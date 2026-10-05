@@ -1,0 +1,77 @@
+//- The site navigation.
+//-
+//- Ordinary pages (Markdown notes) are grouped by their top-level folder
+//- (/ios/notes.html → "ios"); pages at the root form the first, unlabelled
+//- group. The block is rendered only when there is at least one such page
+//- in the menu.
+//-
+//- With study sheets in the site (context.sheets, from the .tex pages), the
+//- sidebar IS the memo filter (owner, 2026-09-26: "tag area and selection
+//- should be done on the side panel, also search should be there" — and
+//- nothing else: no heading, no page tab, no category selects):
+//-   * a search box (a GET form to the memo list, so it works with JS off);
+//-   * the areas, one selected at a time, with counts.
+//- No tags here (owner, 2026-09-29: "tags on the side bar are broken, remove
+//- them from sidebar") — a sheet's tags are its chip bar below the content,
+//- and each chip links into the filtered list.
+//- Every control is a plain link or form field into the filtered memo list;
+//- on the list page static/js/memos.js takes them over and filters in place.
+//- On a phone the filter folds (the same fold the contents use).
+-
+  const pages = context.pages.filter(it => it.showInMenu)
+  const groups = []
+  for (const p of pages) {
+    const seg = p.url.split('/').filter(Boolean)
+    const key = seg.length > 1 ? seg[0] : ''
+    let g = groups.find(x => x.key === key)
+    if (!g) { g = { key, pages: [] }; groups.push(g) }
+    g.pages.push(p)
+  }
+  //- `side…` names: this file is included into layouts that declare their
+  //- own `sheets` / `list` (memos.pug), and pug compiles both into one scope
+  const sideSheets = context.sheets || []
+  const sideList = (context.memos && context.memos.list) || '/memos.html'
+  const sideAreaCounts = {}
+  for (const s of sideSheets) {
+    sideAreaCounts[s.area] = (sideAreaCounts[s.area] || 0) + 1
+  }
+  const sideAreas = Object.keys(sideAreaCounts).sort()
+  const sideHere = sideSheets.find(s => s.url === page.finalPath)
+  const sideIsList = page.finalPath === sideList
+nav.site-nav
+  h2.intro Hi. I'm #[a(href="/") Artur Gurgul]
+  p.tagline and this is my notepad.
+  if pages.length
+    details.contents(open)
+      summary
+        span.contents-label Contents
+        svg.chevron(viewBox="0 0 16 16" width="14" height="14" aria-hidden="true")
+          path(d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round")
+      each g in groups
+        if g.key
+          p.group= g.key
+        ul.posts
+          each page in g.pages
+            li
+              a(href=page.url, class=(page.isCurrent ? "current" : undefined), aria-current=(page.isCurrent ? "page" : undefined))= page.title
+  if sideSheets.length
+    //- `contents` too: all.css and default.pug's script fold it on a phone
+    details.contents.side-fold(open)
+      summary
+        span.contents-label.side-fold-label Filter
+        svg.chevron(viewBox="0 0 16 16" width="14" height="14" aria-hidden="true")
+          path(d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round")
+      form.side-filter(action=sideList method="get" data-list=sideList)
+        input.side-search(type="search" name="q" placeholder="search the memos…" aria-label="Search the memos" autocomplete="off")
+        p.group Area
+        ul.posts.side-areas
+          li
+            a.side-area(href=sideList data-area="" class=(sideIsList ? "current" : undefined)) all areas
+              span.count= sideSheets.length
+          each a in sideAreas
+            li
+              a.side-area(href=sideList + "?area=" + encodeURIComponent(a) data-area=a class=(sideHere && sideHere.area === a ? "current" : undefined))
+                | #{a}
+                span.count= sideAreaCounts[a]
+        noscript
+          button.side-apply(type="submit") Search

@@ -1,0 +1,33 @@
+doctype html
+html(lang="en")
+  head
+    meta(charset="utf-8")
+    meta(name="viewport" content="width=device-width, initial-scale=1")
+    title Artur Gurgul - #{page.title}
+    meta(name="author" content="Artur Gurgul")
+    meta(name="description" content="This is my notepad")
+
+    link(rel="icon" href="/static/favicon.svg" type="image/svg+xml")
+    link(rel="alternate" type="application/atom+xml" title=page.title href="#{site.url}/atom.xml")
+    meta(name="theme-color" content="#0a5fd6")
+    link(rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin)
+    link(rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin)
+    link(rel="stylesheet" href="/static/css/all.css")
+    link(rel="stylesheet" href="/static/css/hightlight.css")
+    link(rel="stylesheet" href="/static/css/sheet.css")
+  body
+    .container
+      .sidebar
+        include sidebar.pug
+      .scroll
+        .content
+          h1.title= page.title
+          #post!= page.file.html
+          .footer
+            include footer.pug
+    //- On a phone the contents start folded; on a desktop they are always open.
+    script.
+      if (window.matchMedia('(max-width: 860px)').matches) {
+        var c = document.querySelector('details.contents');
+        if (c) c.open = false;
+      }

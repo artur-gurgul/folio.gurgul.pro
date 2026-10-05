@@ -1,0 +1,294 @@
+/* CV layout (layouts/cv.pug). Builds on all.css for fonts and tokens; the
+ * structure follows a two-column résumé: a tinted side column for contact,
+ * skills, education and languages, and the main column for the rest. */
+
+.cv-page {
+	background: #eef1f6;
+	padding: 2.5rem 1rem;
+}
+
+.cv {
+	display: grid;
+	grid-template-columns: 17rem 1fr;
+	max-width: 62rem;
+	margin: 0 auto;
+	background: var(--surface);
+	border-radius: 14px;
+	box-shadow: 0 1px 2px rgba(20, 30, 50, 0.06), 0 12px 40px rgba(20, 30, 50, 0.08);
+	overflow: hidden;
+}
+
+.cv h2 {
+	margin: 0 0 0.6rem;
+	font-size: 1.05rem;
+	font-weight: 700;
+	letter-spacing: 0.18em;
+	text-transform: uppercase;
+	color: var(--accent-strong);
+}
+
+/* ── side column ────────────────────────────────────────────────────────── */
+
+.cv-side {
+	background: var(--sidebar-bg);
+	padding: 2.4rem 1.8rem;
+	font-size: 0.98rem;
+	line-height: 1.45;
+}
+
+.cv-contact {
+	list-style: none;
+	margin: 0 0 2rem;
+	padding: 0;
+}
+
+.cv-contact li {
+	position: relative;
+	margin: 0 0 0.45rem;
+	padding-left: 1.5rem;
+	overflow-wrap: anywhere;
+}
+
+/* small accent markers stand in for icons: no icon font is bundled */
+.cv-contact li::before {
+	position: absolute;
+	left: 0;
+	top: 0.05rem;
+	width: 1.1rem;
+	font-family: var(--font-code);
+	font-size: 0.72rem;
+	font-weight: 700;
+	color: var(--accent);
+}
+.cv-contact-location::before { content: "◉"; }
+.cv-contact-phone::before { content: "☎"; }
+.cv-contact-email::before { content: "@"; }
+.cv-contact-linkedin::before { content: "in"; }
+.cv-contact-web::before { content: "⌂"; }
+
+.cv-contact a {
+	color: var(--text);
+}
+
+.cv-block {
+	margin-bottom: 1.8rem;
+}
+
+.cv-block h2::after,
+.cv-section h2::after {
+	content: "";
+	display: block;
+	width: 1.8rem;
+	height: 2px;
+	margin-top: 0.4rem;
+	background: var(--accent);
+}
+
+.cv-block h3 {
+	margin: 0.9rem 0 0.15rem;
+	font-size: 0.8rem;
+	font-weight: 700;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--muted);
+}
+
+.cv-list,
+.cv-edu,
+.cv-lang {
+	margin: 0 0 0.3rem;
+}
+
+/* ── main column ────────────────────────────────────────────────────────── */
+
+.cv-main {
+	position: relative;
+	padding: 2.4rem 2.6rem;
+}
+
+/* top-right corner of the white column */
+.cv-download {
+	position: absolute;
+	top: 1.4rem;
+	right: 1.6rem;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 2.5rem;
+	height: 2.5rem;
+	border: 1px solid var(--accent);
+	border-radius: 50%;
+	color: var(--accent);
+	background: var(--surface);
+	transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.cv-download:hover,
+.cv-download:focus-visible {
+	background: var(--accent);
+	color: #fff;
+	text-decoration: none;
+}
+
+.cv-head h1 {
+	margin: 0;
+	font-size: 3rem;
+	font-weight: 400;
+	letter-spacing: 0.01em;
+}
+
+.cv-headline {
+	margin: 0.2rem 0 0;
+	font-size: 1.1rem;
+	font-weight: 700;
+	letter-spacing: 0.28em;
+	text-transform: uppercase;
+	color: var(--accent-strong);
+}
+
+.cv-head::after {
+	content: "";
+	display: block;
+	width: 3.5rem;
+	height: 3px;
+	margin: 1rem 0 1.6rem;
+	background: var(--accent);
+}
+
+.cv-section {
+	margin-bottom: 1.4rem;
+}
+
+.cv-job {
+	padding: 0.9rem 0;
+	border-top: 1px solid var(--border);
+	break-inside: avoid;
+}
+
+.cv-job:first-of-type {
+	border-top: 0;
+	padding-top: 0.2rem;
+}
+
+.cv-job-top {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 1rem;
+}
+
+.cv-job h3 {
+	margin: 0;
+	font-size: 1.25rem;
+}
+
+.cv-dates {
+	flex: none;
+	font-size: 0.95rem;
+	color: var(--muted);
+}
+
+.cv-org {
+	margin: 0.1rem 0 0.5rem;
+	color: var(--muted);
+}
+
+.cv-company {
+	font-weight: 700;
+	color: var(--accent-strong);
+}
+
+.cv-job p {
+	margin-bottom: 0.45rem;
+}
+
+.cv-project h4 {
+	margin: 0.7rem 0 0.15rem;
+	font-size: 1.02rem;
+}
+
+.cv-used {
+	font-size: 0.92rem;
+	color: var(--muted);
+}
+
+.cv-used span {
+	margin-right: 0.7rem;
+	font-size: 0.78rem;
+	font-weight: 700;
+	letter-spacing: 0.14em;
+	color: var(--accent-strong);
+}
+
+.cv-consent {
+	margin-top: 1.6rem;
+	padding-top: 0.8rem;
+	border-top: 1px solid var(--border);
+	font-size: 0.8rem;
+	color: var(--muted);
+}
+
+/* ── narrow screens ─────────────────────────────────────────────────────── */
+
+@media (max-width: 760px) {
+	.cv-page {
+		padding: 0;
+	}
+
+	.cv {
+		grid-template-columns: 1fr;
+		border-radius: 0;
+	}
+
+	.cv-main {
+		order: -1;
+		padding: 1.8rem 1.25rem;
+	}
+
+	.cv-side {
+		padding: 1.6rem 1.25rem;
+	}
+
+	.cv-head h1 {
+		font-size: 2.3rem;
+	}
+
+	/* icon-only, so it fits in the corner on a phone too */
+	.cv-download {
+		top: 1rem;
+		right: 1rem;
+	}
+
+	.cv-job-top {
+		flex-direction: column;
+		gap: 0;
+	}
+}
+
+/* ── print (browser "Save as PDF") ──────────────────────────────────────── */
+
+@media print {
+	@page {
+		size: A4;
+		margin: 0;
+	}
+
+	body.cv-page {
+		padding: 0;
+		background: none;
+		border: 0;
+	}
+
+	.cv-download {
+		display: none;
+	}
+
+	.cv {
+		max-width: none;
+		border-radius: 0;
+		box-shadow: none;
+		font-size: 12px;
+		-webkit-print-color-adjust: exact;
+		print-color-adjust: exact;
+	}
+}

@@ -1,0 +1,676 @@
+/* Sajt default theme.
+ *
+ * Fonts are bundled under static/fonts/ and licensed under the SIL Open Font
+ * License 1.1 (see static/fonts/FONTS.md and each family's OFL.txt):
+ *   Rajdhani — headings, navigation and text
+ *   0xProto  — code
+ */
+
+/* ── fonts ──────────────────────────────────────────────────────────────── */
+
+@font-face {
+	font-family: "Rajdhani";
+	src: url("/static/fonts/rajdhani/Rajdhani-Regular.woff2") format("woff2");
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Rajdhani";
+	src: url("/static/fonts/rajdhani/Rajdhani-Medium.woff2") format("woff2");
+	font-weight: 500;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Rajdhani";
+	src: url("/static/fonts/rajdhani/Rajdhani-SemiBold.woff2") format("woff2");
+	font-weight: 600;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Rajdhani";
+	src: url("/static/fonts/rajdhani/Rajdhani-Bold.woff2") format("woff2");
+	font-weight: 700;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "0xProto";
+	src: url("/static/fonts/0xproto/0xProto-Regular.woff2") format("woff2");
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "0xProto";
+	src: url("/static/fonts/0xproto/0xProto-Bold.woff2") format("woff2");
+	font-weight: 700;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "0xProto";
+	src: url("/static/fonts/0xproto/0xProto-Italic.woff2") format("woff2");
+	font-weight: 400;
+	font-style: italic;
+	font-display: swap;
+}
+
+/* ── tokens ─────────────────────────────────────────────────────────────── */
+
+:root {
+	--font-text: "Rajdhani", system-ui, -apple-system, "Segoe UI", sans-serif;
+	--font-code: "0xProto", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+	--bg: #fbfbfd;
+	--surface: #ffffff;
+	--sidebar-bg: #f3f5f9;
+	--text: #1c2230;
+	--muted: #5f687a;
+	--border: #e2e6ee;
+	--accent: #0a5fd6;
+	--accent-strong: #0848a3;
+	--accent-soft: rgba(10, 95, 214, 0.08);
+	--code-bg: #f5f7fb;
+
+	--radius: 10px;
+	--sidebar-width: 300px;
+	/* Rajdhani is condensed: 18px sets ~8.4px per character, so 760px was
+	   ~90 characters a line. 680px is ~80, the top of the comfortable range. */
+	--content-width: 680px;
+}
+
+/* ── base ───────────────────────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	scroll-behavior: smooth;
+	-webkit-text-size-adjust: 100%;
+}
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--text);
+	/* Medium (500). SemiBold was tried on 2026-09-24 and reverted on
+	   2026-09-25 (owner: "medium font on the website looked better") */
+	/* 1.5, not 1.6: Rajdhani's own line box at 18px is 23px (1.28), with a
+	   tall x-height and short extenders, so 1.6 floats the lines apart. */
+	font: 500 18px/1.5 var(--font-text);
+	-webkit-font-smoothing: antialiased;
+	text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+	font-family: var(--font-text);
+	font-weight: 700;
+	line-height: 1.2;
+	letter-spacing: 0.01em;
+	color: var(--text);
+	margin: 1.6em 0 0.5em;
+}
+
+/* ⚠ rem is the ROOT size (16px), while body text is 18px — so these are
+   smaller relative to the text than the numbers suggest. h4 at 1.15rem was
+   18.4px, the same size as the text beside it. Steps of ~1.16 from the text:
+   h4 20px · h3 23.2px · h2 27.2px · h1 38.4px. */
+h1 { font-size: 2.4rem; }
+h2 { font-size: 1.7rem; margin-top: 2em; }
+h3 { font-size: 1.45rem; }
+h4 { font-size: 1.25rem; }
+h5,
+h6 { font-size: 0.95rem; text-transform: uppercase; letter-spacing: 0.06em; }
+
+p {
+	margin: 0 0 1em;
+}
+
+a {
+	color: var(--accent);
+	text-decoration: none;
+	text-underline-offset: 0.18em;
+}
+
+a:hover,
+a:focus-visible {
+	color: var(--accent-strong);
+	text-decoration: underline;
+}
+
+/* links inside a note carry a thin underline, so they read as links in
+   running text without shouting */
+#post a {
+	text-decoration: underline;
+	text-decoration-thickness: 1px;
+	text-decoration-color: rgba(10, 95, 214, 0.35);
+	text-underline-offset: 0.2em;
+	overflow-wrap: anywhere;
+}
+
+#post a:hover {
+	text-decoration-color: currentColor;
+}
+
+:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+	border-radius: 4px;
+}
+
+strong {
+	font-weight: 700;
+}
+
+em {
+	font-style: italic;
+}
+
+hr {
+	border: 0;
+	border-top: 1px solid var(--border);
+	margin: 2em 0;
+}
+
+img,
+svg {
+	max-width: 100%;
+	height: auto;
+}
+
+/* ── layout ─────────────────────────────────────────────────────────────── */
+
+.container {
+	display: flex;
+	min-height: 100vh;
+}
+
+.sidebar {
+	flex: 0 0 var(--sidebar-width);
+	position: sticky;
+	top: 0;
+	height: 100vh;
+	overflow-y: auto;
+	background: var(--sidebar-bg);
+	border-right: 1px solid var(--border);
+	padding: 2rem 1.5rem;
+}
+
+.scroll {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.content {
+	max-width: calc(var(--content-width) + 6rem);
+	margin: 0 auto;
+	padding: 0 3rem 3rem;
+}
+
+/* ── sidebar ────────────────────────────────────────────────────────────── */
+
+.sidebar .intro {
+	margin: 0;
+	font-size: 1.35rem;
+	line-height: 1.2;
+}
+
+.sidebar .intro a {
+	color: var(--text);
+}
+
+.sidebar .intro a:hover {
+	color: var(--accent);
+	text-decoration: none;
+}
+
+.sidebar .tagline {
+	margin: 0.2em 0 0;
+	font-size: 1rem;
+	font-weight: 500;
+	color: var(--muted);
+}
+
+/* the contents list: a <details> so it can fold on a phone; on a desktop the
+   summary is just a label */
+.contents {
+	margin-top: 1.8rem;
+}
+
+.contents summary {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	list-style: none;
+	cursor: default;
+	/* one small-caps size for both labels in the sidebar (this and .group);
+	   colour tells them apart, not a 1px size difference */
+	font-size: 0.75rem;
+	font-weight: 700;
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
+	color: var(--muted);
+}
+
+.contents summary::-webkit-details-marker {
+	display: none;
+}
+
+.contents .chevron {
+	display: none;
+}
+
+.group {
+	margin: 1.1rem 0 0.25rem;
+	font-size: 0.75rem;
+	font-weight: 700;
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+	color: var(--accent-strong);
+	opacity: 0.85;
+}
+
+ul.posts {
+	list-style: none;
+	margin: 0.35rem 0 0;
+	padding: 0;
+}
+
+ul.posts li {
+	margin: 0;
+}
+
+ul.posts li span {
+	display: none;
+}
+
+ul.posts a {
+	display: block;
+	/* the 3px accent border is part of the inset, so the text lines up
+	   with the heading above */
+	padding: 0.32rem 0.75rem 0.32rem calc(0.75rem - 3px);
+	margin-left: -0.75rem;
+	border-radius: 8px;
+	border-left: 3px solid transparent;
+	color: var(--text);
+	font-weight: 600;
+	font-size: 1rem;
+	line-height: 1.3;
+	transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+ul.posts a:hover {
+	background: var(--accent-soft);
+	color: var(--accent-strong);
+	text-decoration: none;
+}
+
+ul.posts a.current {
+	background: var(--accent-soft);
+	border-left-color: var(--accent);
+	color: var(--accent-strong);
+}
+
+/* ── the page ───────────────────────────────────────────────────────────── */
+
+h1.title {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	/* the band spans the text column, like the footer's rule — bleeding it
+	   3rem past the text reached neither the text edge nor the page edge.
+	   2rem on top lines it up with the sidebar's first line. (On a phone it
+	   bleeds edge to edge instead; see the media query.) */
+	margin: 0 0 1rem;
+	padding: 2rem 0 0.9rem;
+	background: rgba(251, 251, 253, 0.86);
+	-webkit-backdrop-filter: saturate(160%) blur(10px);
+	backdrop-filter: saturate(160%) blur(10px);
+	border-bottom: 1px solid var(--border);
+}
+
+h1.title:empty {
+	display: none;
+}
+
+#post > :first-child {
+	margin-top: 1.2rem;
+}
+
+/* a page without a title (the home page): its first element takes the
+   title's place, level with the sidebar's first line */
+h1.title:empty + #post > :first-child {
+	margin-top: 2rem;
+}
+
+#post ul,
+#post ol {
+	padding-left: 1.4em;
+	margin: 0 0 1.1em;
+}
+
+#post ul {
+	list-style: none;
+}
+
+#post ul > li {
+	position: relative;
+}
+
+#post ul > li::before {
+	content: "";
+	position: absolute;
+	left: -1em;
+	/* centred on the first line: (1.5em line − 0.36em marker) / 2 */
+	top: 0.57em;
+	width: 0.36em;
+	height: 0.36em;
+	border-radius: 2px;
+	background: var(--accent);
+	opacity: 0.7;
+}
+
+#post li {
+	margin: 0.25em 0;
+}
+
+#post li > ul,
+#post li > ol {
+	margin: 0.25em 0;
+}
+
+blockquote {
+	margin: 1.4em 0;
+	padding: 0.8em 1.2em;
+	border-left: 3px solid var(--accent);
+	background: var(--accent-soft);
+	border-radius: 0 var(--radius) var(--radius) 0;
+	color: var(--muted);
+}
+
+blockquote p:last-child {
+	margin-bottom: 0;
+}
+
+table {
+	width: 100%;
+	border-collapse: collapse;
+	margin: 1.4em 0;
+	font-size: 0.95em;
+}
+
+th,
+td {
+	padding: 0.55em 0.8em;
+	text-align: left;
+	border-bottom: 1px solid var(--border);
+}
+
+thead th {
+	font-size: 0.8em;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted);
+	border-bottom: 2px solid var(--border);
+}
+
+tbody tr:nth-child(even) {
+	background: var(--code-bg);
+}
+
+/* images and diagrams get a quiet frame, as before */
+p:has(> img),
+p:has(> svg) {
+	padding: 1rem;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+}
+
+p > img,
+p > svg {
+	display: block;
+	margin: 0 auto;
+}
+
+/* ── code ───────────────────────────────────────────────────────────────── */
+
+code,
+pre,
+kbd,
+samp {
+	font-family: var(--font-code);
+	font-variant-ligatures: contextual;
+}
+
+/* 0xProto's x-height is lower than Rajdhani's, so code needs to be closer to
+   the text size than usual to read as the same size: 0.85em inline, 0.82em
+   in blocks (was 0.8 / 0.78). */
+#post :not(pre) > code {
+	font-size: 0.85em;
+	padding: 0.12em 0.4em;
+	border-radius: 6px;
+	background: var(--code-bg);
+	border: 1px solid var(--border);
+	white-space: nowrap;
+}
+
+#post pre {
+	margin: 1.3em 0;
+	padding: 1em 1.2em;
+	overflow: auto;
+	white-space: pre;
+	font-size: 0.82em;
+	line-height: 1.6;
+	background: var(--code-bg);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+}
+
+/* a heading sits as close to the code block it introduces as it does to a
+   paragraph: let the heading's own bottom margin set the gap */
+#post :is(h1, h2, h3, h4, h5, h6) + pre {
+	margin-top: 0;
+}
+
+#post pre code {
+	font-size: inherit;
+	padding: 0;
+	border: 0;
+	background: none;
+}
+
+.hljs {
+	background: transparent !important;
+	padding: 0 !important;
+}
+
+/* diagrams render text with the page's font */
+svg text,
+svg g {
+	font-family: var(--font-text);
+	font-weight: 500;
+}
+
+/* ── LaTeX pages (.tex) ─────────────────────────────────────────────────── */
+
+/* labels and tags from the sheet's header, as small chips */
+#post ul.tex-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem;
+	list-style: none;
+	margin: 0 0 0.9rem;
+	padding: 0;
+}
+
+#post ul.tex-meta > li {
+	margin: 0;
+	padding: 0.18em 0.6em;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	background: var(--surface);
+	color: var(--muted);
+	font-size: 0.8rem;
+	font-weight: 600;
+	line-height: 1.3;
+}
+
+#post ul.tex-meta > li::before {
+	content: none;
+}
+
+.tex-meta .tex-key {
+	color: var(--accent-strong);
+	font-size: 0.85em;
+	font-weight: 700;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+
+#post ul.tex-meta > li.tex-tag {
+	border-color: transparent;
+	background: var(--accent-soft);
+	color: var(--accent-strong);
+}
+
+.tex-tag::before {
+	content: "#";
+	opacity: 0.6;
+}
+
+.tex-links {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+#post .tex-links a {
+	padding: 0.25em 0.8em;
+	border: 1px solid var(--accent);
+	border-radius: 8px;
+	color: var(--accent);
+	font-weight: 700;
+	font-size: 0.9rem;
+	text-decoration: none;
+}
+
+#post .tex-links a:hover {
+	background: var(--accent-soft);
+	color: var(--accent-strong);
+}
+
+.tex-pages {
+	color: var(--muted);
+	font-size: 0.9rem;
+}
+
+/* the page itself: vector, so it stays sharp at any width; a click opens it
+   alone at full size */
+.tex-page {
+	display: block;
+	overflow: hidden;
+	background: #fff;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	box-shadow: 0 1px 2px rgba(28, 34, 48, 0.06), 0 4px 16px rgba(28, 34, 48, 0.06);
+	cursor: zoom-in;
+}
+
+.tex-page img {
+	display: block;
+	width: 100%;
+	height: auto;
+}
+
+/* ── footer ─────────────────────────────────────────────────────────────── */
+
+.footer {
+	margin-top: 3rem;
+	padding-top: 1.2rem;
+	border-top: 1px solid var(--border);
+}
+
+.disclaimer {
+	color: var(--muted);
+	font-size: 0.9rem;
+	font-weight: 600;
+}
+
+.disclaimer p {
+	margin: 0;
+}
+
+/* ── narrow screens: the sidebar goes on top ────────────────────────────── */
+
+@media (max-width: 860px) {
+	body {
+		font-size: 17px;
+	}
+
+	.container {
+		flex-direction: column;
+	}
+
+	.sidebar {
+		position: static;
+		height: auto;
+		flex-basis: auto;
+		border-right: 0;
+		border-bottom: 1px solid var(--border);
+		padding: 1.4rem 1.25rem;
+	}
+
+	.content {
+		padding: 0 1.25rem 2rem;
+	}
+
+	h1.title {
+		margin: 0 -1.25rem 1rem;
+		padding: 1.1rem 1.25rem 0.7rem;
+		font-size: 1.9rem;
+	}
+
+	/* the same distance below the sidebar as the sidebar's own padding */
+	h1.title:empty + #post > :first-child {
+		margin-top: 1.4rem;
+	}
+
+	.contents {
+		margin-top: 1rem;
+	}
+
+	/* the contents fold: a real toggle here */
+	.contents summary {
+		cursor: pointer;
+		padding: 0.5rem 0;
+	}
+
+	.contents .chevron {
+		display: inline;
+		transition: transform 0.15s ease;
+	}
+
+	.contents[open] .chevron {
+		transform: rotate(180deg);
+	}
+}

@@ -1,0 +1,399 @@
+/* Study sheets (.tex pages rendered by Sajt's sheet parser) and the memo list.
+ * Builds on all.css: same fonts, tokens and column. The colour classes mirror
+ * printup-sheet.sty's palette (sheetBlue/Green/Brown/Orange/Red/Grey) so a
+ * \textcolor on paper keeps its meaning on the web. */
+
+/* ── the side panel: the memo filter ────────────────────────────────────── */
+
+.side-filter {
+	margin: 0;
+}
+
+/* the filter's fold: no label on a desktop (the panel is always open there);
+   on a phone the same fold as the contents, labelled */
+.side-fold {
+	margin-top: 1.2rem;
+}
+
+.side-fold summary {
+	display: none;
+}
+
+@media (max-width: 860px) {
+	.side-fold summary {
+		display: flex;
+	}
+}
+
+.side-search {
+	display: block;
+	width: 100%;
+	margin: 0.3rem 0 0.2rem;
+	padding: 0.4rem 0.7rem;
+	font: inherit;
+	font-size: 0.95rem;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--surface);
+	color: var(--text);
+}
+
+.side-search:focus {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+	border-color: transparent;
+}
+
+/* all.css hides spans in the contents list (the old date column); the
+   counts are wanted, right-aligned */
+ul.posts.side-areas li span.count {
+	display: inline;
+	float: right;
+	margin-left: 0.5rem;
+	font-size: 0.78rem;
+	font-weight: 500;
+	color: var(--muted);
+}
+
+/* a selected area looks like the current page in the contents (the sidebar
+   carries no tags — owner, 2026-09-29) */
+ul.posts a.on {
+	background: var(--accent);
+	border-left-color: var(--accent);
+	color: #fff;
+}
+
+ul.posts a.on .count {
+	color: rgba(255, 255, 255, 0.85);
+}
+
+.side-apply {
+	margin-top: 0.6rem;
+	padding: 0.35rem 0.9rem;
+	font: inherit;
+	font-weight: 700;
+	color: #fff;
+	background: var(--accent);
+	border: 0;
+	border-radius: 8px;
+}
+
+/* ── the sheet page ─────────────────────────────────────────────────────── */
+
+.sheet-kicker {
+	margin: -0.4rem 0 0.8rem;
+	font-size: 0.85rem;
+	font-weight: 700;
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+	color: var(--muted);
+}
+
+/* at the end of the sheet, after "Related" */
+#post .sheet-meta {
+	list-style: none;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem;
+	margin: 1rem 0 0;
+	padding: 0;
+}
+
+/* not a list of points: no square markers, no running-text underline */
+#post .sheet-meta li::before {
+	display: none;
+}
+
+#post .sheet-meta a {
+	text-decoration: none;
+}
+
+.sheet-meta li a,
+.memos-chip {
+	display: inline-block;
+	padding: 0.1rem 0.55rem;
+	border-radius: 999px;
+	border: 1px solid var(--border);
+	background: var(--surface);
+	font-size: 0.82rem;
+	font-weight: 600;
+	line-height: 1.5;
+	color: var(--muted);
+	text-decoration: none;
+}
+
+.sheet-meta li.sheet-label a {
+	border-color: rgba(10, 95, 214, 0.25);
+	color: var(--accent-strong);
+	background: var(--accent-soft);
+}
+
+.sheet-meta li a:hover,
+.memos-chip:hover {
+	border-color: var(--accent);
+	color: var(--accent-strong);
+	text-decoration: none;
+}
+
+.sheet-oneliner {
+	padding: 0.7rem 1rem;
+	border-left: 3px solid var(--accent);
+	background: var(--accent-soft);
+	border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.sheet-tools {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.4rem 1rem;
+	margin: 0.8rem 0 1.6rem;
+	font-weight: 600;
+}
+
+.sheet-download {
+	padding: 0.35rem 0.9rem;
+	border-radius: 8px;
+	background: var(--accent);
+	color: #fff !important;
+	text-decoration: none !important;
+}
+
+.sheet-download:hover {
+	background: var(--accent-strong);
+}
+
+.sheet-pages {
+	color: var(--muted);
+	font-weight: 500;
+}
+
+.sheet-section h2 {
+	margin-top: 1.6em;
+	font-size: 1.35rem;
+}
+
+.sheet-section h2:first-child {
+	margin-top: 1.2em;
+}
+
+/* the sheets' own "\hd{…}" headings (a bold-only paragraph in the source) */
+.sheet h3.sheet-hd {
+	margin: 1.5em 0 0.4em;
+	font-size: 1.2rem;
+}
+
+.sheet h3.sheet-hd span {
+	color: inherit;
+}
+
+/* inline code sits in a lot of running text here: a touch smaller than in a note */
+#post .sheet :not(pre) > code {
+	font-size: 0.82em;
+}
+
+.sheet li.trap {
+	list-style: none;
+}
+
+#post .sheet li.trap::before {
+	content: "!";
+	top: 0.2em;
+	width: auto;
+	height: auto;
+	background: none;
+	opacity: 1;
+	font-weight: 700;
+	color: var(--c-red);
+}
+
+.item-label {
+	font-weight: 700;
+	margin-right: 0.25em;
+}
+
+.sheet-figure {
+	margin: 1rem 0 1.4rem;
+	text-align: center;
+}
+
+.sheet-figure img {
+	max-width: 100%;
+	height: auto;
+}
+
+/* a picture drawn across the printed page fills the column here too; a
+   small one keeps its printed size (tex.ts decides from the SVG's size) */
+.sheet-figure img.wide {
+	width: 100%;
+}
+
+.sheet-code {
+	margin: 0.8em 0 1.2em;
+}
+
+.sheet-table {
+	margin: 1em 0 1.4em;
+}
+
+.sheet-table td.b,
+.sheet-table th.b {
+	font-weight: 700;
+}
+
+.sheet-table td.center,
+.sheet-table th.center {
+	text-align: center;
+}
+
+.sheet-table td.right,
+.sheet-table th.right {
+	text-align: right;
+}
+
+.sheet-table code {
+	white-space: normal;
+}
+
+.sheet-related {
+	margin-top: 2rem;
+	padding-top: 1rem;
+	border-top: 1px solid var(--border);
+	color: var(--muted);
+	font-size: 0.95rem;
+}
+
+.sheet-related-label {
+	font-weight: 700;
+}
+
+.unverified {
+	font-size: 0.85em;
+	font-style: italic;
+	color: var(--c-orange);
+}
+
+.sheet-note {
+	color: var(--muted);
+	font-size: 0.9em;
+}
+
+.chip {
+	display: inline-block;
+	padding: 0 0.35em;
+	border-radius: 4px;
+	background: var(--code-bg);
+}
+
+.math {
+	font-style: italic;
+}
+
+.math code {
+	font-style: normal;
+}
+
+/* ── the paper palette on the web ───────────────────────────────────────── */
+
+:root {
+	--c-blue: #204a87;
+	--c-green: #4e9a06;
+	--c-brown: #8f5902;
+	--c-orange: #ce5c00;
+	--c-red: #b22222;
+	--c-grey: #6b7280;
+}
+
+.c-sheetblue, .c-tangokeyword, .c-navyblue { color: var(--c-blue); }
+.c-sheetgreen, .c-tangostring { color: var(--c-green); }
+.c-sheetbrown, .c-tangocomment { color: var(--c-brown); }
+.c-sheetorange, .c-tangooperator { color: var(--c-orange); }
+.c-sheetred, .c-brickred, .c-red { color: var(--c-red); }
+.c-sheetgrey, .c-gray, .c-grey, .c-black { color: var(--c-grey); }
+.c-white { color: inherit; }
+
+.chip.c-sheetblue { background: rgba(32, 74, 135, 0.08); }
+.chip.c-sheetgreen { background: rgba(78, 154, 6, 0.1); }
+.chip.c-sheetorange { background: rgba(206, 92, 0, 0.1); }
+.chip.c-sheetred { background: rgba(178, 34, 34, 0.08); }
+
+/* ── the memo list ──────────────────────────────────────────────────────── */
+
+/* what the side panel currently selects, above the list */
+.memos-status {
+	margin: 0 0 0.6rem;
+	color: var(--muted);
+	font-size: 0.9rem;
+	font-weight: 600;
+}
+
+.memos-active {
+	font-weight: 500;
+}
+
+.memos-area {
+	margin-top: 1.8rem;
+}
+
+.memos-area h2 {
+	margin: 0 0 0.4rem;
+	font-size: 1.15rem;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--accent-strong);
+}
+
+#post ul.memos-list {
+	list-style: none;
+	padding: 0;
+	margin: 0;
+}
+
+#post ul.memos-list > li {
+	margin: 0;
+	padding: 0.55rem 0;
+	border-top: 1px solid var(--border);
+}
+
+#post ul.memos-list > li::before {
+	display: none;
+}
+
+.memos-list a.memos-title {
+	font-weight: 700;
+	text-decoration: none;
+}
+
+.memos-list .memos-oneliner {
+	margin: 0.1rem 0 0;
+	color: var(--muted);
+	font-size: 0.95rem;
+}
+
+.memos-list .memos-tags {
+	margin: 0.2rem 0 0;
+	font-size: 0.8rem;
+	color: var(--muted);
+}
+
+/* #post underlines links in running text; a tag list is not that */
+#post .memos-list .memos-tags a {
+	color: var(--muted);
+	text-decoration: none;
+}
+
+#post .memos-list .memos-tags a:hover {
+	color: var(--accent-strong);
+	text-decoration: underline;
+}
+
+.memos-list li.hidden,
+.memos-area.hidden,
+.memos-empty.hidden {
+	display: none;
+}
+
+.memos-empty {
+	color: var(--muted);
+	font-style: italic;
+}

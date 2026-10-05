@@ -1,0 +1,132 @@
+% printup-sheet.sty — LaTeX + TikZ study sheets in printup's print theme.
+%
+% WHY THIS EXISTS. Owner, 2026-09-23: dense one-page learning sheets are
+% written in LaTeX + TikZ, "use the same theme and fonts we use for printing
+% markdowns". printup renders Markdown with pandoc → xelatex; this package
+% reproduces THAT look for hand-written .tex, so a TikZ sheet and a Markdown
+% printout are the same family on paper.
+%
+% — 8pt · A4 · geometry 18/18/22/22 mm · linestretch 1.1 · mono Scale=0.88 ·
+% tango highlighting · colorlinks NavyBlue · pandoc's parskip. If printup's
+% settings change, change these too. FONTS are not copied: print-sheet.py asks
+% `printup --config` and passes them in as \printupbody / \printupmono, so
+% .config/printup.yaml overrides apply here exactly as they do to Markdown.
+%
+% Use:  \documentclass[8pt]{extarticle}  \usepackage{printup-sheet}
+% the tool injects the fonts and enforces the one-page limit).
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{printup-sheet}[2026/09/23 printup print theme for study sheets]
+
+% ── fonts (printup's defaults if the tool did not pass them) ────────────────
+\providecommand\printupbody{Atkinson Hyperlegible}
+\providecommand\printupmono{0xProto Nerd Font Mono}
+\RequirePackage{fontspec}
+\setmainfont{\printupbody}
+\setsansfont{\printupbody}
+\setmonofont{\printupmono}[Scale=0.88]
+
+% ── page: pandoc -V papersize=a4 -V geometry:… -V linestretch=1.1 ───────────
+\RequirePackage[a4paper,top=18mm,bottom=18mm,left=22mm,right=22mm]{geometry}
+\RequirePackage{setspace}
+\setstretch{1.1}
+\RequirePackage{parskip}            % pandoc's default: no indent, space between paragraphs
+\setcounter{secnumdepth}{0}         % pandoc: unnumbered headings
+\pagestyle{empty}                   % one sheet — the page number is noise
+
+% ── colour + links: -V colorlinks=true -V linkcolor=NavyBlue ───────────────
+\RequirePackage[dvipsnames,svgnames]{xcolor}
+\RequirePackage[colorlinks=true,linkcolor=NavyBlue,urlcolor=NavyBlue]{hyperref}
+
+% ── tango palette (pandoc --highlight-style=tango) ─────────────────────────
+\definecolor{tangoShade}{RGB}{248,248,248}
+\definecolor{tangoKeyword}{RGB}{32,74,135}
+\definecolor{tangoString}{RGB}{78,154,6}
+\definecolor{tangoComment}{RGB}{143,89,2}
+\definecolor{tangoNumber}{RGB}{0,0,207}
+\definecolor{tangoOperator}{RGB}{206,92,0}
+% Diagram colours drawn from the same palette, so figures match the code.
+\colorlet{sheetBlue}{tangoKeyword}
+\colorlet{sheetGreen}{tangoString}
+\colorlet{sheetBrown}{tangoComment}
+\colorlet{sheetOrange}{tangoOperator}
+\colorlet{sheetRed}{BrickRed}
+\colorlet{sheetGrey}{black!55}
+
+% ── code: listings styled like pandoc's tango Shaded blocks ────────────────
+\RequirePackage{listings}
+\lstdefinestyle{printup}{
+  basicstyle=\ttfamily\footnotesize,
+  backgroundcolor=\color{tangoShade},
+  keywordstyle=\color{tangoKeyword}\bfseries,
+  stringstyle=\color{tangoString},
+  commentstyle=\color{tangoComment}\itshape,
+  numberstyle=\color{tangoNumber},
+  columns=fullflexible, keepspaces=true, showstringspaces=false,
+  breaklines=true, frame=none, aboveskip=4pt, belowskip=4pt,
+  xleftmargin=3pt, xrightmargin=3pt, framexleftmargin=3pt,
+  upquote=true,
+}
+\lstset{style=printup}
+
+% ── TikZ + dense-layout helpers ────────────────────────────────────────────
+\RequirePackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,fit,backgrounds,shapes.geometric,
+                shapes.multipart,decorations.pathreplacing,matrix}
+\tikzset{
+  sheet/.style={font=\sffamily\small, >={Stealth[length=4pt]}},
+  box/.style={draw=sheetBlue, thick, rounded corners=2pt, fill=sheetBlue!6,
+              inner sep=3pt, align=center, font=\small},
+  cell/.style={draw=sheetGrey, minimum height=5mm, minimum width=9mm,
+               font=\ttfamily\footnotesize, inner sep=1pt},
+  note/.style={font=\footnotesize\itshape, text=sheetBrown, align=left},
+  flow/.style={->, thick, draw=sheetGrey},
+  hot/.style={->, thick, draw=sheetOrange},
+}
+\RequirePackage{booktabs}
+\RequirePackage{multicol}
+\setlength{\columnsep}{6mm}
+% Without this, multicol stretches parskip glue to fill a column after a
+% \columnbreak — big holes, and a heading drifting away from its content
+% (measured on _template.tex, 2026-09-23).
+\raggedcolumns
+
+% ── glyphs the body font lacks ─────────────────────────────────────────────
+% Atkinson Hyperlegible has no arrows or math relations: a literal → prints as
+% a tofu box. printup solves this for Markdown with its glyph-fallback header;
+% for .tex, map the usual suspects to math glyphs here.
+\RequirePackage{amssymb}            % \checkmark
+\RequirePackage{newunicodechar}
+\newunicodechar{→}{\ensuremath{\rightarrow}}
+\newunicodechar{←}{\ensuremath{\leftarrow}}
+\newunicodechar{↔}{\ensuremath{\leftrightarrow}}
+\newunicodechar{⇒}{\ensuremath{\Rightarrow}}
+\newunicodechar{≤}{\ensuremath{\leq}}
+\newunicodechar{≥}{\ensuremath{\geq}}
+\newunicodechar{≠}{\ensuremath{\neq}}
+\newunicodechar{≈}{\ensuremath{\approx}}
+\newunicodechar{×}{\ensuremath{\times}}
+\newunicodechar{✓}{\ensuremath{\checkmark}}
+\RequirePackage{enumitem}
+\setlist{nosep, leftmargin=*}
+
+\newcommand\sheettitle[2]{%
+  {\noindent\Large\bfseries #1}\hfill{\small\color{sheetGrey}#2}\par\vspace{2pt}%
+  {\color{sheetBlue}\rule{\linewidth}{0.8pt}}\par}
+\newcommand\oneliner[1]{\noindent\colorbox{sheetBlue!8}{\parbox{\dimexpr\linewidth-2\fboxsep}{\textbf{In one line:} #1}}\par}
+\newcommand\trap[1]{\item[\textcolor{sheetRed}{\textbf{!}}] #1}
+% \unverified — put right after a claim that was NOT checked against a primary
+% source (from memory, a blog, a forum). Owner, 2026-09-25: uncertain facts
+% must be visibly marked on paper, one consistent mark. Usage: claim\unverified
+\newcommand\unverified{\,{\scriptsize\itshape\textcolor{sheetOrange}{(unverified)}}}
+
+% ── one source, two media ───────────────────────────────────────────────────
+% The website (artur.gurgul.pro, built by Sajt) renders the same .tex as HTML
+% and does the OPPOSITE of these: it keeps \htmlonly, drops \pdfonly, and shows
+% \webfigure as an image. Owner, 2026-09-25: "it does not have to be 1:1, we
+% need to adjust content for pdf and for html separately" — with these the
+% adjustment lives in the one source file, so a copy is never edited.
+\newcommand\htmlonly[1]{}                 % nothing on paper
+\newcommand\pdfonly[1]{#1}                % as written on paper
+\newcommand\webfigure[2]{}                % {file}{alt}: an image only on the web
+
+\endinput
