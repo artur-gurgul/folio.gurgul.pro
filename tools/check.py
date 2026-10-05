@@ -157,8 +157,11 @@ def selftest(with_compile: bool) -> bool:
     controls = [
         ("headers flags a folio without Sources/labels",
          bool(header_problems("% just a comment\n\\documentclass{article}"))),
+        # the planted samples are assembled at run time: written out literally
+        # they would sit in this tracked file and the leak scan would flag itself
         ("leaks flags a private IP and a key",
-         len(leak_hits("host 192.168.1.20\napi_key = 'abcdefghijklmnopqrstuvwx'")) >= 2),
+         len(leak_hits("host " + ".".join(["192", "168", "1", "20"]) + "\n"
+                       + "api" + "_key = '" + "x" * 24 + "'")) >= 2),
     ]
     if with_compile and shutil.which("xelatex") and shutil.which("pdfinfo"):
         template = ROOT / "tools" / "templates" / "folio.tex"
