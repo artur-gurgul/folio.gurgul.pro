@@ -58,13 +58,13 @@ the view tree, drive routing</strong> — a deep logic tree with a shallow view 
     viewController<span class="hljs-operator">?</span>.display(.<span class="hljs-keyword">init</span>(rows: r.orders.map(\.title))) } }</code></pre>
 </section>
 <section class="sheet-section">
-<h2>Traps<span class="unverified">(unverified)</span></h2>
+<h2>Traps</h2>
 <ul>
-<li class="trap">“VIP is VIPER renamed.” VIPER’s Presenter sits <em>between</em> View and Interactor,  two-way; VIP is a one-way cycle, no Entity layer, typed models per use case.</li>
-<li class="trap">RIBs’ Router is not “just navigation” — it owns the <em>RIB tree</em>; screens are a  side effect of attaching RIBs.</li>
-<li class="trap">Redux: every subscriber hears every change unless it <code>select</code>s a slice; keep  ephemeral UI state (focus, scroll) out of the global store.</li>
-<li class="trap">MVI: a toast stored in State fires again on re-render — model it as a consumed event.</li>
-<li class="trap">“MV means no tests” — the logic moves to <code>@Observable</code> models, which test  fine; what you lose is a per-screen seam.</li>
+<li class="trap">“VIP is VIPER renamed.” VIPER (2014): Presenter <em>between</em> View and Interactor,  both ways; Entities stay in the Interactor. VIP: a one-way cycle.</li>
+<li class="trap">RIBs’ Router is not “just navigation”: it attaches/detaches child RIBs from  Interactor output — screens follow the tree.</li>
+<li class="trap">Redux: subscribers hear every change unless they <code>select</code> a slice; local UI  state (<code>isDropdownOpen</code>) stays out of the store.</li>
+<li class="trap">A one-off message kept in state shows again on every re-render until the view  reports it shown and the state clears it.</li>
+<li class="trap">Conforming to the <code>Observable</code> protocol alone adds no observation — use the  <code>@Observable</code> macro.</li>
 </ul>
 </section>
 <p class="sheet-related"><span class="sheet-related-label">Related:</span> MVC / MVP / MVVM · VIPER and Clean

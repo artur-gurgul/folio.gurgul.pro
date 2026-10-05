@@ -9,7 +9,8 @@
 %   hannesdorfmann.com/android/mosby3-mvi-1 · redux.js.org (three principles; history of Redux)
 %   github.com/ReSwift/ReSwift (README, releases) · github.com/pointfreeco/swift-composable-architecture
 %   developer.apple.com/documentation/swiftui/managing-model-data-in-your-app
-% Traps are engineering judgement, not quoted from a source — marked unverified.
+%   objc.io/issues/13-architecture/viper (Gilbert, Stoll, 2014-06) · redux.js.org/faq/organizing-state
+%   developer.android.com/topic/architecture/ui-layer/events
 % @labels: area=design kind=architecture platform=ios
 % @tags: vip, clean-swift, ribs, mvi, redux, reswift, mv-pattern, viper, interactor, unidirectional-data-flow, tca, observation
 \documentclass[8pt]{extarticle}
@@ -196,17 +197,18 @@ final class ListOrdersPresenter {       // PresentationLogic
     viewController?.display(.init(rows: r.orders.map(\.title))) } }
 \end{lstlisting}
 
-\section{Traps\unverified}
+\section{Traps}
 \begin{itemize}
-  \trap{``VIP is VIPER renamed.'' VIPER's Presenter sits \emph{between} View and Interactor,
-        two-way; VIP is a one-way cycle, no Entity layer, typed models per use case.}
-  \trap{RIBs' Router is not ``just navigation'' — it owns the \emph{RIB tree}; screens are a
-        side effect of attaching RIBs.}
-  \trap{Redux: every subscriber hears every change unless it \texttt{select}s a slice; keep
-        ephemeral UI state (focus, scroll) out of the global store.}
-  \trap{MVI: a toast stored in State fires again on re-render — model it as a consumed event.}
-  \trap{``MV means no tests'' — the logic moves to \texttt{@Observable} models, which test
-        fine; what you lose is a per-screen seam.}
+  \trap{``VIP is VIPER renamed.'' VIPER (2014): Presenter \emph{between} View and Interactor,
+        both ways; Entities stay in the Interactor. VIP: a one-way cycle.}
+  \trap{RIBs' Router is not ``just navigation'': it attaches/detaches child RIBs from
+        Interactor output — screens follow the tree.}
+  \trap{Redux: subscribers hear every change unless they \texttt{select} a slice; local UI
+        state (\texttt{isDropdownOpen}) stays out of the store.}
+  \trap{A one-off message kept in state shows again on every re-render until the view
+        reports it shown and the state clears it.}
+  \trap{Conforming to the \texttt{Observable} protocol alone adds no observation — use the
+        \texttt{@Observable} macro.}
 \end{itemize}
 
 \end{multicols}
