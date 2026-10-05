@@ -29,9 +29,17 @@ src/                     the sources — the only place content is written
   <subject>/<name>.tex   one folio per file, grouped by subject
   .sajt/                 site config + theme (layouts, styles, fonts, sheet style)
 tools/build.py           builds src/ → docs/ (needs a compiled Sajt: --sajt or $SAJT)
+tools/check.py           the checks (headers, leaks, docs untouched, one page) — no Sajt needed
+tools/ci-fonts.py        installs the exact fonts the page-count check needs
 tools/templates/folio.tex  the anatomy of a folio — start every new one from it
 docs/                    ⚠ BUILD OUTPUT, served by GitHub Pages. Never edit by hand.
+.github/                 issue forms, PR template, CODEOWNERS, the checks workflow
+CONTRIBUTING.md          how people help: report, fix, suggest, discuss
 ```
+
+**`main` is protected:** every change — the maintainer's too — goes through a
+pull request that passes the checks and is approved by the maintainer. Run
+`python3 tools/check.py --compile` before opening one.
 
 `docs/CNAME` is the custom domain — the build keeps it; never delete it.
 

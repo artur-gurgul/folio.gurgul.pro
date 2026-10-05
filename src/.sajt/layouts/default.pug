@@ -17,6 +17,10 @@ html(lang="en")
     //- a folio page (a .tex page) gets the wide layout: its diagrams and tables
     //- are drawn for an A4 width and are unreadable in a 680 px reading column
     - const isFolio = (context.sheets || []).some(s => s.url === page.finalPath)
+    //- where a reader can fix or report a folio: its source on GitHub, and the
+    //- fact-correction form pre-filled with the folio's file
+    - const repo = "https://github.com/artur-gurgul/folio.gurgul.pro"
+    - const srcFile = page.finalPath.replace(/^\//, "").replace(/\.html$/, ".tex")
     .container
       .sidebar
         include sidebar.pug
@@ -24,6 +28,11 @@ html(lang="en")
         .content(class=isFolio ? "folio-page" : undefined)
           h1.title= page.title
           #post!= page.file.html
+          if isFolio
+            p.folio-actions
+              a(href=repo + "/edit/main/src/" + srcFile) Edit on GitHub
+              span.sep  ·
+              a(href=repo + "/issues/new?template=fact-correction.yml&folio=" + encodeURIComponent(srcFile)) Report a problem
           .footer
             include footer.pug
     //- On a phone the contents start folded; on a desktop they are always open.

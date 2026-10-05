@@ -20,10 +20,10 @@ page you keep next to you.
 
 ## Contributing
 
-Change files under `src/` and open a pull request. Please keep to the rules in
-[`CLAUDE.md`](CLAUDE.md) — they apply to people as much as to Claude Code:
-dense, true (sources in the header), visual, one page, nothing internal. Do
-not edit `docs/`; the maintainer rebuilds it.
+Report a wrong fact, suggest a folio, or fix one yourself — every folio page
+has "Edit on GitHub" and "Report a problem" links. How it works, and the checks
+a pull request must pass: [`CONTRIBUTING.md`](CONTRIBUTING.md). The rules in
+[`CLAUDE.md`](CLAUDE.md) apply to people as much as to Claude Code.
 
 ## Licence
 

@@ -1,0 +1,32 @@
+name: Fact correction
+description: A fact on a folio is wrong, outdated or unsourced.
+title: "[fact] "
+labels: ["fact"]
+body:
+  - type: input
+    id: folio
+    attributes:
+      label: Folio
+      description: Which folio — its address, or its file under src/ (e.g. design/vip-ribs-mvi-redux.tex).
+    validations:
+      required: true
+  - type: textarea
+    id: wrong
+    attributes:
+      label: What is wrong
+      description: Quote the line exactly as it appears on the folio.
+    validations:
+      required: true
+  - type: textarea
+    id: right
+    attributes:
+      label: What is right
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Source
+      description: A link where the correct fact can be checked — documentation, a specification, a paper. A correction without a source cannot be accepted.
+    validations:
+      required: true

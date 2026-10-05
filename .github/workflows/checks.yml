@@ -1,0 +1,40 @@
+# folio's checks on every pull request and every push to main.
+# The steps are a short, fixed command sequence; the logic lives in tools/check.py.
+name: checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TeX Live and poppler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            texlive-xetex texlive-latex-recommended texlive-latex-extra \
+            texlive-pictures texlive-fonts-recommended poppler-utils fontconfig
+
+      - name: The fonts the sheet style uses (pinned, sha256-verified)
+        run: python3 tools/ci-fonts.py
+
+      - name: Checks — pull request
+        if: github.event_name == 'pull_request'
+        env:
+          # the maintainer's own pull requests carry the rebuilt docs/
+          ALLOW_DOCS: ${{ github.event.pull_request.user.login == 'artur-gurgul-pro' && '--allow-docs' || '' }}
+        run: python3 tools/check.py --selftest --compile --base "origin/${{ github.base_ref }}" $ALLOW_DOCS
+
+      - name: Checks — main
+        if: github.event_name == 'push'
+        run: python3 tools/check.py --selftest --compile
