@@ -19,7 +19,7 @@
 	overflow-x: auto;
 }
 
-/* "Edit on GitHub · Report a problem" under a folio */
+/* "Report a problem · Discuss this folio" under a folio */
 .folio-actions {
 	margin: 2rem 0 0;
 	font-size: 0.85rem;
@@ -28,6 +28,42 @@
 
 .folio-actions .sep {
 	margin: 0 0.4em;
+}
+
+/* ── printing a folio = printing THE A4 folio ───────────────────────────
+ * Without this, Ctrl+P printed the web page (sidebar, wide layout, several
+ * pages). The folio's one-page SVG (the PDF's page, vector) is loaded but
+ * invisible on screen, and in print it is the only thing on the paper. */
+.folio-print {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	opacity: 0;
+	pointer-events: none;
+}
+
+@media print {
+	@page {
+		size: A4;
+		margin: 0;
+	}
+
+	body:has(.folio-print) > :not(.folio-print) {
+		display: none !important;
+	}
+
+	body:has(.folio-print) {
+		margin: 0;
+		background: none;
+	}
+
+	.folio-print {
+		position: static;
+		display: block;
+		width: 210mm;
+		height: 297mm;
+		opacity: 1;
+	}
 }
 
 /* laptop widths (861–1299 px): the 300 px sidebar and 3 rem side padding left

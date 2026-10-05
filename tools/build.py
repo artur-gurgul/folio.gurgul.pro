@@ -35,6 +35,7 @@ SRC = ROOT / "src"
 OUT = SRC / ".build"
 DOCS = ROOT / "docs"
 KEEP = {"CNAME"}
+REPO = "https://github.com/artur-gurgul/folio.gurgul.pro"
 
 
 def fail(msg: str, code: int, fix: str = "") -> int:
@@ -89,6 +90,29 @@ def main() -> int:
     if over:
         return fail("a folio must fit ONE page:\n  " + "\n  ".join(over), 1)
     print(f"one page each: {len(pdfs)} folio PDF(s)")
+
+    # One "LaTeX source" link per folio, and it opens the source on GitHub
+    # (where it can be read, and edited with GitHub's pencil). Sajt writes the
+    # link to a local copy of the .tex; point it at the repository instead. If
+    # Sajt's markup ever changes, fail rather than ship a page without it.
+    missing = []
+    for tex in sorted(SRC.rglob("*.tex")):
+        rel = tex.relative_to(SRC)
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        page = OUT / rel.with_suffix(".html")
+        if not page.is_file():
+            missing.append(f"{rel}: no page built")
+            continue
+        html = page.read_text()
+        local = f'<a href="{tex.stem}.tex">LaTeX source</a>'
+        if local not in html:
+            missing.append(f"{rel}: Sajt's LaTeX source link not found in {page.name}")
+            continue
+        page.write_text(html.replace(local, f'<a href="{REPO}/blob/main/src/{rel.as_posix()}">LaTeX source</a>'))
+    if missing:
+        return fail("could not point LaTeX source at GitHub:\n  " + "\n  ".join(missing), 1)
+
     if args.check:
         print("check only — docs/ untouched")
         return 0

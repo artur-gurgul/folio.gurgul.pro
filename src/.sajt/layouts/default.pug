@@ -25,6 +25,10 @@ html(lang="en")
     //- link opens a new thread in the "Folio comments" category, pre-filled
     - const discussBody = "About the folio: https://folio.gurgul.pro" + page.finalPath + "\n\n"
     - const discussUrl = repo + "/discussions/new?category=folio-comments&title=" + encodeURIComponent(page.title || srcFile) + "&body=" + encodeURIComponent(discussBody)
+    //- printing a folio prints THE A4 folio: the PDF's page as a vector SVG,
+    //- loaded but invisible on screen, the only thing shown in print (sheet.css)
+    if isFolio
+      img.folio-print(src=page.finalPath.replace(/\.html$/, ".svg") alt="" aria-hidden="true")
     .container
       .sidebar
         include sidebar.pug
@@ -34,8 +38,6 @@ html(lang="en")
           #post!= page.file.html
           if isFolio
             p.folio-actions
-              a(href=repo + "/edit/main/src/" + srcFile) Edit on GitHub
-              span.sep  ·
               a(href=repo + "/issues/new?template=fact-correction.yml&folio=" + encodeURIComponent(srcFile)) Report a problem
               span.sep  ·
               a(href=discussUrl) Discuss this folio

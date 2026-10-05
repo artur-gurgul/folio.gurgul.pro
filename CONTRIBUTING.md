@@ -8,7 +8,7 @@ is welcome — reviewing facts is as valuable as writing them.
 | You want to… | Do this |
 |---|---|
 | **Report a wrong or outdated fact** | "Report a problem" under the folio, or open a [fact correction](https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml). Include a source — a correction without one cannot be accepted. |
-| **Fix it yourself** | "Edit on GitHub" under the folio opens its source; GitHub creates the pull request for you. |
+| **Fix it yourself** | "LaTeX source" at the top of the folio opens its source on GitHub; the ✎ pencil there edits it, and GitHub creates the pull request for you. |
 | **Suggest a new folio** | [Suggest a folio](https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=folio-suggestion.yml): the subject, the facts worth keeping, a picture, sources. |
 | **Report a broken page** | [Website problem](https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=website-problem.yml). |
 | **Talk about a folio** | "Discuss this folio" under the folio starts a thread in the *Folio comments* category of [Discussions](https://github.com/artur-gurgul/folio.gurgul.pro/discussions). Discussions live on GitHub under GitHub's terms — they are not part of this repository's CC0 content. |
