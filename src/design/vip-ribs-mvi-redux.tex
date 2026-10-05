@@ -8,7 +8,8 @@
 % names, Uber RIBs concepts (Router/Interactor/Builder, viewless RIBs, Listener), ReSwift API
 % (Store/dispatch/StoreSubscriber.newState/select), SwiftUI @Observable + environment.
 % Verify against clean-swift.com, github.com/uber/RIBs, github.com/ReSwift/ReSwift if in doubt.
-% @labels: area=design kind=architecture level=senior platform=ios new=no round=market-2026-09-25 topic=architecture
+% Folio edition: subject facts only — no interview Q&A (folio's content rule).
+% @labels: area=design kind=architecture platform=ios topic=architecture
 % @tags: vip, clean-swift, ribs, mvi, redux, reswift, mv-pattern, viper, interactor, unidirectional-data-flow, tca
 \documentclass[8pt]{extarticle}
 \usepackage{printup-sheet}
@@ -142,14 +143,9 @@ MV & \texttt{@Observable} models / services & view calls model, observes it & mo
         \texttt{@Environment(Model.self)}. Critics: business rules drift into \texttt{body}.
 \end{itemize}
 
-\section{Likely questions}
-\begin{enumerate}
-  \item VIP vs VIPER? — one-way cycle vs presenter-centred two-way.
-  \item Why RIBs? — a logic tree (even viewless) many teams extend safely.
-  \item MVI vs MVVM? — one immutable state vs many observable props.
-  \item Redux cost? — global coupling, boilerplate, effects in middleware.
-  \item MV or MVVM in SwiftUI? — MV small/mid; add models as logic grows.
-\end{enumerate}
+\section{Remember}
+\textbf{Place any pattern with 3 questions: \emph{who owns state? which way does it flow?
+where do effects live?}} VIP = cycle · RIBs = logic tree · MVI/Redux = one state + reducer.
 
 \columnbreak
 
@@ -172,7 +168,7 @@ final class ListOrdersPresenter {       // PresentationLogic
 // VC: interactor?.fetch(.init()) in viewDidLoad
 \end{lstlisting}
 
-\section{Interview traps}
+\section{Traps}
 \begin{itemize}
   \trap{``VIP is VIPER renamed.'' VIPER's Presenter sits \emph{between} View and Interactor,
         two-way; VIP is a one-way cycle (VC talks to the Interactor directly), no Entity
@@ -187,10 +183,6 @@ final class ListOrdersPresenter {       // PresentationLogic
   \trap{``MV means no tests'' — the logic moves to \texttt{@Observable} models, which test
         fine; what you lose is a per-screen seam.}
 \end{itemize}
-
-\section{Remember}
-\textbf{Place any pattern with 3 questions: \emph{who owns state? which way does it flow?
-where do effects live?}} VIP = cycle · RIBs = logic tree · MVI/Redux = one state + reducer.
 
 \end{multicols}
 

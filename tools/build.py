@@ -73,6 +73,22 @@ def main() -> int:
         return fail(f"{OUT}/index.html was not produced", 1)
     pages = sorted(p.relative_to(OUT) for p in OUT.rglob("*.html"))
     print(f"built {len(pages)} page(s): {', '.join(map(str, pages))}")
+
+    # The promise of a folio is ONE A4 sheet. A folio whose PDF runs to a
+    # second page has broken it, however good the web page looks — fail.
+    pdfs = sorted(OUT.rglob("*.pdf"))
+    if pdfs and not shutil.which("pdfinfo"):
+        return fail("pdfinfo not found (needed to check one page per folio)", 2,
+                    "install poppler-utils")
+    over = []
+    for pdf in pdfs:
+        info = subprocess.run(["pdfinfo", str(pdf)], capture_output=True, text=True)
+        n = next((ln.split()[-1] for ln in info.stdout.splitlines() if ln.startswith("Pages:")), "?")
+        if n != "1":
+            over.append(f"{pdf.relative_to(OUT)} has {n} pages")
+    if over:
+        return fail("a folio must fit ONE page:\n  " + "\n  ".join(over), 1)
+    print(f"one page each: {len(pdfs)} folio PDF(s)")
     if args.check:
         print("check only — docs/ untouched")
         return 0

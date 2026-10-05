@@ -34,14 +34,9 @@ SwiftUI views plus <code>@Observable</code> models are already enough.</p>
 </ul>
 </section>
 <section class="sheet-section">
-<h2>Likely questions</h2>
-<ol>
-<li>VIP vs VIPER? — one-way cycle vs presenter-centred two-way.</li>
-<li>Why RIBs? — a logic tree (even viewless) many teams extend safely.</li>
-<li>MVI vs MVVM? — one immutable state vs many observable props.</li>
-<li>Redux cost? — global coupling, boilerplate, effects in middleware.</li>
-<li>MV or MVVM in SwiftUI? — MV small/mid; add models as logic grows.</li>
-</ol>
+<h2>Remember</h2>
+<p><strong>Place any pattern with 3 questions: <em>who owns state? which way does it flow?
+where do effects live?</em></strong> VIP = cycle · RIBs = logic tree · MVI/Redux = one state + reducer.</p>
 </section>
 <section class="sheet-section">
 <h2>Example — one VIP use case</h2>
@@ -62,7 +57,7 @@ SwiftUI views plus <code>@Observable</code> models are already enough.</p>
 <span class="hljs-comment">// VC: interactor?.fetch(.init()) in viewDidLoad</span></code></pre>
 </section>
 <section class="sheet-section">
-<h2>Interview traps</h2>
+<h2>Traps</h2>
 <ul>
 <li class="trap">“VIP is VIPER renamed.” VIPER’s Presenter sits <em>between</em> View and Interactor,  two-way; VIP is a one-way cycle (VC talks to the Interactor directly), no Entity  layer, typed Request/Response/ViewModel per use case.</li>
 <li class="trap">VIP ownership: VC <span class="math">→</span> Interactor <span class="math">→</span> Presenter strong; Presenter <span class="math">→</span> VC  <strong>weak</strong>, or the scene never deallocates.</li>
@@ -72,15 +67,10 @@ SwiftUI views plus <code>@Observable</code> models are already enough.</p>
 <li class="trap">“MV means no tests” — the logic moves to <code>@Observable</code> models, which test  fine; what you lose is a per-screen seam.</li>
 </ul>
 </section>
-<section class="sheet-section">
-<h2>Remember</h2>
-<p><strong>Place any pattern with 3 questions: <em>who owns state? which way does it flow?
-where do effects live?</em></strong> VIP = cycle · RIBs = logic tree · MVI/Redux = one state + reducer.</p>
-</section>
 <p class="sheet-related"><span class="sheet-related-label">Related:</span> mvc-mvp-mvvm · coordinator-repository-di-clean
 (VIPER, Clean rings) · tca-composable-architecture · unidirectional-state-machines ·
 modularization-spm</p>
-<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/index.html?area=design" title="area">design</a></li><li class="sheet-label sheet-label-kind"><a href="/index.html?kind=architecture" title="kind">architecture</a></li><li class="sheet-label sheet-label-level"><a href="/index.html?level=senior" title="level">senior</a></li><li class="sheet-label sheet-label-platform"><a href="/index.html?platform=ios" title="platform">ios</a></li><li class="sheet-label sheet-label-topic"><a href="/index.html?topic=architecture" title="topic">architecture</a></li><li class="sheet-tag"><a href="/index.html?tag=vip">vip</a></li><li class="sheet-tag"><a href="/index.html?tag=clean-swift">clean-swift</a></li><li class="sheet-tag"><a href="/index.html?tag=ribs">ribs</a></li><li class="sheet-tag"><a href="/index.html?tag=mvi">mvi</a></li><li class="sheet-tag"><a href="/index.html?tag=redux">redux</a></li><li class="sheet-tag"><a href="/index.html?tag=reswift">reswift</a></li><li class="sheet-tag"><a href="/index.html?tag=mv-pattern">mv-pattern</a></li><li class="sheet-tag"><a href="/index.html?tag=viper">viper</a></li><li class="sheet-tag"><a href="/index.html?tag=interactor">interactor</a></li><li class="sheet-tag"><a href="/index.html?tag=unidirectional-data-flow">unidirectional-data-flow</a></li><li class="sheet-tag"><a href="/index.html?tag=tca">tca</a></li></ul>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/index.html?area=design" title="area">design</a></li><li class="sheet-label sheet-label-kind"><a href="/index.html?kind=architecture" title="kind">architecture</a></li><li class="sheet-label sheet-label-platform"><a href="/index.html?platform=ios" title="platform">ios</a></li><li class="sheet-label sheet-label-topic"><a href="/index.html?topic=architecture" title="topic">architecture</a></li><li class="sheet-tag"><a href="/index.html?tag=vip">vip</a></li><li class="sheet-tag"><a href="/index.html?tag=clean-swift">clean-swift</a></li><li class="sheet-tag"><a href="/index.html?tag=ribs">ribs</a></li><li class="sheet-tag"><a href="/index.html?tag=mvi">mvi</a></li><li class="sheet-tag"><a href="/index.html?tag=redux">redux</a></li><li class="sheet-tag"><a href="/index.html?tag=reswift">reswift</a></li><li class="sheet-tag"><a href="/index.html?tag=mv-pattern">mv-pattern</a></li><li class="sheet-tag"><a href="/index.html?tag=viper">viper</a></li><li class="sheet-tag"><a href="/index.html?tag=interactor">interactor</a></li><li class="sheet-tag"><a href="/index.html?tag=unidirectional-data-flow">unidirectional-data-flow</a></li><li class="sheet-tag"><a href="/index.html?tag=tca">tca</a></li></ul>
 </article></div><div class="footer"><div class="disclaimer"><p>© Artur Gurgul, 2024 &mdash; Public Domain Licence</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
   var c = document.querySelector('details.contents');
   if (c) c.open = false;
