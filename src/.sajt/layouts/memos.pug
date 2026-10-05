@@ -26,9 +26,8 @@ html(lang="en")
   head
     meta(charset="utf-8")
     meta(name="viewport" content="width=device-width, initial-scale=1")
-    title Artur Gurgul - #{page.title}
-    meta(name="author" content="Artur Gurgul")
-    meta(name="description" content="Study sheets: one page per topic, as a web page and as a PDF")
+    title= page.title ? page.title + " — folio" : "folio"
+    meta(name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by")
     link(rel="icon" href="/static/favicon.svg" type="image/svg+xml")
     meta(name="theme-color" content="#0a5fd6")
     link(rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin)
@@ -47,7 +46,7 @@ html(lang="en")
             != page.file.html
             .memos(data-index=context.memos.index data-search=context.memos.search data-list=list)
               p.memos-status
-                span.memos-count #{sheets.length} sheets
+                span.memos-count #{sheets.length} #{sheets.length === 1 ? "folio" : "folios"}
                 span.memos-active
               each a in areas
                 section.memos-area(data-area=a.key)

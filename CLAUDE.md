@@ -5,7 +5,7 @@ This file is everything a session needs; it is self-contained on purpose.
 
 ## What a folio is — READ FIRST
 
-A folio is a memo that helps the reader **remember** a subject: one A4 sheet,
+A folio is a page that helps the reader **remember** a subject: one A4 sheet,
 as dense as possible with **important facts**, and **visualisations** wherever
 a picture carries a fact better than words. **No noise** — no filler, no
 narrative, no padding; every line earns its place by being a fact worth
@@ -43,6 +43,12 @@ docs/                    ⚠ BUILD OUTPUT, served by GitHub Pages. Never edit by
    neighbours; prefer tags that other folios use too.
 5. **A folio owns its page.** Content may start from older notes, but once it
    is here it is folio's: edit it here, adapt it freely to these rules.
+6. **No branding.** No personal names, logos, initials or "my notepad" voice —
+   on pages, in titles, in metadata. The pages are **folios** (never "memos"
+   or "sheets" in anything a reader sees); the site is just *folio*.
+7. **Public domain.** Everything here is CC0 1.0 (`LICENSE`); contributions
+   are dedicated the same way. Add a third-party file only if its licence
+   allows it, and record it in `LICENSES/README.md` with its licence text.
 
 ## Hard rules — working
 

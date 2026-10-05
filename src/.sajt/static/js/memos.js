@@ -132,7 +132,8 @@
     areas.forEach(function (area) {
       area.classList.toggle("hidden", !area.querySelector(".memos-list > li:not(.hidden)"))
     })
-    count.textContent = shown === items.length ? items.length + " sheets" : shown + " of " + items.length + " sheets"
+    var noun = items.length === 1 ? " folio" : " folios"
+    count.textContent = shown === items.length ? items.length + noun : shown + " of " + items.length + noun
     active.textContent = describe()
     empty.classList.toggle("hidden", shown > 0)
     syncPanel()
