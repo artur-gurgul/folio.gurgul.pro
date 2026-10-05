@@ -1,5 +1,5 @@
 ---
-layout: memos
+layout: default
 hidden: true
 ---
 
@@ -19,5 +19,3 @@ comes as a one-page PDF.
 
 A folio is not interview preparation, not a tutorial and not a blog post. It is
 the page you keep next to you.
-
-## The folios

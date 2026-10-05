@@ -25,7 +25,8 @@ the subject needs. Repetition is noise: say a fact once.
 
 ```
 src/                     the sources — the only place content is written
-  index.md               the front page (what folio is) + the list of folios
+  index.md               the front page — only what folio is
+  folios.md              the list of folios (filtered by the sidebar's search and areas)
   <subject>/<name>.tex   one folio per file, grouped by subject
   .sajt/                 site config + theme (layouts, styles, fonts, sheet style)
 tools/build.py           builds src/ → docs/ (needs a compiled Sajt: --sajt or $SAJT)
