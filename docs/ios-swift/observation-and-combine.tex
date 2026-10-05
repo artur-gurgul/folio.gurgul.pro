@@ -1,0 +1,203 @@
+% observation-and-combine.tex — the four observation mechanisms compared; Combine core
+% (publisher/subscriber/subscription + demand), operators, schedulers, subjects,
+% @Published willSet, AnyCancellable lifetime and the sink/assign retain cycles.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/foundation/notificationcenter/addobserver(forname:object:queue:using:)
+%     (pass the returned token to removeObserver(_:); the center copies the block) — a common claim
+%     that releasing the token is enough is not what Apple documents
+%   developer.apple.com/documentation/foundation/nskeyvalueobservation (invalidated on deinit)
+%   developer.apple.com/documentation/combine (Publisher, Subscriber, Subscribers.Demand, subjects,
+%     Published — emits on willSet, assign(to:) iOS 14, AnyCancellable cancels on deinit,
+%     receive(on:) vs subscribe(on:), Future, Deferred)
+%   developer.apple.com/documentation/observation (@Observable iOS 17, withObservationTracking —
+%     onChange fires once, on willSet) · .../observation/observations (iOS 26)
+%   developer.apple.com/documentation/swift/keyvalueobservingpublisher · Swift 4 smart key-path KVO
+%     (NSObject.observe(_:options:changeHandler:))
+% @labels: area=ios-swift kind=api platform=apple topic=patterns,memory,concurrency discussion=67
+% @tags: combine, notificationcenter, kvo, observable, anycancellable, published, sink-retain-cycle, passthroughsubject, currentvaluesubject, debounce, switchtolatest, backpressure
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,import,
+    if,else,return,guard,self,nil,try,await,async,throws,private,in,
+    true,false,Set,AnyCancellable,ObservableObject,Published},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  pb/.style={box, font=\scriptsize, minimum height=6mm, inner sep=1.5pt},
+  op/.style={pb, draw=sheetOrange, fill=sheetOrange!8},
+  sub/.style={pb, draw=sheetGreen!70!black, fill=sheetGreen!10},
+  ob/.style={pb, minimum width=13mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hs/.style={->, thin, draw=sheetBlue},
+  cyc/.style={->, very thick, draw=sheetRed},
+  own/.style={->, thick, draw=sheetBlue},
+  weakr/.style={->, thick, dashed, draw=sheetGreen!70!black},
+  ttl/.style={font=\bfseries\scriptsize, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Observation · Combine · cancellables}{ios-swift · folio}
+
+\oneliner{Four ways to observe on iOS — \textbf{NotificationCenter} (broadcast bus),
+\textbf{KVO} (one \texttt{NSObject} property), \textbf{Combine} (typed streams +
+operators + \emph{demand}), \textbf{\texttt{@Observable}} (per-property read tracking,
+iOS 17). Every one hands you a \textbf{lifetime object}; what matters is
+\textbf{who owns it} and \textbf{whether the closure owns you back}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── pipeline ──
+  \node[ttl] at (-0.2,2.55) {pipeline: values flow right, demand flows left};
+  \node[pb] (pub) at (0.75,1.6) {\textbf{Publisher}\\\texttt{\$query}};
+  \node[op] (o1) at (2.75,1.6) {\texttt{debounce}\\300 ms};
+  \node[op] (o2) at (4.75,1.6) {\texttt{removeDuplicates}\\no repeat query};
+  \node[op] (o3) at (6.95,1.6) {\texttt{map} $\to$ request\\\texttt{switchToLatest}};
+  \node[op] (o4) at (9.0,1.6) {\texttt{receive(on:}\\\texttt{.main)}};
+  \node[sub] (sk) at (10.9,1.6) {\textbf{Subscriber}\\\texttt{sink} / \texttt{assign}};
+  \foreach \a/\b in {pub/o1,o1/o2,o2/o3,o3/o4,o4/sk} \draw[flow] (\a) -- (\b);
+  % handshake
+  \draw[hs] ([yshift=-3mm]sk.south west) -- node[lbl, below]{1 \texttt{subscribe(\_:)}} ([yshift=-3mm]pub.south east);
+  \draw[hs] ([yshift=-6.5mm]pub.south east) -- node[lbl, below]{2 \texttt{receive(subscription:)} — the Subscription object} ([yshift=-6.5mm]sk.south west);
+  \draw[hs] ([yshift=-10mm]sk.south west) -- node[lbl, below]{3 \texttt{request(.max(n))} / \texttt{.unlimited} (sink, assign)} ([yshift=-10mm]pub.south east);
+  \draw[hs, draw=sheetGreen!70!black] ([yshift=-13.5mm]pub.south east) -- node[lbl, below]{4 ≤ demand values, then \texttt{.finished} | \texttt{.failure(e)} — exactly once, then silence} ([yshift=-13.5mm]sk.south west);
+  % ── ownership cycle ──
+  \draw[sheetGrey!40] (12.05,2.7) -- (12.05,-0.9);
+  \node[ttl] at (12.15,2.55) {the sink retain cycle};
+  \node[ob] (vm) at (12.95,1.75) {ViewModel};
+  \node[ob] (bag) at (15.4,1.75) {\texttt{bag: Set<}\\\texttt{AnyCancellable>}};
+  \node[ob] (sb) at (15.4,0.35) {Subscription\\(inside token)};
+  \node[ob] (sn) at (12.95,0.35) {sink closure};
+  \draw[own] (vm) -- node[lbl, above]{owns} (bag);
+  \draw[own] (bag) -- node[lbl, right]{keeps} (sb);
+  \draw[own] (sb) -- node[lbl, above]{retains} (sn);
+  \draw[cyc] (sn) -- node[lbl, left, text=sheetRed]{\texttt{self.}\\strong} (vm);
+  \node[lbl, text=sheetGreen!60!black, align=left, anchor=north west] at (12.15,-0.2)
+    {fix: \texttt{[weak self]} or \texttt{assign(to: \&\$x)};\\\texttt{assign(to:\textbackslash.x, on: self)} = same red edge};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{The four mechanisms}
+{\scriptsize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{18mm}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{21mm}@{}}
+\toprule
+ & \textbf{Shape / needs} & \textbf{Lifetime handle} & \textbf{Thread / trap} \\
+\midrule
+\textbf{Notif.\ Center} & many-to-many, \texttt{Notification.Name}, untyped \texttt{userInfo} & block API returns a token: \textbf{call \texttt{removeObserver(token)}}; center retains the block & runs on the \emph{posting} thread unless \texttt{queue:} given \\
+\textbf{KVO} & one property; \texttt{NSObject} + \texttt{@objc dynamic} & \texttt{NSKeyValueObservation} — invalidated on deinit & fires on the thread that \emph{mutated}; no Swift structs \\
+\textbf{Combine} & typed \texttt{Output}/\texttt{Failure}, operators, demand & \texttt{AnyCancellable} — \textbf{cancels on deinit} & \texttt{receive(on:)}; one error ends it \\
+\textbf{\texttt{@Observable}} & macro on a class; iOS 17 & SwiftUI: automatic; else \texttt{withObservationTracking} & \texttt{onChange} fires \textbf{once}, on \emph{willSet} — re-register \\
+\bottomrule
+\end{tabular}}
+
+\section{How Combine works}
+\begin{itemize}
+  \item \textbf{Publisher} = a recipe; nothing runs until a \textbf{Subscriber} attaches
+        — a cold one (\texttt{dataTaskPublisher}) re-runs per subscriber
+        (\texttt{share()} to multicast; Subjects are hot).
+        \texttt{Future} is the exception: runs \emph{eagerly}, once
+        (wrap in \texttt{Deferred}).
+  \item \textbf{Demand} is backpressure: \texttt{receive(\_:)} returns \emph{extra}
+        demand (additive). \texttt{sink}/\texttt{assign} ask \texttt{.unlimited}.
+  \item \textbf{Subjects}: \texttt{PassthroughSubject} — no value, events only;
+        \texttt{CurrentValueSubject} — holds \texttt{.value}, replays it to new
+        subscribers (state). Dead after \texttt{send(completion:)}.
+  \item \textbf{\texttt{@Published}} emits on \textbf{willSet}: inside the sink,
+        \texttt{self.x} is still the \emph{old} value — use the argument.
+  \item \textbf{Schedulers}: \texttt{receive(on:)} moves \emph{downstream} delivery
+        (put it just before UI work); \texttt{subscribe(on:)} moves the
+        \emph{upstream} subscribe / request / cancel work. \texttt{DispatchQueue.main}
+        over \texttt{RunLoop.main} (paused while the user drags a scroll view).
+\end{itemize}
+
+\section{Operators — the pairs that get confused}
+\begin{itemize}
+  \item \texttt{debounce} = emit last after a \emph{quiet gap} (search box);
+        \texttt{throttle} = at most one per interval (\texttt{latest:} first/last).
+  \item \texttt{combineLatest} = latest of each on any change, silent until
+        \emph{all} emitted once; \texttt{zip} = pairs by index; \texttt{merge} =
+        interleave same type.
+  \item \texttt{flatMap} keeps every inner alive (\texttt{maxPublishers:});
+        \texttt{map}+\texttt{switchToLatest} cancels the stale one.
+  \item \texttt{catch} swaps in a fallback \emph{publisher}; \texttt{replaceError}
+        a value. Both still end the upstream — do it \emph{inside} the inner
+        publisher. \texttt{removeDuplicates} needs \texttt{Equatable}.
+\end{itemize}
+
+\columnbreak
+
+\section{Example — typeahead VM, no cycle}
+\begin{lstlisting}[language=SwiftSheet]
+final class SearchVM: ObservableObject {
+  @Published var query = ""
+  @Published private(set) var results: [Item] = []
+  private var bag = Set<AnyCancellable>()
+  init(api: API) {
+    $query
+     .debounce(for: .milliseconds(300),
+               scheduler: DispatchQueue.main)
+     .removeDuplicates()
+     .map { api.search($0).replaceError(with: []) }
+     .switchToLatest()             // drop the stale request
+     .receive(on: DispatchQueue.main)
+     .assign(to: &$results)        // no self capture, no token
+    // LEAK: .sink { self.results = $0 }.store(in: &bag)
+    // FIX:  .sink { [weak self] in self?.results = $0 }
+  }
+}
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{The cycle:} \texttt{self} $\to$ \texttt{bag} $\to$
+        cancellable $\to$ sink closure $\to$ \texttt{self}. \texttt{deinit} never runs,
+        so the bag never cancels. \texttt{[weak self]}.}
+  \trap{\texttt{assign(to:\textbackslash.x, on: self)} retains \texttt{self} strongly.
+        \texttt{assign(to: \&\$x)} (iOS 14) ties the subscription to the
+        \texttt{@Published} storage — no cycle, no \texttt{AnyCancellable}.}
+  \trap{Dropped cancellable (\texttt{\_ = pub.sink\{\}}) cancels at once — ``my sink
+        never fires''.}
+  \trap{Block-based NotificationCenter: keep the token and \textbf{call
+        \texttt{removeObserver(token)}}; do not rely on releasing it. The block is
+        retained by the center — \texttt{[weak self]} inside.}
+  \trap{An error reaching the sink \emph{terminates} the subscription: a search box
+        stops working after the first failed request.}
+  \trap{\texttt{subscribe(on:)} does \emph{not} make the sink run on that queue.}
+\end{itemize}
+
+\section{Timeline}
+\begin{tikzpicture}[sheet]
+  \tikzset{yr/.style={font=\bfseries\scriptsize, text=sheetBlue},
+           ev/.style={font=\tiny, align=center, text=black!85, text width=13mm, anchor=north}}
+  \draw[thick, sheetGrey, ->] (0,0) -- (8.3,0);
+  \foreach \x/\y/\t in {
+      0.6/Swift 4/{block KVO\\\texttt{observe(\textbackslash.x)}},
+      1.95/iOS 13/{Combine\\\texttt{@Published}},
+      3.3/iOS 14/{\texttt{assign(to: \&\$x)}},
+      4.65/iOS 15/{\texttt{.values}\\(async)},
+      6.0/iOS 17/{\texttt{@Observable}},
+      7.35/iOS 26/{\texttt{Observations}\\(async stream)}}{
+    \fill[sheetBlue] (\x,0) circle (0.6mm);
+    \node[yr, above=1pt] at (\x,0) {\y};
+    \node[ev] at (\x,-0.12) {\t};
+  }
+\end{tikzpicture}
+
+\section{Remember}
+\textbf{Values right, demand left, cancellable owns the chain, closure must not own
+\texttt{self}.} \texttt{@Published} = willSet. Passthrough = event, CurrentValue = state.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} arc-ownership (capture lists,
+\texttt{[weak self]}) · delegate vs observer · SwiftUI state (\texttt{@State},
+\texttt{@Bindable}) · async/await + \texttt{AsyncSequence} (\texttt{publisher.values}) ·
+instruments-performance (Memory Graph)}
+
+\end{document}

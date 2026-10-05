@@ -1,0 +1,178 @@
+% swiftui-state.tex — some View, @State/@Binding/@StateObject/@ObservedObject/@EnvironmentObject,
+% iOS 17 Observation, @ViewBuilder, view identity and when body re-runs.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/swiftui/state · .../binding · .../stateobject (iOS 14; autoclosure,
+%     once per identity) · .../observedobject · .../environmentobject (iOS 13)
+%   developer.apple.com/documentation/swiftui/migrating-from-the-observable-object-protocol-to-the-observable-macro
+%     (iOS 17: @State, @Bindable, @Environment(T.self), .environment(o))
+%   developer.apple.com/documentation/swiftui/viewbuilder · .../view/task(priority:_:) (iOS 15)
+%   developer.apple.com/videos/play/wwdc2021/10022 "Demystify SwiftUI" (identity, lifetime, dependencies)
+% @labels: area=ios-swift kind=api platform=apple topic=ui,data discussion=70
+% @tags: state, binding, stateobject, observedobject, environmentobject, observableobject, published, observable, bindable, viewbuilder, opaque-types, view-identity
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,protocol,extension,return,if,else,
+    guard,try,await,async,throws,case,switch,self,some,any,where,init,in,private,
+    @State,@Binding,@StateObject,@ObservedObject,@Published,@Observable,@Bindable},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\begin{document}
+
+\sheettitle{SwiftUI state \& data flow}{ios-swift · folio}
+
+\oneliner{A view is a cheap \textbf{struct} rebuilt constantly; its state lives \textbf{outside} it in
+SwiftUI's storage, keyed by \textbf{view identity}. The only question each wrapper answers is
+\textbf{who owns the truth}: this view (\texttt{@State}, \texttt{@StateObject}) or someone else
+(\texttt{@Binding}, \texttt{@ObservedObject}, \texttt{@EnvironmentObject}).}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{\texttt{View}} is a protocol: \texttt{associatedtype Body: View} +
+        \texttt{@ViewBuilder var body: Self.Body \{ get \}}. \texttt{some View} is an
+        \textbf{opaque result type}: \emph{one} concrete type (e.g.
+        \texttt{VStack<TupleView<(Text, Button<Text>)>>}), chosen by the \emph{implementation},
+        known to the compiler, hidden from the reader. Not a box, not dynamic — unlike \texttt{AnyView},
+        which erases the type and hurts diffing.
+  \item \textbf{\texttt{@State}} — view-\textbf{owned} source of truth for a \emph{value}; storage lives
+        in SwiftUI, survives \texttt{body} re-runs; the initial value is used \emph{once}. Mark it
+        \texttt{private}. \texttt{\$x} (the \texttt{projectedValue}) is a \texttt{Binding}.
+  \item \textbf{\texttt{@Binding}} — \textbf{not} storage: a two-way get/set \emph{reference} to truth
+        owned elsewhere. Child writes $\to$ parent's \texttt{@State} changes $\to$ both re-render.
+        Passed as \texttt{\$name}; \texttt{.constant(x)} in previews.
+  \item \textbf{\texttt{@StateObject}} — view \textbf{creates and owns} an \texttt{ObservableObject};
+        the \texttt{@autoclosure} initialiser runs \textbf{once per identity}, the instance survives
+        struct re-creation.
+  \item \textbf{\texttt{@ObservedObject}} — object is \textbf{injected}; view only subscribes, does
+        \emph{not} control lifetime. Initialised inline, it is re-created on every parent redraw.
+  \item \textbf{\texttt{@EnvironmentObject}} — injected by an ancestor's
+        \texttt{.environmentObject(obj)}, looked up by \emph{type} at run time; missing = crash.
+        \texttt{@Environment(\textbackslash.colorScheme)} reads \emph{values} (\texttt{\textbackslash.dismiss}, \texttt{\textbackslash.scenePhase}).
+  \item \textbf{Notification}: \texttt{@Published} fires \texttt{objectWillChange} \emph{before} the set
+        (whole object). \textbf{iOS 17 \texttt{@Observable}} (macro, Observation) tracks \textbf{each
+        property \texttt{body} read} — see the table.
+  \item \textbf{\texttt{@ViewBuilder}} — a \emph{result builder}: \texttt{buildBlock} packs children
+        into \texttt{TupleView}; \texttt{if/else} $\to$ \texttt{\_ConditionalContent}
+        (\texttt{buildEither}); \texttt{if} alone $\to$ \texttt{Optional} (\texttt{buildOptional}).
+        That is why \texttt{body} may branch but a plain helper \texttt{func -> some View} may not
+        (all returns must be one type) — mark it \texttt{@ViewBuilder}.
+  \item \textbf{Identity}: \emph{structural} (position in the tree, which \texttt{if} branch) or
+        \emph{explicit} (\texttt{.id(\_:)}, \texttt{ForEach} ids). New identity = state destroyed,
+        \texttt{onAppear} again, transition played.
+  \item \textbf{\texttt{body} re-runs} when something it \emph{read} changes: a \texttt{@State} /
+        \texttt{@Binding} value, an observed object publishes (or an \texttt{@Observable} property it read),
+        an \texttt{@Environment} value, or the parent passes different inputs. Then SwiftUI diffs.
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+final class VM: ObservableObject { @Published var n = 0 }
+struct Screen: View {
+  @StateObject private var vm = VM()   // made ONCE, owned
+  @State private var on = false        // value, owned
+  var body: some View {                // one concrete type
+    VStack { Toggle("On", isOn: $on)   // $on : Binding<Bool>
+             Row(vm: vm, on: $on) }    // hand truth down
+  }
+}
+struct Row: View {
+  @ObservedObject var vm: VM           // injected, NOT owned
+  @Binding var on: Bool                // someone else's @State
+  var body: some View { Button("+") { vm.n += 1; on = true } }
+}
+\end{lstlisting}
+
+\columnbreak
+
+\section{Structs die, storage stays}
+\begin{tikzpicture}[sheet]
+  \tikzset{vw/.style={box, text width=27mm, align=left, font=\footnotesize},
+           st/.style={cell, font=\ttfamily\footnotesize, minimum width=27mm, minimum height=6mm,
+                      align=center, fill=sheetGreen!10, draw=sheetGreen}}
+  % left lane: view structs
+  \node[vw] (P) at (0,0) {\textbf{Screen} (struct)\\\texttt{@State on}\\\texttt{@StateObject vm}};
+  \node[vw] (C) at (0,-1.75) {\textbf{Row} (struct)\\\texttt{@Binding on}\\\texttt{@ObservedObject vm}};
+  \node[vw, draw=sheetRed, fill=sheetRed!6] (B) at (0,-3.45)
+       {\textbf{Bad} (struct)\\\texttt{@ObservedObject}\\\texttt{var vm = VM()}};
+  % right lane: SwiftUI storage
+  \node[st] (S) at (4.6,0) {on = true};
+  \node[st, fill=sheetBlue!8, draw=sheetBlue] (O) at (4.6,-1.75) {VM \#1\\[-2pt]{\scriptsize created once}};
+  \node[st, fill=sheetRed!6, draw=sheetRed, dashed] (X) at (4.6,-3.45)
+       {VM \#2, \#3, \#4 …\\[-2pt]{\scriptsize new per redraw}};
+  \begin{scope}[on background layer]
+    \node[draw=sheetGrey, dashed, rounded corners=3pt, fill=black!3, inner sep=4pt,
+          fit=(S)(O)(X), label={[note, align=center]above:SwiftUI storage\\[-2pt]lives as long as the \emph{identity}}] {};
+    \node[draw=none, inner sep=3pt, fit=(P)(C)(B),
+          label={[note, align=center]above:view structs\\[-2pt]rebuilt on every parent \texttt{body}}] {};
+  \end{scope}
+  \draw[->, thick, sheetBlue] ([yshift=2mm]P.east) -- node[above, note, pos=0.5]{owns (\texttt{@State})} ([yshift=2mm]S.west);
+  \draw[->, thick, sheetBlue] ([yshift=-2mm]P.east) -- node[above, sloped, note, pos=0.22]{owns} ([yshift=1mm]O.west);
+  \draw[<->, thick, sheetOrange] ([yshift=2mm]C.east) -- node[below, sloped, note, text=sheetOrange, pos=0.62]{\texttt{\$on} r/w} ([yshift=-2mm]S.west);
+  \draw[->, thick, sheetGrey, dashed] ([yshift=-2mm]C.east) -- node[below, note, pos=0.42]{watches only} ([yshift=-2mm]O.west);
+  \draw[->, thick, sheetRed] (B.east) -- node[above, note, text=sheetRed]{re-inits!} (X.west);
+\end{tikzpicture}
+
+\vspace{2pt}
+{\footnotesize
+\begin{tabular}{@{}p{17mm}p{27mm}p{29mm}@{}}
+\toprule
+\textbf{role} & \textbf{\texttt{ObservableObject}} & \textbf{iOS 17 \texttt{@Observable}} \\
+\midrule
+owns it     & \texttt{@StateObject}          & \texttt{@State} \\
+passed in   & \texttt{@ObservedObject}       & plain \texttt{let} / \texttt{var} \\
+needs \texttt{\$x.prop} & \texttt{@ObservedObject} & \texttt{@Bindable} \\
+injected    & \texttt{@EnvironmentObject}    & \texttt{@Environment(T.self)} \\
+provide     & \texttt{.environmentObject(o)} & \texttt{.environment(o)} \\
+publishes   & \texttt{@Published} props      & every stored prop (macro) \\
+re-renders  & every observer, any change     & only views that \emph{read} it \\
+\bottomrule
+\end{tabular}\par}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{\texttt{@ObservedObject var vm = VM()}} — created but not owned: each parent redraw
+        allocates a fresh VM, state resets, \emph{no warning}. Creator: \texttt{@StateObject}.}
+  \trap{\textbf{``\texttt{some View} = any view / like \texttt{AnyView}''} — no: \texttt{some} is
+        \emph{one fixed type}; returning \texttt{Text} in one branch and \texttt{Image} in another
+        fails without \texttt{@ViewBuilder}.}
+  \trap{\textbf{``\texttt{@Binding} is a copy''} — no: it stores nothing; writes go to the owner.
+        Two \texttt{@State} copies of one fact = two truths that drift.}
+  \trap{\texttt{@State} holding a plain \textbf{class}: inner mutation leaves the reference equal
+        $\to$ no re-render (fine only for an \texttt{@Observable} class).}
+  \trap{\texttt{if c \{ MyView() \} else \{ MyView() \}} = two identities $\to$ state resets on toggle.
+        \texttt{.id(value)} changing often silently nukes state.}
+  \trap{Heavy work or network calls in \texttt{body} — it runs many times; use \texttt{.task}
+        (auto-cancelled on disappear) or \texttt{.onAppear}.}
+\end{itemize}
+
+\section{Timeline}
+\begin{tikzpicture}[sheet]
+  \tikzset{yr/.style={font=\bfseries\scriptsize, text=sheetBlue},
+           ev/.style={font=\tiny, align=center, text=black!85, text width=16mm, anchor=north}}
+  \draw[thick, sheetGrey, ->] (0,0) -- (8.3,0);
+  \foreach \x/\y/\t in {
+      0.9/iOS 13/{\texttt{@State} \texttt{@Binding}\\\texttt{@ObservedObject}\\\texttt{@EnvironmentObject}},
+      3.0/iOS 14/{\texttt{@StateObject}},
+      5.1/iOS 15/{\texttt{.task}\\(cancelled on\\disappear)},
+      7.2/iOS 17/{\texttt{@Observable}\\\texttt{@Bindable}}}{
+    \fill[sheetBlue] (\x,0) circle (0.6mm);
+    \node[yr, above=1pt] at (\x,0) {\y};
+    \node[ev] at (\x,-0.12) {\t};
+  }
+\end{tikzpicture}
+
+\section{Remember}
+\textbf{``Who wrote \texttt{= VM()}? That view writes \texttt{@StateObject}.''} State\,/\,StateObject =
+\emph{mine}; Binding\,/\,Observed\,/\,Environment = \emph{borrowed}. \texttt{\$} = a pointer to the truth.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} property wrappers (\texttt{wrappedValue} /
+\texttt{projectedValue}) · \texttt{PreferenceKey} (child $\to$ parent) · \texttt{.task(id:)} · Combine · \texttt{EquatableView}}
+
+\end{document}

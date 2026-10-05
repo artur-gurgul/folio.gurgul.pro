@@ -1,0 +1,219 @@
+% combine-publishers-demand.tex — Combine at the protocol level: the Publisher / Subscriber /
+% Subscription handshake, Subscribers.Demand arithmetic and backpressure (buffer strategies,
+% flatMap maxPublishers, dropping at zero demand), subjects in depth, schedulers (default
+% thread, receive(on:) vs subscribe(on:), time operators) and who retains whom
+% (AnyCancellable, the subscriber <-> subscription loop, assign(to:)).
+% Extends observation-and-combine.tex (the four observation mechanisms, the sink retain
+% cycle, the basic operator pairs) — that material is not repeated here.
+% Sources (checked 2026-09-29): developer.apple.com/documentation/combine —
+% Publisher, Subscriber, Subscriber/receive(_:), Subscribers/Demand, PassthroughSubject,
+% Publisher/buffer(size:prefetch:whenFull:), Publishers/PrefetchStrategy,
+% Publishers/BufferingStrategy, Publisher/subscribe(on:options:), Publisher/assign(to:),
+% AnyCancellable, Publisher/share().
+% @labels: area=ios-swift kind=api platform=apple topic=concurrency,memory,patterns discussion=62
+% @tags: combine, publisher, subscriber, subscription, demand, backpressure, passthroughsubject, currentvaluesubject, schedulers, receive-on, subscribe-on, anycancellable
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,typealias,
+    if,else,return,guard,self,nil,private,in,true,false,Never,Subscriber,Subscription},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  ln/.style={box, font=\scriptsize, minimum width=19mm, inner sep=1.5pt},
+  m/.style={font=\tiny, inner sep=1pt, align=center, fill=white},
+  msg/.style={->, thick, draw=sheetBlue},
+  val/.style={->, thick, draw=sheetGreen!70!black},
+  dem/.style={font=\ttfamily\scriptsize, inner sep=1pt},
+  ob/.style={box, font=\scriptsize, minimum height=6mm, inner sep=1.5pt},
+  own/.style={->, thick, draw=sheetBlue},
+  lp/.style={->, very thick, draw=sheetRed},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Combine in depth — protocols, demand, subjects, schedulers, lifetimes}{ios-swift · folio}
+
+\oneliner{A \textbf{Publisher} is a recipe; \ct{subscribe(\_:)} makes it create a
+\textbf{Subscription} and hand it to the \textbf{Subscriber}, which \textbf{requests}
+a \textbf{demand}. The publisher may send \textbf{at most that many} values, then \textbf{one}
+completion. Demand \emph{is} Combine's backpressure — but \ct{sink}/\ct{assign} ask
+\ct{.unlimited}, so a push source that outruns its consumer must \textbf{drop or buffer}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet, yscale=0.85]
+  % ---------- demand ledger (sequence diagram) ----------
+  \node[ttl] at (-0.2,4.2) {One subscription, demand counted step by step};
+  \node[ln] (s) at (0.9,3.65) {\textbf{Subscriber}\\custom, paced};
+  \node[ln, draw=sheetOrange, fill=sheetOrange!8] (sb) at (4.5,3.65) {\textbf{Subscription}\\made by the publisher};
+  \node[ln, draw=sheetGreen!70!black, fill=sheetGreen!8] (p) at (8.1,3.65) {\textbf{Publisher}\\\ct{PassthroughSubject}};
+  \node[font=\bfseries\scriptsize] at (9.6,3.65) {demand};
+  \foreach \x in {0.9,4.5,8.1} \draw[sheetGrey!60, thick] (\x,3.2) -- (\x,-0.15);
+  % 1 subscribe
+  \draw[msg] (0.9,3.0) -- node[m, above]{1 \ct{pub.subscribe(sub)} $\to$ \ct{receive(subscriber:)}} (8.1,3.0);
+  \node[dem] at (9.55,3.0) {—};
+  % 2 subscription
+  \draw[msg] (8.1,2.65) -- node[m, above]{2 \ct{sub.receive(subscription: s)}} (0.9,2.65);
+  \node[dem] at (9.55,2.65) {0};
+  % 3 request 2
+  \draw[msg] (0.9,2.3) -- node[m, above]{3 \ct{s.request(.max(2))}} (4.5,2.3);
+  \node[dem] at (9.55,2.3) {2};
+  % 4,5 values
+  \draw[val] (8.1,1.95) -- node[m, above]{4 \ct{receive(1)} returns \ct{.none}} (0.9,1.95);
+  \node[dem] at (9.55,1.95) {1};
+  \draw[val] (8.1,1.6) -- node[m, above]{5 \ct{receive(2)} returns \ct{.none}} (0.9,1.6);
+  \node[dem] at (9.55,1.6) {0};
+  % 6 dropped
+  \draw[->, thick, draw=sheetRed] (8.1,1.25) -- (6.3,1.25) node[m, left, text=sheetRed]{6 \ct{send(3)} at demand 0: \textbf{dropped}};
+  \node[dem, text=sheetRed] at (9.55,1.25) {0};
+  % 7 request again
+  \draw[msg] (0.9,0.9) -- node[m, above]{7 later: \ct{s.request(.max(1))}} (4.5,0.9);
+  \node[dem] at (9.55,0.9) {1};
+  % 8 value, returns +1
+  \draw[val] (8.1,0.55) -- node[m, above]{8 \ct{receive(4)} returns \ct{.max(1)}: $1-1+1$} (0.9,0.55);
+  \node[dem] at (9.55,0.55) {1};
+  % 9 completion
+  \draw[->, very thick, draw=sheetBrown] (8.1,0.2) -- node[m, above]{9 \ct{receive(completion: .finished)} — once, then silence; chain released} (0.9,0.2);
+  \node[dem] at (9.55,0.2) {end};
+  \node[lbl, anchor=west, align=left] at (-0.2,-0.4) {demand is \textbf{additive}: every \ct{request} and every non-\ct{.none}
+     return \emph{adds}; each value delivered\\subtracts 1; \ct{.unlimited} $+$ anything $=$ \ct{.unlimited}.
+     A subject at demand 0 \textbf{drops} (Apple docs); \ct{buffer} is how you keep values.};
+
+  \draw[sheetGrey!40] (10.25,4.3) -- (10.25,-0.75);
+
+  % ---------- who retains whom ----------
+  \node[ttl] at (10.35,4.2) {Who keeps the chain alive};
+  \node[ob] (vm) at (11.3,3.55) {\ct{ViewModel}};
+  \node[ob] (tok) at (11.3,2.55) {\ct{AnyCancellable}};
+  \node[ob, draw=sheetOrange, fill=sheetOrange!8, text width=16mm] (sn) at (11.3,1.35) {\ct{Sink}\\(the subscriber)};
+  \node[ob, draw=sheetGreen!70!black, fill=sheetGreen!8, text width=16mm] (subj) at (15.4,3.55) {subject / timer};
+  \node[ob, draw=sheetOrange, fill=sheetOrange!8, text width=16mm] (su) at (15.4,1.35) {subscription\\+ operator inners};
+  \draw[own] (vm) -- node[lbl, right]{\ct{bag} owns} (tok);
+  \draw[own] (tok) -- node[lbl, right]{wraps} (sn);
+  \draw[own] (subj) -- node[lbl, left]{upstream owns downstream} (su);
+  \draw[lp] (su.west) to[bend left=22] node[lbl, below, text=sheetRed]{delivers to (strong)} (sn.east);
+  \draw[lp] (sn.east) to[bend left=22] node[lbl, above, text=sheetRed]{keeps \ct{s} to request / cancel} (su.west);
+  \node[lbl, anchor=north west, align=left] at (10.35,0.5)
+    {\textcolor{sheetRed}{\textbf{red loop}} is deliberate: lives until \ct{cancel()} or completion.
+     Token deinit $\to$\\\ct{cancel()} $\to$ upstream lets go. \ct{subscribe(\_:)} returns \ct{Void}: no token,
+     lives\\until completion (a timer: forever). \ct{assign(to: \&\$x)} (iOS 14): no token,\\
+     cancelled when the \ct{Published} storage deinits.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{The three protocols}
+\begin{itemize}
+  \item \ct{Publisher<Output, Failure: Error>}: one requirement,
+        \ct{receive(subscriber:)}; you call \ct{subscribe(\_:)}. Operators are mostly
+        \textbf{structs} wrapping upstream (\ct{Publishers.Map<Upstream, T>}); \ct{Share} is a class.
+  \item \ct{Subscriber} (\ct{Input}/\ct{Failure} must match): \ct{receive(subscription:)},
+        \ct{receive(\_:) \hbox{-}\hbox{>} Subscribers.Demand} (``how many \emph{more}''),
+        \ct{receive(completion:)} with \ct{.finished} | \ct{.failure(e)}.
+  \item \ct{Subscription: Cancellable}: \ct{request(\_:)} + \ct{cancel()}. Cancel is
+        terminal and \textbf{silent}: no completion event follows.
+  \item \textbf{Demand} \ct{.none} / \ct{.max(n)} / \ct{.unlimited}: values $\leq$ demand,
+        $\leq$ 1 completion, calls \textbf{serial}.
+\end{itemize}
+
+\hd{Example — a paced subscriber (real backpressure)}
+\begin{lstlisting}[language=SwiftSheet]
+final class OneAtATime: Subscriber {
+  typealias Input = Data; typealias Failure = Never
+  private var sub: Subscription?          // needed to ask again
+  func receive(subscription s: Subscription) {
+    sub = s; s.request(.max(1))           // demand 1
+  }
+  func receive(_ d: Data) -> Subscribers.Demand {
+    upload(d) { [weak self] in self?.sub?.request(.max(1)) }
+    return .none                          // pause until upload ends
+  }
+  func receive(completion: Subscribers.Completion<Never>) {
+    sub = nil                             // drop the loop
+  }
+}
+frames.buffer(size: 20, prefetch: .keepFull, whenFull: .dropOldest)
+      .subscribe(OneAtATime())            // Void: no AnyCancellable
+\end{lstlisting}
+
+\hd{Backpressure in practice}
+\begin{itemize}
+  \item \ct{buffer(size:prefetch:whenFull:)} absorbs bursts. Prefetch
+        \ct{.keepFull} (fill at subscription, stay full) or \ct{.byRequest}; when full
+        \ct{.dropNewest} · \ct{.dropOldest} · \ct{.customError \{ \ldots \}} (fails the stream).
+  \item Demand-shaping operators: \ct{flatMap(maxPublishers: .max(n))} ($\leq$ n inner
+        subscriptions), \ct{collect(n)} (batches), \ct{.values} (1 per loop turn);
+        rate-cutting: \ct{throttle}, \ct{debounce}.
+  \item \textbf{See it}: \ct{.print("tag")} logs every request, value, completion, cancel;
+        \ct{handleEvents(receiveRequest:)} hooks them.
+\end{itemize}
+
+\hd{Subjects in depth}
+\begin{itemize}
+  \item Classes conforming to \ct{Subject}: \ct{send(\_:)}, \ct{send(completion:)},
+        \ct{send(subscription:)} — so a subject can \emph{subscribe} to a publisher
+        (\ct{pub.subscribe(subject)}) and become one multicast point.
+  \item \ct{PassthroughSubject}: no initial value, no buffer — an event sent in \ct{init},
+        before the view subscribed, is gone.
+  \item \ct{CurrentValueSubject}: \ct{.value} readable synchronously; setting it
+        \emph{is} \ct{send}; a new subscriber gets the current value first.
+  \item After \ct{send(completion:)} a subject is \textbf{finished for good}: later
+        \ct{send}s ignored, late subscribers get only the completion.
+  \item \ct{@Published}'s \ct{\$x} acts like a \ct{CurrentValueSubject<T, Never>} that
+        fires on \textbf{willSet}.
+\end{itemize}
+
+\columnbreak
+
+\hd{Schedulers — where code runs}
+\begin{itemize}
+  \item \ct{Scheduler} = \ct{now} + \ct{schedule(\ldots)} (now / after / repeating):
+        \ct{DispatchQueue}, \ct{RunLoop}, \ct{OperationQueue}, \ct{ImmediateScheduler}.
+  \item \textbf{No \ct{receive(on:)}} $\to$ delivered on the thread that emitted:
+        \ct{dataTaskPublisher} = URLSession's background queue, \ct{@Published} = the
+        setter's thread, \ct{NotificationCenter.publisher} = the poster's thread.
+  \item \ct{receive(on:)} re-schedules \emph{every} downstream event, values and
+        completion. On \ct{DispatchQueue.main} it is an \textbf{async hop} even when already
+        on main — the first value lands a run-loop turn later.
+  \item \ct{subscribe(on:)} moves \textbf{subscribe, request and cancel} upstream (docs).
+        A \emph{synchronous} publisher (\ct{Just}, \ct{[1,2].publisher}) emits
+        \emph{inside} \ct{request}, so its values move too; URLSession still emits on its own queue.
+  \item Time operators take a scheduler and \textbf{deliver on it}: \ct{debounce},
+        \ct{throttle}, \ct{delay}, \ct{timeout}, \ct{measureInterval}. Inject it $\to$ testable.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Discarded token: \ct{Just(1).sink\{\ldots\}} ``works'' (it finishes synchronously
+        before the token dies); the same line on a network publisher never fires.}
+  \trap{Returning \ct{.none} and never calling \ct{request} again stalls the stream —
+        no error, no completion, nothing.}
+  \trap{\ct{.unlimited} + fast producer + \ct{receive(on: .main)} = main queue flooded.
+        Cut upstream: \ct{throttle}, \ct{collect}, \ct{buffer(\ldots .dropOldest)}.}
+  \trap{\ct{send} into one subject from several threads at once breaks the serial rule
+        — funnel through one queue or actor.}
+  \trap{Cycle is not only in \ct{sink}: any stored operator closure (\ct{map},
+        \ct{flatMap}, \ct{handleEvents}) that captures \ct{self} closes the loop too.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Subscribe $\to$ request $\to$ $\leq$ demand values $\to$ one ending.}
+Push can't wait: drop or buffer. Upstream owns downstream; the \textbf{token} owns the loop.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} observation-and-combine (sink cycle) ·
+combine-operators-migration · arc-ownership · async-sequences-streams · concurrency · async-and-network-testing}
+
+\end{document}
