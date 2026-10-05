@@ -65,3 +65,10 @@ edit `docs/` by hand.
 - Nothing internal: no private hostnames, IPs, keys, personal data, or paths
   from other projects — in the page, its comments, or the commit message.
 - One folio (or one coherent change) per commit; never amend, never force-push.
+
+## 6. After it is live — its one discussion thread
+
+A new folio's "Discuss this folio" starts a thread in GitHub Discussions
+(category *Folio comments*). Once that thread exists, add its number to the
+folio's header — `discussion=<n>` in `% @labels:` — so the link opens that one
+thread from then on instead of starting new ones.
