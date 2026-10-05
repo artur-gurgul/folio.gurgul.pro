@@ -1,0 +1,197 @@
+% apple-pay-passkit.tex — Apple Pay in apps: merchant ID + Payment Processing Certificate, entitlement,
+% PKPaymentRequest, the authorization-controller delegate flow, the encrypted token (DPAN + cryptogram),
+% PSP decryption, merchant tokens for recurring / deferred / auto-reload, Wallet order tracking,
+% Apple Pay vs In-App Purchase, Apple Pay on the web.
+% IAP itself is the storekit2 folio; Wallet passes (.pkpass) are the wallet-passes folio.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/passkit (PKPaymentRequest, PKMerchantCapability,
+%   PKRecurringPaymentRequest, PKPaymentOrderDetails, PayWithApplePayButton,
+%   PKPaymentAuthorizationControllerDelegate)
+%   developer.apple.com/documentation/passkit/payment-token-format-reference (EC_v1/RSA_v1, 5 min, ECI)
+%   developer.apple.com/app-store/review/guidelines (3.1.1, 3.1.3(e), 3.2.1(vi), 4.9)
+%   WWDC24 "What's new in Wallet and Apple Pay" (Apple Pay in third-party browsers)
+%   apple.com/newsroom (Apple Pay launch with iOS 8.1, 2014-10-20; Tap to Pay on iPhone, iOS 15.4)
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis,security
+% @tags: apple-pay, passkit, pkpaymentrequest, payment-token, dpan, merchant-token, payment-processing-certificate, psp, three-d-secure, in-app-purchase-boundary, recurring-payments, wallet-orders
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,static,some,init,
+    if,else,return,guard,self,nil,private,true,false,in,try,await,async,throws,
+    switch,case,default,for,escaping,Void,String,Bool,Int},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  st/.style={box, font=\scriptsize, text width=27mm, minimum height=10mm, inner sep=2pt},
+  dev/.style={st, draw=sheetBlue, fill=sheetBlue!8},
+  apl/.style={st, draw=sheetGrey, fill=black!5},
+  you/.style={st, draw=sheetGreen, fill=sheetGreen!10},
+  psp/.style={st, draw=sheetOrange, fill=sheetOrange!8},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Apple Pay in apps · PassKit payments}{ios-platform · folio}
+
+\oneliner{Apple Pay pays for \textbf{physical goods and services} with a Wallet card: the app builds a
+\ct{PKPaymentRequest}, the system sheet authenticates, the \textbf{Secure Element} emits a
+\textbf{DPAN + one-time cryptogram}, Apple re-encrypts it to \textbf{your merchant key}, and the app
+forwards the opaque \ct{token.paymentData} to your server $\to$ \textbf{PSP}. The app never sees a card
+number. Digital content used in the app is \textbf{In-App Purchase}, not Apple Pay.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % row 1: device + Apple, left to right
+  \node[dev] (app) at (1.45,1.45) {\textbf{1 · App}\\\ct{PKPaymentRequest}\\+ \ct{present()}};
+  \node[dev] (sh) at (4.75,1.45) {\textbf{2 · Payment sheet}\\(system process)\\Face ID / double-click};
+  \node[dev, draw=sheetRed, fill=sheetRed!6] (se) at (8.05,1.45) {\textbf{3 · Secure Element}\\\textbf{DPAN} + one-time\\cryptogram (EMV/3DS)};
+  \node[apl] (as) at (11.35,1.45) {\textbf{4 · Apple Pay servers}\\re-encrypt to the\\\textbf{merchant's} public key};
+  \node[dev] (tok) at (14.65,1.45) {\textbf{5 · App} gets \ct{PKPayment}\\\ct{token.paymentData}\\(opaque JSON blob)};
+  % row 2: right to left
+  \node[you] (srv) at (14.65,0) {\textbf{6 · Your server}\\amount, order id,\\idempotency key};
+  \node[psp] (pspn) at (11.35,0) {\textbf{7 · PSP} (Stripe, Adyen)\\decrypts with the\\\textbf{processing cert}'s key};
+  \node[psp] (net) at (8.05,0) {\textbf{8 · Card network}\\token service maps\\\textbf{DPAN $\to$ FPAN}};
+  \node[psp] (iss) at (4.75,0) {\textbf{9 · Issuer}\\checks cryptogram\\approve / decline};
+  \node[dev] (done) at (1.45,0) {\textbf{10 · App} \ct{handler(.success)}\\sheet shows \checkmark\\\ct{DidFinish} $\to$ dismiss};
+  \draw[flow] (app) -- (sh); \draw[flow] (sh) -- (se); \draw[hot] (se) -- (as); \draw[hot] (as) -- (tok);
+  \draw[hot] (tok) -- node[lbl, right]{HTTPS} (srv);
+  \draw[hot] (srv) -- (pspn); \draw[hot] (pspn) -- (net); \draw[hot] (net) -- (iss);
+  \draw[flow, draw=sheetGreen] (iss) -- (done);
+  % annotations
+  \node[lbl, text=sheetRed, anchor=north] at (8.05,0.88) {the real card number (FPAN) is never on the phone or at the merchant};
+  \node[lbl, text=sheetBrown, anchor=south] at (8.05,2.05) {delegate callbacks (shipping contact / method / coupon) update the totals before step 3};
+  \node[lbl, text=sheetBlue, anchor=north] at (13.0,-0.62) {the app never decrypts: the private key lives at the PSP (or your HSM)};
+  \node[lbl, text=sheetGrey, anchor=north] at (3.1,-0.62) {result travels back via PSP + server; decline $\to$ \ct{.failure} + errors, sheet stays up};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Setup}
+\begin{itemize}
+  \item \textbf{Merchant ID} \ct{merchant.com.example.app} (portal). \textbf{Payment Processing
+        Certificate} per merchant ID: the \textbf{PSP makes the CSR} and keeps the private key — the
+        token is encrypted to it. The ID never expires; certificates do.
+  \item Apple Pay capability $\to$ entitlement \ct{com.apple.developer.in-app-payments} (merchant IDs).
+  \item \textbf{Web only}: \textbf{Merchant Identity Certificate} (TLS client cert) + a verified domain.
+\end{itemize}
+
+\hd{The request}
+\begin{itemize}
+  \item \ct{countryCode} = the \textbf{merchant's} country; \ct{currencyCode};
+        \ct{supportedNetworks}; \ct{merchantCapabilities = .threeDSecure} \textbf{always}.
+  \item \ct{paymentSummaryItems}: lines, then \textbf{last = grand total} labelled with your
+        \textbf{business name} (``Pay EXAMPLE CO''). \ct{NSDecimalNumber}; \ct{.pending} if unknown yet.
+  \item \ct{requiredShippingContactFields}, \ct{shippingMethods}, \ct{supportsCouponCode}.
+        Before auth, \ct{didSelectShippingContact} gets a \textbf{redacted} address (city, postcode,
+        country) — enough for tax; full contact only in the authorized \ct{PKPayment}.
+\end{itemize}
+
+\hd{Example — request, present, authorize}
+\begin{lstlisting}[language=SwiftSheet]
+let r = PKPaymentRequest()
+r.merchantIdentifier = "merchant.com.example.app"
+r.countryCode = "US"; r.currencyCode = "USD"
+r.supportedNetworks = [.visa, .masterCard, .amex]
+r.merchantCapabilities = .threeDSecure
+r.paymentSummaryItems = [PKPaymentSummaryItem(label: "EXAMPLE CO",
+    amount: NSDecimalNumber(string: "12.00"))]   // last = total
+let c = PKPaymentAuthorizationController(paymentRequest: r)
+c.delegate = self; c.present(completion: nil)
+// delegate: charge server-side, report exactly once
+func paymentAuthorizationController(_ c: PKPaymentAuthorizationController,
+    didAuthorizePayment p: PKPayment,
+    handler done: @escaping (PKPaymentAuthorizationResult) -> Void) {
+  api.charge(p.token.paymentData) { ok in
+    done(.init(status: ok ? .success : .failure, errors: nil)) } }
+// required; also called on cancel
+func paymentAuthorizationControllerDidFinish(_ c: ...) { c.dismiss() }
+\end{lstlisting}
+
+\hd{Button \& availability}
+\ct{canMakePayments()} = device capable, not restricted; \ct{canMakePayments(usingNetworks:)} = a
+matching card exists. No card $\to$ \ct{PKPaymentButton(type: .setUp)}. SwiftUI:
+\ct{PayWithApplePayButton} (iOS 16). Apple's button only (4.9, HIG).
+
+\hd{Apple Pay or In-App Purchase?}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{37mm}>{\raggedright\arraybackslash}p{36mm}@{}}
+\toprule
+digital content / subs used \emph{in} the app & \textbf{IAP} (3.1.1, StoreKit) \\
+physical goods, services used \emph{outside} & \textbf{Apple Pay} / card — IAP not allowed (3.1.3(e)) \\
+nonprofit donations & must offer Apple Pay (3.2.1(vi)) \\
+accept cards on your iPhone & \textbf{Tap to Pay on iPhone} (ProximityReader) \\
+\bottomrule
+\end{tabular}}
+
+\columnbreak
+
+\hd{The token — what your server receives}
+\ct{paymentMethod} (``Visa 1234'', network, debit/credit — UI only) · \ct{transactionIdentifier} ·
+\ct{paymentData} = JSON \{\ct{version} (\ct{EC\_v1} ECC · \ct{RSA\_v1} RSA), \ct{data}, \ct{signature},
+\ct{header} \{\ct{ephemeralPublicKey}, \ct{publicKeyHash}, \ct{transactionId}\}\}. \textbf{Decrypted} (PSP):
+\ct{applicationPrimaryAccountNumber} = \textbf{DPAN}, expiry, amount, currency,
+\ct{onlinePaymentCryptogram} + optional \ct{eciIndicator} — if present it \textbf{must} reach the
+processor, else the transaction fails. CMS signing time vs transaction time $>$ \textbf{5 min} apart
+$\to$ possible replay.
+
+\hd{DPAN vs FPAN vs merchant token}
+\textbf{FPAN} = printed card number. \textbf{DPAN} = network token in \emph{this device's} SE — gone
+when the card is removed or the phone wiped. \textbf{Merchant token (MPAN)} = bound to you + the user's
+Apple Account, survives a new phone. Get one via (iOS 16) \ct{recurringPaymentRequest}
+(\ct{PKRecurringPaymentRequest}: description, \ct{regularBilling}, \ct{managementURL},
+\ct{tokenNotificationURL}) · \ct{automaticReloadPaymentRequest} (top-ups) ·
+\ct{deferredPaymentRequest} (16.4, hotels). \ct{multiTokenContexts} = one token per merchant
+(marketplace); not combinable with recurring / auto-reload.
+
+\hd{After payment \& on the web}
+\ct{PKPaymentAuthorizationResult.orderDetails} = \ct{PKPaymentOrderDetails} (order type ID, order ID,
+web service URL, auth token; iOS 16) $\to$ Wallet tracks the \textbf{order}. Web:
+\ct{ApplePaySession} / Payment Request API; your server does \textbf{merchant validation} with the
+Merchant Identity cert. iOS 18: non-Safari browsers show a \textbf{code the iPhone scans}.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Digital upgrade via Apple Pay $\to$ rejected; a pizza via IAP $\to$ wrong too.}
+  \trap{\ct{Double} for money; last item ``Total'' instead of the business name.}
+  \trap{Decrypting \ct{paymentData} in the app = shipping the private key.}
+  \trap{Storing a DPAN for subscriptions — request a merchant token.}
+  \trap{Hiding the button when no card: show \ct{.setUp} instead.}
+  \trap{Apple Pay (you \emph{charge}) $\neq$ Tap to Pay (you \emph{accept}) $\neq$ HCE.}
+\end{itemize}
+
+\hd{Timeline}
+\begin{tikzpicture}[sheet]
+  \tikzset{yr/.style={font=\bfseries\scriptsize, text=sheetBlue},
+           ev/.style={font=\tiny, align=center, text=black!85, text width=13mm, anchor=north}}
+  \draw[thick, sheetGrey, ->] (0,0) -- (8.3,0);
+  \foreach \x/\y/\t in {
+      0.6/iOS 8.1/{Apple Pay\\(US, 2014)},
+      1.95/iOS 10/{Apple Pay\\on the web},
+      3.3/iOS 15.4/{Tap to Pay\\on iPhone},
+      4.65/iOS 16/{merchant tokens\\order tracking\\SwiftUI button},
+      6.0/iOS 16.4/{deferred\\payments},
+      7.35/iOS 18/{other browsers:\\scan a code}}{
+    \fill[sheetBlue] (\x,0) circle (0.6mm);
+    \node[yr, above=1pt] at (\x,0) {\y};
+    \node[ev] at (\x,-0.12) {\t};
+  }
+\end{tikzpicture}
+
+\hd{Remember}
+\textbf{``ID, cert, sheet, SE, blob, PSP.''} Phone makes a one-time proof; only the PSP opens it; only
+the network knows the card.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} storekit2 (IAP) · store-policy-and-deadlines (3.1.x) ·
+wallet-passes · nfc-fundamentals (SE vs HCE) · keychain-secure-enclave · tls-pki (client certs)}
+
+\end{document}

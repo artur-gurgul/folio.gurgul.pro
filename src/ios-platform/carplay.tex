@@ -1,0 +1,213 @@
+% carplay.tex — CarPlay for app developers: category entitlements, the template
+% scene (CPTemplateApplicationScene + CPInterfaceController), the template stack and
+% its depth limits, audio / communication / navigation specifics, car-imposed limits,
+% iOS 26 / 26.4 / 27 changes, testing (Xcode Simulator window vs CarPlay Simulator).
+% Not repeated here: AVAudioSession categories + Now Playing basics
+% (avfoundation-camera-audio), background modes (background-execution), SiriKit vs
+% App Intents (app-intents), widget + Live Activity mechanics (widgets-live-activities).
+% Sources (checked 2026-09-29) — primary:
+%   https://developer.apple.com/carplay/
+%   https://developer.apple.com/documentation/carplay  (+ requesting-carplay-entitlements,
+%     displaying-content-in-carplay, using-the-carplay-simulator, cpinterfacecontroller,
+%     cplisttemplate, cpgridtemplate, cptabbartemplate, cpinformationtemplate,
+%     cppointofinteresttemplate, cpsessionconfiguration,
+%     cptemplateapplicationinstrumentclusterscene)
+%   https://developer.apple.com/videos/play/wwdc2025/216/  (Turbocharge your app for CarPlay)
+%   https://developer.apple.com/videos/play/wwdc2026/212/  (Rev up your CarPlay app)
+%   https://developer.apple.com/videos/play/wwdc2022/10016/ (fueling + driving task)
+%   CarPlay Developer Guide, June 2026 (depth limits; read via search excerpts only)
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis,ui
+% @tags: carplay, carplay-entitlement, cptemplateapplicationscene, cpinterfacecontroller, cplisttemplate, cpnowplayingtemplate, cpmaptemplate, cpwindow, mpremotecommandcenter, carplay-simulator, driver-distraction
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,
+    if,else,return,guard,self,nil,true,false,in,for,async,await,try},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+% compact section heading (dense sheet)
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  nd/.style={box, font=\scriptsize, inner sep=1.5pt, align=center},
+  ph/.style={nd, draw=sheetBlue, fill=sheetBlue!10},
+  cp/.style={nd, draw=sheetOrange, fill=sheetOrange!12},
+  md/.style={nd, draw=sheetGreen, fill=sheetGreen!12},
+  tp/.style={draw=sheetGrey, fill=white, font=\scriptsize, minimum width=34mm,
+             minimum height=4.6mm, inner sep=1pt, align=center},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{CarPlay — entitlements, template scene, limits}{ios-platform · folio}
+
+\oneliner{A CarPlay app is \textbf{not a separate target}: it is a second \textbf{scene}
+(\ct{CPTemplateApplicationScene}) of your iOS app, same process. You never draw its UI —
+you hand \textbf{templates} to a \ct{CPInterfaceController} and the \textbf{car renders
+them}. Apple grants one \textbf{category entitlement}; the category decides which templates
+you may use and how \textbf{deep} the stack goes. Only \textbf{navigation} apps draw pixels
+(the map, in a \ct{CPWindow}).}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- iPhone process ----------
+  \node[pt] at (-0.1,3.55) {iPhone — one process, one binary};
+  \node[nd, minimum width=52mm] (app) at (2.6,3.05) {\ct{UIApplication} · AppDelegate};
+  \node[ph, text width=21mm] (ps) at (1.15,2.15) {\ct{UIWindowScene}\\{\tiny phone UI — may be \textbf{absent}}};
+  \node[cp, text width=24mm] (cs) at (3.95,2.15) {\ct{CPTemplate-}\\\ct{ApplicationScene}\\{\tiny + its scene delegate}};
+  \draw[flow] (app) -- (ps);
+  \draw[flow] (app) -- (cs);
+  \node[md, text width=51mm] (model) at (2.6,1.0) {\textbf{shared model layer} — library, player, auth\\{\tiny both scenes observe it · phone may be \textbf{locked}: Data Protection}};
+  \draw[flow] (ps) -- (ps |- model.north);
+  \draw[flow] (cs) -- (cs |- model.north);
+  \node[lbl, text=sheetRed, anchor=west, align=left] at (-0.1,0.3) {app killed + plugged in $\to$\\background launch, CarPlay scene only};
+
+  % ---------- template stack ----------
+  \node[pt] at (5.75,3.55) {\ct{CPInterfaceController} stack};
+  \node[lbl, text=sheetRed, anchor=west, align=left] at (5.75,3.05) {depth $\le$ 5 audio, nav, comm, EV, parking · 3 fueling, voice ·\\2 food, driving task (3 from iOS 26.4) — by entitlement};
+  \node[tp, fill=sheetBlue!8] (t1) at (7.7,0.6) {\ct{CPTabBarTemplate} {\tiny root only}};
+  \node[tp] (t2) at (7.7,1.2) {\ct{CPListTemplate} ``Albums'' {\tiny(a tab)}};
+  \node[tp] (t3) at (7.7,1.8) {\ct{CPListTemplate} ``Tracks''};
+  \node[tp, fill=sheetOrange!12] (t4) at (7.7,2.4) {\ct{CPNowPlayingTemplate.shared}};
+  \node[lbl] at (5.8,1.2) {1};
+  \node[lbl] at (5.8,1.8) {2};
+  \node[lbl] at (5.8,2.4) {3};
+  \draw[hot] (9.6,1.2) -- node[lbl, right]{push} (9.6,2.4);
+  \draw[flow, draw=sheetOrange] (cs.east) -| (5.55,0.6) -- (t1.west);
+  \node[lbl, rotate=90, text=sheetOrange!80!black] at (5.4,1.3) {\ct{didConnect}};
+  \node[nd, draw=sheetRed, fill=sheetRed!8, font=\tiny, text width=17mm] at (10.45,0.55) {\ct{presentTemplate}:\\alert, action sheet};
+
+  % ---------- car ----------
+  \node[pt] at (11.55,3.55) {car head unit};
+  \draw[hot] (9.95,1.8) -- node[lbl, above]{template} node[lbl, below]{data} (11.6,1.8);
+  \node[draw=black!70, very thick, rounded corners=4pt, minimum width=48mm, minimum height=21mm, fill=black!3] (scr) at (14.05,2.05) {};
+  \node[nd, draw=sheetOrange, fill=sheetOrange!12, text width=42mm, font=\tiny] at (14.05,2.6) {\textbf{templates} — drawn by CarPlay: car fonts, light / dark, touch \emph{or} knob; you supply data + handlers};
+  \node[nd, draw=sheetBlue, fill=sheetBlue!10, text width=42mm, font=\tiny] at (14.05,1.5) {\textbf{nav only:} \ct{CPWindow.rootViewController} = your \textbf{map} (pixels) under the \ct{CPMapTemplate} buttons};
+  \node[nd, font=\tiny, minimum width=21mm] at (12.8,0.55) {Dashboard scene};
+  \node[nd, font=\tiny, minimum width=21mm] at (15.3,0.55) {Instrument cluster (15.4)};
+  \draw[flow, draw=sheetGreen] (14.05,1.0) -- (14.05,0.05) -- (4.6,0.05) -- (4.6,0.78);
+  \node[lbl, anchor=south, text=sheetGreen!50!black] at (8.3,0.07) {steering-wheel play/skip $\to$ \ct{MPRemoteCommandCenter} $\to$ player};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Entitlement} per category, requested from Apple; a Boolean key in
+        \ct{.entitlements}, matching App ID + profile. A template outside your category
+        $\to$ \textbf{runtime exception}.
+  \item \textbf{Scene manifest}: \ct{UISceneConfigurations} gets a
+        \ct{CPTemplateApplicationScene\-SessionRoleApplication} entry (class
+        \ct{CPTemplateApplicationScene} + your delegate). No extension, no new target.
+  \item \textbf{Connect}: \ct{templateApplicationScene(\_:didConnect:)} hands you the
+        \ct{CPInterfaceController}: keep it, \ct{setRootTemplate}. Nav apps get
+        \ct{\dots didConnect:to:} with a \ct{CPWindow}. Disconnect $\to$ drop both.
+  \item \textbf{Stack}: push / pop / \ct{pop(to:)}; \ct{presentTemplate} shows one modal.
+        \ct{CPTabBarTemplate} is root only, each tab its own stack.
+  \item \textbf{Templates are data}: text, \ct{CPImageSet} (light/dark), handlers.
+        Update in place (\ct{updateSections(\_:)}).
+  \item \textbf{The car sets limits}: \ct{maximumItemCount}, \ct{maximumTabCount},
+        \ct{CPSessionConfiguration.limitedUserInterfaces} (\ct{.keyboard}, \ct{.lists}
+        while driving); a grid shows 8 buttons.
+\end{itemize}
+
+\hd{Categories — key \ct{com.apple.developer.carplay-\dots}}
+{\scriptsize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{24mm}@{}}
+\toprule
+\textbf{category} & \textbf{key suffix} & \textbf{depth} & \textbf{own templates · rule} \\ \midrule
+audio & \ct{audio} & 5 & Now Playing \\
+communication & \ct{communication} & 5 & Contact \\
+navigation & \ct{maps} & 5 & Map, Search, Voice \\
+EV charging, parking & \ct{charging}, \ct{parking} & 5 & Point of Interest, Information \\
+quick food ordering & \ct{quick-ordering} & 2 (3$^\dagger$) & Point of Interest, Information \\
+fueling (iOS 16) & — & 3 & \\
+driving task (iOS 16) & \ct{driving-task} & 2 (3$^\dagger$) & \\
+public safety & — & — & dispatch, routing \\
+voice conv.\ (26.4) & \ct{voice-based-}\newline\ct{conversation}\unverified & 3 & audio session only while voice is in use \\
+video (iOS 27) & — & — & parked only, AirPlay video \\
+\bottomrule
+\end{tabular}}\\[1pt]
+{\tiny $^\dagger$ iOS 26.4+. List, grid, tab, alert, action sheet: all. Information: not audio.
+EV + fueling combine, audio + video too. Old \ct{MPPlayableContentManager}: deprecated (14).}
+
+\hd{Example — audio app, scene delegate}
+\begin{lstlisting}[language=SwiftSheet]
+func templateApplicationScene(_ s: CPTemplateApplicationScene,
+                didConnect ui: CPInterfaceController) {
+  self.ui = ui                              // keep it
+  let max = CPListTemplate.maximumItemCount // the car's limit
+  let rows = Library.shared.albums.prefix(max).map { a in
+    let row = CPListItem(text: a.title, detailText: a.artist)
+    row.handler = { _, done in
+      Player.shared.play(a)                 // shared model
+      ui.pushTemplate(CPNowPlayingTemplate.shared,
+                      animated: true, completion: nil)
+      done() }                              // or it spins forever
+    return row }
+  let list = CPListTemplate(title: "Albums",
+                 sections: [CPListSection(items: rows)])
+  ui.setRootTemplate(list, animated: true, completion: nil)
+}
+\end{lstlisting}
+
+\columnbreak
+\hd{Testing}
+Xcode Simulator \textbf{I/O $\to$ External Displays $\to$ CarPlay} (800$\times$480 @2x):
+no \textbf{locked} iPhone, \textbf{Siri} or \textbf{audio}. \textbf{CarPlay Simulator} (Mac
+app, Additional Tools for Xcode) drives a \textbf{real iPhone} over a cable.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Model built in the phone \ct{SceneDelegate}: CarPlay may launch you with
+        \emph{no} phone scene.}
+  \trap{Locked phone: \ct{.complete} files and \ct{WhenUnlocked} keychain items fail —
+        use \ct{completeUntilFirstUserAuthentication} / \ct{AfterFirstUnlock}.}
+  \trap{Hard-coded row counts: read the limits at runtime; they shrink while driving.}
+  \trap{``Custom CarPlay UI'': only the nav map. No video (bar parked video apps), games
+        or free text.}
+\end{itemize}
+
+\hd{Per category}
+\begin{itemize}
+  \item \textbf{Audio}: browse $\to$ \ct{CPNowPlayingTemplate.shared}, a singleton fed by
+        \ct{MPNowPlayingInfoCenter}; its buttons and the steering wheel go through
+        \ct{MPRemoteCommandCenter} — the lock-screen plumbing.
+  \item \textbf{Communication}: SiriKit (\ct{INSendMessageIntent},
+        \ct{INSearchForMessagesIntent}, \ct{INStartCallIntent}) + CallKit;
+        \ct{CPContactTemplate}, \ct{CPMessageListItem}. Siri dictates — no keyboard.
+  \item \textbf{Navigation}: \ct{CPMapTemplate} (buttons, trips, maneuvers via
+        \ct{CPNavigationSession}) over your map; \ct{CPSearchTemplate}; Dashboard
+        (\ct{CPSupportsDashboardNavigationScene}) + instrument-cluster scenes.
+  \item \textbf{EV / parking / food}: \ct{CPPointOfInterestTemplate} (map + picker),
+        \ct{CPInformationTemplate} (items + $\le$ 3 \ct{CPTextButton}s).
+\end{itemize}
+
+\hd{New in iOS 26 · 26.4 · 27}
+\begin{itemize}
+  \item \textbf{26}: \ct{.systemSmall} widgets + Live Activities (\ct{.small}) show on the
+        Dashboard, no CarPlay app needed; opt out:
+        \ct{.disfavoredLocations([.carPlay], for: [.systemSmall])}.
+  \item \textbf{26.4}: voice conversational apps; food/driving-task depth 3.
+  \item \textbf{27}: \textbf{video} apps — parked, in cars with video-in-car; AirPlay video;
+        audio-only fallback (\ct{supportsVideoPlayback}). \ct{CPVoiceControlTemplate} for all.
+  \item \textbf{CarPlay Ultra} (every car display): automaker feature; templates restyle.
+\end{itemize}
+
+\hd{Remember}
+\textbf{``The entitlement picks the templates, templates are data, the car draws —
+only maps get pixels.''}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} avfoundation-camera-audio
+(Now Playing) · background-execution · app-intents (SiriKit) · widgets-live-activities ·
+state-restoration-multiwindow}
+
+\end{document}

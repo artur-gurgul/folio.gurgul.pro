@@ -1,0 +1,240 @@
+% shareplay-group-activities.tex — SharePlay with the Group Activities framework: defining a GroupActivity
+% (activityIdentifier, GroupActivityMetadata), the entitlement, starting (activate / prepareForActivation /
+% GroupStateObserver / GroupActivitySharingController / share sheet / ShareLink / AirDrop), receiving
+% (sessions() -> join), GroupSession state machine and participants, sync channels (AVPlayer playback
+% coordinator, GroupSessionMessenger, GroupSessionJournal), late joiners, privacy, visionOS in one line.
+% Picture: one FaceTime call, three devices — activate -> sessions() -> join -> sync; session state machine.
+% NOT repeated: AVPlayer / HLS mechanics (ios-platform/video-playback-hls.tex), Transferable itself
+% (swiftui/swiftui-transferable-drag-drop.tex), WebRTC / CallKit (ios-platform/realtime-webrtc-callkit.tex).
+% Sources (checked 2026-09-29) — developer.apple.com documentation JSON + WWDC transcripts:
+%   /documentation/groupactivities (overview: E2E encryption, Apple servers don't know the app's identity)
+%   GroupActivity (activityIdentifier, metadata, activate() async throws -> Bool, prepareForActivation(),
+%   sessions()); GroupActivityActivationResult (.activationPreferred/.activationDisabled/.cancelled);
+%   GroupActivityMetadata (title, subtitle, previewImage: CGImage?, fallbackURL, type,
+%   supportsContinuationOnTV) + ActivityType cases; entitlement com.apple.developer.group-session;
+%   GroupSession (state, activeParticipants, localParticipant, activity @Published get set — change only
+%   when joined; join/leave/end, requestForegroundPresentation, isLocallyInitiated);
+%   State.invalidated(reason: any Error) — on error, call end, or leave(); release everything;
+%   GroupStateObserver.isEligibleForGroupSession; "Presenting SharePlay activities from your app's UI"
+%   (activate fails without a FaceTime call or Messages conversation -> GroupActivitySharingController;
+%   ShareLink with a Transferable activity; NSItemProvider.registerGroupActivity (iOS 15.4);
+%   SharePlay over AirDrop via ShareLink / activityItemsConfiguration);
+%   GroupSessionMessenger (init(session:deliveryMode:), DeliveryMode .reliable/.unreliable iOS 16,
+%   Participants .all / .only, MessageContext.source); GroupSessionJournal (iOS 17, Transferable,
+%   add / attachments / load, "available to all participants, regardless of when they joined");
+%   AVPlayerPlaybackCoordinator (intercepts setRate/pause/seek; "doesn't manage the playback queue");
+%   AVPlaybackCoordinator.coordinateWithSession(_:), beginSuspension(for:);
+%   AVPlayerPlaybackCoordinatorDelegate playbackCoordinator(_:identifierFor:);
+%   Participant (id: UUID, no sensitive data; isNearbyWithLocalParticipant iOS 26);
+%   WWDC22 10140 (iOS 15.4 start without a call; messenger payload 256 KB; unreliable = UDP);
+%   WWDC23 10239 (SharePlay over AirDrop in iOS 17; new activity types).
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis,networking
+% @tags: shareplay, group-activities, groupsession, groupsessionmessenger, groupsessionjournal, avplaybackcoordinator, facetime, late-joiners, visionos
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,static,init,for,in,
+    if,else,return,guard,self,nil,try,await,async,throws,true,false,case,switch,
+    default,Task,some},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  dev/.style={box, font=\scriptsize, minimum width=17mm, minimum height=5.5mm},
+  sys/.style={box, draw=sheetGreen!60!black, fill=sheetGreen!10, font=\scriptsize, minimum height=5.5mm},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center, fill=white},
+  ttl/.style={font=\bfseries\scriptsize, anchor=west, text=sheetBlue},
+  st/.style={draw=sheetBlue, thick, rounded corners=5pt, fill=sheetBlue!8, font=\scriptsize,
+             minimum height=6mm, minimum width=15mm, align=center},
+}
+
+\begin{document}
+
+\sheettitle{SharePlay — Group Activities}{ios-platform · folio}
+
+\oneliner{\textbf{SharePlay} = your app's activity shared over a \textbf{FaceTime call} or \textbf{Messages
+conversation} (and, iOS 17, \textbf{AirDrop} nearby). You define a \ct{Codable} \ct{GroupActivity};
+one person \ct{activate()}s it; the system hands a \ct{GroupSession} to \emph{every} participant's
+\ct{sessions()} stream; each app \ct{join()}s and syncs through \textbf{AVPlayer's playback coordinator}
+(media), \textbf{GroupSessionMessenger} (small messages) or \textbf{GroupSessionJournal} (files). All
+session data is \textbf{end-to-end encrypted}; there is no server of yours in the loop.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── lanes ──
+  \node[ttl] at (-0.2,3.55) {One FaceTime call, three devices — who calls what};
+  \node[dev] (a) at (0.9,3.0) {Alice's app};
+  \node[sys, minimum width=34mm] (s) at (4.9,3.0) {FaceTime / system · \textbf{E2E}};
+  \node[dev] (b) at (8.9,3.0) {Bob's app};
+  \node[dev, draw=sheetGrey, fill=black!4] (c) at (11.0,3.0) {Carol (later)};
+  \draw[sheetGrey, thick] (0.9,2.72) -- (0.9,-0.75);
+  \draw[sheetGreen!60!black, thick] (4.9,2.72) -- (4.9,-0.75);
+  \draw[sheetGrey, thick] (8.9,2.72) -- (8.9,-0.75);
+  \draw[sheetGrey, thick, dashed] (11.0,2.72) -- (11.0,-0.75);
+  % 1 eligibility + activate
+  \node[lbl, anchor=west, text=sheetBrown] at (1.0,2.55) {\ct{isEligibleForGroupSession}?};
+  \draw[hot] (0.9,2.2) -- node[lbl, above]{\textbf{1} \ct{prepareForActivation()} $\to$ \ct{activate()}} (4.9,2.2);
+  \node[lbl, anchor=west, text=sheetGreen!40!black] at (5.0,2.2) {encodes the \ct{Codable} activity};
+  % 2 sessions delivered to everyone
+  \draw[flow, draw=sheetGreen!60!black] (4.9,1.7) -- node[lbl, above]{\textbf{2} \ct{sessions()} yields} (0.9,1.7);
+  \draw[flow, draw=sheetGreen!60!black] (4.9,1.7) -- node[lbl, above]{\textbf{2} \ct{GroupSession} (\ct{.waiting})} (8.9,1.7);
+  % 3 join
+  \node[lbl, anchor=west, text=sheetBrown] at (1.0,1.36) {\textbf{3} configure UI + sync, \emph{then} \ct{join()}};
+  \node[lbl, anchor=east, text=sheetBrown] at (8.8,1.36) {\textbf{3} \ct{join()} $\to$ \ct{.joined}};
+  % 4 sync
+  \draw[<->, very thick, draw=sheetOrange] (0.9,0.95) -- node[lbl, above, text=sheetOrange!80!black]{\textbf{4} \ct{player.pause()} / \ct{seek} — the \textbf{coordinator} intercepts, others follow} (8.9,0.95);
+  \draw[<->, thick, draw=sheetBlue] (0.9,0.5) -- node[lbl, above, text=sheetBlue]{\textbf{4} \ct{messenger.send(move, to: .all)} — \ct{Codable}, $\le$ 256 KB} (8.9,0.5);
+  % 5 late joiner
+  \draw[flow, draw=sheetGrey] (4.9,0.1) -- (11.0,0.1);
+  \node[lbl, anchor=south west] at (5.0,0.1) {\textbf{5} Carol joins: session + current \ct{activity}};
+  \draw[hot, draw=sheetRed] (8.9,-0.3) -- (11.0,-0.3);
+  \node[lbl, anchor=east, text=sheetRed] at (8.8,-0.3) {\ct{\$activeParticipants} grew $\to$ send state to \ct{.only(carol)}};
+  \node[lbl, anchor=west, text=sheetRed, align=left] at (1.0,-0.3) {messages are \textbf{not replayed}:\\snapshot, or the \textbf{Journal}};
+  \node[lbl, anchor=west, text=sheetGrey] at (1.0,-0.72) {\ct{Participant} = opaque \ct{UUID} — no name, no handle, no phone number};
+  % separator
+  \draw[sheetGrey!40] (12.35,3.7) -- (12.35,-0.85);
+  % ── state machine ──
+  \node[ttl] at (12.5,3.55) {\ct{GroupSession.State}};
+  \node[st] (w) at (13.45,2.85) {\ct{.waiting}};
+  \node[st, draw=sheetGreen!60!black, fill=sheetGreen!10] (j) at (13.45,1.65) {\ct{.joined}};
+  \node[st, draw=sheetRed, fill=sheetRed!8, minimum width=19mm] (i) at (13.45,0.35) {\ct{.invalidated}\\\ct{(reason: Error)}};
+  \draw[flow, draw=sheetGreen!60!black] (w) -- node[lbl, right]{\ct{join()}} (j);
+  \draw[flow, draw=sheetRed] (j) -- node[lbl, right, align=left, text=sheetRed]{\ct{leave()} · \ct{end()}\\call ends · error} (i);
+  \node[lbl, anchor=west, align=left, text=sheetBrown] at (14.6,2.85) {call ends first $\to$\\straight to invalidated};
+  \node[lbl, anchor=west, align=left, text=sheetBrown] at (14.6,1.65) {\ct{leave()} = only me\\\ct{end()} = everyone};
+  \node[lbl, anchor=north west, align=left, text=sheetRed] at (12.45,-0.2) {terminal: release session, messenger,\\tasks; never join/leave/end again};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\small\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Capability}: \emph{Group Activities} $\to$ entitlement \ct{com.apple.developer.group-session}.
+        Framework since iOS 15 / macOS 12 / tvOS 15 / visionOS 1.
+  \item \textbf{Activity} = \ct{struct: GroupActivity} (\ct{Codable}, sent to every device) with
+        \ct{static activityIdentifier} (needed once you have several types) and \ct{metadata}:
+        \ct{title}, \ct{subtitle}, \ct{previewImage} (\ct{CGImage}), \ct{fallbackURL} (join from a web
+        browser), \ct{type} (\ct{.watchTogether}, \ct{.listenTogether}, \ct{.playTogether},
+        \ct{.createTogether}, … iOS 17 added shop/read/learn/workout), \ct{supportsContinuationOnTV}.
+  \item \textbf{Start}: \ct{GroupStateObserver().isEligibleForGroupSession} (\ct{ObservableObject}) —
+        true in a call/conversation. \ct{prepareForActivation()} asks the user:
+        \ct{.activationPreferred} $\to$ \ct{activate()} · \ct{.activationDisabled} $\to$ do it
+        \emph{locally} · \ct{.cancelled} $\to$ nothing. Not eligible $\to$ present
+        \ct{GroupActivitySharingController} (iOS 15.4): it invites people and starts the call.
+  \item \textbf{Share sheet / AirDrop}: \ct{ShareLink(item: activity, …)} with a \ct{Transferable}
+        activity; UIKit: \ct{NSItemProvider.registerGroupActivity(\_:)} (15.4) in
+        \ct{UIActivityViewController} or a responder's \ct{activityItemsConfiguration} — the
+        latter is what \textbf{SharePlay over AirDrop} (iOS 17) finds.
+  \item \textbf{Receive} on \emph{every} device, including the starter: \ct{for await s in
+        X.sessions()} from launch (e.g. \ct{.task} on the root view). Store it, build UI +
+        sync objects, \emph{then} \ct{join()}.
+  \item \textbf{Change content}: set \ct{session.activity} (\ct{@Published}, only when
+        \ct{.joined}); everyone observes \ct{\$activity} and loads the same item.
+  \item Also on the session: \ct{isLocallyInitiated} (am I the starter?),
+        \ct{requestForegroundPresentation()} (the activity needs your app on screen).
+\end{itemize}
+
+\hd{Example — watch together + reactions}
+\begin{lstlisting}[language=SwiftSheet]
+struct WatchTogether: GroupActivity {
+  let movie: Movie                           // Codable payload
+  var metadata: GroupActivityMetadata {
+    var m = GroupActivityMetadata(); m.type = .watchTogether
+    m.title = movie.title; m.fallbackURL = movie.webURL; return m }
+}
+func start(_ a: WatchTogether) async throws {  // Alice's tap
+  switch await a.prepareForActivation() {
+  case .activationPreferred: _ = try await a.activate()
+  case .activationDisabled: playLocally(a.movie)
+  default: break }                           // .cancelled
+}
+for await s in WatchTogether.sessions() {    // every device
+  session = s; load(s.activity.movie)        // keep strong refs
+  player.playbackCoordinator.coordinateWithSession(s)
+  messenger = GroupSessionMessenger(session: s, deliveryMode: .unreliable)
+  s.join()
+  Task { for await (r, ctx) in messenger.messages(of: Reaction.self) {
+           show(r, from: ctx.source) } }     // ctx.source: Participant
+}
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Three sync channels}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{25mm}@{}}
+\toprule
+\textbf{Channel} & \textbf{Carries} & \textbf{Watch out} \\ \midrule
+\ct{AVPlayer} \ct{.playback} \ct{Coordinator} (15) & rate, time, pause, seek — intercepted and imposed on the others
+  & does \textbf{not} manage the queue; stalls/interruptions \emph{suspend} coordination \\
+\ct{GroupSession} \ct{Messenger} (15) & your \ct{Codable}/\ct{Data} to \ct{.all} or \ct{.only(p)};
+  $\le$ \textbf{256 KB}; \ct{.reliable} (default) or \ct{.unreliable} (16, UDP)
+  & live traffic only — no history for late joiners \\
+\ct{GroupSession} \ct{Journal} (17) & \ct{Transferable} files: \ct{add}, \ct{attachments}, \ct{load}
+  & available to everyone \emph{whenever} they joined; not for fast messages \\
+\bottomrule
+\end{tabular}}\par
+\textbf{Local detour}: \ct{let s = player.playbackCoordinator.beginSuspension(for: …)} — rewind or 2× for
+yourself, \ct{s.end()} rejoins the group's time. Same movie, different URLs per device (CDN, locale)?
+\ct{AVPlayerPlaybackCoordinatorDelegate} \ct{playbackCoordinator(\_:identifierFor:)} returns a shared id.
+
+\hd{Privacy and platforms}
+\begin{itemize}
+  \item E2E encrypted; Apple sees neither content nor playback events, nor your app's identity.
+        \ct{Participant.id} is a \ct{UUID}, no personal data — map people to accounts yourself.
+  \item iOS 26: \ct{Participant.isNearbyWithLocalParticipant} (same room vs remote).
+        \textbf{visionOS}: spatial Personas, \ct{session.systemCoordinator}, \ct{SpatialTemplate}
+        for seating; visionOS 26 shares with people nearby.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{\ct{activate()} with no call/conversation \textbf{fails} — check eligibility, fall back to
+        \ct{GroupActivitySharingController} or the share sheet.}
+  \trap{The coordinator syncs \emph{time}, not \emph{which item}: drive item changes through
+        \ct{session.activity}, or players drift to different movies.}
+  \trap{Late joiner sees an empty canvas: the messenger never replays. Diff
+        \ct{\$activeParticipants}, send a snapshot to \ct{.only(new)} — or keep state in the Journal.}
+  \trap{\ct{.unreliable} is best-effort: cursors and drags, never moves or scores.}
+  \trap{\ct{.invalidated} is terminal: drop the session, messenger and tasks. \ct{join()} only once
+        your UI can show the activity.}
+  \trap{``SharePlay needs my backend'' — no: FaceTime's infrastructure relays it; you only need
+        content every device can load.}
+\end{itemize}
+
+\hd{Timeline}
+\begin{tikzpicture}[sheet]
+  \tikzset{yr/.style={font=\bfseries\scriptsize, text=sheetBlue},
+           ev/.style={font=\tiny, align=center, text=black!85, text width=15mm, anchor=north}}
+  \draw[thick, sheetGrey, ->] (0,0) -- (8.3,0);
+  \foreach \x/\y/\t in {
+      0.8/iOS 15/{Group Activities\\playback coordinator\\messenger},
+      2.45/iOS 15.4/{start from the app\\(\texttt{GroupActivity-}\\\texttt{SharingController})},
+      4.1/iOS 16/{messenger\\\texttt{.unreliable}},
+      5.75/iOS 17/{\texttt{GroupSession-}\\\texttt{Journal} · AirDrop\\nearby start},
+      7.4/iOS 26/{nearby\\participants}}{
+    \fill[sheetBlue] (\x,0) circle (0.6mm);
+    \node[yr, above=1pt] at (\x,0) {\y};
+    \node[ev] at (\x,-0.12) {\t};
+  }
+\end{tikzpicture}
+
+\hd{Remember}
+\textbf{Activate once, receive everywhere, join when ready, sync three ways (Coordinator · Messenger ·
+Journal), release on invalidated.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} video-playback-hls (AVPlayer) ·
+swiftui-transferable-drag-drop · realtime-webrtc-callkit · websockets-realtime · network-framework-local}
+
+\end{document}

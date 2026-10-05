@@ -1,0 +1,206 @@
+% coredata-migrations-swiftdata.tex — Core Data model versioning, lightweight vs custom
+% migration, staged migration (iOS 17), testing + data-loss risks; SwiftData deep:
+% @Model, @Query, ModelContainer/ModelContext, @ModelActor + PersistentIdentifier,
+% relationships + delete rules, VersionedSchema + SchemaMigrationPlan, vs Core Data.
+% The persistence folio has the basics (contexts, merge, faulting).
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/coredata/nsstagedmigrationmanager (iOS 17; stages;
+%     NSPersistentStoreStagedMigrationManagerOptionKey)
+%   developer.apple.com/library/archive/documentation/Cocoa/Conceptual/CoreDataVersioning
+%     (version hashes, versionHashModifier; lightweight on SQLite "in situ … solely by issuing
+%     SQL statements … doesn't have to load any of your data"; the three-stage migration process)
+%   developer.apple.com/documentation/coredata/nspersistentstoredescription
+%     (shouldMigrateStoreAutomatically, shouldInferMappingModelAutomatically — default true)
+%   developer.apple.com/documentation/swiftdata (Model, Attribute(originalName:), Relationship
+%     delete rules, ModelActor, ModelContext.delete(model:where:), VersionedSchema, SchemaMigrationPlan)
+%   WWDC23 10195 "Model your schema with SwiftData" (custom stage de-duplicates before .unique)
+%   WWDC24 10137 "What's new in SwiftData" (#Unique, #Index — iOS 18)
+% Not claimed: an iOS 17 migrationProgress addition. The per-property macro is @_PersistedProperty.
+% @labels: area=ios-platform kind=api platform=apple topic=data,concurrency
+% @tags: core-data, lightweight-migration, mapping-model, nsstagedmigrationmanager, swiftdata, model-macro, modelcontext, modelactor, persistentidentifier, versionedschema, schemamigrationplan, delete-rules
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,static,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,any,in,
+    true,false,AnyObject,Void,String,Bool},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=6mm},
+  ver/.style={sb, minimum width=8mm, draw=sheetBrown, fill=sheetBrown!10},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\sheettitle{Core Data migrations \& SwiftData}{ios-platform · folio}
+
+\oneliner{On open, Core Data compares the store's recorded \textbf{entity version hashes}
+with the current model; if they differ it must \textbf{migrate} — \textbf{lightweight}
+(mapping \emph{inferred}, schema-shaped changes only) or \textbf{custom} (mapping model +
+\texttt{NSEntityMigrationPolicy} code), one hop at a time. \textbf{SwiftData} (iOS 17) is a
+macro layer on the same engine: \texttt{@Model} classes, a \texttt{ModelContext} per actor,
+\texttt{PersistentIdentifier} across actors, \texttt{VersionedSchema} +
+\texttt{SchemaMigrationPlan} for the same lightweight/custom stages.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── migration chain ──
+  \node[font=\bfseries\small, anchor=west] at (-0.1,2.9) {Opening an old store: staged, one hop at a time};
+  \node[sb, draw=sheetGrey, fill=black!5, minimum width=19mm] (disk) at (0.95,2.15)
+    {store on disk\\hashes of \textbf{v1}};
+  \node[sb, minimum width=19mm] (cmp) at (3.35,2.15) {current model\\\textbf{v4}: hashes $\neq$};
+  \draw[flow] (disk) -- (cmp);
+  \node[lbl, anchor=west, align=left, text=sheetBlue] at (4.6,2.15)
+    {iOS 17: \texttt{NSStagedMigrationManager}\\before: loop the versions yourself};
+  \node[ver] (v1) at (0.4,0.95) {v1}; \node[ver] (v2) at (2.7,0.95) {v2};
+  \node[ver] (v3) at (5.0,0.95) {v3}; \node[ver] (v4) at (7.3,0.95) {v4};
+  \draw[flow, dashed] (disk.south) -- (v1.north -| disk.south);
+  \draw[hot] (v1) -- node[lbl, above]{lightweight} node[lbl, below]{add \texttt{nick?}} (v2);
+  \draw[hot, draw=sheetRed] (v2) -- node[lbl, above, text=sheetRed]{\textbf{custom}} node[lbl, below]{merge 2 fields} (v3);
+  \draw[hot] (v3) -- node[lbl, above]{lightweight} node[lbl, below]{rename + ID} (v4);
+  \node[lbl, anchor=west, align=left, text=sheetGreen!50!black] at (-0.1,0.1)
+    {\textbf{lightweight on SQLite}: SQL in place —\\fast, no objects loaded};
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (3.6,0.1)
+    {\textbf{custom}: source + destination stores, objects in\\memory, writes a \textbf{new} file (3 passes)};
+  % ── SwiftData actors ──
+  \draw[sheetGrey!40] (8.0,3.0) -- (8.0,-0.3);
+  \node[font=\bfseries\small, anchor=west] at (8.1,2.9) {SwiftData: one container, a context per actor};
+  \node[sb, draw=sheetBrown, fill=sheetBrown!10, minimum width=40mm] (mc) at (12.3,2.25)
+    {\texttt{ModelContainer} (schema + store) — share \textbf{one}};
+  \node[sb, draw=sheetGreen!70!black, fill=sheetGreen!10, text width=30mm] (main) at (9.9,1.1)
+    {\texttt{@MainActor mainContext}\\\texttt{@Query} in views · autosaves};
+  \node[sb, draw=sheetOrange, fill=sheetOrange!10, text width=30mm] (bg) at (14.7,1.1)
+    {\texttt{@ModelActor actor Importer}\\own \texttt{modelContext} · \texttt{save()}!};
+  \draw[flow] (mc) -- (main); \draw[flow] (mc) -- (bg);
+  \draw[->, thick, sheetBlue, dashed] ([yshift=2.5mm]bg.west) -- node[lbl, above, text=sheetBlue]
+    {\texttt{PersistentIdentifier} ✓} ([yshift=2.5mm]main.east);
+  \draw[->, thick, sheetRed] ([yshift=-2.5mm]bg.west) -- node[lbl, below, text=sheetRed]
+    {\texttt{@Model} object \ensuremath{\times}} ([yshift=-2.5mm]main.east);
+  \node[lbl, anchor=west, align=left] at (8.1,0.1)
+    {models are \textbf{not} \texttt{Sendable} and belong to their context; re-resolve the id with
+     \texttt{context.model(for: id)}.\\Background write not in the UI? unsaved, or a \emph{second}
+     container.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Core Data}
+\begin{itemize}
+  \item \texttt{.xcdatamodeld} holds versions; the \textbf{current} one is ticked. Each
+        entity/property has a \texttt{versionHash}; the store metadata keeps the set it was
+        written with. Same schema, new meaning → bump \texttt{versionHashModifier}.
+  \item Store description flags \texttt{shouldMigrateStoreAutomatically} +
+        \texttt{shouldInferMappingModelAutomatically} both \textbf{default true}:
+        \texttt{NSPersistentContainer} migrates lightweight inside
+        \texttt{loadPersistentStores}, \textbf{synchronously}.
+  \item \textbf{Custom}: an \texttt{.xcmappingmodel} (\texttt{\$source.x} expressions) +
+        an \texttt{NSEntityMigrationPolicy} subclass overriding\\
+        \texttt{createDestinationInstances(forSource:in:manager:)}.
+        \texttt{NSMigrationManager} writes a new store; swap it in on success.
+  \item \textbf{Staged} (iOS 17): an \texttt{NSStagedMigrationManager} of
+        \texttt{NSLightweightMigrationStage} / \texttt{NSCustomMigrationStage}
+        (\texttt{will/didMigrateHandler}); models as\\
+        \texttt{NSManagedObjectModelReference}; store option\\
+        \texttt{NSPersistentStoreStagedMigrationManagerOptionKey}.
+\end{itemize}
+
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}L{37mm}L{37mm}@{}}
+\toprule
+\textbf{Lightweight can} & \textbf{Needs custom} \\
+\midrule
+add / remove attribute, entity & merge \texttt{first}+\texttt{last} → \texttt{name} \\
+optional → required \emph{with default} & split one entity into two \\
+rename via \textbf{Renaming ID} & de-duplicate, fix bad data \\
+to-one ↔ to-many, add relationship & type change needing logic \\
+\bottomrule
+\end{tabular}}
+
+\section{Risks · testing}
+\begin{itemize}
+  \item Data loss: rename without Renaming ID (drop + add); required attribute without
+        default (fails); ``delete the store'' — only for a re-downloadable \textbf{cache}.
+  \item Big migration on main at launch → watchdog \texttt{0x8badf00d}: load off main,
+        show progress, back up first.
+  \item Use \texttt{destroyPersistentStore} / \texttt{replacePersistentStore}, not
+        \texttt{FileManager} — SQLite has \texttt{-wal}/\texttt{-shm} sidecars.
+  \item Tests: \textbf{golden stores} written by each \emph{old app version} (with
+        sidecars) → migrate a copy → assert counts + values; the whole chain.
+        CloudKit-synced model: additive changes only.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Passing a \texttt{@Model} to another actor — pass \texttt{persistentModelID}.}
+  \trap{\texttt{.cascade} with no inverse declared → children may survive.\unverified}
+  \trap{Adding \texttt{.unique} over duplicate rows fails the migration — dedupe in a
+        \texttt{.custom} stage's \texttt{willMigrate}.}
+  \trap{Lightweight ``handles everything'' — it never computes values.}
+\end{itemize}
+
+\columnbreak
+
+\section{SwiftData (iOS 17)}
+\begin{itemize}
+  \item \texttt{@Model final class}: the macro adds \texttt{PersistentModel} +
+        \texttt{Observable}, backing storage per property, \texttt{persistentModelID}.
+        \texttt{@Attribute(.unique)}, \texttt{@Attribute(originalName:)} (rename),
+        \texttt{.externalStorage}, \texttt{@Transient}. iOS 18: \texttt{\#Unique},
+        \texttt{\#Index}.
+  \item \texttt{.modelContainer(for:)} injects \texttt{mainContext}
+        (\texttt{@MainActor}, \texttt{autosaveEnabled}) into the environment.
+        \texttt{@Query(filter:sort:)} is SwiftUI-only and re-renders on change; for a
+        runtime filter set \texttt{\_items = Query(filter: …)} in the view's
+        \texttt{init}. Elsewhere: \texttt{context.fetch(FetchDescriptor)} with
+        \texttt{\#Predicate}, \texttt{fetchLimit}, \texttt{fetchCount};
+        \texttt{context.delete(model:where:)} = batch delete.
+  \item \texttt{@ModelActor} synthesises \texttt{init(modelContainer:)},
+        \texttt{modelContext}, \texttt{modelExecutor}. Background contexts: call
+        \texttt{save()} yourself.
+  \item \texttt{@Relationship(deleteRule: .cascade, inverse: \textbackslash Item.folder)};
+        rules \texttt{.nullify} (default) · \texttt{.cascade} · \texttt{.deny} ·
+        \texttt{.noAction}. To-many arrays come back \textbf{unordered}.
+\end{itemize}
+
+\section{Example — dedupe, then make it unique}
+\begin{lstlisting}[language=SwiftSheet]
+enum V1: VersionedSchema {
+  static let versionIdentifier = Schema.Version(1, 0, 0)
+  static var models: [any PersistentModel.Type] { [Trip.self] }
+  @Model final class Trip { var name = "" } }
+enum V2: VersionedSchema { /* 2.0.0: @Attribute(.unique) */ }
+enum Plan: SchemaMigrationPlan {
+  static var schemas: [any VersionedSchema.Type]
+    { [V1.self, V2.self] }
+  static var stages: [MigrationStage] { [dedupe] }
+  static let dedupe = MigrationStage.custom(
+    fromVersion: V1.self, toVersion: V2.self,
+    willMigrate: { ctx in /* delete duplicate V1.Trips */
+      try ctx.save() }, didMigrate: nil) }
+let c = try ModelContainer(for: V2.Trip.self,
+                           migrationPlan: Plan.self)
+\end{lstlisting}
+
+\section{SwiftData vs Core Data}
+SwiftData: Swift-native, \texttt{Observable}, SwiftUI-first, iOS 17+. Core Data still for
+FRC-driven UIKit lists, batch insert/update, derived attributes, fine context control,
+older OS, complex migrations. Both can open one store (same schema; rename the
+\texttt{NSManagedObject} subclasses so class names don't clash).
+
+\section{Remember}
+\textbf{Hash → hop → verify on a golden store.} Lightweight = inferred, custom = your code;
+across actors pass the id; a stale UI = no \texttt{save()}, or two containers.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} persistence (contexts, merge,
+faulting) · swift6-strict-concurrency (\texttt{Sendable}) · concurrency (actors) ·
+offline sync · macros-and-result-builders (\texttt{@Model})}
+
+\end{document}

@@ -1,0 +1,204 @@
+% widgets-live-activities.tex — WidgetKit (timelines, reload budget, App Groups,
+% interactive widgets) + ActivityKit Live Activities & the Dynamic Island.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/widgetkit/keeping-a-widget-up-to-date (40–70 refreshes/day for a
+%     frequently viewed widget; reloads while the app is in the foreground do not count)
+%   developer.apple.com/documentation/widgetkit/timelineprovider · .../widgetfamily (accessory, iOS 16)
+%   developer.apple.com/documentation/widgetkit/adding-interactivity-to-widgets-and-live-activities (iOS 17)
+%   developer.apple.com/documentation/activitykit/displaying-live-data-with-live-activities (8 h active,
+%     up to 4 h more on the Lock Screen; NSSupportsLiveActivities, FrequentUpdates)
+%   developer.apple.com/documentation/activitykit/starting-and-updating-live-activities-with-activitykit-push-notifications
+%     (push-to-start iOS 17.2; apns-push-type liveactivity)
+%   developer.apple.com/documentation/widgetkit/controlwidget (iOS 18) · StandBy (iOS 17)
+% Not documented by Apple: the ~30 MB widget memory figure (marked \unverified on the page).
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis,ui
+% @tags: widgetkit, timelineprovider, reload-budget, reloadtimelines, app-groups, interactive-widgets, activitykit, live-activities, dynamic-island, contentstate, push-to-start
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,static,some,init,
+    if,else,return,guard,self,nil,private,true,false,in,try,await,async,throws,
+    Void,String,Bool,Int,Date},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  ttl/.style={font=\bfseries\small},
+  proc/.style={draw=sheetGrey, dashed, rounded corners=3pt, inner sep=4pt},
+  ent/.style={draw=sheetBlue, fill=sheetBlue!12, minimum width=9mm,
+              minimum height=5mm, font=\scriptsize, inner sep=1pt},
+}
+
+\begin{document}
+
+\sheettitle{WidgetKit · Live Activities · Dynamic Island}{ios-platform · folio}
+
+\oneliner{A widget is \textbf{not a live view}: a separate \textbf{extension
+process} hands WidgetKit a \textbf{timeline} of pre-rendered entries, the system
+swaps them at their dates and decides \emph{when} to ask again (budgeted). A
+\textbf{Live Activity} is the same WidgetKit/SwiftUI surface fed by
+\textbf{ActivityKit} state updates — local or by APNs push — for a bounded
+event (8~h).}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Widgets}
+\begin{itemize}
+  \item \texttt{Widget} (\texttt{StaticConfiguration} /
+        \texttt{AppIntentConfiguration}) + \texttt{TimelineProvider}
+        + \texttt{TimelineEntry} (\texttt{date} + data) + SwiftUI view.
+  \item \texttt{placeholder(in:)} — sync, redacted skeleton.
+        \texttt{getSnapshot} — one entry for the gallery (sample data OK).
+        \texttt{getTimeline} — \texttt{[Entry]} + reload policy.
+  \item Policy: \texttt{.atEnd} · \texttt{.after(date)} · \texttt{.never}
+        (only when the app calls \texttt{WidgetCenter.shared.}\allowbreak
+        \texttt{reloadTimelines(ofKind:)}). All are \emph{requests}: a
+        frequently viewed widget gets $\approx$\,\textbf{40--70 reloads/day};
+        reloads asked while the app is foreground are free.
+  \item View body is \textbf{archived} (rendered once per entry): no
+        network, no scroll, no video, no code timers. Clocks =
+        \texttt{Text(date, style: .timer)}.
+  \item \textbf{Memory} $\approx$\,\textbf{30~MB} (undocumented)\unverified{} — over it,
+        jetsam $\to$ blank widget. Downsample images.
+  \item \textbf{Data}: an \textbf{App Group} (entitlement on \emph{both}
+        targets) — \texttt{UserDefaults(suiteName:)}, shared file / DB.
+  \item Families: \texttt{.systemSmall/Medium/Large/}\allowbreak\texttt{ExtraLarge}
+        (iPad); Lock Screen (iOS 16) \texttt{.accessoryCircular/}\allowbreak
+        \texttt{Rectangular/Inline}. Taps: small = one \texttt{.widgetURL};
+        medium+ = many \texttt{Link}s.
+  \item \textbf{Interactive (iOS 17)}: only \texttt{Button(intent:)} /
+        \texttt{Toggle(isOn:intent:)}; tap runs the \texttt{AppIntent}'s
+        \texttt{perform()} without opening the app, then the timeline reloads.
+\end{itemize}
+
+\section{Live Activities}
+\begin{itemize}
+  \item \texttt{ActivityAttributes} = \textbf{static} (order id); nested
+        \texttt{ContentState: Codable \& Hashable} = the \textbf{changing}
+        values. Info.plist \texttt{NSSupportsLiveActivities = YES}.
+  \item \texttt{Activity.request(attributes:content:pushType:)} —
+        \textbf{foreground only} (push-to-start from iOS~17.2).
+        \texttt{update(\_:)}, \texttt{end(\_:dismissalPolicy:)} with
+        \texttt{.default / .immediate / .after(date)}.
+  \item Remote: \texttt{pushTokenUpdates} $\to$ your server $\to$ APNs
+        \texttt{apns-push-type: liveactivity} with \texttt{content-state},
+        \texttt{event: update|end}. App is \textbf{not} launched.
+  \item Push budget; \texttt{NSSupportsLiveActivitiesFrequentUpdates} raises
+        it. \texttt{staleDate} $\to$ \texttt{context.isStale}.
+  \item UI lives in the \textbf{widget extension}:
+        \texttt{ActivityConfiguration(for: Attrs.self) \{ lock screen \}
+        dynamicIsland: \{ DynamicIsland \{ expanded regions \}
+        compactLeading: compactTrailing: minimal: \}}.
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+struct Provider: TimelineProvider {
+  func getTimeline(in c: Context,
+      completion: @escaping (Timeline<Entry>) -> Void) {
+    let s = Store.shared.read()  // App Group, pre-fetched
+    let es = (0..<4).map {       // 4 entries, 15 min apart
+      Entry(date: .now + Double($0) * 900, s: s) }
+    completion(Timeline(entries: es, policy: .atEnd))
+  } // + placeholder(in:), getSnapshot(in:completion:)
+}
+let a = try Activity.request(attributes: Order(id: "42"),
+  content: .init(state: .init(eta: 20), staleDate: nil),
+  pushType: .token)  // then: for await t in a.pushTokenUpdates
+\end{lstlisting}
+
+\columnbreak
+
+\section{Who runs where}
+\begin{tikzpicture}[sheet]
+  \node[box, minimum width=17mm] (app) at (0,0) {App\\\scriptsize fetch, write};
+  \node[box, draw=sheetGreen, fill=sheetGreen!10, minimum width=17mm] (grp) at (2.7,0) {App Group\\\scriptsize shared container};
+  \node[box, draw=sheetOrange, fill=sheetOrange!10, minimum width=17mm] (ext) at (5.4,0) {Widget ext.\\\scriptsize TimelineProvider};
+  \node[box, draw=sheetBrown, fill=sheetBrown!10, minimum width=17mm] (wk) at (5.4,-1.55) {WidgetKit\\\scriptsize SpringBoard};
+  \node[box, draw=sheetGrey, fill=black!4, minimum width=17mm] (srv) at (0,-1.55) {Server / APNs};
+  \draw[flow] (app) -- node[lbl, above]{write} (grp);
+  \draw[flow] (grp) -- node[lbl, above]{read} (ext);
+  \draw[hot] (ext.south) -- node[lbl, right]{\texttt{[Entry]} + policy} (wk.north);
+  \draw[hot] (app.south east) -- node[lbl, sloped, above, pos=0.62]{\texttt{reloadTimelines}} (wk.north west);
+  \draw[flow] (srv.north) -- node[lbl, left]{data} (app.south);
+  \draw[flow, dashed, sheetRed] (srv.east) -- node[lbl, below=2pt, text=sheetRed]{LA push: \texttt{content-state}} (wk.west);
+  \node[note, anchor=north west] at (-0.9,-2.1) {3 processes (app · extension · SpringBoard): no shared memory};
+\end{tikzpicture}
+
+\section{A timeline is not a loop}
+\begin{tikzpicture}[sheet]
+  \draw[flow] (0,0) -- (7.1,0) node[lbl, below left]{time};
+  \foreach \x/\t in {0/10:00,1.2/10:15,2.4/10:30,3.6/10:45}{
+    \node[ent] at (\x+0.55,0.45) {E};
+    \node[lbl] at (\x+0.55,-0.25) {\t};
+  }
+  \draw[hot] (4.9,1.0) -- (4.9,0.05);
+  \node[lbl, text=sheetOrange, align=center] at (4.9,1.25) {\texttt{.atEnd}: \emph{may} ask again};
+  \draw[sheetRed, thick, densely dotted] (4.9,0.3) -- (6.8,0.3);
+  \node[lbl, text=sheetRed] at (5.85,0.55) {budget decides};
+  \node[note, anchor=west] at (0,-0.65) {entries are swapped by the system at their \texttt{date}; your code is not running};
+\end{tikzpicture}
+
+\section{Live Activity life}
+\begin{tikzpicture}[sheet]
+  \fill[sheetGreen!20] (0,0) rectangle (4.4,0.4);
+  \fill[sheetGrey!25] (4.4,0) rectangle (6.6,0.4);
+  \node[lbl] at (2.2,0.2) {\textbf{active} $\le$ 8 h (updates)};
+  \node[lbl] at (5.5,0.2) {Lock Screen only};
+  \draw[sheetGrey] (0,0) -- (0,-0.15) node[lbl, below]{request};
+  \draw[sheetGrey] (4.4,0) -- (4.4,-0.15) node[lbl, below]{ended: 8 h};
+  \draw[sheetGrey] (6.6,0) -- (6.6,-0.15) node[lbl, below]{removed $\le$ 12 h};
+  % island presentations
+  \node[draw, rounded corners=5pt, fill=black, text=white, font=\scriptsize,
+        minimum width=22mm, minimum height=4mm] (c) at (1.1,-1.15) {\textcolor{sheetGreen!60}{L}\quad\quad\textcolor{sheetOrange!70}{T}};
+  \node[lbl, below=1pt of c] {\textbf{compact} leading/trailing};
+  \node[draw, circle, fill=black, minimum size=4mm, inner sep=0pt] (m) at (3.3,-1.15) {};
+  \node[lbl, below=1pt of m, align=center] {\textbf{minimal}\\(2+ activities)};
+  \node[draw, rounded corners=6pt, fill=black, minimum width=22mm, minimum height=9mm] (e) at (5.5,-1.3) {};
+  \node[font=\tiny, text=white, align=center] at (5.5,-1.3) {lead · center · trail\\[-1pt] bottom};
+  \node[lbl, below=1pt of e] {\textbf{expanded} (long-press)};
+\end{tikzpicture}
+
+\section{Timeline}
+\begin{tikzpicture}[sheet]
+  \tikzset{yr/.style={font=\bfseries\scriptsize, text=sheetBlue},
+           ev/.style={font=\tiny, align=center, text=black!85, text width=13mm, anchor=north}}
+  \draw[thick, sheetGrey, ->] (0,0) -- (8.3,0);
+  \foreach \x/\y/\t in {
+      0.6/iOS 14/{WidgetKit\\Home Screen},
+      1.95/iOS 16/{Lock Screen\\accessory\\families},
+      3.3/iOS 16.1/{Live Activities\\Dynamic Island},
+      4.65/iOS 17/{interactive\\widgets\\StandBy},
+      6.0/iOS 17.2/{push-to-start},
+      7.35/iOS 18/{Control Center\\controls}}{
+    \fill[sheetBlue] (\x,0) circle (0.6mm);
+    \node[yr, above=1pt] at (\x,0) {\y};
+    \node[ev] at (\x,-0.12) {\t};
+  }
+\end{tikzpicture}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``Update the widget every second'' — impossible; entries +
+        \texttt{Text(.timer)}; reloads are budgeted \emph{requests}.}
+  \trap{Network in the view body / slow \texttt{getTimeline} — fetch in the
+        app (or background task), write to the App Group.}
+  \trap{App Group missing on the widget target $\to$ empty store.}
+  \trap{\texttt{Link} inside \texttt{.systemSmall} is ignored — use \texttt{widgetURL}.}
+  \trap{Starting a Live Activity from a silent push — no (push-to-\emph{update}
+        yes; push-to-start only 17.2+ with its own token).}
+  \trap{Blank widget: jetsam, or completion never called.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``P-S-T''}: \textbf{P}laceholder (skeleton) · \textbf{S}napshot (gallery) ·
+\textbf{T}imeline (real). Widget = \emph{slideshow}, not video. LA: \textbf{8 on, 12 out}.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} App Intents · App Extensions \& App Groups · background tasks · APNs · deep links (\texttt{onOpenURL})}
+
+\end{document}

@@ -1,0 +1,90 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>SQLite internals for app engineers (+ GRDB) — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/ios-platform/sqlite-grdb-internals.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">50</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">SQLite internals for app engineers (+ GRDB)</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">ios-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> SQLite is a library, not a server: one <strong>file</strong> of fixed-size <strong>pages</strong>
+(4096 B default) holding <strong>B-trees</strong> — one per table (rows by <code>rowid</code>) and one per index.
+Many connections may <strong>read</strong>, only <strong>one may write</strong>. In <strong>WAL</strong> mode commits are
+<em>appended</em> to <code>-wal</code>, readers keep a snapshot (<em>end mark</em>), and a <strong>checkpoint</strong>
+copies pages back. Core Data, SwiftData, GRDB and Android Room all sit on it.</p>
+<p class="sheet-tools"><a class="sheet-download" href="sqlite-grdb-internals.pdf" download>Download PDF</a> <a href="sqlite-grdb-internals.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/sqlite-grdb-internals.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="sqlite-grdb-internals-fig1.svg" width="613" height="143" class="wide" alt="SQLite internals for app engineers (+ GRDB) — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">How it works</span></h3>
+<ul>
+<li><strong>Pages</strong>: 512–65 536 B, 4096 default (since 3.12.0). A table is a <strong>B+tree</strong> keyed by  the 64-bit <code>rowid</code> (<code>INTEGER PRIMARY KEY</code> aliases it) — data only in leaves. An  index is a B-tree of <em>(columns, rowid)</em>; <code>WITHOUT ROWID</code> tables are index B-trees.</li>
+<li><strong>Rollback journal</strong> (<code>DELETE</code>, the default): original pages copied to <code>-journal</code>,  the db written <em>in place</em>; commit = delete the journal. A writer committing locks readers out.</li>
+<li><strong>WAL</strong> (<code>PRAGMA journal_mode=WAL</code>, <strong>persistent</strong>): commit = append a commit  frame to <code>-wal</code>. Readers use <code>-shm</code> (shared memory) — so <strong>same host only</strong>, no network  file systems. Big win for apps: UI reads never wait for a background import.</li>
+<li><strong>Transactions</strong>: <code>BEGIN</code> = <strong>DEFERRED</strong> — no lock until first access; a read that  later writes must <em>upgrade</em>, and fails with <strong><code>SQLITE_BUSY</code></strong> if another connection  wrote meanwhile. <code>BEGIN IMMEDIATE</code> takes the write lock up front (= <code>EXCLUSIVE</code> in WAL).  A read transaction is a <strong>snapshot</strong>: it never sees later commits.</li>
+<li><code>SQLITE_BUSY</code> = another <em>connection</em> holds the lock (busy timeout = wait and retry).  No timeout set <span class="math">→</span> fails at once. The real fix: <strong>one writer</strong> in the whole app.</li>
+<li><strong>Durability</strong>: WAL + <code>synchronous=NORMAL</code> (recommended) syncs only at checkpoint — a  commit may be lost on <em>power loss</em>, never corrupted. <code>FULL</code> syncs every commit.</li>
+<li>Off by default: <code>PRAGMA foreign_keys</code> (per connection). GRDB turns it on.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">GRDB — one writer, many readers</span></h3>
+<ul>
+<li><strong>One</strong> <code>DatabaseQueue</code> <em>or</em> <code>DatabasePool</code> per file, for the app’s lifetime.  <strong>Queue</strong> = one connection, everything serialised. <strong>Pool</strong> = WAL, a serial  <strong>writer</strong> + concurrent <strong>readers</strong>, each read isolated.</li>
+<li>Every <code>write {}</code> and <code>read {}</code> is a transaction; writes are serialised (so no  <code>SQLITE_BUSY</code> inside one process); no writes inside <code>read</code>; non-reentrant.  Escape hatches are named <code>…WithoutTransaction</code> / <code>unsafe…</code>.</li>
+<li><code>ValueObservation.tracking { db in … }</code>: records the <em>region</em> it read; any commit  touching it <span class="math">→</span> re-fetch. Only committed changes; may <strong>coalesce</strong>; <code>removeDuplicates()</code>;  <code>.values(in:)</code> async sequence or <code>start(in:onError:onChange:)</code>.</li>
+<li><code>DatabaseMigrator</code>: named migrations, each in its own transaction, applied list stored  in the db; FK checks deferred to commit. <strong>Never edit a shipped migration</strong>.  <code>eraseDatabaseOnSchemaChange</code> is for development only.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — pool, migration, write, observe</span></h3>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">var</span> cfg <span class="hljs-operator">=</span> <span class="hljs-type">Configuration</span>()
+cfg.busyMode <span class="hljs-operator">=</span> .timeout(<span class="hljs-number">5</span>)        <span class="hljs-comment">// app-group peers: wait, don&#x27;t fail</span>
+<span class="hljs-keyword">let</span> db <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> <span class="hljs-type">DatabasePool</span>(path: url.path, configuration: cfg)
+<span class="hljs-keyword">var</span> m <span class="hljs-operator">=</span> <span class="hljs-type">DatabaseMigrator</span>()
+m.registerMigration(<span class="hljs-string">&quot;v1&quot;</span>) { db <span class="hljs-keyword">in</span>
+  <span class="hljs-keyword">try</span> db.create(table: <span class="hljs-string">&quot;note&quot;</span>) { t <span class="hljs-keyword">in</span>
+    t.autoIncrementedPrimaryKey(<span class="hljs-string">&quot;id&quot;</span>)
+    t.column(<span class="hljs-string">&quot;folderId&quot;</span>, .integer).notNull()
+    t.column(<span class="hljs-string">&quot;title&quot;</span>, .text).notNull()
+    t.column(<span class="hljs-string">&quot;updatedAt&quot;</span>, .datetime).notNull() }
+  <span class="hljs-keyword">try</span> db.execute(sql: <span class="hljs-string">&quot;&quot;&quot;
+    CREATE INDEX idx_note_folder ON note(folderId, updatedAt, title)&quot;&quot;&quot;</span>) }
+<span class="hljs-keyword">try</span> m.migrate(db)                  <span class="hljs-comment">// each migration = one transaction</span>
+<span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> db.write { db <span class="hljs-keyword">in</span> <span class="hljs-keyword">try</span> <span class="hljs-type">Note</span>(folderId: <span class="hljs-number">1</span>, title: <span class="hljs-string">&quot;Hi&quot;</span>).insert(db) }
+<span class="hljs-keyword">let</span> obs <span class="hljs-operator">=</span> <span class="hljs-type">ValueObservation</span>.tracking { db <span class="hljs-keyword">in</span>    <span class="hljs-comment">// region: note table</span>
+  <span class="hljs-keyword">try</span> <span class="hljs-type">Note</span>.filter(<span class="hljs-type">Column</span>(<span class="hljs-string">&quot;folderId&quot;</span>) <span class="hljs-operator">==</span> <span class="hljs-number">1</span>).fetchAll(db) }
+<span class="hljs-keyword">for</span> <span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> notes <span class="hljs-keyword">in</span> obs.values(in: db) { render(notes) }</code></pre>
+<ul>
+<li>Tests: <code>DatabaseQueue()</code> with no path = in-memory db — run the <em>real</em> migrator on it,  plus golden db files written by old app versions.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Query plans, indexes, N+1</span></h3>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-type">EXPLAIN</span> <span class="hljs-type">QUERY</span> <span class="hljs-type">PLAN</span> <span class="hljs-type">SELECT</span> title <span class="hljs-type">FROM</span> note
+  <span class="hljs-type">WHERE</span> folderId <span class="hljs-operator">=</span> <span class="hljs-operator">?</span> <span class="hljs-type">ORDER</span> <span class="hljs-type">BY</span> updatedAt;
+<span class="hljs-operator">--</span> no index:    <span class="hljs-type">SCAN</span> note <span class="hljs-operator">+</span> <span class="hljs-type">USE</span> <span class="hljs-type">TEMP</span> <span class="hljs-type">B</span><span class="hljs-operator">-</span><span class="hljs-type">TREE</span> <span class="hljs-type">FOR</span> <span class="hljs-type">ORDER</span> <span class="hljs-type">BY</span>
+<span class="hljs-operator">--</span> (folderId):  <span class="hljs-type">SEARCH</span> note <span class="hljs-type">USING</span> <span class="hljs-type">INDEX</span> <span class="hljs-operator">...</span> (folderId<span class="hljs-operator">=?</span>)
+<span class="hljs-operator">--</span>              <span class="hljs-operator">+</span> <span class="hljs-type">USE</span> <span class="hljs-type">TEMP</span> <span class="hljs-type">B</span><span class="hljs-operator">-</span><span class="hljs-type">TREE</span> <span class="hljs-type">FOR</span> <span class="hljs-type">ORDER</span> <span class="hljs-type">BY</span>
+<span class="hljs-operator">--</span> (folderId, updatedAt, title):
+<span class="hljs-operator">--</span>   <span class="hljs-type">SEARCH</span> note <span class="hljs-type">USING</span> <span class="hljs-type">COVERING</span> <span class="hljs-type">INDEX</span> idx_note_folder (folderId<span class="hljs-operator">=?</span>)</code></pre>
+<ul>
+<li><strong>SCAN</strong> = every row; <strong>SEARCH</strong> = B-tree seek; <strong>COVERING</strong> = no table lookup.  Order: <strong>equality</strong> columns first, then the <code>ORDER BY</code>/range one. <code>TEMP B-TREE</code> = a  sort you could index away. Every index costs each write.</li>
+<li><strong>N+1</strong>: 1 query for folders + 1 per folder. Fix: <code>JOIN</code>, <code>IN (…)</code>, or GRDB  <code>including(all:)</code> (one query per association, not per row).</li>
+<li><strong>FTS5</strong>: <code>USING fts5(title, body)</code> + <code>MATCH</code> + <code>ORDER BY rank</code> (bm25); GRDB  <code>FTS5()</code> + <code>synchronize(withTable:)</code>. Needs <code>SQLITE_ENABLE_FTS5</code> (GRDB docs:  custom build). <code>LIKE &#39;%x%&#39;</code> is a scan.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">On iOS — files, locks, backups</span></h3>
+<ul>
+<li><strong>Three files</strong>: db + <code>-wal</code> + <code>-shm</code>. Copy, move, back up or protect only the db  <span class="math">→</span> lost commits. Put them in <strong>one directory</strong> and treat it as a unit.</li>
+<li><strong>Data Protection</strong>: default Class C (<code>…UntilFirstUserAuthentication</code>). <code>.complete</code>  (A): key gone <span class="math">≈</span>10 s after lock <span class="math">→</span> background writes fail (<em>disk I/O error</em>).</li>
+<li><strong><code>0xdead10cc</code></strong>: suspended holding a file lock in a <strong>shared container</strong> (app  group) <span class="math">→</span> killed. GRDB: <code>observesSuspensionNotifications</code> + <code>Database.suspendNotification</code>.</li>
+<li><strong>Backup</strong> live: backup API (GRDB <code>backup(to:)</code>) or <code>VACUUM INTO &#39;copy.sqlite&#39;</code>  (consistent, compacted). Never <code>cp</code> mid-transaction.</li>
+<li><strong>Migrations</strong> without a library: <code>PRAGMA user_version</code> (int at header offset 60) —  read, run steps above it in one transaction, write it back.</li>
+<li><strong>Core Data</strong> SQLite stores default to WAL since iOS 7; <strong>SwiftData</strong> is Core Data  underneath. <strong>Android</strong>: Room = SQLite + compile-time-checked DAOs, <code>Flow</code> observation.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">Two pools on one file — two writers, <code>SQLITE_BUSY</code>, observations miss commits.</li>
+<li class="trap">Long read transaction (a paused cursor, a huge export) <span class="math">→</span> checkpoint starvation, <code>-wal</code>  of gigabytes, slower reads.</li>
+<li class="trap">Read-then-write in a DEFERRED transaction <span class="math">→</span> <code>SQLITE_BUSY</code> at the upgrade; write  transactions from the start (GRDB <code>write</code>).</li>
+<li class="trap">“Add an index” without <code>EXPLAIN QUERY PLAN</code> before <em>and</em> after.</li>
+<li class="trap">Deleting or overwriting the db but not its <code>-wal</code>, or unlinking a file still open —  a mispaired log is a documented corruption path. So is linking <strong>two SQLite copies</strong>  (system + a bundled one): one’s <code>close()</code> can drop the other’s POSIX locks.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<p><strong>Pages <span class="math">→</span> B-trees <span class="math">→</span> one writer.</strong> WAL: <em>append, snapshot, checkpoint</em> — and the oldest reader decides when the log can shrink.</p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> persistence (store choice, Core Data
+contexts) · coredata-migrations-swiftdata · data-access-patterns · keychain-secure-enclave (Data
+Protection) · app-extensions (app groups) · background-execution</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=ios-platform" title="area">ios-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=data" title="topic">data</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=concurrency" title="topic">concurrency</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=performance" title="topic">performance</a></li><li class="sheet-tag"><a href="/folios.html?tag=sqlite">sqlite</a></li><li class="sheet-tag"><a href="/folios.html?tag=wal">wal</a></li><li class="sheet-tag"><a href="/folios.html?tag=checkpoint">checkpoint</a></li><li class="sheet-tag"><a href="/folios.html?tag=b-tree">b-tree</a></li><li class="sheet-tag"><a href="/folios.html?tag=sqlite-busy">sqlite-busy</a></li><li class="sheet-tag"><a href="/folios.html?tag=grdb">grdb</a></li><li class="sheet-tag"><a href="/folios.html?tag=databasepool">databasepool</a></li><li class="sheet-tag"><a href="/folios.html?tag=explain-query-plan">explain-query-plan</a></li><li class="sheet-tag"><a href="/folios.html?tag=covering-index">covering-index</a></li><li class="sheet-tag"><a href="/folios.html?tag=fts5">fts5</a></li><li class="sheet-tag"><a href="/folios.html?tag=data-protection">data-protection</a></li><li class="sheet-tag"><a href="/folios.html?tag=valueobservation">valueobservation</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=ios-platform%2Fsqlite-grdb-internals.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/new?category=folio-comments&amp;title=SQLite%20internals%20for%20app%20engineers%20(%2B%20GRDB)&amp;body=About%20the%20folio%3A%20https%3A%2F%2Ffolio.gurgul.pro%2Fios-platform%2Fsqlite-grdb-internals.html%0A%0A">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

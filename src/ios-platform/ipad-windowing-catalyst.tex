@@ -1,0 +1,239 @@
+% ipad-windowing-catalyst.tex — iPadOS 26 windowing (Windowed Apps, window controls, tiling, Exposé,
+% Slide Over, Stage Manager), what an app must adopt (UIRequiresFullScreen deprecation, size restrictions,
+% corner-adapted layout, effective-geometry callbacks, UIScene requirement), opening windows, external
+% displays; Mac Catalyst (idioms, 77% scaling, titlebar + NSToolbar, detection, AppKit bridging) and the
+% "which way onto the Mac" decision table.
+% NOT repeated: the scene object model, disconnect vs discard, restoration (state-restoration-multiwindow);
+% SwiftUI scene types, openWindow, scenePhase (swiftui-app-scenes-lifecycle); menu bar building with
+% UIMenuBuilder / UIMainMenuSystem, pointer styles, context menus (uikit-menus-interactions).
+% Sources (checked 2026-09-29):
+%   developer.apple.com/videos/play/wwdc2025/282/ (window controls, preferredWindowingControlStyle,
+%     layoutGuide(for: .margins(cornerAdaptation:)), UIRequiresFullScreen deprecated, sizeRestrictions,
+%     iOS 26 SDK apps no longer scaled or letterboxed on new screens)
+%   developer.apple.com/videos/play/wwdc2025/208/ (resize handle, controls on the toolbar's leading edge,
+%     press-and-hold layout shortcuts, a window per document, descriptive window names)
+%   developer.apple.com/documentation/bundleresources/information-property-list/uirequiresfullscreen
+%     (deprecated 26.0; scaled, not resized, in Windowed Apps / Stage Manager)
+%   developer.apple.com/documentation/technotes/tn3192-migrating-your-app-from-the-deprecated-uirequiresfullscreen-key
+%     (iOS 27 SDK: discrete resizing; prefersInterfaceOrientationLocked; isInteractivelyResizing;
+%     UIRequiresFullScreenIgnoredStartingWithVersion)
+%   developer.apple.com/documentation/technotes/tn3187-migrating-to-the-uikit-scene-based-life-cycle
+%   developer.apple.com/documentation/uikit/uiscenesizerestrictions · uiwindowscene/sizerestrictions
+%   developer.apple.com/documentation/uikit/uiwindowscene/windowingcontrolstyle (automatic/minimal/unified)
+%   developer.apple.com/documentation/uikit/uiview/layoutregion (26)
+%   developer.apple.com/documentation/uikit/uiwindowscenedelegate/windowscene(_:didupdateeffectivegeometry:) (26)
+%   developer.apple.com/documentation/uikit/uiapplication/activatescenesession(for:errorhandler:) (17)
+%   developer.apple.com/documentation/uikit/uiscenesession/role-swift.struct
+%   developer.apple.com/documentation/swiftui/scene/windowresizability(_:) · defaultsize(width:height:) (17)
+%   developer.apple.com/documentation/swiftui/view/oninteractiveresizechange(_:) (26)
+%   developer.apple.com/documentation/uikit/choosing-a-user-interface-idiom-for-your-mac-app
+%   developer.apple.com/videos/play/wwdc2020/10056/ (77% scaling vs 1:1)
+%   developer.apple.com/documentation/uikit/uititlebar (Mac Catalyst only)
+%   developer.apple.com/documentation/foundation/processinfo/ismaccatalystapp · isiosapponmac
+%   developer.apple.com/documentation/apple-silicon/running-your-ios-apps-in-macos
+%   support.apple.com/en-us/125309 (modes, Exposé, Slide Over in 26.2) ·
+%   apple.com/newsroom/2025/06/ipados-26-introduces-powerful-new-features-that-push-ipad-even-further/
+% @labels: area=ios-platform kind=api platform=apple topic=ui,platform-apis
+% @tags: ipados-26, windowed-apps, window-controls, stage-manager, uiscenesizerestrictions, uirequiresfullscreen, multiwindow, external-display, mac-catalyst, mac-idiom, nstoolbar, designed-for-ipad
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,override,
+    if,else,return,guard,self,nil,true,false,in,private,as},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\eqeq{\texttt{\hbox{=}\hbox{=}}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  dev/.style={draw=black!70, very thick, rounded corners=5pt, fill=black!3},
+  win/.style={draw=sheetBlue, thick, rounded corners=2pt, fill=white},
+  tl/.style={circle, inner sep=0pt, minimum size=1.3mm},
+  mac/.style={font=\tiny, anchor=west, text width=20mm, align=left, inner sep=1.5pt,
+              draw=sheetOrange, fill=sheetOrange!8, rounded corners=1pt},
+}
+% traffic lights: close · minimise · zoom
+\newcommand\lights[2]{%
+  \node[tl, fill=sheetRed] at (#1,#2) {};
+  \node[tl, fill=sheetOrange] at ($(#1,#2)+(0.17,0)$) {};
+  \node[tl, fill=sheetGreen] at ($(#1,#2)+(0.34,0)$) {};}
+
+\begin{document}
+
+\sheettitle{iPad windowing (iPadOS 26) \& Mac Catalyst}{ios-platform · folio}
+
+\oneliner{In iPadOS 26 a scene can be a \textbf{freely resizable window} with Mac-style \textbf{window
+controls}, so an iPad app must lay out for \textbf{any width and height}, not a few Split View fractions —
+\ct{UIRequiresFullScreen} is \textbf{deprecated}. \textbf{Mac Catalyst} recompiles the \emph{same} UIKit
+scenes into a Mac app (title bar, \ct{NSToolbar}, menu bar); \textbf{Designed for iPad} runs the iOS
+binary as is.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ================= iPad =================
+  \node[font=\bfseries\small, anchor=west] at (0,4.2) {iPad — Windowed Apps};
+  \node[box, font=\tiny, anchor=west] (proc) at (3.3,4.2)
+       {one process · \ct{UIApplication} — a \ct{UISceneSession} per window};
+  \draw[dev] (0,0) rectangle (8.4,3.8);
+  \fill[black!12] (0.12,3.43) rectangle (8.28,3.66);
+  \node[lbl, anchor=west] at (0.2,3.545) {\textbf{menu bar} — swipe down / pointer to top (\ct{UIMainMenuSystem}) · search commands};
+  \foreach \x in {3.9,6.6} \draw[flow, dashed] (\x,3.97) -- (\x,3.8);
+  % window 1
+  \draw[win] (0.25,1.2) rectangle (4.35,3.28);
+  \lights{0.45}{3.1}
+  \node[lbl, anchor=west] at (0.95,3.1) {Inbox \quad {\color{sheetGrey}toolbar wraps the controls}};
+  \node[lbl, align=left, anchor=west] at (0.4,2.3) {\textbf{scene 1}: \ct{UIWindowScene}\\
+       \textbf{any} W\,$\times$\,H, resized \emph{live}\\size class = a coarse bucket:\\``regular'' covers many widths};
+  \draw[sheetBlue, very thick] (4.05,1.27) arc (270:360:0.25);
+  \node[lbl, text=sheetBlue, anchor=east] at (4.0,1.45) {drag handle $\to$ resize};
+  % window 2
+  \draw[win] (4.6,1.95) rectangle (8.15,3.28);
+  \lights{4.8}{3.1}
+  \node[lbl, anchor=west] at (5.3,3.1) {``Q3 plan'' \enspace{\color{sheetGrey}\ct{ws.title}}};
+  \node[lbl, align=left, anchor=west] at (4.75,2.45) {\textbf{scene 2}: a window per document;\\
+       titles list it in the app menu + Exposé;\\reopens at its last size \& position};
+  % window 3 — minimum size
+  \draw[win, draw=sheetRed] (4.6,0.15) rectangle (6.55,1.75);
+  \lights{4.8}{1.57}
+  \node[lbl, align=left, anchor=west, text=sheetRed] at (4.7,0.8) {\textbf{scene 3}\\stops shrinking at\\\ct{sizeRestrictions}\\\ct{.minimumSize}};
+  % slide over
+  \draw[sheetGrey, dashed, rounded corners=2pt, fill=black!4] (6.75,0.15) rectangle (8.15,1.75);
+  \node[lbl, text=black!60] at (7.45,0.95) {Slide Over\\(26.2): one\\window on top,\\swiped off the\\edge and back};
+  % controls explanation
+  \node[lbl, align=left, anchor=west, text=black!80] at (0.25,0.62)
+       {\textcolor{sheetRed}{$\bullet$}\textcolor{sheetOrange}{$\bullet$}\textcolor{sheetGreen}{$\bullet$}
+        close · minimise · zoom (full screen)\\press and hold $\to$ layout shortcuts · flick to \textbf{tile}\\
+        \textbf{Exposé}: every open window spread out};
+  % ================= arrow =================
+  \draw[hot, very thick] (8.45,1.9) -- (9.05,1.9);
+  \node[lbl, rotate=90, text=sheetOrange] at (8.72,2.8) {+ Mac Catalyst};
+  \node[lbl, rotate=90, text=sheetOrange] at (8.72,0.95) {same source};
+  % ================= Mac =================
+  \node[font=\bfseries\small, anchor=west] at (9.1,4.2) {Mac — the same scenes under Catalyst};
+  \draw[dev] (9.1,0) rectangle (16.45,3.8);
+  \fill[black!12] (9.22,3.43) rectangle (16.33,3.66);
+  \node[lbl, anchor=west] at (9.3,3.545) {\textbf{Notes}\enspace File\enspace Edit\enspace View\enspace Window\enspace Help
+        \quad{\color{sheetGrey}$\leftarrow$ \ct{buildMenu(with:)}}};
+  \draw[win] (9.3,0.7) rectangle (14.05,3.28);
+  \fill[black!8, rounded corners=2pt] (9.32,2.88) rectangle (14.03,3.26);
+  \lights{9.5}{3.07}
+  \node[lbl, anchor=west] at (10.0,3.07) {\ct{NSToolbar} \enspace$\leftarrow$ \ct{ws.titlebar?.toolbar}};
+  \node[lbl, align=left, anchor=west] at (9.45,2.1)
+       {same \ct{UIWindowScene} / SwiftUI \ct{WindowGroup}\\[1pt]
+        \textbf{Scaled to Match iPad}: idiom \ct{.pad},\\whole UI drawn at \textbf{77\%} (17\,pt text $\to$ 13\,pt)\\[1pt]
+        \textbf{Optimize for Mac}: idiom \ct{.mac}, \textbf{1:1} points,\\controls look like AppKit (switch $\to$ checkbox)};
+  \node[lbl, align=left, anchor=west, text=sheetBlue] at (9.45,1.05)
+       {right-click $\to$ context menu · hover recognisers\\\ct{requestGeometryUpdate(.Mac(systemFrame:))}};
+  \node[lbl, anchor=west, text=black!65] at (9.3,0.36) {min/max size: the same \ct{sizeRestrictions}};
+  \node[mac] at (14.2,2.9) {compile time: \ct{\#if}\\\ct{targetEnvironment(}\\\ct{\ \ macCatalyst)}};
+  \node[mac] at (14.2,2.2) {AppKit-only API via a\\macOS \textbf{plug-in bundle}};
+  \node[mac, draw=sheetGreen, fill=sheetGreen!8] at (14.2,1.3) {\textbf{Designed for iPad}:\\unmodified iOS binary,\\Apple silicon only};
+  \node[mac, draw=sheetGrey, fill=black!4] at (14.2,0.42) {\ct{isiOSAppOnMac}\\tells the two apart};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{IPadOS 26}
+\begin{itemize}
+  \item \textbf{Modes} (Settings › Multitasking \& Gestures): Full Screen Apps · Windowed Apps · Stage
+        Manager (stages, external display). The fixed Split View widths are gone: the system resizes your
+        scene \textbf{continuously} and remembers the size.
+  \item \textbf{Clear the controls}: \ct{preferredWindowingControlStyle(for:)} $\to$
+        \ct{.automatic/.minimal/.unified}; bars use
+        \ct{layoutGuide(for: .margins(cornerAdaptation: .horizontal))} (26).
+  \item \textbf{Size limits}: \ct{windowScene.sizeRestrictions} (\ct{minimumSize}, \ct{maximumSize},
+        \ct{allowsFullScreen}) is \ct{nil} where the system cannot resize — the write silently no-ops.
+        SwiftUI: \ct{.windowResizability(.contentMinSize)}, \ct{.defaultSize} (17).
+  \item \textbf{Live resize}: \ct{windowScene(\_:didUpdateEffectiveGeometry:)} (26) +
+        \ct{effectiveGeometry.isInteractivelyResizing}: defer costly work to the drag's end. SwiftUI
+        \ct{.onInteractiveResizeChange} (26).
+  \item \textbf{\ct{UIRequiresFullScreen}} (deprecated 26): in a window the app is \textbf{scaled}, not
+        resized; with the iOS 27 SDK it is resized \emph{discretely} when the drag ends (TN3192). Use
+        \ct{sizeRestrictions} + \ct{prefersInterfaceOrientationLocked};
+        \ct{UIRequiresFullScreenIgnoredStartingWithVersion} for older OSes.
+  \item iOS 26 SDK: no scaling or letterboxing on new screens. \textbf{TN3187}: in the release after iOS 26
+        an app without the UIScene life cycle \textbf{won't launch}.
+  \item \textbf{New window}: \ct{activateSceneSession(for:)} (17; \ct{requestSceneSessionActivation} is
+        deprecated). \textbf{External display}: \ct{.windowApplication} role = interactive windows;
+        \ct{.windowExternalDisplayNonInteractive} = presentation screen. \ct{UISplitViewController}
+        (26): draggable column widths, \ct{.inspector} column.
+\end{itemize}
+
+\hd{Example — one scene delegate, iPad and Mac}
+\begin{lstlisting}[language=SwiftSheet]
+func scene(_ scene: UIScene, willConnectTo s: UISceneSession,
+           options: UIScene.ConnectionOptions) {
+  guard let ws = scene as? UIWindowScene else { return }
+  ws.sizeRestrictions?.minimumSize = CGSize(width: 500, height: 400)
+  ws.title = doc.name                  // window list, Expose, Mac title
+  #if targetEnvironment(macCatalyst)   // titlebar exists only on Mac
+  ws.titlebar?.toolbar = NSToolbar(identifier: "main")
+  #endif }
+func preferredWindowingControlStyle(for ws: UIWindowScene)
+    -> UIWindowScene.WindowingControlStyle { .unified }      // 26
+func windowScene(_ ws: UIWindowScene,                        // 26
+    didUpdateEffectiveGeometry old: UIWindowScene.Geometry) {
+  renderer.paused = ws.effectiveGeometry.isInteractivelyResizing }
+UIApplication.shared.activateSceneSession(for: .init(       // 17
+  role: .windowApplication, userActivity: docActivity, options: nil))
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Mac Catalyst}
+\begin{itemize}
+  \item Tick the \emph{Mac Catalyst} destination: the UIKit target is rebuilt for macOS (Intel + AS),
+        each scene a Mac window.
+  \item \textbf{Mac idiom} costs work: fix hard-coded sizes and assets; \ct{UIPageControl} and some
+        customisations (button titles for non-\ct{.normal} states, slider images) \textbf{throw}. Keep one
+        control iPad-style: \ct{preferredBehavioralStyle = .pad}.
+  \item \textbf{Chrome}: \ct{windowScene.titlebar} (\ct{UITitlebar}, Catalyst-only): \ct{toolbar},
+        \ct{toolbarStyle}, \ct{titleVisibility}, \ct{representedURL}.
+  \item \textbf{AppKit-only API} (status item): a macOS bundle inside the app, \ct{Bundle(url:)?.load()},
+        its principal class behind an \ct{@objc} protocol — a technique, not an API.
+\end{itemize}
+
+\hd{Which way onto the Mac? {\normalfont\footnotesize\color{sheetGrey}(AS = Apple silicon)}}
+{\footnotesize
+\begin{tabular}{@{}L{16mm}L{25mm}L{10mm}L{20mm}@{}}
+\toprule
+\textbf{route} & \textbf{build} & \textbf{Macs} & \textbf{looks · cost} \\ \midrule
+Designed for iPad & none: iOS binary; opt out in App Store Connect & AS only & iPad UI (iPhone: fixed) · 0 \\
+Catalyst, scaled & recompile, same target & Intel + AS & iPad at 77\% · low \\
+Catalyst, Mac idiom & + fix sizes, assets & Intel + AS & Mac controls · medium \\
+SwiftUI multiplatform & macOS target, \ct{\#if os(macOS)} & all & native · medium \\
+AppKit & separate UI code & all & native · high \\
+\bottomrule
+\end{tabular}\par}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Size classes are enough'' — a \emph{regular} window can be almost any width: lay out from
+        bounds, set a minimum.}
+  \trap{Layout on \ct{userInterfaceIdiom}~\eqeq~\ct{.pad}: wrong in a narrow iPad window and under the
+        Mac idiom.}
+  \trap{\ct{UIRequiresFullScreen} as the fix: deprecated, scaled in windows, discrete with SDK 27.}
+  \trap{\ct{isMacCatalystApp} is \ct{true} for Designed-for-iPad apps too — use \ct{isiOSAppOnMac}.}
+  \trap{\ct{titlebar} without \ct{\#if targetEnvironment(macCatalyst)} — the iOS build fails.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Any size, any number, any screen: lay out by bounds, name every window; on the Mac pick 77\%
+or 1:1.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} state-restoration-multiwindow ·
+swiftui-app-scenes-lifecycle · uikit-menus-interactions · uikit-modern-apis · auto-layout · keyboard-input ·
+swift-attributes-directives (\ct{\#if})}
+
+\end{document}

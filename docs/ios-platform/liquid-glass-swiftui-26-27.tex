@@ -1,0 +1,184 @@
+% liquid-glass-swiftui-26-27.tex — Liquid Glass (iOS 26: glassEffect + Glass variants,
+% GlassEffectContainer, glassEffectID / Union / Transition morphing, .glass /
+% .glassProminent, backgroundExtensionEffect, tab bar minimise, bottom accessory,
+% ToolbarSpacer, Tab(role: .search), scroll edge effect) + design guidance (content vs
+% navigation layer, no glass on glass, tint for meaning, accessibility settings,
+% UIDesignRequiresCompatibility ignored with the 27 SDK) + new SwiftUI in iOS 26 (WebView /
+% WebPage, rich TextEditor, @Animatable) and iOS 27 (@State macro, ContentBuilder,
+% documents, reorderable, swipe actions anywhere, alert(item:), AsyncImage caching,
+% Tab(role: .prominent), ToolbarOverflowMenu).
+% Sources (checked 2026-09-25): developer.apple.com/documentation/swiftui (Glass,
+% glassEffect(_:in:), GlassEffectContainer, glassEffectID(_:in:), GlassEffectTransition,
+% backgroundExtensionEffect(), TabBarMinimizeBehavior, tabViewBottomAccessory(content:),
+% ToolbarSpacer, TabRole.prominent [27], Animatable() macro), WebKit WebPage (26),
+% UIDesignRequiresCompatibility (ignored when building for 27), Adopting Liquid Glass,
+% WWDC25 219 (accessibility, clear vs regular), 323, 256; WWDC26 269; TN3211.
+% Overlaps NOT repeated: matchedGeometryEffect / springs (animations.tex), TabView +
+% NavigationStack (swiftui-navigation.tex), VoiceOver / Dynamic Type (accessibility-localization.tex).
+% @labels: area=ios-platform kind=api platform=ios topic=ui
+% @tags: liquid-glass, glasseffect, glasseffectcontainer, glasseffectid, glass-button-style, tabbarminimizebehavior, tabviewbottomaccessory, uidesignrequirescompatibility, webview, animatable-macro, state-macro, reorderable
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,static,some,init,
+    if,else,return,guard,self,nil,private,true,false,in,try,await,async,throws,
+    for,case,String,Int,@State,@Namespace},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {??}{{\hbox{?}\hbox{?}}}2 {!=}{{\hbox{!}\hbox{=}}}2}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  gl/.style={draw=sheetBlue!70, thick, fill=sheetBlue!10, fill opacity=0.85, text opacity=1,
+             rounded corners=5pt, font=\scriptsize, inner sep=2pt, minimum height=5.5mm, align=center},
+  pill/.style={gl, rounded corners=2.75mm},
+}
+
+\begin{document}
+
+\sheettitle{Liquid Glass \& new SwiftUI (iOS 26 · 27)}{ios-platform · folio}
+
+\oneliner{\textbf{Liquid Glass} is a system \emph{material} for the \textbf{functional layer}
+(tab bars, toolbars, sheets, key controls) that floats \emph{above} a full-bleed
+\textbf{content layer}; it lenses and adapts to what is under it. Standard components get it
+free with the Xcode 26 SDK; custom views opt in with \texttt{.glassEffect()}, grouped in a
+\texttt{GlassEffectContainer} so shapes blend and \textbf{morph}.}
+
+\noindent\begin{tikzpicture}[sheet]
+  % ---- layer model (side view) ----
+  \node[font=\bfseries\small, anchor=west] at (-0.2,2.05) {layers (side view)};
+  \fill[sheetGreen!18] (0,0) rectangle (6.4,0.45);
+  \node[lbl, anchor=west] at (0.1,0.22) {\textbf{content layer}: list, photos, map — full bleed, colour lives here};
+  \node[gl, minimum width=18mm] at (1.2,1.15) {tab bar};
+  \node[gl, minimum width=14mm] at (3.3,1.15) {toolbar};
+  \node[pill, minimum width=9mm] at (5.1,1.15) {+};
+  \foreach \x in {1.2,3.3,5.1} \draw[sheetBlue!50, densely dotted] (\x,0.85) -- (\x,0.47);
+  \node[lbl, text=sheetBlue, anchor=west] at (-0.2,1.65) {\textbf{functional layer}: glass, lenses what scrolls beneath};
+  \node[gl, minimum width=10mm, fill=sheetRed!10, draw=sheetRed] (gg) at (6.3,1.55) {glass};
+  \node[gl, minimum width=10mm, fill=sheetRed!10, draw=sheetRed] at (6.3,1.15) {on glass};
+  \node[lbl, text=sheetRed, anchor=west] at (6.95,1.35) {\textbf{no}};
+  \node[lbl, anchor=west, align=left] at (-0.2,-0.35) {scroll edge effect fades content under bars · don't glass the list cells};
+  % ---- morph in a GlassEffectContainer ----
+  \begin{scope}[xshift=8.3cm]
+    \node[font=\bfseries\small, anchor=west] at (-0.2,2.05) {\texttt{GlassEffectContainer(spacing: 20)}};
+    \node[pill, minimum width=6mm] at (0.3,1.2) {A};
+    \node[pill, minimum width=6mm] at (1.3,1.2) {B};
+    \node[lbl, below] at (0.8,0.85) {far: 2 shapes};
+    \draw[flow] (1.75,1.2) -- (2.2,1.2);
+    \draw[draw=sheetBlue!70, thick, fill=sheetBlue!10, rounded corners=2.75mm] (2.4,0.925) rectangle (3.95,1.475);
+    \node[font=\scriptsize] at (2.8,1.2) {A}; \node[font=\scriptsize] at (3.55,1.2) {B};
+    \node[lbl, below, align=center] at (3.2,0.85) {within spacing:\\blend into one};
+    \draw[flow] (4.15,1.2) -- (4.6,1.2);
+    \node[pill, minimum width=7mm] (e1) at (5.1,1.2) {\texttt{e}};
+    \node[pill, minimum width=7mm, draw=sheetOrange, fill=sheetOrange!10] (e2) at (6.1,1.6) {1};
+    \node[pill, minimum width=7mm, draw=sheetOrange, fill=sheetOrange!10] (e3) at (6.1,0.8) {2};
+    \draw[hot] (e1.north east) to[bend left=15] (e2.west);
+    \draw[hot] (e1.south east) to[bend right=15] (e3.west);
+    \node[lbl, below, align=center, text=sheetOrange] at (5.7,0.5) {state flips in \texttt{withAnimation}:\\same \texttt{glassEffectID} + \texttt{@Namespace}\\$\Rightarrow$ shapes flow out of ``e''};
+    \node[lbl, anchor=west, align=left] at (-0.2,-0.35) {glass can't sample glass: one container = one pass, shared sampling};
+  \end{scope}
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Liquid Glass (iOS 26)}
+\begin{itemize}
+  \item \texttt{.glassEffect(\_:in:)} — default \texttt{.regular} in a \textbf{capsule} behind
+        the view's bounds. \texttt{.regular} = adaptive, use almost always · \texttt{.clear} =
+        only over media, with a dimming layer · \texttt{.identity} = off, same layout.
+        \texttt{.tint(\_:)}, \texttt{.interactive()} (bounce/shimmer on touch).
+  \item \texttt{GlassEffectContainer(spacing:)} renders its glass together; shapes nearer than
+        \texttt{spacing} \textbf{blend}. Morph: \texttt{glassEffectID(\_:in:)} + \texttt{@Namespace}
+        + state change in \texttt{withAnimation}; \texttt{glassEffectUnion(id:}\allowbreak
+        \texttt{namespace:)} joins views; \texttt{glassEffectTransition(.matchedGeometry)}
+        or \texttt{.materialize}.
+  \item \texttt{.buttonStyle(.glass)} / \texttt{.glassProminent} (primary action).
+  \item \texttt{.tabBarMinimizeBehavior(.onScrollDown)} (iPhone) ·
+        \texttt{.tabViewBottomAccessory\{\}} (inline when minimised: read
+        \texttt{tabViewBottomAccessoryPlacement}) · \texttt{Tab(role: .search)} +
+        \texttt{.searchable}: the field replaces the bar.
+  \item Toolbars share glass: \texttt{ToolbarSpacer(.fixed | .flexible)},
+        \texttt{.sharedBackground}\allowbreak\texttt{Visibility(.hidden)}, \texttt{.badge(n)};
+        \texttt{.scrollEdgeEffectStyle(.hard, for: .top)}.
+  \item \texttt{.backgroundExtensionEffect()}: mirrors + blurs a view into the safe area
+        (hero image under a sidebar). Once per screen.
+  \item UIKit: \texttt{UIGlassEffect}, \texttt{UIButton.Configuration.glass()}. Opt-out
+        \texttt{UIDesign}\allowbreak\texttt{RequiresCompatibility}: honoured with the 26 SDK,
+        \textbf{ignored when building for 27}.
+\end{itemize}
+
+\section{Design + accessibility}
+\begin{itemize}
+  \item Glass = \textbf{navigation layer only}; \textbf{never glass on glass} (fills/vibrancy on
+        top); \textbf{tint for meaning}, not decoration; drop custom bar backgrounds.
+  \item Automatic: \textbf{Reduce Transparency} $\to$ frostier · \textbf{Increase Contrast}
+        $\to$ black/white + border · \textbf{Reduce Motion} $\to$ no elastic effects. Test
+        \emph{custom} glass with each.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Glass on list cells, everywhere, or stacked on glass.}
+  \trap{Glass views without a container — no blend, no morph.}
+  \trap{``We'll keep the old look'' — opt-out ignored with the 27 SDK.}
+  \trap{\texttt{@State var m = Model()} + \texttt{init} assignment — error on 27.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Content below, glass above, one container, one ID.''}
+
+\columnbreak
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+@Namespace private var ns
+@State private var open = false
+GlassEffectContainer(spacing: 16) {
+  HStack(spacing: 16) {
+    Button("Edit", systemImage: "pencil") {
+      withAnimation { open.toggle() } }
+      .buttonStyle(.glass).glassEffectID("edit", in: ns)
+    if open {
+      Image(systemName: "trash").padding()
+        .glassEffect(.regular.tint(.red).interactive())
+        .glassEffectID("trash", in: ns)   // morphs out
+    } } }
+TabView { /* Tabs */ Tab(role: .search) { SearchView() } }
+  .tabBarMinimizeBehavior(.onScrollDown)
+  .tabViewBottomAccessory { NowPlayingBar() }
+\end{lstlisting}
+
+\section{New SwiftUI — iOS 26}
+\begin{itemize}
+  \item \texttt{WebView(page)} + \texttt{WebPage} (WebKit, \texttt{@Observable}): \texttt{load}
+        returns an \texttt{AsyncSequence} of navigation events; \texttt{callJavaScript}.
+  \item \texttt{TextEditor(text: \$attributed)} edits an \texttt{AttributedString} (rich text).
+  \item \texttt{@Animatable} synthesises \texttt{animatableData} (\texttt{@AnimatableIgnored}
+        opts out); a macro, so it back-deploys. Also \texttt{Chart3D}, SwiftUI instrument.
+\end{itemize}
+
+\section{New SwiftUI — iOS 27}
+\begin{itemize}
+  \item \textbf{\texttt{@State} is a macro}: an \texttt{@Observable} object is created
+        \textbf{lazily, once} per view lifetime (back to iOS 17). \emph{Source break}: default
+        value \emph{and} \texttt{init} assignment $\to$ error — drop the default (TN3211).
+  \item \texttt{@ContentBuilder} unifies builders (faster type-checking) · documents:
+        \texttt{WritableDocument} snapshot $\to$ \texttt{DocumentWriter} writes off-main.
+  \item \texttt{.reorderable()} + \texttt{.reorderContainer(for:)} in any container ·
+        \texttt{.swipeActions} anywhere inside \texttt{.swipeActionsContainer()}.
+  \item \texttt{.alert(\_:item:)}, \texttt{.confirmationDialog(\_:item:)} · \texttt{AsyncImage}
+        obeys HTTP caching (\texttt{.asyncImageURLSession}).
+  \item \texttt{Tab(role: .prominent)}, \texttt{ToolbarOverflowMenu},
+        \texttt{.visibilityPriority(.high)}, \texttt{.toolbarMinimizeBehavior(\ldots)}.
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} animations (\texttt{matchedGeometryEffect},
+springs) · swiftui-navigation (\texttt{TabView}, sheets) · accessibility-localization (settings,
+contrast) · SwiftUI instrument}
+
+\end{document}

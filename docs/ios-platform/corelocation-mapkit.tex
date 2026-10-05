@@ -1,0 +1,192 @@
+% corelocation-mapkit.tex — Core Location (authorization ladder, accuracy, the
+% monitoring services and their power cost, iOS 17 async APIs, background) and
+% MapKit (annotations vs overlays, reuse, clustering, search, directions,
+% SwiftUI Map iOS 17).
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/corelocation/cllocationmanager (authorization, accuracy
+%     constants, significant-change 500 m / 5 min, 20 regions, showsBackgroundLocationIndicator)
+%   developer.apple.com/documentation/corelocation/cllocationupdate · .../clmonitor ·
+%     .../clbackgroundactivitysession (iOS 17)
+%   developer.apple.com/documentation/corelocation/clservicesession-pt7n (iOS 18) +
+%     WWDC24 10212 "What's new in location authorization" (implicit sessions,
+%     NSLocationRequireExplicitServiceSession, Always effective only while a .always session is held)
+%   developer.apple.com/documentation/mapkit (MKAnnotationView reuse, clustering iOS 11,
+%     MKLocalSearchCompleter, MKDirections; SwiftUI Map iOS 17)
+% (The blue-pill rule: shown for While-Using background use; opt-in for Always.)
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis,performance
+% @tags: core-location, cllocationmanager, location-authorization, significant-change, geofencing, clmonitor, cllocationupdate, background-location, mapkit, annotations, overlays, clustering
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,
+    if,else,return,guard,self,nil,true,false,in,for,async,await,try,continue},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  st/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5mm},
+  ok/.style={st, draw=sheetGreen, fill=sheetGreen!12},
+  no/.style={st, draw=sheetRed, fill=sheetRed!8},
+  pr/.style={st, draw=sheetOrange, fill=sheetOrange!10, dashed},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  svc/.style={draw=sheetBlue, fill=sheetBlue!15, circle, inner sep=1.3pt},
+  sl/.style={font=\scriptsize, anchor=west, inner sep=1pt, align=left},
+}
+
+\begin{document}
+
+\sheettitle{Core Location + MapKit}{ios-platform · folio}
+
+\oneliner{Core Location fuses GPS/Wi-Fi/cell into fixes under a permission the user can
+\textbf{shrink any time} (While Using/Always \emph{and} Precise/Approximate); the right
+service is the \textbf{cheapest one that answers the question}. MapKit draws
+it: \textbf{annotations} = points (reused views), \textbf{overlays} = shapes (renderers).}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── authorization ladder ──
+  \node[font=\bfseries\small, anchor=west] at (0,3.3) {Authorization (iOS 13+)};
+  \node[st] (nd) at (0.9,2.4) {\texttt{.notDetermined}};
+  \node[st, align=center, minimum width=27mm] (pm) at (4.1,2.4) {prompt: \textbf{Allow Once} ·\\\textbf{While Using} · Don't Allow};
+  \node[ok] (wiu) at (7.6,2.4) {\texttt{.authorizedWhenInUse}};
+  \node[no] (den) at (4.1,1.2) {\texttt{.denied} $\to$ Settings only};
+  \node[ok] (alw) at (7.6,0.2) {\texttt{.authorizedAlways}};
+  \node[pr, align=center] (prov) at (3.2,0.2) {\textbf{provisional Always}\\(after a cold \texttt{requestAlways})};
+  \draw[flow] (nd) -- node[lbl, above]{request\dots} (pm);
+  \draw[flow] (pm) -- (wiu);
+  \draw[flow] (pm) -- (den);
+  \draw[hot] (wiu) -- node[lbl, right, align=left]{\texttt{requestAlways}\\upgrade prompt,\\shown \textbf{once}} (alw);
+  \draw[hot, dashed] (prov) -- node[lbl, above]{system asks later:} node[lbl, below]{keep Always?} (alw);
+  \draw[flow, dashed] (pm.south west) to[bend right=20] node[lbl, left]{picked While Using} (prov.north);
+  \node[lbl, text=sheetBrown, align=left, anchor=west] at (5.35,1.25) {Allow Once = While Using\\that lapses when the\\app leaves use};
+  % accuracy axis
+  \node[lbl, anchor=west, align=left, text=sheetBlue] at (0,-0.6) {orthogonal (iOS 14): \texttt{accuracyAuthorization} \texttt{.fullAccuracy} / \texttt{.reducedAccuracy} (km-scale)\\$\to$ \texttt{requestTemporaryFullAccuracy(withPurposeKey:)} — key in \texttt{NSLocationTemporaryUsage\dots}};
+  % ── power vs precision ──
+  \draw[sheetGrey!40] (9.35,3.4) -- (9.35,-0.75);
+  \node[font=\bfseries\small, anchor=west] at (9.5,3.3) {Which service? — power vs precision};
+  \draw[->, thick, sheetGrey] (10.0,-0.3) -- (16.5,-0.3) node[lbl, anchor=north east]{finer fix $\to$};
+  \draw[->, thick, sheetGrey] (10.0,-0.3) -- (10.0,3.0) node[lbl, anchor=south west]{battery};
+  \tikzset{rl/.style={svc, fill=sheetGreen!60, draw=sheetGreen!60!black}}
+  \node[rl] (v) at (10.4,0.05) {}; \node[sl] at (v.east) {\textbf{visits} (\texttt{CLVisit}, place-level)};
+  \node[rl] (s) at (11.0,0.6) {}; \node[sl] at (s.east) {\textbf{significant change} ($\approx$500 m, $\ge$5 min)};
+  \node[rl] (r) at (11.6,1.15) {}; \node[sl] at (r.east) {\textbf{regions} / \texttt{CLMonitor} (cap 20)};
+  \node[svc] (k) at (12.4,1.7) {}; \node[sl] at (k.east) {updates \texttt{Kilometer}/\texttt{HundredMeters}};
+  \node[svc] (b) at (13.6,2.25) {}; \node[sl] at (b.east) {\texttt{kCLLocationAccuracyBest}};
+  \node[svc, fill=sheetRed!40, draw=sheetRed] (n) at (14.6,2.8) {}; \node[sl] at (n.east) {\texttt{BestForNavigation}};
+  \node[rl, anchor=west] at (10.0,-0.6) {};
+  \node[lbl, text=sheetGreen!60!black, anchor=west] at (10.2,-0.6) {= \textbf{relaunches} a terminated app (needs Always)};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Core Location}
+\begin{itemize}
+  \item \texttt{CLLocationManager}: strong ref, created on main (callbacks use the
+        creating thread's run loop). \texttt{locationManagerDidChangeAuthorization}
+        (iOS 14) fires at creation too — read \texttt{authorizationStatus} there.
+  \item Info.plist \texttt{NSLocationWhenInUseUsageDescription} (+
+        \texttt{\dots AlwaysAndWhenInUse\dots} for Always); missing $\to$ no prompt.
+  \item \texttt{requestLocation()} = one fix, then stops (needs
+        \texttt{didFailWithError}). \texttt{startUpdatingLocation()} = stream, tuned
+        by \texttt{desiredAccuracy}, \texttt{distanceFilter}, \texttt{activityType}.
+  \item \textbf{iOS 17}: \texttt{CLLocationUpdate.liveUpdates()} =
+        \texttt{AsyncSequence}, no delegate; a held
+        \texttt{CLBackground\allowbreak ActivitySession} keeps it alive in the background. \textbf{\texttt{CLMonitor}} (actor) replaces
+        \texttt{startMonitoring(for:)}: \texttt{add(condition, identifier:)}, then
+        iterate \texttt{events} (\texttt{.satisfied}/\texttt{.unsatisfied}).
+  \item \textbf{iOS 18}: \texttt{CLServiceSession(authorization: .whenInUse)} declares what
+        a feature \emph{needs}; Core Location prompts as appropriate. Iterating
+        \texttt{liveUpdates}/\texttt{events} holds one implicitly (off with
+        \texttt{NSLocationRequireExplicitServiceSession}). \textbf{Always} only takes
+        effect while a \texttt{.always} session is held — started in the foreground.
+  \item \textbf{Background}: mode \texttt{location} + \texttt{allowsBackground\allowbreak
+        LocationUpdates = true}, started in the foreground.
+  \item Quality: \texttt{horizontalAccuracy < 0} = invalid; first fix often cached
+        (check \texttt{timestamp}). \texttt{CLGeocoder}: network, rate-limited.
+\end{itemize}
+
+\section{MapKit}
+\begin{itemize}
+  \item \textbf{Annotation} (\texttt{MKAnnotation} point) $\to$ \texttt{viewFor:}
+        $\to$ \textbf{reused} \texttt{MKAnnotationView} (\texttt{register} +
+        \texttt{dequeueReusable\dots}; \texttt{MKMarkerAnnotationView}).
+        \textbf{Overlay} (\texttt{MKPolyline}/\allowbreak\texttt{Polygon}/\allowbreak
+        \texttt{Circle}/\allowbreak\texttt{MKTileOverlay}) $\to$ \texttt{rendererFor:}
+        $\to$ \texttt{MKOverlayRenderer}, scales with zoom.
+  \item \textbf{Clustering} (iOS 11): shared \texttt{clusteringIdentifier} $\to$
+        \texttt{MKClusterAnnotation}; \texttt{displayPriority}.
+  \item \textbf{Search}: \texttt{MKLocalSearchCompleter} (as you type) $\to$
+        \texttt{MKLocalSearch} $\to$ \texttt{[MKMapItem]}. \textbf{Directions}:
+        \texttt{MKDirections.Request} $\to$ \texttt{calculate} $\to$ \texttt{MKRoute}
+        (\texttt{polyline}, \texttt{expectedTravelTime}); or hand off:
+        \texttt{openInMaps(\allowbreak launchOptions:)}.
+  \item \textbf{SwiftUI \texttt{Map} (iOS 17)}: content builder (\texttt{Marker},
+        \texttt{Annotation}, \texttt{MapPolyline}, \texttt{MapCircle},
+        \texttt{UserAnnotation}), \texttt{MapCameraPosition} (\texttt{.automatic},
+        \texttt{.region}, \texttt{.userLocation(\allowbreak fallback:)}),
+        \texttt{.onMapCameraChange}, \texttt{.mapControls}. iOS 16
+        \texttt{Map(coordinateRegion:)} is deprecated.
+\end{itemize}
+
+\section{Example — iOS 17 async + SwiftUI Map}
+\begin{lstlisting}[language=SwiftSheet]
+let bg = CLBackgroundActivitySession() // hold: bg updates
+for try await u in CLLocationUpdate.liveUpdates() {
+  guard let loc = u.location else { continue }
+  track(loc) }                         // + u.isStationary
+let m = await CLMonitor("stores")      // actor, 20 max
+await m.add(CLMonitor.CircularGeographicCondition(
+  center: shop, radius: 150), identifier: "shop-7")
+for try await e in await m.events {
+  if case .satisfied = e.state { arrived(e.identifier) } }
+Map(position: $camera, selection: $picked) {
+  ForEach(shops) { s in
+    Marker(s.name, coordinate: s.coord).tag(s.id) }
+  MapPolyline(route.polyline).stroke(.blue, lineWidth: 4)
+  UserAnnotation() }
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Reading \texttt{authorizationStatus} right after \texttt{request\dots} —
+        still \texttt{.notDetermined}; the answer comes in the delegate.}
+  \trap{No first prompt offers ``Always''. A cold \texttt{requestAlways} gives
+        \emph{provisional} Always; the upgrade prompt shows \textbf{once} — after
+        that, and after Don't Allow, only Settings.}
+  \trap{\textbf{Blue pill}: mandatory for While-Using background use;
+        \emph{off} by default for Always (opt in via
+        \texttt{showsBackground\allowbreak LocationIndicator}).}
+  \trap{\texttt{allowsBackgroundLocationUpdates} without the \texttt{location}
+        mode crashes; \texttt{pausesLocationUpdatesAutomatically} silently stops a
+        background tracker.}
+  \trap{\textbf{20 regions} per app: monitor the nearest 19 + one big region round
+        the user whose \emph{exit} re-plans. Geofences lag by minutes; radii under
+        $\approx$100 m are unreliable.}
+  \trap{Returning a view for \texttt{MKUserLocation} hides the blue dot — return
+        \texttt{nil}. \texttt{CLGeocoder} per keystroke is throttled.}
+\end{itemize}
+
+\section{\texttt{desiredAccuracy} constants}
+{\footnotesize
+\begin{tabular}{@{}l l@{}}
+\toprule
+\texttt{…BestForNavigation} · \texttt{…Best} & highest (navigation) · best available \\
+\texttt{…NearestTenMeters} · \texttt{…HundredMeters} & 10 m · 100 m \\
+\texttt{…Kilometer} · \texttt{…ThreeKilometers} & 1 km · 3 km \\
+\texttt{kCLLocationAccuracyReduced} (iOS 14) & approximate, as if Precise off \\
+\bottomrule
+\end{tabular}}
+
+\section{Remember}
+\textbf{Cheapest service that answers it} · permission can \textbf{shrink} any time ·
+\textbf{points = reused views, shapes = renderers}.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} background-execution
+(modes, relaunch) · app-hardening-privacy (permission state machine) ·
+swiftui-uikit-interop (wrapping \texttt{MKMapView}) · tableview-diffable (reuse) ·
+Look Around (\texttt{MKLookAroundSceneRequest})}
+
+\end{document}

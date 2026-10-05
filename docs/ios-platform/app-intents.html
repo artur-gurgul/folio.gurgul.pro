@@ -1,0 +1,96 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>App Intents · Siri, Shortcuts, Spotlight, widgets (iOS 16 → 27) — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/ios-platform/app-intents.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">50</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">App Intents · Siri, Shortcuts, Spotlight, widgets (iOS 16 → 27)</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">ios-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> App Intents (iOS 16+) exposes an app <strong>action</strong> to the system as
+plain Swift: a struct conforming to <code>AppIntent</code> with <code>@Parameter</code>s
+and an <code>async perform()</code>. Write it <strong>once</strong>; Siri, Shortcuts,
+Spotlight, the Action button, interactive widgets, Control Center and visual intelligence all run the
+<em>same</em> type — no <code>.intentdefinition</code> file, usually no extension.</p>
+<p class="sheet-tools"><a class="sheet-download" href="app-intents.pdf" download>Download PDF</a> <a href="app-intents.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/app-intents.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<h3 class="sheet-hd"><span class="c-sheetblue">How it works</span></h3>
+<ul>
+<li><strong><code>AppIntent</code></strong>: <code>static let title: LocalizedStringResource</code>,  <code>@Parameter(title:)</code> properties, <code>func perform() async throws</code> <code>-&gt;</code>  <code>some IntentResult</code>. Results: <code>.result()</code>, <code>.result(value:)</code> (chains in Shortcuts),  <code>.result(dialog:)</code> (Siri speaks), <code>.result(view:)</code> (snippet).</li>
+<li><strong>Parameter types</strong>: primitives, <code>Date</code>, <code>URL</code>…;  <strong><code>AppEnum</code></strong> (fixed cases + <code>caseDisplayRepresentations</code>)  or <strong><code>AppEntity</code></strong> (dynamic domain objects).</li>
+<li><strong><code>AppEntity</code></strong>: <code>id</code>, <code>displayRepresentation</code>,  <code>typeDisplayRepresentation</code>, <code>static var defaultQuery</code>. Its  <strong><code>EntityQuery</code></strong>: <code>entities(for: ids)</code> (required — resolve saved ids),  <code>suggestedEntities()</code> (picker), <code>EntityStringQuery.entities(matching:)</code> (spoken text).  <span class="c-sheetorange"><strong>26</strong></span>: <code>@ComputedProperty</code> (getter reads your model / <code>UserDefaults</code> — no stored  copy), <code>@DeferredProperty</code> (<code>get async throws</code>: fetched only if the system asks).</li>
+<li><strong>Asking the user</strong>: <code>$room.requestValue()</code>, <code>requestDisambiguation</code>,  <code>requestConfirmation</code>. <span class="c-sheetorange"><strong>26</strong></span>: <code>requestConfirmation(actionName:snippetIntent:)</code> shows a  snippet; <code>requestChoice(between:dialog:view:)</code> with <code>Option(title:style:)</code> returns the  pick or throws on cancel. <code>ParameterSummary</code> = the Shortcuts-editor sentence.</li>
+<li><strong><code>AppShortcutsProvider</code></strong>: <code>static var appShortcuts</code> of  <code>AppShortcut(intent:phrases:…)</code> — in Siri, Spotlight, Shortcuts on install, zero setup.  Every phrase contains <code>\(.applicationName)</code>; max <strong>10</strong>; one entity/enum  parameter per phrase — <code>updateAppShortcutParameters()</code> when its values change.</li>
+<li><strong>Where <code>perform()</code> runs</strong>: background by default, app UI not loaded, about  <strong>30 s</strong>. <span class="c-sheetorange"><strong>26</strong></span> <code>static let supportedModes: IntentModes</code> — <code>.background</code>,  <code>.foreground(.immediate / .dynamic / .deferred)</code>, combinable; in <code>.dynamic</code> call  <code>continueInForeground(_:alwaysConfirm:)</code>. <code>openAppWhenRun</code> is <strong>deprecated in 26</strong>  (“provide <code>supportedModes</code>”). Widget buttons run in the widget extension;  <code>LiveActivityIntent</code> / <code>AudioPlaybackIntent</code> in the app.  <span class="c-sheetorange"><strong>27</strong></span> <code>allowedExecutionTargets</code> (<code>IntentExecutionTargets</code>: main app, App Intents  extension, WidgetKit extension) pins the process.</li>
+<li><strong>Dependencies</strong>: <code>@Dependency var store: Store</code>, registered at launch with  <code>AppDependencyManager.shared.add { store }</code> — not singletons reached from <code>perform()</code>.</li>
+<li><strong>Special conformances</strong>: <code>WidgetConfigurationIntent</code> (17), <code>SetFocusFilterIntent</code>,  <code>ControlConfigurationIntent</code> (Control Center, 18), <code>OpenIntent</code> (opens an entity).  <span class="c-sheetorange"><strong>26</strong></span> <code>UndoableIntent</code>: its <code>undoManager</code> registers undo for the in-app action.  <code>AppIntentsPackage</code> (17, frameworks) now also for Swift packages + static libraries.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example</span></h3>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">struct</span> <span class="hljs-title class_">ToggleLight</span>: <span class="hljs-title class_ inherited__">AppIntent</span> {
+  <span class="hljs-keyword">static</span> <span class="hljs-keyword">let</span> title: <span class="hljs-type">LocalizedStringResource</span> <span class="hljs-operator">=</span> <span class="hljs-string">&quot;Toggle Light&quot;</span>
+  <span class="hljs-keyword">static</span> <span class="hljs-keyword">let</span> supportedModes: <span class="hljs-type">IntentModes</span> <span class="hljs-operator">=</span> [.background, .foreground(.dynamic)]
+  <span class="hljs-meta">@Parameter</span>(title: <span class="hljs-string">&quot;Room&quot;</span>) <span class="hljs-keyword">var</span> room: <span class="hljs-type">RoomEntity</span>
+  <span class="hljs-meta">@Dependency</span> <span class="hljs-keyword">var</span> lights: <span class="hljs-type">LightService</span>
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">perform</span>() <span class="hljs-keyword">async</span> <span class="hljs-keyword">throws</span> -&gt; <span class="hljs-keyword">some</span> <span class="hljs-type">IntentResult</span> &amp; <span class="hljs-type">ProvidesDialog</span> {
+    <span class="hljs-keyword">let</span> on <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> lights.toggle(room.id)      <span class="hljs-comment">// modes: iOS 26</span>
+    <span class="hljs-keyword">return</span> .result(dialog: <span class="hljs-string">&quot;<span class="hljs-subst">\(room.name)</span> is <span class="hljs-subst">\(on <span class="hljs-operator">?</span> <span class="hljs-string">&quot;on&quot;</span> : <span class="hljs-string">&quot;off&quot;</span>)</span>&quot;</span>)
+  }
+}
+<span class="hljs-comment">// iOS 26: ask mid-perform with a custom snippet view</span>
+<span class="hljs-keyword">let</span> archive <span class="hljs-operator">=</span> <span class="hljs-type">Option</span>(title: <span class="hljs-string">&quot;Archive&quot;</span>, style: .default)
+<span class="hljs-keyword">let</span> delete  <span class="hljs-operator">=</span> <span class="hljs-type">Option</span>(title: <span class="hljs-string">&quot;Delete&quot;</span>,  style: .destructive)
+<span class="hljs-keyword">let</span> pick <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> requestChoice(between: [.cancel, archive, delete],
+    dialog: <span class="hljs-string">&quot;Archive or delete <span class="hljs-subst">\(album.name)</span>?&quot;</span>, view: <span class="hljs-type">AlbumCard</span>(album))
+<span class="hljs-keyword">struct</span> <span class="hljs-title class_">RoomSnippet</span>: <span class="hljs-title class_ inherited__">SnippetIntent</span> {                       <span class="hljs-comment">// iOS 26</span>
+  <span class="hljs-meta">@Parameter</span> <span class="hljs-keyword">var</span> room: <span class="hljs-type">RoomEntity</span>
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">perform</span>() <span class="hljs-keyword">async</span> <span class="hljs-keyword">throws</span> -&gt; <span class="hljs-keyword">some</span> <span class="hljs-type">IntentResult</span> &amp; <span class="hljs-type">ShowsSnippetView</span> {
+    .result(view: <span class="hljs-type">RoomCard</span>(room))      <span class="hljs-comment">// Button(intent: ToggleLight())...</span>
+  }                                    <span class="hljs-comment">// RoomSnippet.reload() on change</span>
+}</code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">Spotlight &amp; donation (in brief)</span></h3>
+<p><code>NSUserActivity</code> (<code>isEligibleForSearch/Prediction</code>, Handoff) · Core Spotlight <code>CSSearchableItem</code> + <code>CSSearchableIndex</code> · <code>IndexedEntity</code> (18) · <strong>donate</strong> (<code>IntentDonationManager.shared.donate(intent:)</code>) after in-app use — feeds <em>suggestions</em>, does not expose the action.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Which protocol when</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th>need</th><th>adopt</th></tr>
+</thead>
+<tbody>
+<tr><td>show / edit UI inline in Siri, Spotlight</td><td><code>SnippetIntent</code> (26)</td></tr>
+<tr><td>open the app on an entity</td><td><code>OpenIntent</code> · <code>supportedModes</code> (26)</td></tr>
+<tr><td>configure a widget / a control</td><td><code>WidgetConfigurationIntent</code> · <code>ControlConfigurationIntent</code></td></tr>
+<tr><td>button in a Live Activity / audio</td><td><code>LiveActivityIntent</code> · <code>AudioPlaybackIntent</code></td></tr>
+<tr><td>undo from the app’s UI</td><td><code>UndoableIntent</code> (26)</td></tr>
+<tr><td>be found by image search</td><td><code>IntentValueQuery</code> (26)</td></tr>
+<tr><td>clean up on cancel · work past 30 s</td><td><code>CancellableIntent</code> (26.4) · <code>LongRunningIntent</code> (27)</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Write once, surface everywhere</span></h3>
+<figure class="sheet-figure"><img src="app-intents-fig1.svg" width="267" height="116" alt="App Intents · Siri, Shortcuts, Spotlight, widgets (iOS 16 → 27) — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">“Toggle kitchen in Lumen”</span></h3>
+<figure class="sheet-figure"><img src="app-intents-fig2.svg" width="287" height="67" alt="App Intents · Siri, Shortcuts, Spotlight, widgets (iOS 16 → 27) — figure 2" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">New in iOS 26 · 26.4 · 27</span></h3>
+<ul>
+<li><span class="c-sheetorange"><strong>26</strong></span> <strong>Interactive snippets</strong>: <code>SnippetIntent</code> returns  <code>ShowsSnippetView</code>; its buttons/toggles run other intents, then the system calls its  <code>perform()</code> <em>again</em> to redraw; <code>reload()</code> when your data changes.</li>
+<li><span class="c-sheetorange"><strong>26</strong></span> <strong>Visual intelligence</strong>: an <code>IntentValueQuery</code> with  <code>values(for input: SemanticContentDescriptor)</code> (<code>input.pixelBuffer</code>) returns your  entities for on-screen / camera image search; <code>@UnionValue</code> enum when results mix entity types.</li>
+<li><span class="c-sheetorange"><strong>26.4</strong></span> <code>CancellableIntent</code>: <code>withIntentCancellationHandler(operation:onCancel:)</code>  gets a reason — no progress past the 30 s limit, or the person cancelled.</li>
+<li><span class="c-sheetorange"><strong>27</strong></span> <code>LongRunningIntent</code> (a <code>ProgressReportingIntent</code>):  <code>performBackgroundTask { …}</code> runs past 30 s <em>if</em> it keeps updating  <code>progress</code>. <code>EntityCollection&lt;T&gt;</code>: a parameter of ids only (<code>.identifiers</code>,  <code>resolvedEntities()</code> when needed). <code>SyncableEntity</code>: id stable across devices  (<code>SyncableEntityIdentifier(local:stable:)</code>) so Siri can hand off. <strong>App Intents
+ Testing</strong> framework (<code>AnyAppIntent</code>, <code>ResolvedIntentResult</code>, <code>IntentDefinitions</code>).</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">Phrase without <code>\(.applicationName)</code> — never matches.</li>
+<li class="trap">UI from a background <code>perform()</code> — declare <code>supportedModes</code> (pre-26:  <code>openAppWhenRun</code>, now deprecated).</li>
+<li class="trap">“App Intents replaced SiriKit” — not all: messaging, VoIP calling, media, CarPlay still  use <code>INIntent</code> + an Intents extension.</li>
+<li class="trap">Assuming app state in <code>perform()</code>; entities persist by <em>id</em> and re-resolve via the query.</li>
+<li class="trap">Long work in <code>perform()</code> with no progress — cancelled at ~30 s; report  progress (<code>LongRunningIntent</code> in 27).</li>
+<li class="trap">Expensive entity fields computed eagerly — <code>@DeferredProperty</code>; copied state —  <code>@ComputedProperty</code>.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<p><strong>“I-E-Q-S”</strong>: <strong>I</strong>ntent does it, <strong>E</strong>ntity names it, <strong>Q</strong>uery finds it, <strong>S</strong>hortcut says it — <strong>Modes</strong> say where it runs.</p>
+<p><strong><span class="c-sheetblue"><code>supportedModes</code> (26) — when the app comes forward</span></strong></p>
+<figure class="sheet-figure"><img src="app-intents-fig3.svg" width="311" height="108" alt="App Intents · Siri, Shortcuts, Spotlight, widgets (iOS 16 → 27) — figure 3" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">Timeline — what arrived when</span></h3>
+<figure class="sheet-figure"><img src="app-intents-fig4.svg" width="322" height="57" alt="App Intents · Siri, Shortcuts, Spotlight, widgets (iOS 16 → 27) — figure 4" loading="lazy"></figure>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> WidgetKit interactive widgets · Live Activities ·
+deep links / <code>onOpenURL</code> · localization (<code>LocalizedStringResource</code>) · SiriKit legacy ·
+background-execution (30 s budgets) · Foundation Models (tools)</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=ios-platform" title="area">ios-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=platform-apis" title="topic">platform-apis</a></li><li class="sheet-tag"><a href="/folios.html?tag=appintent">appintent</a></li><li class="sheet-tag"><a href="/folios.html?tag=appentity">appentity</a></li><li class="sheet-tag"><a href="/folios.html?tag=entityquery">entityquery</a></li><li class="sheet-tag"><a href="/folios.html?tag=appshortcutsprovider">appshortcutsprovider</a></li><li class="sheet-tag"><a href="/folios.html?tag=siri">siri</a></li><li class="sheet-tag"><a href="/folios.html?tag=shortcuts">shortcuts</a></li><li class="sheet-tag"><a href="/folios.html?tag=snippetintent">snippetintent</a></li><li class="sheet-tag"><a href="/folios.html?tag=supportedmodes">supportedmodes</a></li><li class="sheet-tag"><a href="/folios.html?tag=intentvaluequery">intentvaluequery</a></li><li class="sheet-tag"><a href="/folios.html?tag=visual-intelligence">visual-intelligence</a></li><li class="sheet-tag"><a href="/folios.html?tag=longrunningintent">longrunningintent</a></li><li class="sheet-tag"><a href="/folios.html?tag=dependency">dependency</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=ios-platform%2Fapp-intents.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/new?category=folio-comments&amp;title=App%20Intents%20%C2%B7%20Siri%2C%20Shortcuts%2C%20Spotlight%2C%20widgets%20(iOS%2016%20%E2%86%92%2027)&amp;body=About%20the%20folio%3A%20https%3A%2F%2Ffolio.gurgul.pro%2Fios-platform%2Fapp-intents.html%0A%0A">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

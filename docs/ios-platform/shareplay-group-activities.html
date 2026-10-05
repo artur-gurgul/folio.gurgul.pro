@@ -1,0 +1,84 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>SharePlay — Group Activities — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/ios-platform/shareplay-group-activities.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">50</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">SharePlay — Group Activities</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">ios-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> <strong>SharePlay</strong> = your app’s activity shared over a <strong>FaceTime call</strong> or <strong>Messages
+conversation</strong> (and, iOS 17, <strong>AirDrop</strong> nearby). You define a <code>Codable</code> <code>GroupActivity</code>;
+one person <code>activate()</code>s it; the system hands a <code>GroupSession</code> to <em>every</em> participant’s
+<code>sessions()</code> stream; each app <code>join()</code>s and syncs through <strong>AVPlayer’s playback coordinator</strong>
+(media), <strong>GroupSessionMessenger</strong> (small messages) or <strong>GroupSessionJournal</strong> (files). All
+session data is <strong>end-to-end encrypted</strong>; there is no server of yours in the loop.</p>
+<p class="sheet-tools"><a class="sheet-download" href="shareplay-group-activities.pdf" download>Download PDF</a> <a href="shareplay-group-activities.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/shareplay-group-activities.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="shareplay-group-activities-fig1.svg" width="631" height="178" class="wide" alt="SharePlay — Group Activities — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">How it works</span></h3>
+<ul>
+<li><strong>Capability</strong>: <em>Group Activities</em> <span class="math">→</span> entitlement <code>com.apple.developer.group-session</code>.  Framework since iOS 15 / macOS 12 / tvOS 15 / visionOS 1.</li>
+<li><strong>Activity</strong> = <code>struct: GroupActivity</code> (<code>Codable</code>, sent to every device) with  <code>static activityIdentifier</code> (needed once you have several types) and <code>metadata</code>:  <code>title</code>, <code>subtitle</code>, <code>previewImage</code> (<code>CGImage</code>), <code>fallbackURL</code> (join from a web  browser), <code>type</code> (<code>.watchTogether</code>, <code>.listenTogether</code>, <code>.playTogether</code>,  <code>.createTogether</code>, … iOS 17 added shop/read/learn/workout), <code>supportsContinuationOnTV</code>.</li>
+<li><strong>Start</strong>: <code>GroupStateObserver().isEligibleForGroupSession</code> (<code>ObservableObject</code>) —  true in a call/conversation. <code>prepareForActivation()</code> asks the user:  <code>.activationPreferred</code> <span class="math">→</span> <code>activate()</code> · <code>.activationDisabled</code> <span class="math">→</span> do it  <em>locally</em> · <code>.cancelled</code> <span class="math">→</span> nothing. Not eligible <span class="math">→</span> present  <code>GroupActivitySharingController</code> (iOS 15.4): it invites people and starts the call.</li>
+<li><strong>Share sheet / AirDrop</strong>: <code>ShareLink(item: activity, …)</code> with a <code>Transferable</code>  activity; UIKit: <code>NSItemProvider.registerGroupActivity(_:)</code> (15.4) in  <code>UIActivityViewController</code> or a responder’s <code>activityItemsConfiguration</code> — the  latter is what <strong>SharePlay over AirDrop</strong> (iOS 17) finds.</li>
+<li><strong>Receive</strong> on <em>every</em> device, including the starter: <code>for await s in
+ X.sessions()</code> from launch (e.g. <code>.task</code> on the root view). Store it, build UI +  sync objects, <em>then</em> <code>join()</code>.</li>
+<li><strong>Change content</strong>: set <code>session.activity</code> (<code>@Published</code>, only when  <code>.joined</code>); everyone observes <code>$activity</code> and loads the same item.</li>
+<li>Also on the session: <code>isLocallyInitiated</code> (am I the starter?),  <code>requestForegroundPresentation()</code> (the activity needs your app on screen).</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — watch together + reactions</span></h3>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">struct</span> <span class="hljs-title class_">WatchTogether</span>: <span class="hljs-title class_ inherited__">GroupActivity</span> {
+  <span class="hljs-keyword">let</span> movie: <span class="hljs-type">Movie</span>                           <span class="hljs-comment">// Codable payload</span>
+  <span class="hljs-keyword">var</span> metadata: <span class="hljs-type">GroupActivityMetadata</span> {
+    <span class="hljs-keyword">var</span> m <span class="hljs-operator">=</span> <span class="hljs-type">GroupActivityMetadata</span>(); m.type <span class="hljs-operator">=</span> .watchTogether
+    m.title <span class="hljs-operator">=</span> movie.title; m.fallbackURL <span class="hljs-operator">=</span> movie.webURL; <span class="hljs-keyword">return</span> m }
+}
+<span class="hljs-keyword">func</span> <span class="hljs-title function_">start</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">a</span>: <span class="hljs-type">WatchTogether</span>) <span class="hljs-keyword">async</span> <span class="hljs-keyword">throws</span> {  <span class="hljs-comment">// Alice&#x27;s tap</span>
+  <span class="hljs-keyword">switch</span> <span class="hljs-keyword">await</span> a.prepareForActivation() {
+  <span class="hljs-keyword">case</span> .activationPreferred: <span class="hljs-keyword">_</span> <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> a.activate()
+  <span class="hljs-keyword">case</span> .activationDisabled: playLocally(a.movie)
+  <span class="hljs-keyword">default</span>: <span class="hljs-keyword">break</span> }                           <span class="hljs-comment">// .cancelled</span>
+}
+<span class="hljs-keyword">for</span> <span class="hljs-keyword">await</span> s <span class="hljs-keyword">in</span> <span class="hljs-type">WatchTogether</span>.sessions() {    <span class="hljs-comment">// every device</span>
+  session <span class="hljs-operator">=</span> s; load(s.activity.movie)        <span class="hljs-comment">// keep strong refs</span>
+  player.playbackCoordinator.coordinateWithSession(s)
+  messenger <span class="hljs-operator">=</span> <span class="hljs-type">GroupSessionMessenger</span>(session: s, deliveryMode: .unreliable)
+  s.join()
+  <span class="hljs-type">Task</span> { <span class="hljs-keyword">for</span> <span class="hljs-keyword">await</span> (r, ctx) <span class="hljs-keyword">in</span> messenger.messages(of: <span class="hljs-type">Reaction</span>.<span class="hljs-keyword">self</span>) {
+           show(r, from: ctx.source) } }     <span class="hljs-comment">// ctx.source: Participant</span>
+}</code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">Three sync channels</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>Channel</strong></th><th><strong>Carries</strong></th><th><strong>Watch out</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>AVPlayer</code> <code>.playback</code> <code>Coordinator</code> (15)</td><td>rate, time, pause, seek — intercepted and imposed on the others</td><td>does <strong>not</strong> manage the queue; stalls/interruptions <em>suspend</em> coordination</td></tr>
+<tr><td><code>GroupSession</code> <code>Messenger</code> (15)</td><td>your <code>Codable</code>/<code>Data</code> to <code>.all</code> or <code>.only(p)</code>;
+ <span class="math">≤</span> <strong>256 KB</strong>; <code>.reliable</code> (default) or <code>.unreliable</code> (16, UDP)</td><td>live traffic only — no history for late joiners</td></tr>
+<tr><td><code>GroupSession</code> <code>Journal</code> (17)</td><td><code>Transferable</code> files: <code>add</code>, <code>attachments</code>, <code>load</code></td><td>available to everyone <em>whenever</em> they joined; not for fast messages</td></tr>
+</tbody>
+</table></p>
+<p><strong>Local detour</strong>: <code>let s = player.playbackCoordinator.beginSuspension(for: …)</code> — rewind or 2× for yourself, <code>s.end()</code> rejoins the group’s time. Same movie, different URLs per device (CDN, locale)? <code>AVPlayerPlaybackCoordinatorDelegate</code> <code>playbackCoordinator(_:identifierFor:)</code> returns a shared id.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Privacy and platforms</span></h3>
+<ul>
+<li>E2E encrypted; Apple sees neither content nor playback events, nor your app’s identity.  <code>Participant.id</code> is a <code>UUID</code>, no personal data — map people to accounts yourself.</li>
+<li>iOS 26: <code>Participant.isNearbyWithLocalParticipant</code> (same room vs remote).  <strong>visionOS</strong>: spatial Personas, <code>session.systemCoordinator</code>, <code>SpatialTemplate</code>  for seating; visionOS 26 shares with people nearby.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap"><code>activate()</code> with no call/conversation <strong>fails</strong> — check eligibility, fall back to  <code>GroupActivitySharingController</code> or the share sheet.</li>
+<li class="trap">The coordinator syncs <em>time</em>, not <em>which item</em>: drive item changes through  <code>session.activity</code>, or players drift to different movies.</li>
+<li class="trap">Late joiner sees an empty canvas: the messenger never replays. Diff  <code>$activeParticipants</code>, send a snapshot to <code>.only(new)</code> — or keep state in the Journal.</li>
+<li class="trap"><code>.unreliable</code> is best-effort: cursors and drags, never moves or scores.</li>
+<li class="trap"><code>.invalidated</code> is terminal: drop the session, messenger and tasks. <code>join()</code> only once  your UI can show the activity.</li>
+<li class="trap">“SharePlay needs my backend” — no: FaceTime’s infrastructure relays it; you only need  content every device can load.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Timeline</span></h3>
+<figure class="sheet-figure"><img src="shareplay-group-activities-fig2.svg" width="321" height="59" alt="SharePlay — Group Activities — figure 2" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<h3 class="sheet-hd">Activate once, receive everywhere, join when ready, sync three ways (Coordinator · Messenger ·
+Journal), release on invalidated.</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> video-playback-hls (AVPlayer) ·
+swiftui-transferable-drag-drop · realtime-webrtc-callkit · websockets-realtime · network-framework-local</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=ios-platform" title="area">ios-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=ios" title="platform">ios</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=platform-apis" title="topic">platform-apis</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=networking" title="topic">networking</a></li><li class="sheet-tag"><a href="/folios.html?tag=shareplay">shareplay</a></li><li class="sheet-tag"><a href="/folios.html?tag=group-activities">group-activities</a></li><li class="sheet-tag"><a href="/folios.html?tag=groupsession">groupsession</a></li><li class="sheet-tag"><a href="/folios.html?tag=groupsessionmessenger">groupsessionmessenger</a></li><li class="sheet-tag"><a href="/folios.html?tag=groupsessionjournal">groupsessionjournal</a></li><li class="sheet-tag"><a href="/folios.html?tag=avplaybackcoordinator">avplaybackcoordinator</a></li><li class="sheet-tag"><a href="/folios.html?tag=facetime">facetime</a></li><li class="sheet-tag"><a href="/folios.html?tag=late-joiners">late-joiners</a></li><li class="sheet-tag"><a href="/folios.html?tag=visionos">visionos</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=ios-platform%2Fshareplay-group-activities.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/new?category=folio-comments&amp;title=SharePlay%20%E2%80%94%20Group%20Activities&amp;body=About%20the%20folio%3A%20https%3A%2F%2Ffolio.gurgul.pro%2Fios-platform%2Fshareplay-group-activities.html%0A%0A">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

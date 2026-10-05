@@ -1,0 +1,199 @@
+% avfoundation-camera-audio.tex — the AVCaptureSession pipeline and its three
+% queues, permissions, preview, QR, frame processing; AVAudioSession categories,
+% modes, options, interruptions, route changes; which player to use.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/avfoundation/avcapturesession (+ setting up a capture session;
+%     startRunning is blocking)
+%   developer.apple.com/documentation/avfoundation/avcapturemetadataoutput/metadataobjecttypes
+%     (a type not in availableMetadataObjectTypes raises an exception — not silent)
+%   developer.apple.com/documentation/avfoundation/avcapturevideodataoutput/alwaysdiscardslatevideoframes (default true)
+%   developer.apple.com/documentation/avfoundation/avcapturedevice/rotationcoordinator (iOS 17)
+%   developer.apple.com/documentation/avfaudio/avaudioapplication (requestRecordPermission, iOS 17)
+%   developer.apple.com/documentation/avfaudio/avaudiosession/category (+ Audio Session Programming
+%     Guide, category behaviour table) · .../handling-audio-interruptions · .../responding-to-audio-route-changes
+%   developer.apple.com/documentation/visionkit/datascannerviewcontroller (iOS 16)
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis,concurrency
+% @tags: avfoundation, avcapturesession, session-queue, avcapturevideodataoutput, cmsamplebuffer, qr-scanning, avcapturephotooutput, avaudiosession, audio-category, audio-interruption, route-change, avaudioengine
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,defer,
+    if,else,return,guard,self,nil,true,false,in,for,async,await,try},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  nd/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5.5mm},
+  sq/.style={nd, draw=sheetOrange, fill=sheetOrange!12},
+  vq/.style={nd, draw=sheetBlue, fill=sheetBlue!12},
+  mq/.style={nd, draw=sheetGreen, fill=sheetGreen!12},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  cb/.style={font=\scriptsize, anchor=west, inner sep=1pt, align=left},
+}
+
+\begin{document}
+
+\sheettitle{AVFoundation — camera capture + audio session}{ios-platform · folio}
+
+\oneliner{\texttt{AVCaptureSession} is a \textbf{graph}: devices $\to$ inputs $\to$
+session $\to$ outputs, configured and started on a \textbf{private serial queue}
+(\texttt{startRunning()} blocks), frames delivered on \textbf{another} serial queue,
+UI on main. \texttt{AVAudioSession} is \textbf{policy, not playback}: category + mode +
+options tell iOS whether you mix, duck, obey the silent switch, record, and keep
+playing in the background.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[nd] (dev) at (0.95,2.3) {\texttt{AVCaptureDevice}\\[-1pt]{\tiny back wide · mic}};
+  \node[nd] (in) at (3.35,2.3) {\texttt{AVCapture-}\\[-1pt]\texttt{DeviceInput}};
+  \node[sq, minimum height=19mm, minimum width=23mm, align=center] (ses) at (6.0,1.35)
+    {\textbf{\texttt{AVCaptureSession}}\\[2pt]{\tiny\texttt{sessionPreset}}\\{\tiny\texttt{begin/commitConfiguration}}\\{\tiny\texttt{startRunning()} blocks}\\{\tiny\textbf{session queue}}};
+  \draw[flow] (dev) -- (in);
+  \draw[flow] (in) -- (in -| ses.west);
+  \node[lbl, text=sheetGrey] at (3.35,1.7) {\texttt{canAddInput} first};
+  % outputs
+  \node[sq, anchor=west, minimum width=31mm] (ph) at (8.1,2.55) {\texttt{AVCapturePhotoOutput}};
+  \node[vq, anchor=west, minimum width=31mm] (vd) at (8.1,1.75) {\texttt{AVCaptureVideoDataOutput}};
+  \node[mq, anchor=west, minimum width=31mm] (md) at (8.1,0.95) {\texttt{AVCaptureMetadataOutput}};
+  \node[sq, anchor=west, minimum width=31mm] (mv) at (8.1,0.15) {\texttt{AVCaptureMovieFileOutput}};
+  \foreach \o in {ph,vd,md,mv} \draw[flow] (ses.east) -- (\o.west);
+  \node[lbl, rotate=90] at (7.75,1.35) {connections};
+  \node[cb] at (11.35,2.55) {\texttt{capturePhoto(with:delegate:)} $\to$ \texttt{AVCapturePhoto}};
+  \node[cb] at (11.35,1.75) {\texttt{CMSampleBuffer} $\to$ \texttt{CVPixelBuffer} $\to$ Vision/ML};
+  \node[cb] at (11.35,0.95) {\texttt{[.qr]} $\to$ \texttt{AVMetadataMachineReadableCodeObject}};
+  \node[cb] at (11.35,0.15) {records \texttt{.mov} (or frames $\to$ \texttt{AVAssetWriter})};
+  % preview
+  \node[mq] (pv) at (2.3,0.35) {\texttt{AVCaptureVideoPreviewLayer(session:)}\\[-1pt]{\tiny a \texttt{CALayer}; \texttt{videoGravity}; main thread}};
+  \draw[flow, dashed] (ses.west |- pv) -- (pv.east);
+  % legend
+  \node[sq, minimum height=3mm, font=\tiny] at (0.15,1.2) {\phantom{x}};
+  \node[lbl, anchor=west] at (0.35,1.2) {session queue};
+  \node[vq, minimum height=3mm, font=\tiny] at (0.15,0.95) {\phantom{x}};
+  \node[lbl, anchor=west] at (0.35,0.95) {frame queue: serial, keep up or drop};
+  \node[mq, minimum height=3mm, font=\tiny] at (2.05,1.2) {\phantom{x}};
+  \node[lbl, anchor=west] at (2.25,1.2) {main (UI)};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Capture}
+\begin{itemize}
+  \item \textbf{Permission}: \texttt{NSCameraUsageDescription} (+ \dots
+        \texttt{Microphone}\dots) — missing key = \textbf{crash} on access.
+        \texttt{AVCaptureDevice.\allowbreak authorizationStatus(for:)} $\to$
+        \texttt{requestAccess(for:)} (completion off main; \texttt{async} overload);
+        \texttt{.denied}/\texttt{.restricted} $\to$ Settings. Mic alone:
+        \texttt{AVAudioApplication.\allowbreak requestRecordPermission} (iOS 17).
+  \item \textbf{Configure} between \texttt{beginConfiguration()} and
+        \texttt{commitConfiguration()} (atomic camera/preset swap);
+        \texttt{canAdd\dots} before every \texttt{add\dots}. Focus/exposure/torch:
+        \texttt{lockForConfiguration()} $\to$ set $\to$ unlock (check
+        \texttt{is\dots Supported}).
+  \item \textbf{Frames}: \texttt{captureOutput(\_:didOutput:from:)} at frame rate;
+        \texttt{alwaysDiscardsLateVideoFrames} (default \texttt{true}) drops rather
+        than queues — drops arrive in \texttt{didDrop}.
+  \item \textbf{Photo}: a \textbf{new} \texttt{AVCapturePhotoSettings} per shot;
+        \texttt{photoQualityPrioritization} \texttt{.speed}/\texttt{.balanced}/\allowbreak
+        \texttt{.quality}. Saving is the \textbf{Photos} framework's job
+        (\texttt{PHPhotoLibrary}, add-only usage key).
+  \item \textbf{Scanning without the graph}: VisionKit
+        \texttt{DataScannerViewController} (iOS 16) — text + barcodes, live UI.
+  \item \textbf{Rotation} (iOS 17): \texttt{videoRotationAngle} +
+        \texttt{AVCaptureDevice.\allowbreak RotationCoordinator} replace
+        \texttt{videoOrientation}.
+  \item \textbf{Interruptions}: \texttt{AVCaptureSessionWasInterrupted}/\allowbreak
+        \texttt{\dots InterruptionEnded}; reasons e.g. \texttt{videoDevice\allowbreak
+        NotAvailableInBackground}, \texttt{\dots WithMultipleForegroundApps} (iPad
+        multitasking), \texttt{\dots InUseByAnotherClient}. Runtime error $\to$
+        restart on the session queue. Hot device
+        (\texttt{ProcessInfo.thermalState}) $\to$ lower preset/fps.
+\end{itemize}
+
+\section{Example — configure off main}
+\begin{lstlisting}[language=SwiftSheet]
+func configure() {                       // runs on sessionQueue
+  session.beginConfiguration()
+  defer { session.commitConfiguration() }
+  guard let cam = AVCaptureDevice.default(.builtInWideAngleCamera,
+          for: .video, position: .back),
+        let input = try? AVCaptureDeviceInput(device: cam),
+        session.canAddInput(input) else { return }
+  session.addInput(input)
+  let frames = AVCaptureVideoDataOutput()
+  frames.setSampleBufferDelegate(self, queue: videoQueue) // serial
+  if session.canAddOutput(frames) { session.addOutput(frames) }
+  let meta = AVCaptureMetadataOutput(); session.addOutput(meta)
+  meta.setMetadataObjectsDelegate(self, queue: .main)
+  meta.metadataObjectTypes = [.qr]       // AFTER addOutput
+}
+sessionQueue.async { configure(); session.startRunning() }
+\end{lstlisting}
+
+\columnbreak
+
+\section{Audio session — category = defaults}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{19mm}@{}}
+\toprule
+\textbf{Category} & \textbf{silent sw.} & \textbf{mixes} & \textbf{BG\,$^*$} & \textbf{for} \\
+\midrule
+\texttt{.ambient} & silenced & yes & no & game/UI sound \\
+\texttt{.soloAmbient} & silenced & no & no & \textbf{default} \\
+\texttt{.playback} & plays & no$^\dagger$ & yes & media, podcasts \\
+\texttt{.record} & — & no & yes & recorder \\
+\texttt{.playAndRecord} & plays & no$^\dagger$ & yes & VoIP, video call \\
+\bottomrule
+\end{tabular}}\\[1pt]
+{\scriptsize $^*$ also needs \texttt{UIBackgroundModes} \texttt{audio}. $^\dagger$ unless
+\texttt{.mixWithOthers} / \texttt{.duckOthers}. \texttt{.ambient}/\texttt{.soloAmbient}
+also stop on screen lock.}
+
+\begin{itemize}
+  \item \texttt{setCategory(\_:mode:options:)} $\to$ \texttt{setActive(true)} (fails
+        during a call); end with \texttt{.notifyOthersOnDeactivation}.
+  \item \textbf{Modes} tune DSP/routing: \texttt{.moviePlayback},
+        \texttt{.spokenAudio}, \texttt{.voiceChat} (echo cancel), \texttt{.videoChat},
+        \texttt{.measurement}. \textbf{Options}: \texttt{.duckOthers},
+        \texttt{.mixWithOthers}, \texttt{.defaultToSpeaker} (else
+        \texttt{playAndRecord} uses the \emph{earpiece}), \texttt{.allowBluetoothA2DP}.
+  \item \textbf{Interruption}: \texttt{.began} — already stopped, update UI;
+        \texttt{.ended} + \texttt{.shouldResume} $\to$ reactivate, resume. An
+        \texttt{.ended} is not guaranteed.
+  \item \textbf{Route change} \texttt{.oldDeviceUnavailable} (headphones out) $\to$
+        \textbf{pause}. \texttt{mediaServicesWereReset} $\to$ rebuild all audio objects.
+  \item \textbf{Player}: \texttt{AVAudioPlayer} = local file, simple ·
+        \texttt{AVPlayer} = streams/HLS, video · \texttt{AVAudioEngine} = real-time
+        node graph (mixer, effects, \texttt{installTap}); restart it on
+        \texttt{AVAudioEngineConfigurationChange}.
+  \item Lock screen = \texttt{MPNowPlaying\allowbreak InfoCenter} +
+        \texttt{MPRemoteCommand\allowbreak Center};
+        a \texttt{.mixWithOthers} app can't be Now Playing.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{startRunning()} on main = UI freeze; config from two threads =
+        races. One serial session queue owns the session.}
+  \trap{\texttt{metadataObjectTypes} before \texttt{addOutput} (or an unsupported
+        type) \textbf{raises an exception} — not a silent no-op.}
+  \trap{Keeping \texttt{CMSampleBuffer}s past the callback starves the capture
+        pool $\to$ dropped frames. Copy what you need.}
+  \trap{``No sound on silent'' = default \texttt{.soloAmbient}; use
+        \texttt{.playback}. \texttt{AVAudioPlayer} in a local \texttt{let} is
+        deallocated and stops.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Three queues, one graph} · \textbf{category + mode + options = policy} ·
+pause on \textbf{began} and on \textbf{headphones out}.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} concurrency (serial
+queues, main hop) · background-execution (\texttt{audio} mode) ·
+rendering-pipeline (pixel buffers, image decode) · app-hardening-privacy
+(permissions) · state-restoration-multiwindow (camera in iPad multitasking)}
+
+\end{document}

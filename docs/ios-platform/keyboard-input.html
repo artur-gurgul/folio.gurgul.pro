@@ -1,0 +1,75 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Keyboard + text input — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/ios-platform/keyboard-input.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">50</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Keyboard + text input</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">ios-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> The keyboard belongs to the <strong>first responder</strong>: iOS shows its
+<code>inputView</code> (default: the system keyboard) + <code>inputAccessoryView</code>, and
+<strong>your</strong> layout moves — with <code>keyboardLayoutGuide</code> (iOS 15) or from the
+<strong>real end frame</strong> in the notifications. Input is shaped by <strong>traits</strong>, and
+is <strong>provisional</strong> while an IME holds marked text.</p>
+<p class="sheet-tools"><a class="sheet-download" href="keyboard-input.pdf" download>Download PDF</a> <a href="keyboard-input.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/keyboard-input.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="keyboard-input-fig1.svg" width="588" height="163" class="wide" alt="Keyboard + text input — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>How it works</h2>
+<ul>
+<li><strong>First responder</strong>: <code>becomeFirstResponder()</code> returns  <code>Bool</code> — <code>false</code> if not in a window yet or  <code>canBecomeFirstResponder</code> is false. Dismiss:  <code>resignFirstResponder()</code>, <code>view.endEditing(true)</code>, or a  <code>nil</code>-targeted <code>resignFirstResponder</code> action.</li>
+<li><code>inputView</code> <strong>replaces</strong> the keyboard (a picker);  <code>inputAccessoryView</code> rides <strong>above</strong> it. Chat composer: the VC  returns <code>true</code> from <code>canBecomeFirstResponder</code> and vends the bar  as its <code>inputAccessoryView</code>; with <code>keyboardDismissMode =
+ .interactive</code> it follows the finger.</li>
+<li><strong><code>keyboardLayoutGuide</code></strong> (iOS 15): pin to its  <code>topAnchor</code>; show/hide, height changes and animation come free;  <code>followsUndockedKeyboard</code> for the floating iPad keyboard. With no  keyboard it sits at the safe-area bottom.</li>
+<li><strong>Scroll view</strong>: inset content + indicators by the overlap  <em>minus the bottom safe area</em> (already in the adjusted inset),  <code>scrollRectToVisible</code>, reset on hide. <code>UITableViewController</code>  does it for you.</li>
+<li><strong>Traits</strong>: <code>keyboardType</code> (<code>.emailAddress</code>,  <code>.numberPad</code>, <code>.decimalPad</code>, <code>.URL</code>);  <code>textContentType</code> drives AutoFill — <code>.username</code>,  <code>.password</code>, <code>.newPassword</code> (+ <code>passwordRules</code>),  <code>.oneTimeCode</code> (SMS code offered above the keyboard, no permission);  <code>returnKeyType</code>; <code>autocorrectionType</code>,  <code>smartQuotesType</code>, <code>smartDashesType</code>.</li>
+<li><strong><code>UITextField</code></strong>: the delegate <em>asks</em>  (<code>shouldBeginEditing</code>, <code>shouldChangeCharactersIn</code> with an  <code>NSRange</code> in UTF-16, <code>textFieldShouldReturn</code>); control events  <em>report</em> (<code>.editingChanged</code> incl. paste/AutoFill,  <code>.editingDidEndOnExit</code>; <code>addAction(_:for:)</code>). A programmatic  <code>text =</code> triggers neither.</li>
+<li><strong>Hardware keyboard</strong>: <code>UIKeyCommand(title:action:input:
+ modifierFlags:)</code> in a responder’s <code>keyCommands</code> (or the  <code>buildMenu(with:)</code> menu) — titled ones appear when Cmd is held;  <code>wantsPriorityOverSystemBehavior</code> (iOS 15) wins keys the system  uses. Raw keys: <code>pressesBegan</code> <span class="math">→</span> <code>UIPress.key</code>. The  software keyboard shrinks to a shortcut bar.</li>
+<li><strong>SwiftUI</strong>: avoids the keyboard itself (iOS 14; opt out  <code>.ignoresSafeArea(.keyboard)</code>). iOS 15: <code>@FocusState</code> +  <code>.focused</code>, <code>.submitLabel</code> + <code>.onSubmit</code>, a  <code>ToolbarItemGroup(placement: .keyboard)</code>; iOS 16  <code>.scrollDismissesKeyboard</code>; iOS 17 <code>.onKeyPress</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-comment">// iOS 15+: pin the composer to the keyboard - no observers</span>
+composer.bottomAnchor.constraint(
+  equalTo: view.keyboardLayoutGuide.topAnchor).isActive <span class="hljs-operator">=</span> <span class="hljs-literal">true</span>
+<span class="hljs-comment">// scroll view, from keyboardWillChangeFrame:</span>
+<span class="hljs-keyword">@objc</span> <span class="hljs-keyword">func</span> <span class="hljs-title function_">kbChanged</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">n</span>: <span class="hljs-type">Notification</span>) {
+  <span class="hljs-keyword">guard</span> <span class="hljs-keyword">let</span> end <span class="hljs-operator">=</span> n.userInfo<span class="hljs-operator">?</span>[<span class="hljs-type">UIResponder</span>
+          .keyboardFrameEndUserInfoKey] <span class="hljs-keyword">as?</span> <span class="hljs-type">CGRect</span>,
+        <span class="hljs-keyword">let</span> screen <span class="hljs-operator">=</span> view.window<span class="hljs-operator">?</span>.screen <span class="hljs-keyword">else</span> { <span class="hljs-keyword">return</span> }
+  <span class="hljs-keyword">let</span> kb <span class="hljs-operator">=</span> view.convert(end, from: screen.coordinateSpace)
+  <span class="hljs-keyword">let</span> overlap <span class="hljs-operator">=</span> <span class="hljs-built_in">max</span>(<span class="hljs-number">0</span>, view.bounds.maxY <span class="hljs-operator">-</span> kb.minY
+                       <span class="hljs-operator">-</span> view.safeAreaInsets.bottom)
+  scroll.contentInset.bottom <span class="hljs-operator">=</span> overlap
+  scroll.verticalScrollIndicatorInsets.bottom <span class="hljs-operator">=</span> overlap }
+<span class="hljs-comment">// SwiftUI</span>
+<span class="hljs-type">TextField</span>(<span class="hljs-string">&quot;Email&quot;</span>, text: <span class="hljs-variable">$email</span>).focused(<span class="hljs-variable">$field</span>, equals: .email)
+  .textContentType(.emailAddress).keyboardType(.emailAddress)
+  .submitLabel(.next).onSubmit { field <span class="hljs-operator">=</span> .password }</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">A hard-coded keyboard height, or only <code>willShow</code>: the predictive bar,  emoji, hardware or floating keyboard change the frame — handle  <code>willChangeFrame</code>, or use the guide.</li>
+<li class="trap">Keyboard frame is in <strong>screen</strong> coordinates; in Split View / Stage  Manager the window is not the screen — convert.</li>
+<li class="trap"><code>becomeFirstResponder()</code> in <code>viewDidLoad</code> returns  <code>false</code> (no window): do it in <code>viewDidAppear</code>. SwiftUI’s twin:  setting <code>@FocusState</code> in <code>onAppear</code> can be dropped — defer it.</li>
+<li class="trap">Max length in <code>shouldChangeCharactersIn</code>: the range is  <strong>UTF-16</strong>, emoji are several units, and marked text is not final —  compute the result with <code>Range(range, in:)</code>, skip while  <code>markedTextRange</code> <code>!=</code> <code>nil</code>.</li>
+<li class="trap">Smart quotes / dashes / autocorrect in username, code or search fields  silently change <code>&quot;</code> into <code>“</code> — set <code>.no</code>.</li>
+<li class="trap"><code>.numberPad</code> has no Return key: add a Done in the accessory  view / keyboard toolbar.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Timeline</h2>
+<figure class="sheet-figure"><img src="keyboard-input-fig2.svg" width="321" height="63" alt="Keyboard + text input — figure 2" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<h3 class="sheet-hd">Responder owns the keyboard · guide beats notifications · read the real
+frame · marked text is not text yet.</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> auto-layout (safe area) ·
+gof-behavioural (responder chain) · state-restoration-multiwindow (window <span class="math">≠</span>
+screen) · strings-and-collections (graphemes)</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=ios-platform" title="area">ios-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=ios" title="platform">ios</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=ui" title="topic">ui</a></li><li class="sheet-tag"><a href="/folios.html?tag=keyboard-avoidance">keyboard-avoidance</a></li><li class="sheet-tag"><a href="/folios.html?tag=keyboardlayoutguide">keyboardlayoutguide</a></li><li class="sheet-tag"><a href="/folios.html?tag=first-responder">first-responder</a></li><li class="sheet-tag"><a href="/folios.html?tag=inputaccessoryview">inputaccessoryview</a></li><li class="sheet-tag"><a href="/folios.html?tag=inputview">inputview</a></li><li class="sheet-tag"><a href="/folios.html?tag=textcontenttype">textcontenttype</a></li><li class="sheet-tag"><a href="/folios.html?tag=onetimecode">onetimecode</a></li><li class="sheet-tag"><a href="/folios.html?tag=uitextfielddelegate">uitextfielddelegate</a></li><li class="sheet-tag"><a href="/folios.html?tag=marked-text">marked-text</a></li><li class="sheet-tag"><a href="/folios.html?tag=ime">ime</a></li><li class="sheet-tag"><a href="/folios.html?tag=uikeycommand">uikeycommand</a></li><li class="sheet-tag"><a href="/folios.html?tag=focusstate">focusstate</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=ios-platform%2Fkeyboard-input.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/new?category=folio-comments&amp;title=Keyboard%20%2B%20text%20input&amp;body=About%20the%20folio%3A%20https%3A%2F%2Ffolio.gurgul.pro%2Fios-platform%2Fkeyboard-input.html%0A%0A">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

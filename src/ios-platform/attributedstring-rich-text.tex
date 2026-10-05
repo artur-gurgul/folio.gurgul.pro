@@ -1,0 +1,220 @@
+% attributedstring-rich-text.tex — AttributedString (value type, characters + runs,
+% AttributeContainer, scopes, markdown, custom keys, index invalidation) vs NSAttributedString,
+% conversion; rich-text editing: SwiftUI TextEditor + AttributedString + AttributedTextSelection
+% + formatting definitions (iOS 26), UITextView typing attributes / allowsEditingTextAttributes /
+% formatting panel; text input (UITextInput, marked text / IME); links and data detectors.
+% Sources (checked 2026-09-29): developer.apple.com/documentation — SwiftUI TextEditor
+% (init(text:selection:)), AttributedTextSelection, AttributedTextFormattingDefinition,
+% textInputFormattingControlVisibility(_:for:), EnvironmentValues.fontResolutionContext,
+% Text init(_: AttributedString) (ignored attributes, precedence); Foundation AttributedString
+% (transformAttributes(in:body:), replaceSelection(_:withCharacters:)); UIKit UITextView
+% (textFormattingConfiguration iOS 18, dataDetectorTypes), UITextViewDelegate
+% (primaryActionFor iOS 17, shouldChangeTextInRanges iOS 26); WWDC25 280 (rich text code-along).
+% Not repeated: TextKit layout (textkit2-text-layout.tex); String/Character/UTF-16
+% (strings-and-collections.tex); localized strings (accessibility-localization.tex).
+% @labels: area=ios-platform kind=api platform=ios topic=ui,platform-apis
+% @tags: attributedstring, nsattributedstring, attributecontainer, attribute-scopes, markdown, texteditor, attributedtextselection, rich-text-editing, typing-attributes, uitextinput, marked-text, data-detectors
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,static,some,init,
+    if,else,return,guard,self,nil,private,true,false,in,try,for,where,body,View},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {??}{{\hbox{?}\hbox{?}}}2 {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt, align=center},
+  chr/.style={draw=sheetGrey, minimum height=4.6mm, minimum width=3.3mm, inner sep=0pt,
+              font=\ttfamily\scriptsize},
+  run/.style={draw, rounded corners=1pt, minimum height=4.2mm, inner sep=1pt, font=\tiny, align=center},
+  k/.style={box, font=\scriptsize, inner sep=2pt, minimum height=6mm},
+}
+
+\begin{document}
+
+\sheettitle{AttributedString \& rich text — model, editing, input}{ios-platform · folio}
+
+\oneliner{\textbf{\ct{AttributedString}} (iOS 15) is a Swift \textbf{value type}: a sequence of
+\textbf{characters} plus a sequence of \textbf{runs}, each run a range with one
+\textbf{\ct{AttributeContainer}}; attributes are \textbf{type-safe keys} grouped in
+\textbf{scopes} (Foundation, UIKit, SwiftUI, yours). \ct{NSAttributedString} is the older
+reference type keyed by \ct{NSRange}, still what TextKit stores. iOS 26 makes it editable in
+SwiftUI: \ct{TextEditor(text: \$attributed, selection: \$sel)}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------------- anatomy ----------------
+  \node[font=\bfseries\small, anchor=west] at (-0.2,3.55) {One value, two sequences};
+  \foreach \c [count=\i from 0] in {H,i,{ },c,o,o,k,i,n,g,!}
+    \node[chr] (c\i) at (0.33*\i+0.3,2.75) {\c};
+  \node[lbl, anchor=east] at (0.1,2.75) {chars};
+  \node[run, draw=sheetBlue, fill=sheetBlue!10, minimum width=9.4mm] at (0.63,2.15) {\ct{.body}};
+  \node[run, draw=sheetOrange, fill=sheetOrange!15, minimum width=22.6mm] at (2.28,2.15) {\ct{.body} + \ct{orange} + \ct{link}};
+  \node[run, draw=sheetBlue, fill=sheetBlue!10, minimum width=2.8mm] at (3.6,2.15) {};
+  \node[lbl, anchor=east] at (0.1,2.15) {runs};
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}, sheetRed, thick] (1.15,1.8) -- (2.6,1.8)
+     node[midway, below=2pt, lbl, text=sheetRed]{selection = \ct{RangeSet} (bidi: may be 2 ranges)};
+  \node[lbl, anchor=west, align=left] at (-0.2,0.95) {a run = maximal range with \emph{identical} attributes;\\
+     \ct{s.runs[\textbackslash.link]} iterates by one attribute only};
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (-0.2,0.25) {any mutation \textbf{invalidates every index}:\\
+     re-find it, or \ct{transform(updating: \&range) \{\ldots\}}};
+  % ---------------- bridge ----------------
+  \draw[sheetGrey!40] (4.35,3.7) -- (4.35,0);
+  \node[font=\bfseries\small, anchor=west] at (4.5,3.55) {Bridging};
+  \node[k, text width=24mm] (as) at (6.0,2.7) {\ct{AttributedString}\\\tiny struct · Sendable · Codable\\\tiny \ct{String.Index}-based};
+  \node[k, text width=24mm, draw=sheetGrey, fill=black!5] (ns) at (6.0,0.75) {\ct{NSAttributedString}\\\tiny class (+ Mutable) · \ct{NSRange}\\\tiny = UTF-16 offsets};
+  \draw[hot] ([xshift=-4mm]as.south) -- node[lbl, left, align=right, font=\tiny]{\ct{NSAttributed-}\\\ct{String(s)}} ([xshift=-4mm]ns.north);
+  \draw[hot, draw=sheetGreen] ([xshift=4mm]ns.north) -- node[lbl, right, align=left, font=\tiny, text=sheetGreen!50!black]{\ct{try AttributedString(}\\\ct{ns, including:}\\\ct{\textbackslash.uiKit)}} ([xshift=4mm]as.south);
+  \node[lbl, anchor=west, align=left, text=sheetRed, font=\tiny] at (4.5,0.0) {keys \textbf{outside the scope are dropped}};
+  % ---------------- scopes ----------------
+  \node[font=\bfseries\small, anchor=west] at (8.45,3.55) {Scopes};
+  \node[k, text width=26mm, draw=sheetBrown, fill=sheetBrown!8] (fd) at (9.9,2.85) {\ct{\textbackslash.foundation}\\\tiny link, languageIdentifier, …};
+  \node[k, text width=12mm, font=\tiny] (ui) at (9.2,1.85) {\ct{\textbackslash.uiKit}\\font (UIFont)};
+  \node[k, text width=12mm, font=\tiny, draw=sheetGreen, fill=sheetGreen!8] (su) at (10.6,1.85) {\ct{\textbackslash.swiftUI}\\font (Font)};
+  \draw[flow] (fd) -- (ui); \draw[flow] (fd) -- (su);
+  \node[lbl, anchor=west, align=left, font=\tiny] at (8.45,0.85) {each includes Foundation; yours:\\\ct{AttributeScope} + \ct{AttributeDynamic-}\\\ct{Lookup} ext. $\Rightarrow$ \ct{s.myKey = x}};
+  \node[lbl, anchor=west, align=left, font=\tiny, text=sheetRed] at (8.45,0.1) {SwiftUI \ct{Text} ignores other\\Foundation/UIKit keys};
+  % ---------------- editor loop ----------------
+  \draw[sheetGrey!40] (11.95,3.7) -- (11.95,0);
+  \node[font=\bfseries\small, anchor=west] at (12.1,3.55) {SwiftUI editor (iOS 26)};
+  \node[k, text width=26mm] (te) at (13.6,2.85) {\ct{TextEditor(text: \$text,}\\\ct{selection: \$sel)}};
+  \node[k, text width=26mm, draw=sheetOrange, fill=sheetOrange!8] (tb) at (13.6,1.85) {\textbf{B} tapped $\to$\\\tiny\ct{text.transformAttributes(}\\\tiny\ct{in: \&sel) \{ \$0.font = … \}}};
+  \node[k, text width=26mm, draw=sheetGreen, fill=sheetGreen!8] (fd2) at (13.6,0.75) {\tiny\ct{AttributedTextFormatting-}\\\tiny\ct{Definition}: \ct{constrain}\\\tiny allowed keys/values};
+  \draw[flow] (te) -- (tb);
+  \draw[flow] (tb) -- (fd2);
+  \draw[hot] (fd2.east) -- ++(0.2,0) |- node[lbl, pos=0.25, right, font=\tiny, align=left]{new\\value} (te.east);
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{AttributedString}
+\begin{itemize}
+  \item Views: \ct{characters}, \ct{unicodeScalars}, \ct{utf8}/\ct{utf16}, \ct{runs}.
+        \ct{s[range]} $\to$ \ct{AttributedSubstring}; \ct{s[rangeSet]} $\to$
+        \ct{DiscontiguousAttributedSubstring}.
+  \item \ct{s.foregroundColor = .red} sets it on every run; or build an \ct{AttributeContainer}
+        $\to$ \ct{mergeAttributes} / \ct{replaceAttributes(\_:with:)} / \ct{setAttributes}.
+  \item \textbf{Markdown}: \ct{try AttributedString(markdown:)} — inline styles and links become
+        attributes; blocks become \ct{presentationIntent}, which \ct{Text} does not draw
+        (\ct{.inlineOnlyPreservingWhitespace} keeps newlines). \ct{Text("**hi**")} parses a
+        \emph{literal}; \ct{Text(someString)} does not.
+  \item \textbf{Custom keys}: \ct{CodableAttributedStringKey} (\ct{MarkdownDecodable\ldots} for
+        \ct{\^{}[text](key: value)}); rules: \ct{inheritedByAddedText},
+        \ct{invalidationConditions [.textChanged]}, \ct{runBoundaries .paragraph}.
+  \item In SwiftUI, string attributes \textbf{beat view modifiers}; SwiftUI-scope keys beat UIKit ones.
+\end{itemize}
+
+\hd{AttributedString vs NSAttributedString}
+{\scriptsize
+\begin{tabular}{@{}L{0.2\linewidth}L{0.37\linewidth}L{0.37\linewidth}@{}}
+\toprule
+ & \ct{AttributedString} & \ct{NSAttributedString} \\ \midrule
+kind & struct, COW, \ct{Sendable} & class; \ct{NSMutable\ldots} to edit \\
+keys & typed (\ct{\textbackslash.font}), scoped & \ct{[NSAttributedString.Key: Any]} \\
+index & \ct{AttributedString.Index} & \ct{NSRange} (UTF-16 ints) \\
+Codable & yes (codable keys) & \ct{NSSecureCoding}, RTF(D), HTML \\
+used by & SwiftUI \ct{Text}/\ct{TextEditor} & UIKit views, TextKit, Core Text \\
+\bottomrule
+\end{tabular}}
+
+\hd{Example — build, walk, bridge; a Bold button (iOS 26)}
+\begin{lstlisting}[language=SwiftSheet]
+var s = try AttributedString(
+  markdown: "Read the [docs](https://example.com)")
+var hot = AttributeContainer(); hot.foregroundColor = .orange
+s.mergeAttributes(hot)
+for run in s.runs where run.link != nil {
+  print(String(s[run.range].characters)) }      // "docs"
+let ns = NSAttributedString(s)                  // hand to UIKit
+// SwiftUI: @State text: AttributedString, sel: AttributedTextSelection
+TextEditor(text: $text, selection: $sel)        // B/I/U built in
+func toggleBold() {                             // ctx: fontResolutionContext
+  let f = sel.typingAttributes(in: text).font ?? .default
+  let on = f.resolve(in: ctx).isBold
+  text.transformAttributes(in: &sel) {
+    $0.font = ($0.font ?? .default).bold(!on) } }
+\end{lstlisting}
+
+\hd{Links \& data detectors}
+\ct{.link} attribute or markdown link; SwiftUI intercepts via
+\ct{.environment(\textbackslash.openURL, OpenURLAction \{ \_ in .handled \})}. \ct{UITextView}:
+link colour comes from \ct{linkTextAttributes}, not the run; iOS 17
+\ct{textView(\_:primaryActionFor:defaultAction:)} gets a \ct{UITextItem} (link, attachment,
+tag). \ct{dataDetectorTypes} work \textbf{only when not editable} — else \ct{NSDataDetector}.
+
+\columnbreak
+
+\hd{Rich-text editing — SwiftUI (iOS 26)}
+\begin{itemize}
+  \item \ct{TextEditor(text: \$attributed, selection:)}; system B/I/U in the context menu +
+        keyboard bar (\ct{.textInputFormattingControlVisibility(\_:for:)}).
+  \item \ct{AttributedTextSelection} = caret (+ \textbf{typing attributes}) or ranges:
+        \ct{indices(in:)}, \ct{attributes(in:)}, \ct{typingAttributes(in:)}.
+  \item Mutate \emph{through} the selection so it stays valid: \ct{transformAttributes(in:)},
+        \ct{replaceSelection(\_:withCharacters:)}.
+  \item Limit formatting: \ct{AttributedTextFormattingDefinition} (\ct{Scope} +
+        \ct{ValueConstraint}s) via \ct{.attributedTextFormattingDefinition(\_:)} — controls
+        for disallowed values disable themselves.
+\end{itemize}
+
+\hd{Rich-text editing — UIKit}
+\begin{itemize}
+  \item Edit \ct{textStorage} in place (keeps selection + undo), don't reset
+        \ct{attributedText}. \ct{allowsEditingTextAttributes} adds B/I/U; iOS 18
+        \ct{textFormattingConfiguration} feeds the formatting panel.
+  \item \ct{typingAttributes} style the next typed text; \textbf{cleared when the selection
+        changes}. iOS 26 multi-selection: \ct{shouldChangeTextInRanges:replacementText:}.
+\end{itemize}
+
+\hd{Text input — UITextInput \& IME}
+\begin{itemize}
+  \item \ct{UIKeyInput} (\ct{insertText}, \ct{deleteBackward}, \ct{hasText}) suffices for a PIN
+        field; a real editor adopts \ct{UITextInput} (positions, ranges, geometry,
+        \ct{tokenizer}, \ct{inputDelegate}).
+  \item \textbf{Marked text}: CJK IMEs compose in \ct{markedTextRange}
+        (\ct{setMarkedText} $\to$ \ct{unmarkText}) — not committed text yet.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Max-length check in \ct{shouldChangeText\ldots} ignoring \ct{markedTextRange} breaks CJK
+        typing — skip while composing.}
+  \trap{Keeping an \ct{AttributedString.Index} across an edit — use \ct{transform(updating:)}.}
+  \trap{\ct{NSRange} built from \ct{String.count} — UTF-16 $\neq$ \ct{Character}s (emoji).}
+  \trap{HTML import (\ct{NSAttributedString(data:options:)}, \ct{.html}) spins up WebKit:
+        main thread, slow — never in a cell.}
+\end{itemize}
+
+\hd{Timeline}
+\begin{tikzpicture}[sheet]
+  \tikzset{yr/.style={font=\bfseries\scriptsize, text=sheetBlue},
+           ev/.style={font=\tiny, align=center, text=black!85, text width=16mm, anchor=north}}
+  \draw[thick, sheetGrey, ->] (0,0) -- (8.3,0);
+  \foreach \x/\y/\t in {
+      0.9/iOS 15/{\ct{AttributedString}\\markdown init\\scopes, custom keys},
+      3.0/iOS 17/{\ct{UITextItem}\\\ct{primaryActionFor}},
+      5.1/iOS 18/{\ct{textFormatting-}\\\ct{Configuration}\\(UIKit panel)},
+      7.2/iOS 26/{rich \ct{TextEditor}\\\ct{AttributedText-}\\\ct{Selection} · ranges}}{
+    \fill[sheetBlue] (\x,0) circle (0.6mm);
+    \node[yr, above=1pt] at (\x,0) {\y};
+    \node[ev] at (\x,-0.12) {\t};
+  }
+\end{tikzpicture}
+
+\hd{Remember}
+\textbf{``Characters + runs; scope the keys; edit through the selection; mind the marked text.''}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} textkit2-text-layout · strings-and-collections
+(UTF-16) · accessibility-localization (\ct{String(localized:)}) · liquid-glass-swiftui-26-27 · swiftui-uikit-interop}
+
+\end{document}

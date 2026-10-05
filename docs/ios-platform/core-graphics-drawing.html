@@ -1,0 +1,82 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Core Graphics — CGContext, paths, images, PDF — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/ios-platform/core-graphics-drawing.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">50</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Core Graphics — CGContext, paths, images, PDF</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">ios-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Core Graphics (Quartz 2D) is a C, <strong>CPU</strong>, immediate-mode 2D renderer. You talk to a
+<code>CGContext</code> — a <strong>state machine</strong> (CTM, clip, colours, line style, shadow, alpha, blend mode)
+with a stack you push/pop with <code>saveGState()</code> / <code>restoreGState()</code> — build a <strong>path</strong>,
+then <strong>paint</strong> it (fill / stroke), and the context rasterises into its destination: a
+<strong>bitmap</strong>, a view’s <strong>backing store</strong>, or a <strong>PDF</strong> (vectors kept). UIKit’s
+<code>UIBezierPath</code>, <code>UIGraphicsImageRenderer</code> and <code>draw(_:)</code> are thin wrappers over it.</p>
+<p class="sheet-tools"><a class="sheet-download" href="core-graphics-drawing.pdf" download>Download PDF</a> <a href="core-graphics-drawing.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/core-graphics-drawing.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="core-graphics-drawing-fig1.svg" width="631" height="154" class="wide" alt="Core Graphics — CGContext, paths, images, PDF — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">How it works</span></h3>
+<ul>
+<li><strong>Order</strong>: set state <span class="math">→</span> build path (<code>move(to:)</code>, <code>addLine</code>, <code>addCurve</code>,  <code>addArc</code>, <code>addRect</code>, <code>addEllipse(in:)</code>, <code>closePath</code>) <span class="math">→</span> paint  (<code>fillPath</code>, <code>strokePath</code>, <code>drawPath(using: .fillStroke)</code>). Painting clears the path.</li>
+<li><strong>CTM</strong> maps user space <span class="math">→</span> device space; <code>translateBy</code> / <code>rotate(by:)</code> /  <code>scaleBy</code> <em>concatenate</em>, so order matters (rotate-then-translate <span class="math">≠</span>  translate-then-rotate). Wrap every local transform in save/restore.</li>
+<li><strong>Fill rules</strong>: non-zero winding (default) vs <strong>even-odd</strong>  (<code>fillPath(using: .evenOdd)</code>, <code>usesEvenOddFillRule</code>) — a ring = two circles,  even-odd punches the hole regardless of direction.</li>
+<li><strong>Strokes</strong> straddle the path: half the width lands outside. A 1-pixel hairline =  width <code>1/scale</code> centred on a pixel (offset <code>0.5/scale</code>), or it smears over two.</li>
+<li><strong>Clipping</strong>: <code>clip()</code> / <code>addClip()</code> intersects the clip with the current path.  <strong>Gradients</strong> (<code>CGGradient</code> + <code>drawLinearGradient</code> / <code>drawRadialGradient</code>)  fill the <em>whole clip</em> — clip to your shape first.</li>
+<li><strong>Shadows</strong> (<code>setShadow(offset:blur:color:)</code>) apply to <em>every</em> later draw;  to shadow a group once: <code>beginTransparencyLayer</code> … <code>endTransparencyLayer</code>.</li>
+<li><strong>CGImage</strong> = immutable bitmap: width, height, <code>bitsPerComponent</code>,  <code>bitsPerPixel</code>, <code>bytesPerRow</code> (may be <em>padded</em> past w·4 — never assume),  colour space, <code>bitmapInfo</code>. iOS-native: 8-bit <strong>BGRA premultiplied</strong>  (<code>.premultipliedFirst</code> + <code>.byteOrder32Little</code>); pass <code>bytesPerRow: 0</code> to let  CG align it.</li>
+<li><strong>Colour spaces</strong>: sRGB · <strong>Display P3</strong> (wide colour) · extended sRGB (values  outside 0–1, 16-bit float, 8 B/px). <code>UIGraphicsImageRendererFormat.preferredRange</code>  (iOS 12): <code>.automatic</code> picks by content, <code>.standard</code> forces 8-bit sRGB.</li>
+<li><strong>Renderer vs old API</strong>: <code>UIGraphicsImageRenderer</code> (iOS 10) is block-scoped (no  unbalanced begin/end), reusable, picks scale + range; <code>UIGraphicsBeginImageContext(WithOptions)</code>  is <strong>deprecated in the iOS 27 SDK</strong>.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — badge: clip, gradient, restore, flip</span></h3>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">let</span> fmt <span class="hljs-operator">=</span> <span class="hljs-type">UIGraphicsImageRendererFormat</span>(); fmt.scale <span class="hljs-operator">=</span> <span class="hljs-number">1</span>   <span class="hljs-comment">// exact pixels</span>
+<span class="hljs-keyword">let</span> r <span class="hljs-operator">=</span> <span class="hljs-type">UIGraphicsImageRenderer</span>(size: <span class="hljs-type">CGSize</span>(width: <span class="hljs-number">300</span>, height: <span class="hljs-number">300</span>),
+                                format: fmt)
+<span class="hljs-keyword">let</span> badge <span class="hljs-operator">=</span> r.image { rc <span class="hljs-keyword">in</span>
+  <span class="hljs-keyword">let</span> ctx <span class="hljs-operator">=</span> rc.cgContext                        <span class="hljs-comment">// UIKit-flipped: top-left</span>
+  ctx.saveGState()                              <span class="hljs-comment">// push</span>
+  <span class="hljs-type">UIBezierPath</span>(roundedRect: rc.format.bounds, cornerRadius: <span class="hljs-number">48</span>).addClip()
+  <span class="hljs-keyword">let</span> g <span class="hljs-operator">=</span> <span class="hljs-type">CGGradient</span>(colorsSpace: <span class="hljs-literal">nil</span>, colors: [<span class="hljs-type">UIColor</span>.systemBlue.cgColor,
+            <span class="hljs-type">UIColor</span>.systemTeal.cgColor] <span class="hljs-keyword">as</span> <span class="hljs-type">CFArray</span>, locations: [<span class="hljs-number">0</span>, <span class="hljs-number">1</span>])<span class="hljs-operator">!</span>
+  ctx.drawLinearGradient(g, start: .zero, end: <span class="hljs-type">CGPoint</span>(x: <span class="hljs-number">0</span>, y: <span class="hljs-number">300</span>),
+                         options: [])           <span class="hljs-comment">// fills the CLIP, not a shape</span>
+  ctx.restoreGState()                           <span class="hljs-comment">// pop: clip gone again</span>
+  ctx.translateBy(x: <span class="hljs-number">0</span>, y: <span class="hljs-number">300</span>); ctx.scaleBy(x: <span class="hljs-number">1</span>, y: <span class="hljs-operator">-</span><span class="hljs-number">1</span>)  <span class="hljs-comment">// to Quartz y-up</span>
+  ctx.draw(logoCG, in: <span class="hljs-type">CGRect</span>(x: <span class="hljs-number">100</span>, y: <span class="hljs-number">100</span>, width: <span class="hljs-number">100</span>, height: <span class="hljs-number">100</span>))
+}</code></pre>
+<p><strong><span class="c-sheetblue"><code>draw(_:)</code> rules</span></strong></p>
+<p><code>rect</code> is the <em>dirty</em> area — draw only what intersects it; <code>setNeedsDisplay(_ rect:)</code> narrows it. Never call <code>draw</code> yourself. Default <code>contentMode = .scaleToFill</code> <em>stretches the
+old bitmap</em> on resize — set <code>.redraw</code>. Opaque view + solid <code>backgroundColor</code> = no blending.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Which drawing tool?</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>tool</strong></th><th><strong>cost</strong></th><th><strong>use for</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>draw(_:)</code> override</td><td>CPU redraw into a backing store on every <code>setNeedsDisplay</code></td><td>custom content that changes rarely</td></tr>
+<tr><td><code>CAShapeLayer</code></td><td>path rendered by the render server; no app bitmap</td><td>shapes, rings, animated <code>path</code> / <code>strokeEnd</code></td></tr>
+<tr><td>renderer <span class="math">→</span> <code>UIImage</code></td><td>one CPU draw, then just an image</td><td>badges, thumbnails, export, snapshots</td></tr>
+<tr><td><code>CGContext(data:…)</code></td><td>you own the bytes</td><td>pixel access, custom formats</td></tr>
+<tr><td><code>UIGraphicsPDFRenderer</code></td><td>vectors, resolution-free</td><td>invoices, reports, print</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">PDF — out and in</span></h3>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">let</span> a4 <span class="hljs-operator">=</span> <span class="hljs-type">CGRect</span>(x: <span class="hljs-number">0</span>, y: <span class="hljs-number">0</span>, width: <span class="hljs-number">595</span>, height: <span class="hljs-number">842</span>)    <span class="hljs-comment">// points = 1/72 inch</span>
+<span class="hljs-keyword">let</span> data <span class="hljs-operator">=</span> <span class="hljs-type">UIGraphicsPDFRenderer</span>(bounds: a4).pdfData { ctx <span class="hljs-keyword">in</span>
+  ctx.beginPage()                                         <span class="hljs-comment">// one per page</span>
+  <span class="hljs-string">&quot;Invoice&quot;</span>.draw(at: <span class="hljs-type">CGPoint</span>(x: <span class="hljs-number">48</span>, y: <span class="hljs-number">48</span>), withAttributes: attrs) }
+<span class="hljs-keyword">let</span> page <span class="hljs-operator">=</span> <span class="hljs-type">CGPDFDocument</span>(url <span class="hljs-keyword">as</span> <span class="hljs-type">CFURL</span>)<span class="hljs-operator">?</span>.page(at: <span class="hljs-number">1</span>)      <span class="hljs-comment">// 1-BASED index</span>
+<span class="hljs-comment">// render: scale the CTM to fit getBoxRect(.mediaBox), flip, drawPDFPage(page)</span></code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap"><code>clip()</code> without <code>saveGState</code> — nothing outside that shape can be drawn again.</li>
+<li class="trap">Gradient floods the view: forgot to clip to the path first.</li>
+<li class="trap">Animating by <code>setNeedsDisplay</code> every frame — a full CPU redraw per frame; animate a  layer property or use <code>CAShapeLayer</code>.</li>
+<li class="trap">“300×300” export is 900×900 px: the renderer’s default <code>scale</code> is the screen’s.</li>
+<li class="trap">Reading pixels with <code>bytesPerRow = width·4</code> — rows are padded; alpha is  <em>premultiplied</em>, so un-premultiply before comparing colours.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<h3 class="sheet-hd">“State, path, paint — save before you clip; UIKit looks down, Quartz looks up.”</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> rendering-pipeline (ImageIO downsampling,
+lazy decode) · core-animation-rendering (CAShapeLayer, commit) · image-loading-pipeline (bytes per
+pixel) · swiftui-gestures-canvas (Canvas) · core-image-filters · metal-essentials</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=ios-platform" title="area">ios-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=ios" title="platform">ios</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=ui" title="topic">ui</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=performance" title="topic">performance</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=platform-apis" title="topic">platform-apis</a></li><li class="sheet-tag"><a href="/folios.html?tag=core-graphics">core-graphics</a></li><li class="sheet-tag"><a href="/folios.html?tag=cgcontext">cgcontext</a></li><li class="sheet-tag"><a href="/folios.html?tag=graphics-state">graphics-state</a></li><li class="sheet-tag"><a href="/folios.html?tag=ctm">ctm</a></li><li class="sheet-tag"><a href="/folios.html?tag=coordinate-flip">coordinate-flip</a></li><li class="sheet-tag"><a href="/folios.html?tag=uibezierpath">uibezierpath</a></li><li class="sheet-tag"><a href="/folios.html?tag=clipping">clipping</a></li><li class="sheet-tag"><a href="/folios.html?tag=cggradient">cggradient</a></li><li class="sheet-tag"><a href="/folios.html?tag=uigraphicsimagerenderer">uigraphicsimagerenderer</a></li><li class="sheet-tag"><a href="/folios.html?tag=draw-rect">draw-rect</a></li><li class="sheet-tag"><a href="/folios.html?tag=pdf-rendering">pdf-rendering</a></li><li class="sheet-tag"><a href="/folios.html?tag=cgimage">cgimage</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=ios-platform%2Fcore-graphics-drawing.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/new?category=folio-comments&amp;title=Core%20Graphics%20%E2%80%94%20CGContext%2C%20paths%2C%20images%2C%20PDF&amp;body=About%20the%20folio%3A%20https%3A%2F%2Ffolio.gurgul.pro%2Fios-platform%2Fcore-graphics-drawing.html%0A%0A">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

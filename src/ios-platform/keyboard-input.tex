@@ -1,0 +1,203 @@
+% keyboard-input.tex — keyboard avoidance (keyboardLayoutGuide vs notifications,
+% scroll-view insets), the first responder, inputView / inputAccessoryView, text
+% input traits, UITextField delegate vs actions, marked text (IME), hardware
+% keyboard shortcuts, SwiftUI focus + keyboard toolbar.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/uikit/uikeyboardlayoutguide (iOS 15, followsUndockedKeyboard)
+%   developer.apple.com/documentation/uikit/uiresponder (keyboard notifications + userInfo keys,
+%     inputView, inputAccessoryView, becomeFirstResponder)
+%   developer.apple.com/documentation/uikit/uitextinputtraits (textContentType; .oneTimeCode iOS 12)
+%   developer.apple.com/documentation/uikit/uikeycommand (wantsPriorityOverSystemBehavior, iOS 15)
+%   developer.apple.com/documentation/uikit/uitextinput (markedTextRange)
+%   developer.apple.com/documentation/swiftui/focusstate (iOS 15) · submitLabel · scrollDismissesKeyboard
+%     (iOS 16) · onKeyPress (iOS 17)
+% @labels: area=ios-platform kind=api platform=ios topic=ui
+% @tags: keyboard-avoidance, keyboardlayoutguide, first-responder, inputaccessoryview, inputview, textcontenttype, onetimecode, uitextfielddelegate, marked-text, ime, uikeycommand, focusstate
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,defer,
+    override,super,if,else,return,guard,self,nil,true,false,in,for,async,await,
+    try,as,private},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ev/.style={font=\tiny, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small, anchor=west},
+  kb/.style={draw=sheetGrey, fill=black!12, rounded corners=1pt},
+  acc/.style={draw=sheetOrange, fill=sheetOrange!25},
+}
+% one \hbox per character: the mono font turns != into a ligature glyph
+\newcommand\neqop{\texttt{\hbox{!}\hbox{=}}}
+
+\begin{document}
+
+\sheettitle{Keyboard + text input}{ios-platform · folio}
+
+\oneliner{The keyboard belongs to the \textbf{first responder}: iOS shows its
+\texttt{inputView} (default: the system keyboard) + \texttt{inputAccessoryView}, and
+\textbf{your} layout moves — with \texttt{keyboardLayoutGuide} (iOS 15) or from the
+\textbf{real end frame} in the notifications. Input is shaped by \textbf{traits}, and
+is \textbf{provisional} while an IME holds marked text.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── A: geometry ──
+  \node[ttl] at (0,3.35) {Geometry};
+  \draw[thick, rounded corners=4pt, sheetGrey] (0.3,-0.55) rectangle (2.9,3.05);
+  \fill[sheetBlue!8] (0.4,1.4) rectangle (2.8,2.95);
+  \node[lbl] at (1.6,2.6) {scroll content};
+  \draw[sheetBlue, thick] (0.6,1.75) rectangle (2.6,2.05); \node[lbl] at (1.6,1.9) {focused field};
+  \draw[acc] (0.3,1.1) rectangle (2.9,1.4); \node[lbl] at (1.6,1.25) {\texttt{inputAccessoryView}};
+  \draw[kb] (0.3,-0.55) rectangle (2.9,1.1);
+  \node[lbl] at (1.6,0.35) {\texttt{inputView}\\\emph{or} system keyboard};
+  \draw[dashed, sheetGreen!60!black, thick] (0.1,1.4) -- (3.15,1.4);
+  \node[lbl, anchor=west, text=sheetGreen!55!black] at (3.1,1.62) {\texttt{keyboardLayoutGuide}\\\texttt{.topAnchor}};
+  \draw[decorate, decoration={brace, amplitude=3pt}, sheetOrange] (3.05,1.4) -- (3.05,-0.55);
+  \node[lbl, anchor=west, text=sheetOrange, align=left] at (3.2,0.45) {overlap =\\\texttt{bounds.maxY}\\\,$-$ kb \texttt{minY}\\$\to$ \texttt{contentInset}\\\ \ \texttt{.bottom}};
+  % ── B: notification timeline ──
+  \draw[sheetGrey!40] (5.15,3.45) -- (5.15,-0.6);
+  \node[ttl] at (5.3,3.35) {Notifications (\texttt{UIResponder.keyboard\dots})};
+  \draw[->, thick, sheetGrey] (5.4,1.6) -- (11.0,1.6);
+  \foreach \x/\t/\c in {5.7/tap field/black, 6.75/\texttt{willShow}/sheetBlue, 7.9/\texttt{didShow}/sheetGrey, 9.0/\texttt{willChange-}\\\texttt{Frame}/sheetOrange, 10.45/\texttt{willHide}/sheetBlue}
+    { \fill[\c] (\x,1.6) circle (1.4pt); \node[ev, text=\c, above=2pt] at (\x,1.6) {\t}; }
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}, sheetBlue] (6.75,1.45) -- (7.9,1.45);
+  \node[lbl, text=sheetBlue] at (7.32,1.05) {animate \emph{with} its\\duration + curve};
+  \node[lbl, text=sheetOrange] at (9.0,1.0) {predictive bar,\\emoji, undock,\\rotation};
+  \node[lbl, text=sheetBlue] at (10.45,1.05) {\texttt{resign\dots}\\\texttt{endEditing}};
+  \node[lbl, anchor=west, align=left] at (5.3,0.15) {\texttt{userInfo}: \texttt{keyboardFrameEndUserInfoKey} — \textbf{screen} coords, convert;\\\texttt{\dots AnimationDurationUserInfoKey}, \texttt{\dots AnimationCurveUserInfoKey}\\(a raw \texttt{UIView.AnimationCurve}; as options: \texttt{rawValue << 16})};
+  % ── C: marked text ──
+  \draw[sheetGrey!40] (11.3,3.45) -- (11.3,-0.6);
+  \node[ttl] at (11.45,3.35) {Marked text (IME, dictation)};
+  \node[font=\ttfamily\small, anchor=west] (m) at (11.6,2.55) {ni hao};
+  \draw[sheetOrange, thick] (11.65,2.35) -- (12.65,2.35);
+  \node[lbl, anchor=west, text=sheetOrange] at (12.85,2.55) {\texttt{markedTextRange} \neqop\ \texttt{nil}\\provisional — don't validate};
+  \draw[flow] (12.1,2.2) -- node[lbl, right]{pick a candidate} (12.1,1.45);
+  \node[draw=sheetGreen, font=\tiny, anchor=west, inner sep=2pt, align=center] at (11.6,1.2) {2 Han\\chars};
+  \node[lbl, anchor=west, text=sheetGreen!55!black] at (12.45,1.2) {committed: \texttt{markedTextRange} is \texttt{nil}\\now count, trim, format};
+  \node[lbl, anchor=west, align=left] at (11.45,0.25) {\texttt{.editingChanged} fires \emph{during}\\composition; \texttt{text} includes the marked part.\\Count \texttt{String.count} (graphemes), not UTF-16.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{First responder}: \texttt{becomeFirstResponder()} returns
+        \texttt{Bool} — \texttt{false} if not in a window yet or
+        \texttt{canBecomeFirstResponder} is false. Dismiss:
+        \texttt{resignFirstResponder()}, \texttt{view.endEditing(true)}, or a
+        \texttt{nil}-targeted \texttt{resignFirstResponder} action.
+  \item \texttt{inputView} \textbf{replaces} the keyboard (a picker);
+        \texttt{inputAccessoryView} rides \textbf{above} it. Chat composer: the VC
+        returns \texttt{true} from \texttt{canBecomeFirstResponder} and vends the bar
+        as its \texttt{inputAccessoryView}; with \texttt{keyboardDismissMode =
+        .interactive} it follows the finger.
+  \item \textbf{\texttt{keyboardLayoutGuide}} (iOS 15): pin to its
+        \texttt{topAnchor}; show/hide, height changes and animation come free;
+        \texttt{followsUndockedKeyboard} for the floating iPad keyboard. With no
+        keyboard it sits at the safe-area bottom.
+  \item \textbf{Scroll view}: inset content + indicators by the overlap
+        \emph{minus the bottom safe area} (already in the adjusted inset),
+        \texttt{scrollRectToVisible}, reset on hide. \texttt{UITableViewController}
+        does it for you.
+  \item \textbf{Traits}: \texttt{keyboardType} (\texttt{.emailAddress},
+        \texttt{.numberPad}, \texttt{.decimalPad}, \texttt{.URL});
+        \texttt{textContentType} drives AutoFill — \texttt{.username},
+        \texttt{.password}, \texttt{.newPassword} (+ \texttt{passwordRules}),
+        \texttt{.oneTimeCode} (SMS code offered above the keyboard, no permission);
+        \texttt{returnKeyType}; \texttt{autocorrectionType},
+        \texttt{smartQuotesType}, \texttt{smartDashesType}.
+  \item \textbf{\texttt{UITextField}}: the delegate \emph{asks}
+        (\texttt{shouldBeginEditing}, \texttt{shouldChangeCharactersIn} with an
+        \texttt{NSRange} in UTF-16, \texttt{textFieldShouldReturn}); control events
+        \emph{report} (\texttt{.editingChanged} incl. paste/AutoFill,
+        \texttt{.editingDidEndOnExit}; \texttt{addAction(\_:for:)}). A programmatic
+        \texttt{text =} triggers neither.
+  \item \textbf{Hardware keyboard}: \texttt{UIKeyCommand(title:action:input:\allowbreak
+        modifierFlags:)} in a responder's \texttt{keyCommands} (or the
+        \texttt{buildMenu(with:)} menu) — titled ones appear when Cmd is held;
+        \texttt{wantsPriorityOverSystemBehavior} (iOS 15) wins keys the system
+        uses. Raw keys: \texttt{pressesBegan} $\to$ \texttt{UIPress.key}. The
+        software keyboard shrinks to a shortcut bar.
+  \item \textbf{SwiftUI}: avoids the keyboard itself (iOS 14; opt out
+        \texttt{.ignoresSafeArea(.keyboard)}). iOS 15: \texttt{@FocusState} +
+        \texttt{.focused}, \texttt{.submitLabel} + \texttt{.onSubmit}, a
+        \texttt{ToolbarItemGroup(placement: .keyboard)}; iOS 16
+        \texttt{.scrollDismissesKeyboard}; iOS 17 \texttt{.onKeyPress}.
+\end{itemize}
+
+\columnbreak
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+// iOS 15+: pin the composer to the keyboard - no observers
+composer.bottomAnchor.constraint(
+  equalTo: view.keyboardLayoutGuide.topAnchor).isActive = true
+// scroll view, from keyboardWillChangeFrame:
+@objc func kbChanged(_ n: Notification) {
+  guard let end = n.userInfo?[UIResponder
+          .keyboardFrameEndUserInfoKey] as? CGRect,
+        let screen = view.window?.screen else { return }
+  let kb = view.convert(end, from: screen.coordinateSpace)
+  let overlap = max(0, view.bounds.maxY - kb.minY
+                       - view.safeAreaInsets.bottom)
+  scroll.contentInset.bottom = overlap
+  scroll.verticalScrollIndicatorInsets.bottom = overlap }
+// SwiftUI
+TextField("Email", text: $email).focused($field, equals: .email)
+  .textContentType(.emailAddress).keyboardType(.emailAddress)
+  .submitLabel(.next).onSubmit { field = .password }
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{A hard-coded keyboard height, or only \texttt{willShow}: the predictive bar,
+        emoji, hardware or floating keyboard change the frame — handle
+        \texttt{willChangeFrame}, or use the guide.}
+  \trap{Keyboard frame is in \textbf{screen} coordinates; in Split View / Stage
+        Manager the window is not the screen — convert.}
+  \trap{\texttt{becomeFirstResponder()} in \texttt{viewDidLoad} returns
+        \texttt{false} (no window): do it in \texttt{viewDidAppear}. SwiftUI's twin:
+        setting \texttt{@FocusState} in \texttt{onAppear} can be dropped — defer it.}
+  \trap{Max length in \texttt{shouldChangeCharactersIn}: the range is
+        \textbf{UTF-16}, emoji are several units, and marked text is not final —
+        compute the result with \texttt{Range(range, in:)}, skip while
+        \texttt{markedTextRange} \neqop\ \texttt{nil}.}
+  \trap{Smart quotes / dashes / autocorrect in username, code or search fields
+        silently change \texttt{"} into \texttt{“} — set \texttt{.no}.}
+  \trap{\texttt{.numberPad} has no Return key: add a Done in the accessory
+        view / keyboard toolbar.}
+\end{itemize}
+
+\section{Timeline}
+\begin{tikzpicture}[sheet]
+  \tikzset{yr/.style={font=\bfseries\scriptsize, text=sheetBlue},
+           ev/.style={font=\tiny, align=center, text=black!85, text width=15mm, anchor=north}}
+  \draw[thick, sheetGrey, ->] (0,0) -- (8.3,0);
+  \foreach \x/\y/\t in {
+      0.8/iOS 12/{\texttt{.oneTimeCode}\\\texttt{.newPassword}\\\texttt{passwordRules}},
+      2.45/iOS 14/{SwiftUI avoids\\the keyboard},
+      4.1/iOS 15/{\texttt{keyboardLayout-}\\\texttt{Guide} · \texttt{@FocusState}\\keyboard toolbar},
+      5.75/iOS 16/{\texttt{.scrollDismisses-}\\\texttt{Keyboard}},
+      7.4/iOS 17/{\texttt{.onKeyPress}}}{
+    \fill[sheetBlue] (\x,0) circle (0.6mm);
+    \node[yr, above=1pt] at (\x,0) {\y};
+    \node[ev] at (\x,-0.12) {\t};
+  }
+\end{tikzpicture}
+
+\section{Remember}
+\textbf{Responder owns the keyboard · guide beats notifications · read the real
+frame · marked text is not text yet.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} auto-layout (safe area) ·
+gof-behavioural (responder chain) · state-restoration-multiwindow (window $\neq$
+screen) · strings-and-collections (graphemes)}
+
+\end{document}

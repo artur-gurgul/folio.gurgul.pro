@@ -1,0 +1,162 @@
+% watchos-visionos.tex — watchOS: independent vs companion, WatchConnectivity (the four channels,
+% reachability + queueing), WidgetKit complications + Smart Stack, background refresh budget,
+% workouts; visionOS: windows / volumes / immersive spaces, shared vs full space, RealityView,
+% gaze + pinch input and eye-tracking privacy, ornaments, porting an iPad app.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/watchconnectivity/wcsession (sendMessage, updateApplicationContext,
+%     transferUserInfo, transferFile, transferCurrentComplicationUserInfo; delegate queue; file inbox)
+%   developer.apple.com/documentation/watchkit/wkapplicationrefreshbackgroundtask (up to four an hour
+%     with a complication on the active face) · .../wkextendedruntimesession
+%   developer.apple.com/documentation/widgetkit/creating-accessory-widgets-and-watch-complications
+%     (watchOS 9; ClockKit deprecated) · WWDC23 "Meet watchOS 10" (Smart Stack)
+%   developer.apple.com/documentation/visionos (windows, volumes, ImmersiveSpace, immersion styles,
+%     RealityView, ornaments) · .../arkit/arkitsession (visionOS providers, authorization)
+%   developer.apple.com/design/human-interface-guidelines/accessibility (visionOS target 60 pt)
+%   developer.apple.com/documentation/visionos/understanding-the-visionos-privacy-model (gaze not shared)
+% @labels: area=ios-platform kind=api platform=apple topic=platform-apis,ui
+% @tags: watchos, watchconnectivity, wcsession, updateapplicationcontext, transferuserinfo, complications, hkworkoutsession, visionos, immersive-space, volumes, realityview, gaze-and-pinch
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,protocol,extension,return,if,else,
+    guard,case,switch,self,some,any,where,init,in,private,static,try,await,async,throws,nil,
+    @State,@main,@Observable,@MainActor,@Environment},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\begin{document}
+
+\sheettitle{watchOS \& visionOS — the two other platforms}{ios-platform · folio}
+
+\oneliner{\textbf{watchOS}: a \textbf{separate bundle on a separate device} — glance-first, mostly suspended, talks
+to the phone through \textbf{WatchConnectivity} (four channels with different delivery guarantees) or the network
+itself. \textbf{visionOS}: SwiftUI scenes placed in space — \textbf{windows, volumes, immersive spaces} — driven by
+\textbf{gaze + pinch}, where the \textbf{system, never the app, knows where the user looks}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \tikzset{lb/.style={font=\tiny, inner sep=1pt, align=center},
+           dev/.style={draw=sheetGrey, very thick, rounded corners=4pt, fill=black!3, align=center, font=\scriptsize}}
+  % ---- WatchConnectivity ----
+  \node[font=\scriptsize\bfseries, anchor=west] at (-0.2,3.35) {WatchConnectivity — four channels, four guarantees};
+  \node[dev, minimum width=11mm, minimum height=31mm] (ph) at (0.35,1.45) {iPhone\\app};
+  \node[dev, minimum width=11mm, minimum height=31mm, rounded corners=6pt] (wt) at (7.45,1.45) {Watch\\app};
+  % live pipe
+  \draw[<->, very thick, sheetBlue] (0.95,2.6) -- (6.85,2.6);
+  \node[lb, text=sheetBlue, above] at (3.9,2.62) {\texttt{sendMessage} — live, needs \texttt{isReachable}, NOT queued};
+  % context slot
+  \draw[->, very thick, sheetOrange] (0.95,1.85) -- (1.7,1.85);
+  \node[draw=sheetOrange, fill=sheetOrange!10, minimum width=9mm, minimum height=4mm, font=\tiny] (slot) at (2.2,1.85) {1 slot};
+  \draw[->, very thick, sheetOrange] (slot) -- (6.85,1.85);
+  \node[lb, text=sheetOrange, above, anchor=south west] at (2.8,1.87) {\texttt{updateApplicationContext} — latest overwrites};
+  % FIFO queue
+  \draw[->, very thick, sheetGreen] (0.95,1.1) -- (1.55,1.1);
+  \foreach \x in {1.65,2.0,2.35,2.7} \node[draw=sheetGreen, fill=sheetGreen!12, minimum size=3mm, inner sep=0pt] at (\x,1.1) {};
+  \draw[->, very thick, sheetGreen] (2.9,1.1) -- (6.85,1.1);
+  \node[lb, text=sheetGreen!60!black, anchor=south west] at (2.95,1.12) {\texttt{transferUserInfo} — FIFO, every item};
+  % file
+  \draw[->, very thick, sheetBrown] (0.95,0.35) -- (6.85,0.35);
+  \node[lb, text=sheetBrown, anchor=south west] at (1.0,0.37) {\texttt{transferFile} — queued; inbox copy deleted on delegate return};
+  % ---- visionOS scenes ----
+  \begin{scope}[xshift=9.2cm]
+    \node[font=\scriptsize\bfseries, anchor=west] at (-0.2,3.35) {visionOS — where content lives};
+    \draw[sheetBlue, thick, rounded corners=3pt, fill=sheetBlue!4] (0,0.05) rectangle (3.35,3.0);
+    \node[lb, anchor=north west, text=sheetBlue] at (0.05,2.97) {\textbf{Shared Space} (default)\\many apps side by side};
+    \node[draw=sheetBlue, fill=white, rounded corners=2pt, minimum width=12mm, minimum height=8mm, font=\tiny, align=center] at (0.85,1.55) {Window\\2D, points};
+    \node[draw=sheetBlue, fill=sheetBlue!10, rounded corners=2pt, minimum width=9mm, minimum height=7mm, font=\tiny, align=center] at (2.45,1.55) {Volume\\3D, metres};
+    \draw[sheetBlue] (2.0,1.9) -- (2.2,2.05) -- (3.1,2.05) -- (2.9,1.9);
+    \draw[sheetBlue] (2.9,1.2) -- (3.1,1.35) -- (3.1,2.05);
+    \node[lb, text width=31mm] at (1.68,0.45) {other apps' windows\\stay visible};
+    \draw[->, very thick, sheetOrange] (3.45,1.55) -- (4.35,1.55);
+    \node[lb, text=sheetOrange] at (3.9,2.15) {\texttt{open}\\\texttt{Immersive}\\\texttt{Space}};
+    \draw[sheetOrange, thick, rounded corners=3pt, fill=sheetOrange!6] (4.45,0.05) rectangle (7.0,3.0);
+    \node[lb, anchor=north west, text=sheetOrange] at (4.5,2.97) {\textbf{Full Space}\\only your app};
+    \node[lb, anchor=west, align=left] at (4.55,1.85) {\texttt{.mixed} — passthrough\\\texttt{.progressive} — Crown dial\\\texttt{.full} — room hidden};
+    \node[lb, anchor=west, align=left, text=sheetRed] at (4.55,0.75) {one immersive space\\at a time; result may be\\\texttt{.userCancelled}/\texttt{.error}};
+    \node[lb, anchor=west, align=left] at (4.55,0.25) {ARKit data here only};
+  \end{scope}
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{watchOS}
+\begin{itemize}
+  \item \textbf{Structure}: SwiftUI \texttt{App} (watchOS 7); one watch target since Xcode 14. Own bundle, version,
+        install — no shared process or files with the iPhone app.
+  \item \textbf{Independent} (\texttt{WKRunsIndependentlyOfCompanionApp}, or \texttt{WKWatchOnly}) vs companion:
+        independent apps network themselves; WatchConnectivity is an optimisation. App Groups share only \emph{on
+        one device}.
+  \item \textbf{Complications = WidgetKit} (watchOS 9; ClockKit deprecated): \texttt{.accessoryCircular / Rectangular /
+        Inline / Corner}; timeline entries render without waking you. Widgets also fill the \textbf{Smart Stack}
+        (watchOS 10), ranked by relevance.
+  \item \textbf{Background}: mostly suspended. \texttt{WKApplicationRefreshBackgroundTask}; with a complication on the
+        active face $\approx$\textbf{4 refreshes/hour}. Complete every task or lose budget.
+        \texttt{WKExtendedRuntimeSession}: fixed types (mindfulness, smart alarm\ldots).
+  \item \textbf{Workouts}: \texttt{HKWorkoutSession} + \texttt{HKLiveWorkoutBuilder} = the sanctioned long-running mode.
+        HealthKit hides \emph{read} denial — looks like no data. Always On: \texttt{\textbackslash.isLuminanceReduced}.
+\end{itemize}
+
+\section{WatchConnectivity table}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{36mm}@{}}
+\toprule
+\textbf{API} & \textbf{Reachable?} & \textbf{Delivery · use} \\
+\midrule
+\texttt{sendMessage} & required & now or error; watch$\to$phone wakes the iOS app in background, phone$\to$watch does not · live request/reply \\
+\texttt{updateApplication\-Context} & no & background, latest only · current state, settings \\
+\texttt{transferUserInfo} & no & background FIFO, survives relaunch · events that must all arrive \\
+\texttt{transferFile} & no & background queue · images, audio \\
+\texttt{transferCurrent\-ComplicationUserInfo} & no & high priority, daily budget · complication data \\
+\bottomrule
+\end{tabular}}
+
+\begin{lstlisting}[language=SwiftSheet]
+let s = WCSession.default   // both sides: delegate + activate()
+if s.isReachable {
+  s.sendMessage(msg, replyHandler: nil, errorHandler: nil) }
+else { try? s.updateApplicationContext(state) }  // latest wins
+// delegate runs on a BACKGROUND queue: hop to @MainActor
+\end{lstlisting}
+
+\section{visionOS}
+\begin{itemize}
+  \item \textbf{Scenes}: \texttt{WindowGroup} (window) · \texttt{.windowStyle(.volumetric)} + \texttt{.defaultSize(\ldots, in: .meters)}
+        (volume) · \texttt{ImmersiveSpace(id:)} + \texttt{.immersionStyle}. \texttt{await openImmersiveSpace(id:)} and check the result.
+  \item \textbf{\texttt{RealityView \{ content in \}}}: RealityKit entities in metres; \texttt{update:} syncs state;
+        \texttt{attachments:} pin SwiftUI views to entities. \texttt{TapGesture().targetedToAnyEntity()} fires only on
+        entities with \texttt{InputTargetComponent} + \texttt{CollisionComponent}.
+  \item \textbf{Input}: \emph{indirect} = look + pinch; \emph{direct} = touch content in reach. The \textbf{hover highlight
+        is drawn by the system out of process} — the app gets only the pinch-as-tap, never gaze.
+        \texttt{.hoverEffect()}; targets $\geq$ 60\,pt.
+  \item \textbf{ARKit} (\texttt{ARKitSession} + hand / scene-reconstruction / plane / world providers): needs
+        authorisation (\texttt{NSHandsTrackingUsageDescription}, \texttt{NSWorldSensingUsageDescription}) and an
+        open immersive space.
+  \item \textbf{Ornaments}: \texttt{.ornament(attachmentAnchor: .scene(.bottom))} — controls outside the window.
+  \item \textbf{Porting iPad}: ``Designed for iPad'' runs unmodified in a window; the visionOS destination adds glass,
+        ornaments, volumes, spaces — then fix touch/hover assumptions and tiny targets.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{\texttt{updateApplicationContext} for events} — the 2nd call overwrites the 1st; use \texttt{transferUserInfo}.}
+  \trap{\textbf{\texttt{sendMessage} while not reachable} — nothing queued; no fallback = data lost.}
+  \trap{\textbf{\texttt{isReachable} $\neq$ paired}: check \texttt{isPaired} / \texttt{isWatchAppInstalled} (iOS); iOS side must
+        also handle \texttt{sessionDidBecomeInactive} / \texttt{sessionDidDeactivate} (watch switching) and reactivate.}
+  \trap{\textbf{Received file used later} — the inbox file is deleted when \texttt{session(\_:didReceive:)} returns; move it.}
+  \trap{\textbf{``Log what the user looked at''} on visionOS — impossible by design.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Watch: ``message now, context latest, userInfo all, file big.''} \textbf{Vision: ``window, volume, space —
+the system sees the eyes, you see the pinch.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{widgets-live-activities} (timelines, budget) ·
+\texttt{background-execution} · \texttt{app-clips-handoff} (Continuity) · \texttt{swiftui-gestures-canvas} ·
+\texttt{accessibility-localization}}
+
+\end{document}

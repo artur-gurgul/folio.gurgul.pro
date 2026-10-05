@@ -1,0 +1,197 @@
+% uikit-modern-apis.tex — modern UIKit, iOS 17 to 26: automatic observation tracking (iOS 26,
+% opt-in on iOS 18), updateProperties(), the .flushUpdates animation option, the update pass order,
+% automatic trait tracking (iOS 18), registerForTraitChanges + custom traits (iOS 17),
+% UIButton.Configuration, UIContentUnavailableConfiguration, what landed in which release.
+% NOT repeated here: compositional layout, list configuration, cell registration, content
+% configuration basics (collectionview-compositional), diffable (tableview-diffable),
+% viewIsAppearing + VC order (app-and-vc-lifecycle), keyboardLayoutGuide (keyboard-input),
+% Observation internals (observation-deep).
+% Sources (checked 2026-09-29):
+%   developer.apple.com/documentation/uikit/automatic-observation-tracking (the list of tracked methods)
+%   developer.apple.com/documentation/uikit/updating-views-automatically-with-observation-tracking-in-uikit
+%   developer.apple.com/documentation/bundleresources/information-property-list/uiobservationtrackingenabled
+%   developer.apple.com/documentation/uikit/uiview/updateproperties() (iOS 26; setNeedsUpdateProperties)
+%   developer.apple.com/videos/play/wwdc2025/243/ (update-pass order, .flushUpdates, UIMainMenuSystem,
+%     NotificationCenter.Message, scene life cycle required in the release after iOS 26)
+%   developer.apple.com/videos/play/wwdc2024/10118/ (automatic trait tracking, UIUpdateLink, UITab,
+%     list header()/footer(), UIBackgroundConfiguration.listCell())
+%   developer.apple.com/videos/play/wwdc2023/10055/ (viewIsAppearing back to 13, trait system,
+%     UIContentUnavailableConfiguration, displayAsPalette, uniformAcrossSiblings, #Preview)
+%   developer.apple.com/documentation/uikit/uitraitchangeobservable-67e94 (iOS 17, auto clean-up)
+%   developer.apple.com/documentation/uikit/uibutton/configuration-swift.struct (iOS 15; glass styles 26)
+% @labels: area=ios-platform kind=api platform=ios topic=ui,platform-apis
+% @tags: uikit, observation-tracking, updateproperties, flushupdates, trait-tracking, registerfortraitchanges, custom-traits, uibutton-configuration, content-unavailable-configuration, ios-26
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,override,super,
+    if,else,return,guard,self,Self,nil,true,false,in,private,static,extension,get,set,
+    @Observable},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {>=}{{\hbox{>}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ph/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=9mm, text width=19mm},
+  prop/.style={draw=sheetGreen!70!black, fill=sheetGreen!10, font=\ttfamily\scriptsize,
+               minimum width=20mm, minimum height=4.6mm, inner sep=1pt, anchor=west},
+  dep/.style={->, thick, dashed, draw=sheetGreen!70!black},
+}
+
+\begin{document}
+
+\sheettitle{Modern UIKit — observation, updateProperties, traits (iOS 17–26)}{ios-platform · folio}
+
+\oneliner{UIKit \textbf{subscribes for you}: an \texttt{@Observable} property (or a trait) you
+\textbf{read inside an update method} becomes a dependency; when it changes, UIKit invalidates
+\textbf{only that view} and re-runs \textbf{only that method} in the next update pass — no
+\ct{setNeeds…}. On by default in \textbf{iOS 26}; iOS 18 opts in with \ct{UIObservationTrackingEnabled}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── model ──
+  \node[font=\bfseries\small, anchor=west] at (-0.2,2.4) {\ct{@Observable} model};
+  \draw[sheetGreen!70!black, thick, rounded corners=2pt, fill=sheetGreen!4] (-0.2,0.0) rectangle (2.3,2.15);
+  \node[prop] (p1) at (0,1.8) {unread: Int};
+  \node[prop] (p4) at (0,1.3) {isLoading: Bool};
+  \node[prop] (p2) at (0,0.8) {title: String};
+  \node[prop] (p3) at (0,0.3) {avatar: UIImage};
+  % ── the pass ──
+  \node[font=\bfseries\small, anchor=west] at (3.3,3.7) {one update pass per frame, top-down};
+  \draw[sheetBlue, thick, rounded corners=3pt, fill=sheetBlue!3] (3.3,0.0) rectangle (12.6,3.45);
+  \node[ph, draw=sheetGrey, fill=black!4] (t) at (4.55,2.5) {\textbf{1 traits}\\updated per view};
+  \node[ph, draw=sheetOrange, fill=sheetOrange!12, very thick] (u) at (6.85,2.5) {\textbf{2} \ct{updateProperties()}\\content, styling};
+  \node[ph] (l) at (9.15,2.5) {\textbf{3} \ct{layoutSubviews()}\\geometry (may repeat)};
+  \node[ph, draw=sheetBrown, fill=sheetBrown!10] (d) at (11.45,2.5) {\textbf{4 display}\\\ct{draw(\_:)}};
+  \draw[flow] (t) -- (u); \draw[flow] (u) -- (l); \draw[flow] (l) -- (d);
+  \node[lbl, anchor=south] at (4.55,2.97) {then safe to read\\\ct{traitCollection}};
+  \node[lbl, anchor=south, text=sheetOrange!80!black] at (6.85,2.97) {iOS 26: \ct{setNeeds}\\\ct{UpdateProperties()}};
+  \node[lbl, anchor=south] at (9.15,2.97) {\ct{setNeedsLayout()}};
+  \node[lbl, anchor=south] at (11.45,2.97) {\ct{setNeedsDisplay()}};
+  % dependencies: read inside = tracked
+  \draw[dep] (p1.east) to[out=0,in=-100,looseness=0.6] ([xshift=-2mm]u.south);
+  \draw[dep] (p4.east) to[out=0,in=-80,looseness=0.6] ([xshift=2mm]u.south);
+  \draw[dep] (p2.east) to[out=0,in=-90,looseness=0.6] (l.south);
+  \draw[dep] (p3.east) to[out=0,in=-90,looseness=0.6] (d.south);
+  \node[lbl, anchor=west] at (-0.2,-0.4) {{\color{sheetGreen!45!black}dashed = read inside an update method = tracked dependency.}
+    {\color{sheetRed}Set \ct{model.unread = 0} $\to$ only step 2 re-runs, only in views that read \ct{unread}.}};
+  % ── where tracking works ──
+  \node[font=\bfseries\scriptsize, anchor=west] at (12.8,3.7) {Tracked methods};
+  \node[lbl, anchor=north west, align=left, text width=37mm] at (12.8,3.5) {
+    \textbf{UIView}: \ct{updateProperties}, \ct{layoutSubviews}, \ct{updateConstraints}, \ct{draw(\_:)}\\[1pt]
+    \textbf{VC}: \ct{updateProperties}, \ct{viewWill/DidLayoutSubviews}, \ct{updateViewConstraints},
+    \ct{updateContentUnavailable\-Configuration(using:)}\\[1pt]
+    \textbf{UIButton}: \ct{updateConfiguration()}, \ct{configurationUpdateHandler}\\[1pt]
+    \textbf{cells, header/footer}: \ct{updateConfiguration(using:)}, \ct{configurationUpdateHandler}\\[1pt]
+    \textbf{presentation ctrl}: \ct{containerViewWill/DidLayout…} · \textbf{compositional} section provider\\[2pt]
+    {\color{sheetRed}Not: \ct{viewDidLoad}, \ct{init}, action handlers.}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Observation tracking}: each update method runs inside Observation's access tracking;
+        every property \emph{get} registers the view, a later \emph{set} schedules that view's
+        matching invalidation. \textbf{iOS 26}: always on. \textbf{iOS 18}: Info.plist
+        \ct{UIObservationTrackingEnabled = YES} tracks the \emph{existing} methods only.
+  \item \textbf{\ct{updateProperties()}} (iOS 26, \ct{UIView} + \ct{UIViewController}): content,
+        styling, behaviour. Runs after traits, just before \ct{layoutSubviews}, but is invalidated
+        \textbf{independently} — a text change no longer forces a layout. It may invalidate
+        layout; layout runs right after.
+  \item \textbf{\ct{.flushUpdates}} (iOS 26): \ct{UIView.animate(options: .flushUpdates) \{…\}} applies
+        pending updates before and after the block — change a constraint or a model property inside;
+        no \ct{layoutIfNeeded()}.
+  \item \textbf{Traits} — iOS 17: \ct{registerForTraitChanges([UITrait…], handler:)} replaces the
+        deprecated \ct{traitCollectionDidChange}; removed automatically at dealloc. Custom trait =
+        \ct{UITraitDefinition} (\ct{defaultValue}) + accessors on \ct{UITraitCollection} and
+        \ct{UIMutableTraits}; set it with \ct{traitOverrides}, it flows \emph{down};
+        \ct{UITraitBridgedEnvironmentKey} mirrors it into SwiftUI. iOS 18: \textbf{automatic trait
+        tracking} in the same update methods.
+  \item \textbf{\ct{UIButton.Configuration}} (iOS 15): \ct{.plain/.gray/.tinted/.filled()…} +
+        \ct{subtitle}, \ct{imagePlacement}, \ct{showsActivityIndicator}, \ct{cornerStyle}; per-state
+        tweaks in \ct{configurationUpdateHandler}. iOS 26: \ct{.glass()}, \ct{.prominentGlass()},
+        \ct{.clearGlass()}, \ct{.prominentClearGlass()}.
+  \item \textbf{\ct{UIContentUnavailableConfiguration}} (iOS 17): \ct{.empty()}/\ct{.loading()}/\ct{.search()}
+        + \ct{image}, \ct{text}, \ct{secondaryText}, button; assign
+        \ct{vc.contentUnavailableConfiguration} (\ct{nil} hides) inside
+        \ct{updateContentUnavailableConfiguration(using:)}; before 26 trigger it with
+        \ct{setNeedsUpdateContentUnavailableConfiguration()}.
+\end{itemize}
+
+\hd{Example — one model drives badge, spinner, empty state}
+\begin{lstlisting}[language=SwiftSheet]
+@Observable final class Inbox { var unread = 0; var loading = true }
+final class InboxVC: UIViewController {
+  let inbox = Inbox(); let refresh = UIButton(configuration: .filled())
+  override func updateProperties() {        // iOS 26, tracked
+    super.updateProperties()
+    tabBarItem.badgeValue = inbox.unread > 0 ? "\(inbox.unread)" : nil
+    refresh.configuration?.showsActivityIndicator = inbox.loading }
+  override func updateContentUnavailableConfiguration(
+      using state: UIContentUnavailableConfigurationState) {
+    contentUnavailableConfiguration = inbox.loading ? .loading() : nil }
+  func markAllRead() {                      // animated re-run
+    UIView.animate(options: .flushUpdates) { self.inbox.unread = 0 } }
+  func observeWidth() {                     // iOS 17: once, viewDidLoad
+    registerForTraitChanges([UITraitHorizontalSizeClass.self]) {
+      (self: Self, previous: UITraitCollection) in self.relayout() } } }
+\end{lstlisting}
+
+\columnbreak
+
+\hd{What landed when — say the version}
+{\footnotesize
+\begin{tabular}{@{}>{\bfseries}p{4mm}>{\raggedright\arraybackslash}p{68mm}@{}}
+\toprule
+15 & \ct{UIButton.Configuration} · cell \ct{configurationUpdateHandler} · \ct{keyboardLayoutGuide} ·
+     pop-up buttons \\
+16 & \ct{UIHostingConfiguration} · \ct{UIEditMenuInteraction} · multi-item context menus \\
+17 & \ct{viewIsAppearing} (back to 13) · trait system · \ct{UIContentUnavailableConfiguration} ·
+     \ct{\#Preview} · \ct{addSymbolEffect(.bounce)} · \ct{.uniformAcrossSiblings} · palette menus \\
+18 & auto \textbf{trait} tracking · observation \textbf{opt-in} · \ct{UIUpdateLink} ·
+     \ct{UITab}/\ct{UITabGroup} · \ct{UIBackgroundConfiguration.listCell()} ·
+     \ct{UIView.animate(.spring)} (SwiftUI \ct{Animation}) \\
+26 & observation \textbf{default} · \ct{updateProperties} · \ct{.flushUpdates} · typed
+     \ct{NotificationCenter.Message} · \ct{UIMainMenuSystem} · glass buttons ·
+     \ct{UIHostingSceneDelegate} · split-view inspector \\
+\bottomrule
+\end{tabular}}\par
+{\footnotesize \textbf{Next}: the release after iOS 26 refuses to launch a UIKit app built with the
+latest SDK that has not adopted the \textbf{UIScene life cycle} (WWDC25).\par}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Model read in \ct{viewDidLoad} or an action is \textbf{not} tracked — the label never
+        updates. Read it in an update method.}
+  \trap{Only an \ct{@Observable} \textbf{class} read \emph{through} the handler is tracked; a
+        handler that captured a \emph{struct copy} of the item stays frozen.}
+  \trap{iOS 18 target: the plist key covers layout/draw/config handlers, but \ct{updateProperties}
+        and \ct{.flushUpdates} need \ct{if \#available(iOS 26, *)}.}
+  \trap{Constraint change in \ct{UIView.animate} with neither \ct{layoutIfNeeded()} nor
+        \ct{.flushUpdates} $\to$ it jumps.}
+  \trap{\ct{registerForTraitChanges} inside \ct{layoutSubviews} re-registers every pass — once.}
+  \trap{\ct{var c = button.configuration; c?.title = "Go"} edits a \textbf{copy} — assign it back.}
+  \trap{Mixing \ct{setTitle(\_:for:)} / edge insets with a configuration: the configuration wins —
+        style a button one way only.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Read it in an update method and you are subscribed.''} Order: \textbf{traits $\to$
+properties $\to$ layout $\to$ draw}, each with its own \ct{setNeeds…}.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} observation-deep · collectionview-compositional
+· tableview-diffable · app-and-vc-lifecycle · keyboard-input · design-systems (custom traits) ·
+uikit-menus-interactions · swiftui-uikit-interop}
+
+\end{document}

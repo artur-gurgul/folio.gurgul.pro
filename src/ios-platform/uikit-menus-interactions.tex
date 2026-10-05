@@ -1,0 +1,192 @@
+% uikit-menus-interactions.tex — UIKit menus and interactions: the UIMenu element tree (UIMenu,
+% UIAction, UICommand/UIKeyCommand, UIDeferredMenuElement), options/attributes/state, the
+% presenters (UIContextMenuInteraction + previews + identifiers, collection/table delegate menus,
+% pull-down and pop-up buttons, bar button items, the main menu via UIMenuBuilder and iPadOS 26
+% UIMainMenuSystem, UIEditMenuInteraction), validation through the responder chain,
+% pointer interactions, drag and drop in brief.
+% NOT repeated here: the responder-chain rule diagram (patterns-in-apple-frameworks), hit-testing
+% and target-action (uikit-responder-hit-testing), UIKeyCommand basics (keyboard-input),
+% Transferable / SwiftUI drag and drop (swiftui-transferable-drag-drop).
+% Sources (checked 2026-09-29):
+%   developer.apple.com/documentation/uikit/uicontextmenuinteractiondelegate (required
+%     configurationForMenuAtLocation; highlight/dismissal preview; willPerformPreviewAction; willEnd)
+%   developer.apple.com/documentation/uikit/uicollectionviewdelegate/collectionview(_:contextmenuconfigurationforitemsat:point:)
+%     (iOS 16; empty array = space between cells; nil vs empty configuration)
+%   developer.apple.com/documentation/uikit/uicontrol/showsmenuasprimaryaction (iOS 14, touch-down)
+%   developer.apple.com/documentation/uikit/uibutton/changesselectionasprimaryaction (iOS 15; the
+%     menu / showsMenuAsPrimaryAction combinations)
+%   developer.apple.com/documentation/uikit/uideferredmenuelement (init iOS 14; uncached iOS 15)
+%   developer.apple.com/videos/play/wwdc2022/10071/ (keepsMenuPresented, preferredElementSize,
+%     UIEditMenuInteraction replaces UIMenuController, iOS 16)
+%   developer.apple.com/documentation/uikit/uieditmenuinteraction (iOS 16; presentEditMenu(with:))
+%   developer.apple.com/videos/play/wwdc2023/10055/ (displayAsPalette, iOS 17)
+%   developer.apple.com/videos/play/wwdc2024/10118/ (UICommand/UIKeyCommand useful on iPhone, iOS 18)
+%   developer.apple.com/videos/play/wwdc2025/243/ + documentation/uikit/uimainmenusystem (iOS 26:
+%     setBuildConfiguration(_:buildHandler:), storyboard menu bars unsupported, usingFocus deferred elements)
+% @labels: area=ios-platform kind=api platform=ios topic=ui,platform-apis
+% @tags: uimenu, uiaction, uicontextmenuinteraction, uideferredmenuelement, pull-down-button, pop-up-button, uimenubuilder, uimainmenusystem, uieditmenuinteraction, pointer-interaction, drag-and-drop, responder-chain
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,override,super,
+    if,else,return,guard,self,nil,true,false,in,private,static,await,async,as},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {>=}{{\hbox{>}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  el/.style={draw=sheetBlue, fill=sheetBlue!6, rounded corners=1pt, font=\tiny, inner sep=1.5pt,
+             anchor=west, text width=38mm, align=left, minimum height=4.4mm},
+  pr/.style={draw=sheetOrange, fill=sheetOrange!8, rounded corners=1.5pt, font=\tiny, inner sep=1.5pt,
+             anchor=west, text width=41mm, align=left, minimum height=5mm},
+  ord/.style={circle, fill=sheetBlue, text=white, font=\tiny\bfseries, inner sep=0.3pt, minimum size=2.8mm},
+  lc/.style={font=\tiny, anchor=west, text width=55mm, align=left, inner sep=1pt},
+}
+
+\begin{document}
+
+\sheettitle{UIKit menus \& interactions — UIMenu, context menus, menu bar}{ios-platform · folio}
+
+\oneliner{A menu is a \textbf{value tree} of \ct{UIMenuElement}s — \ct{UIMenu} (a group) holding
+\ct{UIAction} (a closure), \ct{UICommand} (a \emph{selector} sent up the \textbf{responder chain}) and
+\ct{UIDeferredMenuElement} (loaded lazily). The \textbf{same tree} is shown by many presenters:
+a context-menu interaction (with a preview), a button, a bar item, the edit menu, the \textbf{main
+menu bar} (Mac; iPad since iPadOS 26).}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── the tree ──
+  \node[font=\bfseries\small, anchor=west] at (-0.2,3.75) {one menu tree (Composite)};
+  \node[el, text width=22mm, very thick] (root) at (-0.2,3.25) {\ct{UIMenu(title: "Photo")}};
+  \draw[sheetBlue, thick] (0.2,3.03) -- (0.2,-0.05);
+  \node[el] (a1) at (0.55,2.7) {\ct{UIAction} ``Favourite'' · \ct{state: .on} $\to$ \checkmark};
+  \node[el] (a2) at (0.55,2.15) {\ct{UIAction} ``Share'' · \ct{image:} an SF Symbol};
+  \node[el, draw=sheetGreen!70!black, fill=sheetGreen!8] (a3) at (0.55,1.6) {\ct{UIDeferredMenuElement} — spinner, then items};
+  \node[el, draw=sheetGrey, fill=black!4] (a4) at (0.55,1.05) {\ct{UIMenu(options: .displayInline)} = section};
+  \node[el, draw=sheetRed, fill=sheetRed!6, text width=27mm] (a5) at (1.2,0.5) {\ct{UIAction} ``Delete'' · \ct{.destructive}};
+  \node[el, draw=sheetBrown, fill=sheetBrown!8] (a6) at (0.55,-0.05) {\ct{UIKeyCommand} — selector + Cmd-key, no target};
+  \foreach \n in {a1,a2,a3,a4,a6} \draw[sheetBlue, thick] (0.2,0 |- \n.west) -- (\n.west);
+  \draw[sheetGrey, thick] (0.85,0.83) |- (a5.west);
+  % ── presenters ──
+  \node[font=\bfseries\small, anchor=west] at (5.55,3.75) {shown by};
+  \coordinate (fan) at (5.15,1.6);
+  \node[pr] (c1) at (5.55,3.2) {\ct{UIContextMenuInteraction} — long press or secondary click, with a preview};
+  \node[pr] (c2) at (5.55,2.55) {\ct{UIButton.menu} — long press; \ct{showsMenuAsPrimaryAction}: pull-down; + \ct{changesSelection…}: pop-up};
+  \node[pr] (c3) at (5.55,1.85) {\ct{UIBarButtonItem.menu} — with no \ct{primaryAction}, a tap opens the menu};
+  \node[pr] (c4) at (5.55,1.15) {\textbf{main menu bar}: \ct{buildMenu(with:)} / \ct{UIMainMenuSystem} (26) — enabled via the responder chain};
+  \node[pr] (c5) at (5.55,0.4) {\ct{UIEditMenuInteraction} (16) — edit bar on touch, context menu on secondary click};
+  \foreach \c in {c1,c2,c3,c4,c5} \draw[flow] (fan) -- (\c.west);
+  \node[lbl, text=sheetGrey, anchor=north] at (7.6,0.0) {same \ct{UIMenu} value everywhere};
+  % ── context menu lifecycle ──
+  \draw[sheetGrey!40] (10.0,3.95) -- (10.0,-0.3);
+  \node[font=\bfseries\small, anchor=west] at (10.1,3.75) {context menu, step by step};
+  \node[ord] at (10.3,3.38) {1}; \node[lc] at (10.5,3.38) {long press $\to$ \ct{configurationForMenuAtLocation} (required)};
+  \node[ord] at (10.3,2.9) {2}; \node[lc] at (10.5,2.9) {\ct{highlightPreviewForItemWithIdentifier} $\to$ a \ct{UITargetedPreview} lifts the view (\ct{visiblePath} = its corners)};
+  \node[ord] at (10.3,2.35) {3}; \node[lc] at (10.5,2.35) {\ct{actionProvider(suggestedActions)} builds the tree; the \ct{previewProvider} VC shows · \ct{willDisplayMenuFor}};
+  \node[ord, fill=sheetGreen!60!black] at (10.3,1.9) {4a}; \node[lc] at (10.5,1.9) {action tapped $\to$ its handler runs, menu closes};
+  \node[ord, fill=sheetOrange] at (10.3,1.45) {4b}; \node[lc] at (10.5,1.45) {preview tapped $\to$ \ct{willPerformPreviewActionForMenuWith} — \ct{animator.addCompletion \{ push(detail) \}}};
+  \node[ord] at (10.3,0.9) {5}; \node[lc] at (10.5,0.9) {\ct{willEndFor} + \ct{dismissalPreviewForItemWithIdentifier} — the \ct{identifier} finds the cell again};
+  \node[lc, text=sheetRed, text width=58mm] at (10.1,0.3) {empty configuration = lift, then cancel (``a menu lives here, nothing now''); \ct{nil} = no feedback};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{\ct{UIAction}}: title, subtitle, image, handler; attributes \ct{.disabled},
+        \ct{.destructive}, \ct{.hidden}, \ct{.keepsMenuPresented} (16); state \ct{.on/.off/.mixed}.
+        \textbf{\ct{UIMenu}} options: \ct{.displayInline}, \ct{.singleSelection} (radio),
+        \ct{.displayAsPalette} (17); \ct{preferredElementSize} \ct{.small/.medium/.large} (16).
+        Children are fixed: build a new menu and re-assign \ct{button.menu}.
+  \item \textbf{Deferred}: \ct{UIDeferredMenuElement \{ completion in … \}} (14) is
+        \textbf{cached} after the first load; \ct{.uncached} (15) re-asks each time. iOS 26
+        \ct{.usingFocus(identifier:shouldCacheItems:)}: the focused responder's \ct{provider(for:)}
+        fills it — per-window main-menu items.
+  \item \textbf{Context menu}: add a \ct{UIContextMenuInteraction(delegate:)} to the view, or in a
+        list implement \ct{contextMenuConfigurationForItemsAt:point:} (16): \ct{[]} = empty
+        space, several paths = multi-selection. \ct{previewProvider} \ct{nil} = snapshot of the view.
+  \item \textbf{Main menu}: \ct{override buildMenu(with builder:)} in the app delegate (13):
+        \ct{builder.system == .main}, \ct{insertChild(\_:atStartOfMenu:)}, \ct{remove(menu:)};
+        \ct{UIMenuSystem.main.setNeedsRebuild()}. iPadOS 26 menu bar:
+        \ct{UIMainMenuSystem.shared} \ct{.setBuildConfiguration(config) \{ builder in … \}}, once
+        at launch; storyboard menu bars unsupported. iOS 18: commands reach iPhone apps too
+        (iPhone Mirroring).
+  \item \textbf{Validation = responder chain}: a \ct{UICommand} has no target — UIKit walks up from
+        the \textbf{first responder} to the first one whose \ct{canPerformAction(\_:withSender:)} is
+        \ct{true}; adjust title/state in \ct{validate(\_ command:)}. None $\to$ disabled.
+  \item \textbf{Edit menu}: \ct{UIEditMenuInteraction} (16) replaces \ct{UIMenuController}:
+        \ct{presentEditMenu(with: UIEditMenuConfiguration(identifier:sourcePoint:))}; delegate
+        \ct{menuFor:suggestedActions:}. Text views: \ct{editMenuForTextIn:suggestedActions:}.
+  \item \textbf{Pointer} (iPadOS 13.4): \ct{UIPointerInteraction} $\to$ \ct{UIPointerStyle(effect:
+        .highlight/.lift/.hover)}; buttons: \ct{isPointerInteractionEnabled}.
+        \textbf{Drag \& drop} (11): \ct{UIDragInteraction} returns \ct{[UIDragItem]};
+        \ct{UIDropInteraction}: \ct{canHandle} $\to$ \ct{UIDropProposal(.copy/.move)} $\to$
+        \ct{performDrop}; drag is off by default on iPhone\unverified.
+\end{itemize}
+
+\columnbreak
+
+\hd{Example — cell menu with preview, pop-up sort button}
+\begin{lstlisting}[language=SwiftSheet]
+func collectionView(_ cv: UICollectionView, contextMenuConfigurationForItemsAt
+    ips: [IndexPath], point: CGPoint) -> UIContextMenuConfiguration? {
+  guard ips.count == 1,
+        let id = ds.itemIdentifier(for: ips[0]) else { return nil }
+  return UIContextMenuConfiguration(identifier: id as NSString, // NSCopying
+      previewProvider: { DetailVC(id: id) }) { _ in
+    let del = UIAction(title: "Delete", attributes: .destructive) {
+      [weak self] _ in self?.delete(id) }
+    let share = UIDeferredMenuElement.uncached { [weak self] done in
+      Task { done(await self?.shareActions(id) ?? []) } }  // spinner first
+    return UIMenu(children: [share,
+      UIMenu(options: .displayInline, children: [del])]) } }   // a section
+sortBtn.menu = UIMenu(options: .singleSelection, children: sorts.map { s in
+  UIAction(title: s.title, state: s == sort ? .on : .off) { _ in pick(s) } })
+sortBtn.showsMenuAsPrimaryAction = true          // pull-down ...
+sortBtn.changesSelectionAsPrimaryAction = true   // ... + this = pop-up
+\end{lstlisting}
+
+\hd{A button with a menu — what the flags do}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{8mm}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{37mm}@{}}
+\toprule
+\ct{menu} & \ct{showsMenu…} & \ct{changes…} & behaviour \\ \midrule
+\ct{nil} & — & \ct{true} & toggle: flips \ct{isSelected} \\
+set & \ct{false} & \ct{false} & tap = primary action, long press = menu \\
+set & \ct{false} & \ct{true} & toggle + long-press menu \\
+set & \ct{true} & \ct{false} & \textbf{pull-down}: menu on touch-down \\
+set & \ct{true} & \ct{true} & \textbf{pop-up}: tracks selection, title follows \\
+\bottomrule
+\end{tabular}}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``The button's menu never shows'' — without \ct{showsMenuAsPrimaryAction} it is a
+        \emph{long-press} menu.}
+  \trap{\ct{IndexPath} captured in a handler or used as the identifier — the diffable snapshot may
+        move it; use the item \textbf{id}.}
+  \trap{The control retains the menu, the menu its actions: \ct{self}$\to$button$\to$menu$\to$handler$\to$\ct{self}
+        is a cycle — \ct{[weak self]}.}
+  \trap{Stale items in a deferred element: it is cached after the first load — \ct{.uncached}.}
+  \trap{Menu-bar item always grey: nothing between the first responder and the app answers
+        \ct{canPerformAction} with \ct{true}.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``One tree, many presenters; actions carry closures, commands ride the responder chain.''}
+Context menu = \textbf{configuration $\to$ preview $\to$ menu $\to$ commit}.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} uikit-modern-apis · uikit-responder-hit-testing ·
+patterns-in-apple-frameworks · keyboard-input · swiftui-transferable-drag-drop · collectionview-compositional}
+
+\end{document}

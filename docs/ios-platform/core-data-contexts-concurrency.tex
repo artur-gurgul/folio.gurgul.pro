@@ -1,0 +1,217 @@
+% core-data-contexts-concurrency.tex — Core Data in depth, part 1: the stack (container,
+% coordinator + row cache, SQLite), context queues and perform variants, object identity and
+% temporary IDs, parent/child vs sibling contexts, merging, query generations, optimistic
+% locking and the five merge policies, unique-constraint upserts, the concurrency debug flag.
+% Not repeated (neighbours): the basics of viewContext / background context / objectID hand-off
+% (ios-swift/persistence.tex); migrations + SwiftData (ios-platform/coredata-migrations-swiftdata.tex);
+% faulting, FRC, batch requests, persistent history (ios-platform/core-data-performance-history.tex).
+% Sources (checked 2026-09-29):
+%   https://developer.apple.com/documentation/coredata/nsmanagedobjectcontext
+%   https://developer.apple.com/documentation/coredata/nsmanagedobjectcontext/scheduledtasktype
+%   https://developer.apple.com/documentation/coredata/nsoverwritemergepolicy
+%   https://developer.apple.com/documentation/coredata/nsmergebypropertyobjecttrumpmergepolicy
+%   https://developer.apple.com/videos/play/wwdc2021/10017/ (perform(schedule:) .immediate / .enqueued)
+% @labels: area=ios-platform kind=api platform=apple topic=data,concurrency
+% @tags: core-data, nsmanagedobjectcontext, nspersistentstorecoordinator, perform, parent-child-context, merge-policy, optimistic-locking, unique-constraints, query-generations, nsmanagedobjectid, concurrency-debug
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,static,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,any,in,for,
+    true,false,as},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  ctx/.style={box, font=\scriptsize, inner sep=1.5pt, text width=23mm},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  lane/.style={font=\bfseries\scriptsize, anchor=east, inner sep=1pt},
+  ev/.style={circle, fill=sheetBlue, inner sep=1.2pt},
+}
+
+\begin{document}
+
+\sheettitle{Core Data — contexts, merging \& concurrency}{ios-platform · folio}
+
+\oneliner{A \textbf{context} is an in-memory scratchpad bound to \textbf{one serial queue};
+it reaches SQLite through a \textbf{coordinator} whose \textbf{row cache} holds last-known
+row values. Contexts see each other's work only after a save reaches the store \emph{and} is
+\textbf{merged} in. Two saves of one row: \textbf{optimistic locking} detects it at
+\texttt{save()} and the saver's \textbf{merge policy} decides — by default the save \textbf{throws}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ───────── the stack ─────────
+  \node[font=\bfseries\small, anchor=west] at (-0.15,4.15) {The stack — who sees whose changes};
+  \node[ctx, draw=sheetBrown, fill=sheetBrown!8] (draft) at (1.2,3.4)
+    {\textbf{child} \ct{draft}\\parent = viewContext};
+  \node[ctx, draw=sheetGreen!70!black, fill=sheetGreen!10] (vc) at (1.2,2.2)
+    {\textbf{viewContext}\\main queue};
+  \node[ctx, draw=sheetOrange, fill=sheetOrange!10] (w) at (4.05,2.2)
+    {\textbf{writer} (private)\\\ct{newBackgroundContext()}};
+  \node[ctx, draw=sheetOrange, fill=sheetOrange!10] (t) at (6.9,2.2)
+    {\ct{performBackground}\\\ct{Task} — new each call};
+  \node[box, draw=sheetBrown, fill=sheetBrown!10, font=\scriptsize, minimum width=81mm] (psc) at (4.05,0.95)
+    {\ct{NSPersistentStoreCoordinator} · \textbf{row cache} = snapshots (values + version)};
+  \node[box, draw=sheetGrey, fill=black!5, font=\scriptsize, text width=36mm] (db) at (2.2,-0.15)
+    {SQLite (WAL) · table \ct{ZITEM}\\\ct{Z\_PK} · \ct{Z\_ENT} · \ct{Z\_OPT} (version)};
+  \node[box, draw=sheetRed, dashed, fill=sheetRed!5, font=\scriptsize, text width=25mm] (ext) at (6.75,-0.15)
+    {widget / extension\\\emph{its own coordinator}};
+  \draw[hot] (draft) -- node[lbl, right, align=left]{\ct{save()} = push up\\\textbf{memory only}} (vc);
+  \draw[flow, <->] ([xshift=-7mm]vc.south) -- ([xshift=-7mm]vc.south |- psc.north);
+  \draw[->, thick, sheetGreen!60!black] ([xshift=5mm]vc.south |- psc.north) --
+    node[lbl, right, text=sheetGreen!50!black, align=left]{merge on\\didSave} ([xshift=5mm]vc.south);
+  \draw[hot] (w.south) -- node[lbl, right]{\ct{save()}} (w.south |- psc.north);
+  \draw[hot] (t.south) -- node[lbl, right]{\ct{save()}} (t.south |- psc.north);
+  \draw[flow, <->] (db.north |- psc.south) -- (db.north);
+  \draw[->, thick, dashed, sheetRed] (ext.west) -- node[lbl, above, text=sheetRed]{writes} (db.east);
+  \draw[<->, thick, dashed, sheetGrey] ([yshift=3mm]w.east) -- node[lbl, above=1pt]{siblings} ([yshift=3mm]t.west);
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (-0.15,-0.8)
+    {another process or a batch request posts \textbf{no} didSave here $\to$ persistent history (part 2)};
+
+  \draw[sheetGrey!40] (8.55,4.3) -- (8.55,-0.9);
+
+  % ───────── optimistic locking ─────────
+  \node[font=\bfseries\small, anchor=west] at (8.7,4.15) {Optimistic locking — one row, two writers};
+  \node[lane, text=sheetGreen!50!black] at (9.75,3.45) {ctx A};
+  \node[lane, text=sheetOrange] at (9.75,2.75) {ctx B};
+  \node[lane] at (9.75,2.05) {store};
+  \draw[sheetGreen!60!black, thick] (9.85,3.45) -- (16.45,3.45);
+  \draw[sheetOrange, thick] (9.85,2.75) -- (16.45,2.75);
+  \draw[sheetGrey, very thick] (9.85,2.05) -- (16.45,2.05);
+  \node[lbl, anchor=west, fill=white] at (9.9,2.05) {title a · note x · v1};
+  % both fetch
+  \node[ev] at (10.4,3.45) {}; \node[ev] at (10.4,2.75) {};
+  \node[lbl, above] at (10.4,3.5) {fetch};
+  \node[lbl, below, align=center] at (10.4,2.7) {snapshot v1};
+  % A saves
+  \node[ev, fill=sheetGreen!60!black] (as) at (12.35,3.45) {};
+  \node[lbl, above] at (12.35,3.5) {title b, note y · \ct{save}};
+  \draw[hot, draw=sheetGreen!60!black] (as) -- (12.35,2.1);
+  \node[lbl, anchor=west, fill=white] at (12.45,2.05) {b · y · \textbf{v2}};
+  % B saves
+  \node[ev, fill=sheetOrange] (bs) at (14.9,2.75) {};
+  \node[lbl, above] at (14.9,2.8) {title c, done \ct{true} · \ct{save}};
+  \draw[hot, draw=sheetRed] (bs) -- (14.9,2.1);
+  \node[lbl, text=sheetRed, fill=white, anchor=west] at (14.95,2.4) {v1 $\neq$ v2};
+  \node[lbl, text=sheetRed, below, align=center] at (14.9,2.0) {\textbf{conflict} $\to$ B's \ct{mergePolicy}};
+  % outcome table
+  \node[anchor=north west, inner sep=0pt] at (8.7,1.55) {\scriptsize\setlength{\tabcolsep}{2.5pt}%
+  \begin{tabular}{@{}L{32mm}L{6mm}L{6mm}L{7mm}L{27mm}@{}}
+  \toprule
+  \textbf{B's policy} & \textbf{title} & \textbf{note} & \textbf{done} & \\ \midrule
+  \ct{.error} (\textbf{default}) & \multicolumn{4}{l}{\ct{save()} throws 133020; nothing written} \\
+  \ct{.mergeByPropertyObjectTrump} & \textbf{c} & y & \ct{true} & mine wins per prop \\
+  \ct{.mergeByPropertyStoreTrump} & b & y & \ct{true} & store wins per prop \\
+  \ct{.overwrite} & \textbf{c} & \textcolor{sheetRed}{\textbf{x}} & \ct{true} & \textcolor{sheetRed}{whole object: A's note lost} \\
+  \ct{.rollback} & b & y & \textcolor{sheetRed}{\ct{false}} & B's edits dropped \\
+  \bottomrule
+  \end{tabular}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Queues}
+\begin{itemize}
+  \item \ct{.mainQueueConcurrencyType} (viewContext) or \ct{.privateQueueConcurrencyType}
+        (\ct{.confinement…} deprecated iOS 9). An object belongs to its context's queue —
+        reading one property is access.
+  \item \ct{perform \{\}} enqueues and returns; \ct{performAndWait \{\}} blocks the caller,
+        \textbf{reentrant}. iOS 15 \ct{try await ctx.perform(schedule:)} returns a value:
+        \ct{.immediate} (default) runs inline if already on the queue, else enqueues;
+        \ct{.enqueued} always goes to the back.
+  \item \ct{newBackgroundContext()} / \ct{performBackgroundTask}: a \textbf{new} private
+        context per call, parent = the \textbf{coordinator}. Two at once = two writers $\to$
+        conflicts, duplicates: keep \textbf{one long-lived writer}.
+\end{itemize}
+
+\hd{Identity \& IDs}
+\begin{itemize}
+  \item \textbf{Uniquing}: one object per row \emph{per context}. \ct{object(with:)} always
+        returns (fault may fail later); \ct{existingObject(with:)} throws if gone;
+        \ct{registeredObject(for:)} = only if in memory.
+  \item New objects carry a \textbf{temporary} ID (\ct{isTemporaryID}) until the store saves
+        them — it resolves nowhere else: \ct{obtainPermanentIDs(for:)} first. Persist a
+        reference as \ct{objectID.uriRepresentation()}.
+\end{itemize}
+
+\hd{Parent/child vs siblings}
+\begin{itemize}
+  \item A \textbf{child}'s fetches go through its parent, so they see the parent's
+        \emph{unsaved} state; its \ct{save()} copies changes into the parent's memory. Use:
+        a cancelable edit sheet. Disk needs the parent's save too.
+  \item \textbf{Siblings} share only the coordinator: nothing crosses until a save reaches
+        the store and a merge runs. \ct{automaticallyMergesChangesFromParent} merges every
+        save of the parent (root context: the coordinator), keeping unsaved local edits.
+        Manual: on \ct{.NSManagedObjectContextDidSave},
+        \ct{mergeChanges(fromContextDidSave:)} inside the target's \ct{perform}.
+  \item \textbf{Query generations} (iOS 10, SQLite): \ct{setQueryGenerationFrom(.current)}
+        pins reads to one store snapshot — stable UI during an import; save/merge advances it.
+  \item \ct{refresh(obj, mergeChanges:)}: \ct{true} re-reads, keeps edits; \ct{false}
+        discards them $\to$ a fault again.
+\end{itemize}
+
+\columnbreak
+
+\hd{Example — a cancelable edit, and an upserting writer}
+\begin{lstlisting}[language=SwiftSheet]
+let draft = NSManagedObjectContext(concurrencyType: .mainQueueConcurrencyType)
+draft.parent = container.viewContext     // sees parent's unsaved state
+let item = draft.object(with: itemID) as! Item
+item.title = "New title"                 // Cancel = just drop `draft`
+try draft.save()                         // -> viewContext (memory)
+try container.viewContext.save()         // -> coordinator -> SQLite
+
+// one writer; model: Item has a unique constraint on remoteID
+let writer = container.newBackgroundContext()
+writer.mergePolicy = NSMergePolicy.mergeByPropertyObjectTrump
+try await writer.perform {
+  for dto in dtos {                      // duplicate remoteID -> update
+    let i = Item(context: writer); i.remoteID = dto.id; i.title = dto.title }
+  try writer.save() }                    // values/IDs leave, never objects
+\end{lstlisting}
+
+\hd{Conflicts — the mechanism}
+\begin{itemize}
+  \item At fetch a context keeps a \textbf{snapshot} (values + row version \ct{Z\_OPT}); at
+        save each changed object's snapshot is compared with the row. Mismatch =
+        \ct{NSMergeConflict}, resolved by the context saving \textbf{second}. Default
+        \ct{NSErrorMergePolicy}: \ct{userInfo["conflictList"]}, nothing saved.
+  \item \textbf{Unique constraints} (per entity): with \ct{.error} a duplicate insert throws
+        \ct{NSConstraintConflict} (133021); with a property-trump policy it merges into the
+        existing row = \textbf{upsert}.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Policy set only on viewContext: the importer saves second and \emph{its}
+        \ct{.error} throws. Set a policy on \emph{every} saving context.}
+  \trap{\ct{.overwrite} $\neq$ ``mine wins'': it writes the \emph{whole} object, undoing
+        others' changes to properties you never touched.}
+  \trap{\ct{performAndWait} onto viewContext from a queue main is waiting on = \textbf{deadlock}.}
+  \trap{Returning a managed object from \ct{await perform} compiles; using it outside is
+        still a queue violation. Return IDs or values.}
+  \trap{\ct{-com.apple.CoreData.ConcurrencyDebug 1} crashes on the first wrong-queue access,
+        in \ct{\_\_Multithreading\_Violation\_AllThatIsLeftToUsIsHonor\_\_}.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{One queue per context, one writer per store, IDs across queues, a policy on whoever
+saves second.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} persistence (basics) ·
+core-data-performance-history (faults, FRC, batch, history) · coredata-migrations-swiftdata ·
+swift6-strict-concurrency · sqlite-grdb-internals}
+
+\end{document}

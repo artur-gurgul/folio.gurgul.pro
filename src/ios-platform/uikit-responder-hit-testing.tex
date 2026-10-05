@@ -1,0 +1,215 @@
+% uikit-responder-hit-testing.tex — how UIKit routes a touch: hit-testing (hitTest/point(inside:),
+% reverse subview order, the exclusion rules, bounds clipping of hits), expanding tap areas,
+% pass-through views, touch delivery order (gesture recognizers first), the touch methods and
+% propagation, first responder + keyboard, target-action + nil-targeted actions, gesture
+% recognizer states / defaults / coordination, scroll views vs controls, custom VC transitions
+% (animated, interactive, iOS 18 zoom).
+% NOT repeated here: the full responder-chain rule diagram (design/patterns-in-apple-frameworks.tex),
+% push vs present + presentation chain (ios-swift/navigation-presentation.tex), VC lifecycle
+% (ios-swift/app-and-vc-lifecycle.tex), SwiftUI gestures (swiftui/swiftui-gestures-canvas.tex).
+% Sources (checked 2026-09-26):
+%   developer.apple.com/documentation/uikit/uiview/hittest(_:with:) (ignores hidden, disabled
+%     interaction, alpha < 0.01; points outside bounds never hit, even with clipsToBounds false;
+%     content transparency not considered)
+%   developer.apple.com/documentation/uikit/using-responders-and-the-responder-chain-to-handle-events
+%   developer.apple.com/documentation/uikit/uigesturerecognizer (window delivers to recognizers
+%     first; cancelsTouchesInView true, delaysTouchesBegan false, delaysTouchesEnded true; states)
+%   developer.apple.com/documentation/uikit/uiview/gesturerecognizershouldbegin(_:) (UISlider example)
+%   developer.apple.com/documentation/uikit/uiscrollview/touchesshouldcancel(in:) (default true
+%     unless the view is a UIControl)
+%   developer.apple.com/documentation/uikit/uicontrol/addtarget(_:action:for:) (target not retained;
+%     nil target -> responder chain)
+%   developer.apple.com/documentation/uikit/enhancing-your-app-with-fluid-transitions (iOS 18 zoom)
+%   developer.apple.com/documentation/uikit/attaching-gesture-recognizers-to-uikit-controls
+%     (control's default action beats a recognizer on an ancestor: UIButton/UISwitch/UIStepper/
+%     UISegmentedControl/UIPageControl tap, UISlider knob swipe, UISwitch knob pan) — confirmed
+%     2026-09-26 fact-check, so the unverified mark was removed.
+% @labels: area=ios-platform kind=concept platform=ios topic=ui,platform-apis
+% @tags: hit-testing, hittest, point-inside, responder-chain, first-responder, target-action, uigesturerecognizer, cancelstouchesinview, uicontrol, uiscrollview, custom-transitions, uiviewcontrolleranimatedtransitioning
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,override,super,
+    if,else,return,guard,self,nil,for,in,true,false,private},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {===}{{\hbox{=}\hbox{=}\hbox{=}}}3
+           {>=}{{\hbox{>}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2 {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+
+\tikzset{
+  vw/.style={box, font=\scriptsize, inner sep=1.2pt, minimum height=5mm, minimum width=15mm},
+  yes/.style={vw, draw=sheetGreen!70!black, fill=sheetGreen!12},
+  no/.style={vw, draw=sheetRed, fill=sheetRed!6, text=black!60, dashed},
+  won/.style={vw, draw=sheetOrange, fill=sheetOrange!18, very thick},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ord/.style={circle, fill=sheetBlue, text=white, font=\tiny\bfseries, inner sep=0.3pt, minimum size=2.8mm},
+  st/.style={box, font=\scriptsize, inner sep=1pt, minimum height=4.6mm},
+}
+
+\begin{document}
+
+\sheettitle{UIKit touches — hit-testing, responders, gestures, transitions}{ios-platform · folio}
+
+\oneliner{A touch goes \textbf{down} then \textbf{up}. On touch-down UIKit \textbf{hit-tests}:
+\ct{hitTest(\_:with:)} recurses from the window, \textbf{frontmost subview first}, and returns the
+\textbf{deepest} view whose \ct{point(inside:with:)} is true — that view owns the touch for its
+whole life. \textbf{Gesture recognizers} on that view and its ancestors see the touch
+\emph{before} the view does. Whatever is not handled — touches, key presses, \ct{nil}-target
+actions — then walks \textbf{up} the responder chain via \ct{next}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % the tree
+  \node[yes] (w) at (4.2,3.0) {UIWindow};
+  \node[yes] (root) at (4.2,2.2) {root view};
+  \node[no] (hdr) at (0.9,1.3) {header (\ct{isHidden})};
+  \node[yes] (list) at (4.2,1.3) {list (scroll view)};
+  \node[yes] (fab) at (7.5,1.3) {FAB container};
+  \node[no] (ov) at (10.6,1.3) {overlay (\ct{alpha}=0)};
+  \draw[flow] (w) -- (root);
+  \foreach \c in {hdr,list,fab,ov} \draw[flow] (root.south) -- (\c.north);
+  \node[yes] (cA) at (2.9,0.35) {cell A};
+  \node[won] (cB) at (5.5,0.35) {cell B};
+  \node[no] (img) at (4.2,-0.55) {UIImageView};
+  \node[yes, minimum width=12mm] (lbl) at (6.8,-0.55) {title label};
+  \draw[flow] (list.south) -- (cA.north); \draw[flow] (list.south) -- (cB.north);
+  \draw[flow] (cB.south) -- (img.north); \draw[flow] (cB.south) -- (lbl.north);
+  \node[no] (badge) at (9.2,0.35) {badge (outside bounds)};
+  \draw[flow] (fab.south) -- (badge.north);
+  % order numbers: subviews visited in reverse
+  \node[ord] at ($(ov.north east)+(0.1,0.05)$) {1};
+  \node[ord] at ($(fab.north east)+(0.1,0.05)$) {2};
+  \node[ord] at ($(list.north east)+(0.1,0.05)$) {3};
+  \node[lbl, text=sheetBlue, anchor=west] at (7.2,2.25) {\ct{subviews.reversed()}: last added = frontmost = asked first};
+  % reasons
+  \node[lbl, text=sheetRed, anchor=north] at (ov.south) {alpha $<$ 0.01 $\to$ skipped};
+  \node[lbl, text=sheetRed, anchor=north] at (hdr.south) {hidden $\to$ skipped};
+  \node[lbl, text=sheetRed, anchor=north, align=center] at (badge.south) {point outside \emph{parent's} bounds\\$\to$ never hit, even if drawn\\(\ct{clipsToBounds = false})};
+  \node[lbl, text=sheetRed, anchor=north, align=center] at (img.south) {\ct{isUserInteractionEnabled}\\\ct{false} by default $\to$ skipped};
+  \node[lbl, anchor=north, align=center] at (lbl.south) {point not inside};
+  \node[lbl, text=sheetOrange, anchor=west, align=left] at (6.3,0.35) {\textbf{hit}: no subview\\claims it $\to$ \ct{self}};
+  % responder chain column
+  \draw[sheetGrey!50] (12.35,3.3) -- (12.35,-1.4);
+  \node[font=\bfseries\scriptsize, text=sheetOrange, anchor=west] at (12.45,3.05) {then UP: \ct{next}};
+  \foreach \t/\y in {cell B/2.45, list/1.95, root view/1.45, its VC/0.95, UIWindow/0.45, UIApplication/-0.05, app delegate/-0.55} {
+    \node[st, minimum width=21mm, draw=sheetOrange, fill=sheetOrange!8] at (13.75,\y) {\t};
+  }
+  \foreach \y in {2.45,1.95,1.45,0.95,0.45,-0.05} \draw[->, thick, sheetOrange] (13.75,\y-0.23) -- (13.75,\y-0.27);
+  \node[lbl, anchor=west, align=left, text=sheetBlue] at (-0.6,3.0) {\textbf{DOWN}: \ct{hitTest} recursion\\from the window};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\small\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Delivery}: \ct{UIApplication.sendEvent} $\to$ \ct{UIWindow.sendEvent}. Hit-test
+        once at touch-down; \ct{UITouch.view} stays the hit view even if the finger leaves it.
+        The window gives the touch to \textbf{gesture recognizers first}, then to the view.
+  \item \textbf{Skipped by hit-testing}: \ct{isHidden}, \ct{isUserInteractionEnabled = false}
+        (default on \ct{UILabel}, \ct{UIImageView} — and it disables the whole subtree),
+        \ct{alpha} $<$ 0.01, and any point outside the view's \ct{bounds} — a subview drawn
+        outside its parent is visible but \textbf{untappable}. Transparent \emph{pixels} still
+        hit: content is not considered.
+  \item \textbf{Bigger tap target} (HIG: 44×44 pt): override \ct{point(inside:with:)} with
+        an outset rect — but it only works \emph{inside every ancestor's bounds}.
+  \item \textbf{Touch methods}: \ct{touchesBegan/Moved/Ended/Cancelled}. The default
+        implementation \textbf{forwards up the chain}; override without \ct{super} and you
+        must override all four. Always handle \emph{Cancelled} (a recognizer or a call can
+        take the touch).
+  \item \textbf{First responder} receives keys, presses, edit-menu actions, \ct{nil}-target
+        actions. \ct{becomeFirstResponder()} needs \ct{canBecomeFirstResponder} and a window;
+        a text input as first responder brings up the keyboard (\ct{inputView},
+        \ct{inputAccessoryView} replace/extend it); dismiss with \ct{view.endEditing(true)}.
+        \ct{canPerformAction(\_:withSender:)} gates edit-menu items; \ct{UIKeyCommand} for
+        hardware keys.
+  \item \textbf{Target–action}: \ct{UIControl} does \textbf{not retain} its target; a
+        \ct{nil} target searches the responder chain. \ct{sendAction(\_:to:from:for:)} with
+        \ct{to: nil} starts at the first responder. Closure-based \ct{addAction(UIAction)}
+        (iOS 14) \emph{is} retained — capture \ct{[weak self]}. Custom controls:
+        \ct{begin/continue/endTracking(\_:with:)}, \ct{sendActions(for:)}.
+\end{itemize}
+
+\section{Gestures — the rules}
+\begin{itemize}
+  \item \textbf{States}: discrete \emph{possible $\to$ recognized | failed}; continuous
+        \emph{possible $\to$ began $\to$ changed* $\to$ ended | cancelled}.
+  \item \textbf{Defaults}: \ct{cancelsTouchesInView = true} (on recognition the view gets
+        \ct{touchesCancelled}), \ct{delaysTouchesBegan = false} (view sees began in parallel),
+        \ct{delaysTouchesEnded = true}.
+  \item \textbf{Coordination}: by default two recognizers do not recognize together.
+        \ct{require(toFail:)} — single tap waits for double tap to fail (adds latency).
+        Delegate: \ct{gestureRecognizerShouldBegin}, \ct{shouldRecognizeSimultaneouslyWith},
+        \ct{shouldReceive(\_ touch:)} (ignore touches on controls),
+        \ct{shouldRequireFailureOf} / \ct{shouldBeRequiredToFailBy}.
+  \item \textbf{Controls vs an ancestor's recognizer}: the control's default action (button
+        tap, slider drag) wins; a view can veto with
+        \ct{gestureRecognizerShouldBegin(\_:)} (\ct{UISlider} does). \textbf{Scroll view}:
+        \ct{delaysContentTouches} (\ct{true}); \ct{touchesShouldCancel(in:)} returns
+        \ct{true} unless the view is a \ct{UIControl} — override to let a drag that starts on
+        a button still scroll.
+\end{itemize}
+
+\section{Remember}
+\textbf{Down by \ct{hitTest}, recognizers first, up by \ct{next}.} Frontmost first · hidden,
+disabled, alpha $<$ 0.01, out of bounds $\to$ skipped.
+
+\columnbreak
+
+\section{Example — hit-testing, written out}
+\begin{lstlisting}[language=SwiftSheet]
+// what the default does (a sketch of the documented rules)
+override func hitTest(_ p: CGPoint, with e: UIEvent?) -> UIView? {
+  guard !isHidden, isUserInteractionEnabled, alpha >= 0.01,
+        point(inside: p, with: e) else { return nil }
+  for sub in subviews.reversed() {                 // frontmost first
+    if let hit = sub.hitTest(sub.convert(p, from: self), with: e) {
+      return hit } }
+  return self }
+// 1 bigger tap area (still clipped by every ancestor's bounds)
+override func point(inside p: CGPoint, with e: UIEvent?) -> Bool {
+  bounds.insetBy(dx: -12, dy: -12).contains(p) }
+// 2 pass-through overlay: its subviews get taps, empty areas don't
+override func hitTest(_ p: CGPoint, with e: UIEvent?) -> UIView? {
+  let v = super.hitTest(p, with: e); return v === self ? nil : v }
+\end{lstlisting}
+
+\section{Custom view-controller transitions}
+\begin{itemize}
+  \item \textbf{Modal}: \ct{vc.transitioningDelegate} (\textbf{weak} — keep it alive)
+        vends the animator (\ct{animationController(forPresented:…)}); \ct{.custom} style +
+        a \ct{UIPresentationController} for dimming and frame. \textbf{Push/pop}: the
+        \ct{UINavigationControllerDelegate} \ct{animationControllerFor:from:to:} method.
+  \item \textbf{Animator} = \ct{UIViewControllerAnimatedTransitioning}:
+        \ct{transitionDuration(using:)} + \ct{animateTransition(using:)} — add the
+        \ct{to} view to \ct{ctx.containerView}, animate, then \textbf{always}
+        \ct{ctx.completeTransition(!ctx.transitionWasCancelled)}; forget it and the UI stays
+        frozen. \ct{interruptibleAnimator(using:)} returns a \ct{UIViewPropertyAnimator}.
+  \item \textbf{Interactive}: return a \ct{UIPercentDrivenInteractiveTransition} from
+        \ct{interactionControllerFor…} \emph{only while a gesture drives it}; the pan calls
+        \ct{update(\%)}, then \ct{finish()} or \ct{cancel()} by progress + velocity.
+  \item \textbf{iOS 18}: \ct{preferredTransition = .zoom \{ \_ in thumb \}} — system
+        zoom, interactive throughout.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Tap gesture on \ct{UIImageView}/\ct{UILabel} never fires — interaction is off by default.}
+  \trap{Badge / button sticking out of its superview: drawn, never tappable.}
+  \trap{``Dismiss keyboard'' tap recognizer on the root view kills \ct{didSelectRowAt}
+        — set \ct{cancelsTouchesInView = false}.}
+  \trap{A clear full-screen view with alpha 1 on top swallows every touch.}
+  \trap{\ct{transitioningDelegate} is weak; no \ct{completeTransition} $\to$ frozen UI.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} patterns-in-apple-frameworks (responder
+chain rules) · navigation-presentation · app-and-vc-lifecycle · keyboard-input ·
+swiftui-gestures-canvas · animations}
+
+\end{document}

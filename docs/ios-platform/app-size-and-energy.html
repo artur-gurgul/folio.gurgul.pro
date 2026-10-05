@@ -1,0 +1,90 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>App size &amp; energy — thinning, ODR, what drains the battery — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/ios-platform/app-size-and-energy.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">50</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">App size &amp; energy — thinning, ODR, what drains the battery</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">ios-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> <strong>Size</strong>: the App Store <em>slices</em> one universal upload into
+per-device variants, <strong>asset packs</strong> move optional content out of the
+download, bitcode is <strong>gone</strong>. <strong>Energy</strong>: do <em>less</em> work, <em>less
+often</em>, in <em>bigger batches</em>, woken by events not timers, at the lowest fidelity
+the user accepts — the radio <strong>tail</strong>, GPS and wakeups cost more than bytes.</p>
+<p class="sheet-tools"><a class="sheet-download" href="app-size-and-energy.pdf" download>Download PDF</a> <a href="app-size-and-energy.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/app-size-and-energy.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="app-size-and-energy-fig1.svg" width="655" height="163" class="wide" alt="App size &amp; energy — thinning, ODR, what drains the battery — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>App size</h2>
+<ul>
+<li><strong>Slicing</strong> — a variant per device: arch + asset-catalog traits (scale,  idiom, Metal GPU family, memory class). Only <strong>asset catalogs</strong> slice.</li>
+<li><strong>Bitcode</strong> — deprecated in Xcode 14; the App Store no longer takes it.</li>
+<li><strong>Three sizes</strong> — <em>upload</em> (universal) · <em>download</em> (compressed  variant; the cellular prompt checks it) · <em>install</em> (unpacked). Over cellular  iOS asks above <strong>200 MB</strong> (iOS 13+; user-adjustable in Settings).</li>
+<li><strong>ODR</strong> (iOS 9, <strong>deprecated in iOS 27</strong>: “Use Background Assets”) —  tagged resources hosted by the App Store: <em>initial install</em>,  <em>prefetched</em>, <em>on demand</em>. <code>NSBundleResourceRequest(tags:)</code> +  <code>beginAccessingResources</code>; the <strong>live request</strong> pins them — after  <code>endAccessingResources</code>/deinit they are purgeable.</li>
+<li><strong>Background Assets</strong> (iOS 16) — asset packs, Apple-hosted (App Store  Connect) or self-hosted (<code>BAURLDownload</code>); policies <em>essential</em>  (before first launch) · <em>prefetch</em> · <em>on-demand</em>; <code>AssetPackManager</code>.</li>
+<li><strong>Measure</strong> — Organizer export, <em>App Thinning: all variants</em> <span class="math">→</span>  <code>App Thinning Size Report.txt</code> (per variant, compressed + not); App Store  Connect file sizes; <code>assetutil</code> on <code>Assets.car</code>.</li>
+<li><strong>Shrink</strong> — catalog assets (HEIC, vectors), drop unused images/locales;  <code>-Osize</code>, dead-code stripping, symbols in the dSYM, fewer dylibs.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Energy — what drains</h2>
+<ul>
+<li><strong>Radio tail</strong> (diagram) — every wake of cellular/Wi-Fi pays seconds of  high power. Polling every 10 s = the radio never sleeps; push (APNs rides one  shared system connection) = the OS pays.</li>
+<li><strong>CPU wakeups</strong> — timers, polling loops, chatty background work stop deep  idle. <code>timer.tolerance</code> <span class="math">≥</span> 10% lets iOS coalesce. Off-main <span class="math">≠</span>  cheaper: same joules.</li>
+<li><strong>GPS</strong> — continuous <code>kCLLocationAccuracyBest</code> is among the worst.  Least accuracy you need, <code>distanceFilter</code>, one-shot  <code>requestLocation()</code>, significant-change (<span class="math">∼</span>500 m, <span class="math">≥</span> 5 min) or region  monitoring, <strong>stop</strong> when the screen closes. “When In Use” can still drain:  mode + accuracy decide, not the permission.</li>
+<li><strong>Display + GPU</strong> — <code>isIdleTimerDisabled</code> left on, needless 120 Hz  animation, offscreen passes.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Energy — what to do</h2>
+<ul>
+<li><strong>Batch</strong> — buffer analytics, prefetch in one burst, flush on  Wi-Fi/charging. <code>isDiscretionary = true</code>: iOS picks the moment (automatic  for transfers started in the background). Respect Low Data Mode  (<code>allowsConstrainedNetworkAccess</code>).</li>
+<li><strong>Low Power Mode</strong> — pause prefetch, autoplay, decoration; never break what  the user just asked for. Read  <code>ProcessInfo.processInfo.isLowPowerModeEnabled</code>, observe  <code>NSProcessInfoPowerStateDidChange</code>.</li>
+<li><strong>Thermal</strong> — <code>thermalState</code> <code>.nominal</code>/<code>.fair</code>/<code>.serious</code>/<code>.critical</code>:  at <code>.serious</code> cut frame rate, quality, effects.</li>
+<li><strong>Measure</strong> — Xcode <em>Energy Impact</em> gauge; Instruments <strong>Energy
+ Log</strong> (on device); field: <strong>MetricKit</strong> (iOS 13) <code>MXMetricPayload</code>  <span class="math">∼</span>daily — <code>cpuMetrics</code>, <code>locationActivityMetrics</code>,  <code>networkTransferMetrics</code>, <code>cellularConditionMetrics</code>,  <code>MXCPUExceptionDiagnostic</code>; Organizer <span class="math">→</span> Energy.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">let</span> req <span class="hljs-operator">=</span> <span class="hljs-type">NSBundleResourceRequest</span>(tags: [<span class="hljs-string">&quot;level-3&quot;</span>])
+req.beginAccessingResources { error <span class="hljs-keyword">in</span> <span class="hljs-comment">// keep `req` alive</span>
+  <span class="hljs-keyword">if</span> <span class="hljs-keyword">let</span> error { <span class="hljs-keyword">return</span> showRetry(error) }
+  loadLevel3() }            <span class="hljs-comment">// later: req.endAccessingResources()</span>
+<span class="hljs-keyword">let</span> cfg <span class="hljs-operator">=</span> <span class="hljs-type">URLSessionConfiguration</span>
+  .background(withIdentifier: <span class="hljs-string">&quot;sync&quot;</span>)
+cfg.isDiscretionary <span class="hljs-operator">=</span> <span class="hljs-literal">true</span>             <span class="hljs-comment">// iOS picks the moment</span>
+cfg.allowsExpensiveNetworkAccess <span class="hljs-operator">=</span> <span class="hljs-literal">false</span> <span class="hljs-comment">// no cellular</span>
+<span class="hljs-keyword">let</span> pi <span class="hljs-operator">=</span> <span class="hljs-type">ProcessInfo</span>.processInfo
+<span class="hljs-keyword">if</span> pi.isLowPowerModeEnabled
+   <span class="hljs-operator">||</span> [.serious, .critical].contains(pi.thermalState) {
+  prefetcher.pause() }                 <span class="hljs-comment">// shed optional work</span></code></pre>
+</section>
+<section class="sheet-section">
+<h2>Limits (iOS, App Store Connect)</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th class="right">before iOS 18</th><th class="right">iOS 18+</th></tr>
+</thead>
+<tbody>
+<tr><td>app bundle</td><td class="right">2 GB</td><td class="right">4 GB</td></tr>
+<tr><td>one asset pack</td><td class="right">512 MB</td><td class="right">8 GB</td></tr>
+<tr><td>initial install + prefetched</td><td class="right">4 GB</td><td class="right">no limit</td></tr>
+<tr><td>in use at once</td><td class="right">2 GB</td><td class="right">no limit</td></tr>
+<tr><td>hosted in total (max 1000 packs)</td><td class="right">20 GB</td><td class="right">70 GB</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">“Enable bitcode for thinning” — removed; slicing + asset packs remain.</li>
+<li class="trap">ODR read by path without a live request — never downloaded, or purged.  Packs move <em>when</em> bytes arrive: loading UI, retry, offline.</li>
+<li class="trap">“One small request can’t matter” — tail energy. Batch it.</li>
+</ul>
+<h3 class="sheet-hd">Remember: slice, pack, strip. Batch, defer, coarsen, stop.</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> background execution ·
+push notifications · linking &amp; launch time · instruments &amp; performance · rendering
+pipeline · crashes &amp; MetricKit</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=ios-platform" title="area">ios-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=ios" title="platform">ios</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=performance" title="topic">performance</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=build" title="topic">build</a></li><li class="sheet-tag"><a href="/folios.html?tag=app-thinning">app-thinning</a></li><li class="sheet-tag"><a href="/folios.html?tag=slicing">slicing</a></li><li class="sheet-tag"><a href="/folios.html?tag=on-demand-resources">on-demand-resources</a></li><li class="sheet-tag"><a href="/folios.html?tag=nsbundleresourcerequest">nsbundleresourcerequest</a></li><li class="sheet-tag"><a href="/folios.html?tag=bitcode">bitcode</a></li><li class="sheet-tag"><a href="/folios.html?tag=app-size">app-size</a></li><li class="sheet-tag"><a href="/folios.html?tag=radio-tail-energy">radio-tail-energy</a></li><li class="sheet-tag"><a href="/folios.html?tag=batching">batching</a></li><li class="sheet-tag"><a href="/folios.html?tag=isdiscretionary">isdiscretionary</a></li><li class="sheet-tag"><a href="/folios.html?tag=low-power-mode">low-power-mode</a></li><li class="sheet-tag"><a href="/folios.html?tag=thermalstate">thermalstate</a></li><li class="sheet-tag"><a href="/folios.html?tag=metrickit">metrickit</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=ios-platform%2Fapp-size-and-energy.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/new?category=folio-comments&amp;title=App%20size%20%26%20energy%20%E2%80%94%20thinning%2C%20ODR%2C%20what%20drains%20the%20battery&amp;body=About%20the%20folio%3A%20https%3A%2F%2Ffolio.gurgul.pro%2Fios-platform%2Fapp-size-and-energy.html%0A%0A">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

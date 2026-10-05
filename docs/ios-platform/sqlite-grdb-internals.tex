@@ -1,0 +1,226 @@
+% sqlite-grdb-internals.tex — SQLite for mobile engineers: pages + B-trees (table B+tree by
+% rowid, index B-tree), rollback journal vs WAL (end marks, -wal/-shm, checkpoint, starvation),
+% DEFERRED/IMMEDIATE transactions, SQLITE_BUSY, one writer → GRDB DatabaseQueue vs DatabasePool,
+% EXPLAIN QUERY PLAN + covering indexes + N+1, FTS5, migrations (user_version, DatabaseMigrator),
+% Data Protection classes + WAL sidecars, 0xdead10cc, backups (backup API, VACUUM INTO),
+% ValueObservation, Core Data / SwiftData / Room on SQLite.
+% Not repeated (neighbours): Core Data contexts/merge/faulting (ios-swift/persistence.tex),
+% Core Data model versioning + SwiftData migrations (ios-platform/coredata-migrations-swiftdata.tex).
+% Sources (checked 2026-09-26): sqlite.org/wal.html (end mark, 1000-page auto-checkpoint ~4 MB,
+% wal-index in shared memory, same host only, checkpoint starvation, persistent journal_mode,
+% synchronous=NORMAL not durable on power loss); sqlite.org/lang_transaction.html (DEFERRED /
+% IMMEDIATE / EXCLUSIVE, read→write upgrade fails with SQLITE_BUSY, one writer); sqlite.org/
+% fileformat2.html (512–65536 pages, table B-tree data only in leaves keyed by 64-bit rowid,
+% index B-tree keys only, user_version at offset 60); sqlite.org/pragma.html (page_size 4096
+% since 3.12.0, foreign_keys OFF by default, wal_checkpoint PASSIVE/FULL/RESTART/TRUNCATE,
+% synchronous=NORMAL for WAL); sqlite.org/eqp.html (SCAN, SEARCH … USING [COVERING] INDEX, USE
+% TEMP B-TREE FOR ORDER BY); sqlite.org/lang_vacuum.html (VACUUM INTO = consistent backup of a
+% live db); GRDB docs on github.com/groue/GRDB.swift (Concurrency, DatabaseSharing: 0xdead10cc,
+% observesSuspensionNotifications, busyMode .timeout; Migrations; ValueObservation; FTS5 needs
+% SQLITE_ENABLE_FTS5); Apple Platform Security "Data Protection classes" (Class C default,
+% Class A key discarded ~10 s after lock); Apple QA1809 (Core Data SQLite stores default to WAL
+% since iOS 7; copy the -wal too).
+% @labels: area=ios-platform kind=concept platform=apple topic=data,concurrency,performance
+% @tags: sqlite, wal, checkpoint, b-tree, sqlite-busy, grdb, databasepool, explain-query-plan, covering-index, fts5, data-protection, valueobservation
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,static,init,for,in,
+    if,else,return,guard,self,nil,try,await,async,throws,true,false,
+    SELECT,FROM,WHERE,ORDER,BY,CREATE,INDEX,ON,EXPLAIN,QUERY,PLAN},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {--}{{\hbox{-}\hbox{-}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  pg/.style={draw=sheetGrey, font=\ttfamily\tiny, minimum height=4.2mm, minimum width=6.5mm, inner sep=0.5pt},
+  fr/.style={draw=sheetOrange, fill=sheetOrange!12, font=\ttfamily\tiny, minimum height=4.2mm, minimum width=6.8mm, inner sep=0.5pt},
+  cmt/.style={draw=sheetGreen!60!black, fill=sheetGreen!25, font=\ttfamily\tiny\bfseries, minimum height=4.2mm, minimum width=5mm, inner sep=0.5pt},
+  bt/.style={draw=sheetBlue, fill=sheetBlue!8, font=\ttfamily\tiny, minimum height=4.2mm, inner sep=1pt},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\scriptsize, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{SQLite internals for app engineers (+ GRDB)}{ios-platform · folio}
+
+\oneliner{SQLite is a library, not a server: one \textbf{file} of fixed-size \textbf{pages}
+(4096 B default) holding \textbf{B-trees} — one per table (rows by \ct{rowid}) and one per index.
+Many connections may \textbf{read}, only \textbf{one may write}. In \textbf{WAL} mode commits are
+\emph{appended} to \ct{-wal}, readers keep a snapshot (\emph{end mark}), and a \textbf{checkpoint}
+copies pages back. Core Data, SwiftData, GRDB and Android Room all sit on it.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── B-trees ──
+  \node[ttl] at (-0.2,2.55) {Table B+tree (data in leaves) + index B-tree};
+  \node[bt, minimum width=16mm] (root) at (2.3,1.95) {root: 400 | 800};
+  \node[bt, minimum width=13mm] (l1) at (0.7,1.05) {rows 1–399};
+  \node[bt, minimum width=13mm] (l2) at (2.3,1.05) {400–799};
+  \node[bt, minimum width=13mm] (l3) at (3.9,1.05) {800–…};
+  \foreach \l in {l1,l2,l3} \draw[flow] (root.south) -- (\l.north);
+  \node[lbl, anchor=east] at (-0.25,1.05) {leaves:\\full rows};
+  \node[bt, draw=sheetGreen!60!black, fill=sheetGreen!10, minimum width=24mm] (ix) at (1.2,0.2) {idx (folderId, rowid)};
+  \draw[hot] (ix.east) -- (l2.south);
+  \node[lbl, anchor=west, text=sheetOrange] at (2.75,0.35) {rowid $\to$ 2nd lookup};
+  \node[lbl, anchor=north west, align=left] at (-0.2,-0.12) {one page read per level: $\approx$3–4 reads for\\millions of rows; \textbf{covering} index = no 2nd lookup};
+  \draw[sheetGrey!40] (5.35,2.7) -- (5.35,-0.9);
+  % ── WAL ──
+  \node[ttl] at (5.5,2.55) {WAL mode — append, snapshot, checkpoint};
+  \node[lbl, anchor=east] at (6.8,2.05) {\ct{app.sqlite}};
+  \foreach \i/\t in {0/P1,1/P2,2/P3,3/P4,4/P5,5/P6}
+    \node[pg, fill=black!4] at (7.2+\i*0.68,2.05) {\t};
+  \node[lbl, anchor=east] at (6.8,1.2) {\ct{app.sqlite-wal}};
+  \foreach \i/\t/\s in {0/P3/fr,1/P5/fr,2/C1/cmt,3/P3/fr,4/P6/fr,5/C2/cmt,6/P2/fr}
+    \node[\s] (w\i) at (7.2+\i*0.68,1.2) {\t};
+  \node[fr, draw=sheetRed, dashed, fill=white] at (7.2+7*0.68,1.2) {P4};
+  \node[lbl, anchor=west, text=sheetRed] at (12.3,1.2) {writer, uncommitted};
+  \node[lbl, anchor=west] at (5.5,0.55) {\ct{-shm}: wal-index};
+  \node[lbl, anchor=west, text=sheetGrey] at (5.5,0.3) {page $\to$ newest frame};
+  % end marks
+  \draw[very thick, sheetBlue] ([xshift=0.34cm]w2.north) -- ++(0,-0.62) node[lbl, below, text=sheetBlue]{reader A};
+  \draw[very thick, sheetBlue] ([xshift=0.34cm]w5.north) -- ++(0,-0.62) node[lbl, below, text=sheetBlue]{reader B};
+  \node[lbl, anchor=north west, align=left] at (7.3,0.25) {A started before C2: sees P3 of C1, \emph{not} the newer P3;\\B sees C2. Readers never block the writer, and vice versa.};
+  % checkpoint
+  \draw[->, thick, sheetGreen!60!black] ([xshift=-1mm]w0.north) to[bend left=25] (8.45,1.83);
+  \draw[->, thick, sheetGreen!60!black] ([xshift=1mm]w1.north) to[bend right=25] (9.9,1.83);
+  \node[lbl, anchor=west, align=left, text=sheetGreen!45!black] at (12.3,2.25) {checkpoint: frames $\to$ db file, only\\up to the \textbf{oldest} reader's end mark;\\auto at \textbf{1000 pages} ($\approx$4 MB)};
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (12.3,0.45) {a reader that never ends $\to$\\no checkpoint completes $\to$\\\ct{-wal} grows without bound};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\small\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Pages}: 512–65\,536 B, 4096 default (since 3.12.0). A table is a \textbf{B+tree} keyed by
+        the 64-bit \ct{rowid} (\ct{INTEGER PRIMARY KEY} aliases it) — data only in leaves. An
+        index is a B-tree of \emph{(columns, rowid)}; \ct{WITHOUT ROWID} tables are index B-trees.
+  \item \textbf{Rollback journal} (\ct{DELETE}, the default): original pages copied to \ct{-journal},
+        the db written \emph{in place}; commit = delete the journal. A writer committing locks readers out.
+  \item \textbf{WAL} (\ct{PRAGMA journal\_mode=WAL}, \textbf{persistent}): commit = append a commit
+        frame to \ct{-wal}. Readers use \ct{-shm} (shared memory) — so \textbf{same host only}, no network
+        file systems. Big win for apps: UI reads never wait for a background import.
+  \item \textbf{Transactions}: \ct{BEGIN} = \textbf{DEFERRED} — no lock until first access; a read that
+        later writes must \emph{upgrade}, and fails with \textbf{\ct{SQLITE\_BUSY}} if another connection
+        wrote meanwhile. \ct{BEGIN IMMEDIATE} takes the write lock up front (= \ct{EXCLUSIVE} in WAL).
+        A read transaction is a \textbf{snapshot}: it never sees later commits.
+  \item \ct{SQLITE\_BUSY} = another \emph{connection} holds the lock (busy timeout = wait and retry).
+        No timeout set $\to$ fails at once. The real fix: \textbf{one writer} in the whole app.
+  \item \textbf{Durability}: WAL + \ct{synchronous=NORMAL} (recommended) syncs only at checkpoint — a
+        commit may be lost on \emph{power loss}, never corrupted. \ct{FULL} syncs every commit.
+  \item Off by default: \ct{PRAGMA foreign\_keys} (per connection). GRDB turns it on.
+\end{itemize}
+
+\hd{GRDB — one writer, many readers}
+\begin{itemize}
+  \item \textbf{One} \ct{DatabaseQueue} \emph{or} \ct{DatabasePool} per file, for the app's lifetime.
+        \textbf{Queue} = one connection, everything serialised. \textbf{Pool} = WAL, a serial
+        \textbf{writer} + concurrent \textbf{readers}, each read isolated.
+  \item Every \ct{write \{\}} and \ct{read \{\}} is a transaction; writes are serialised (so no
+        \ct{SQLITE\_BUSY} inside one process); no writes inside \ct{read}; non-reentrant.
+        Escape hatches are named \ct{…WithoutTransaction} / \ct{unsafe…}.
+  \item \ct{ValueObservation.tracking \{ db in … \}}: records the \emph{region} it read; any commit
+        touching it $\to$ re-fetch. Only committed changes; may \textbf{coalesce}; \ct{removeDuplicates()};
+        \ct{.values(in:)} async sequence or \ct{start(in:onError:onChange:)}.
+  \item \ct{DatabaseMigrator}: named migrations, each in its own transaction, applied list stored
+        in the db; FK checks deferred to commit. \textbf{Never edit a shipped migration}.
+        \ct{eraseDatabaseOnSchemaChange} is for development only.
+\end{itemize}
+
+\hd{Example — pool, migration, write, observe}
+\begin{lstlisting}[language=SwiftSheet]
+var cfg = Configuration()
+cfg.busyMode = .timeout(5)        // app-group peers: wait, don't fail
+let db = try DatabasePool(path: url.path, configuration: cfg)
+var m = DatabaseMigrator()
+m.registerMigration("v1") { db in
+  try db.create(table: "note") { t in
+    t.autoIncrementedPrimaryKey("id")
+    t.column("folderId", .integer).notNull()
+    t.column("title", .text).notNull()
+    t.column("updatedAt", .datetime).notNull() }
+  try db.execute(sql: """
+    CREATE INDEX idx_note_folder ON note(folderId, updatedAt, title)""") }
+try m.migrate(db)                  // each migration = one transaction
+try await db.write { db in try Note(folderId: 1, title: "Hi").insert(db) }
+let obs = ValueObservation.tracking { db in    // region: note table
+  try Note.filter(Column("folderId") == 1).fetchAll(db) }
+for try await notes in obs.values(in: db) { render(notes) }
+\end{lstlisting}
+\begin{itemize}
+  \item Tests: \ct{DatabaseQueue()} with no path = in-memory db — run the \emph{real} migrator on it,
+        plus golden db files written by old app versions.
+\end{itemize}
+
+\columnbreak
+
+\hd{Query plans, indexes, N+1}
+\begin{lstlisting}[language=SwiftSheet]
+EXPLAIN QUERY PLAN SELECT title FROM note
+  WHERE folderId = ? ORDER BY updatedAt;
+-- no index:    SCAN note + USE TEMP B-TREE FOR ORDER BY
+-- (folderId):  SEARCH note USING INDEX ... (folderId=?)
+--              + USE TEMP B-TREE FOR ORDER BY
+-- (folderId, updatedAt, title):
+--   SEARCH note USING COVERING INDEX idx_note_folder (folderId=?)
+\end{lstlisting}
+\begin{itemize}
+  \item \textbf{SCAN} = every row; \textbf{SEARCH} = B-tree seek; \textbf{COVERING} = no table lookup.
+        Order: \textbf{equality} columns first, then the \ct{ORDER BY}/range one. \ct{TEMP B-TREE} = a
+        sort you could index away. Every index costs each write.
+  \item \textbf{N+1}: 1 query for folders + 1 per folder. Fix: \ct{JOIN}, \ct{IN (…)}, or GRDB
+        \ct{including(all:)} (one query per association, not per row).
+  \item \textbf{FTS5}: \ct{USING fts5(title, body)} + \ct{MATCH} + \ct{ORDER BY rank} (bm25); GRDB
+        \ct{FTS5()} + \ct{synchronize(withTable:)}. Needs \ct{SQLITE\_ENABLE\_FTS5} (GRDB docs:
+        custom build). \ct{LIKE '\%x\%'} is a scan.
+\end{itemize}
+
+\hd{On iOS — files, locks, backups}
+\begin{itemize}
+  \item \textbf{Three files}: db + \ct{-wal} + \ct{-shm}. Copy, move, back up or protect only the db
+        $\to$ lost commits. Put them in \textbf{one directory} and treat it as a unit.
+  \item \textbf{Data Protection}: default Class C (\ct{…UntilFirstUserAuthentication}). \ct{.complete}
+        (A): key gone $\approx$10\,s after lock $\to$ background writes fail (\emph{disk I/O error}).
+  \item \textbf{\ct{0xdead10cc}}: suspended holding a file lock in a \textbf{shared container} (app
+        group) $\to$ killed. GRDB: \ct{observesSuspensionNotifications} + \ct{Database.suspendNotification}.
+  \item \textbf{Backup} live: backup API (GRDB \ct{backup(to:)}) or \ct{VACUUM INTO 'copy.sqlite'}
+        (consistent, compacted). Never \ct{cp} mid-transaction.
+  \item \textbf{Migrations} without a library: \ct{PRAGMA user\_version} (int at header offset 60) —
+        read, run steps above it in one transaction, write it back.
+  \item \textbf{Core Data} SQLite stores default to WAL since iOS 7; \textbf{SwiftData} is Core Data
+        underneath. \textbf{Android}: Room = SQLite + compile-time-checked DAOs, \ct{Flow} observation.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Two pools on one file — two writers, \ct{SQLITE\_BUSY}, observations miss commits.}
+  \trap{Long read transaction (a paused cursor, a huge export) $\to$ checkpoint starvation, \ct{-wal}
+        of gigabytes, slower reads.}
+  \trap{Read-then-write in a DEFERRED transaction $\to$ \ct{SQLITE\_BUSY} at the upgrade; write
+        transactions from the start (GRDB \ct{write}).}
+  \trap{``Add an index'' without \ct{EXPLAIN QUERY PLAN} before \emph{and} after.}
+  \trap{Deleting or overwriting the db but not its \ct{-wal}, or unlinking a file still open —
+        a mispaired log is a documented corruption path. So is linking \textbf{two SQLite copies}
+        (system + a bundled one): one's \ct{close()} can drop the other's POSIX locks.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Pages $\to$ B-trees $\to$ one writer.} WAL: \emph{append, snapshot, checkpoint} —
+and the oldest reader decides when the log can shrink.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} persistence (store choice, Core Data
+contexts) · coredata-migrations-swiftdata · data-access-patterns · keychain-secure-enclave (Data
+Protection) · app-extensions (app groups) · background-execution}
+
+\end{document}

@@ -1,0 +1,205 @@
+% accessibility-localization.tex — VoiceOver (label/value/traits/hint, elements,
+% grouping, custom actions, rotor, identifiers), Dynamic Type, Reduce Motion,
+% contrast and target sizes, audits; String Catalogs, String(localized:),
+% CLDR plurals, positional arguments, RTL, formatters, pseudolanguages.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/design/human-interface-guidelines/accessibility (contrast table, control sizes)
+%   developer.apple.com/documentation/xcode/localizing-and-varying-text-with-a-string-catalog
+%   developer.apple.com/documentation/uikit/uicontentsizecategoryadjusting (iOS 10)
+%   developer.apple.com/documentation/swiftui/view/accessibilityelement(children:)
+%   developer.apple.com/documentation/foundation/string/init(localized:defaultvalue:table:bundle:locale:comment:)
+%   developer.apple.com/videos/play/wwdc2023/10155 (String Catalogs, Xcode 15)
+%   developer.apple.com/videos/play/wwdc2023/10035 (performAccessibilityAudit, Xcode 15)
+%   unicode.org/cldr/charts/latest/supplemental/language_plural_rules.html
+% @labels: area=ios-platform kind=concept platform=ios topic=ui,platform-apis
+% @tags: voiceover, accessibility-label, accessibility-traits, dynamic-type, uifontmetrics, reduce-motion, accessibilityidentifier, string-catalog, xcstrings, plurals, cldr, rtl, pseudolanguages
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,static,some,init,
+    if,else,return,guard,self,nil,private,true,false,in,try,await,async,throws,
+    body,View,Void,String,Bool,Int,Text},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  part/.style={draw, rounded corners=2pt, font=\scriptsize, inner sep=2pt,
+               minimum height=5mm, align=center},
+  scr/.style={draw=sheetGrey, rounded corners=3pt, minimum width=30mm,
+              minimum height=10mm},
+}
+
+\begin{document}
+
+\sheettitle{Accessibility \& Localization}{ios-platform · folio}
+
+\oneliner{\textbf{Accessibility}: VoiceOver walks a tree of \emph{elements}
+and speaks each one's \textbf{label, value, traits, hint}; text must scale with
+\textbf{Dynamic Type}; honour user settings (Reduce Motion, contrast).
+\textbf{Localization}: every user-visible string is a \emph{whole sentence} in a
+\textbf{String Catalog}, arguments are \textbf{positional}, plurals follow
+\textbf{CLDR} rules, layout is \textbf{leading/trailing}, and numbers/dates go
+through \textbf{formatters}.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Accessibility}
+\begin{itemize}
+  \item \textbf{Label} = what it is (``Volume'' — never ``Volume button'', the
+        trait says button). \textbf{Value} = current state (``70\%'').
+        \textbf{Traits} = role/state (\texttt{.button .header .selected
+        .adjustable .notEnabled}). \textbf{Hint} = result of acting, spoken
+        last, after a pause; users can turn hints off.
+  \item \texttt{isAccessibilityElement = true} makes a view a leaf;
+        on a container it \emph{hides the children}. Order children with
+        \texttt{accessibilityElements = [...]}. Decorative:
+        \texttt{.accessibilityHidden(true)}.
+  \item \textbf{Grouping} (SwiftUI) \texttt{.accessibilityElement(children:)}:
+        \texttt{.combine} (one swipe, merged) · \texttt{.ignore} (you label it)
+        · \texttt{.contain} (keep children, group them).
+  \item \texttt{.adjustable} needs \texttt{accessibilityIncrement()} /
+        \texttt{Decrement()} (SwiftUI \texttt{.accessibilityAdjustableAction}).
+  \item \textbf{Custom actions} (\texttt{UIAccessibilityCustomAction},
+        \texttt{.accessibilityAction(named:)}) expose swipe/long-press
+        actions via the \textbf{Actions rotor}; custom \textbf{rotors}
+        (\texttt{.accessibilityRotor}) jump between headings/links.
+        Announce: \texttt{UIAccessibility.post(notification: .announcement, \ldots)}.
+  \item \texttt{accessibilityIdentifier} is for \textbf{UI tests}: stable,
+        not localized, never spoken.
+  \item \textbf{Dynamic Type}: \texttt{UIFont.preferredFont(forTextStyle:)}
+        or \texttt{UIFontMetrics(forTextStyle:)}\allowbreak\texttt{.scaledFont(for:)},
+        plus \texttt{adjustsFontForContentSizeCategory = true} (default
+        \texttt{false}) and \texttt{numberOfLines = 0}. SwiftUI text styles
+        scale by themselves; custom sizes: \texttt{@ScaledMetric}. At the
+        accessibility sizes, stack vertically.
+  \item \textbf{Settings}: Reduce Motion
+        (\texttt{\textbackslash.accessibilityReduceMotion}: swap zooms for
+        fades), Reduce Transparency, Increase Contrast, Bold Text. Never
+        colour alone.
+  \item \textbf{Audit}: Accessibility Inspector ·
+        \texttt{XCUIApplication().performAccessibilityAudit()} (Xcode 15).
+\end{itemize}
+
+\section{Localization}
+\begin{itemize}
+  \item \textbf{String Catalog} \texttt{.xcstrings} (Xcode 15, JSON): keys
+        extracted at build, per-language state, plural + device variants
+        inline. Replaces \texttt{.strings} + \texttt{.stringsdict}.
+  \item Code: \texttt{String(localized: "key", defaultValue:, comment:)}
+        (iOS 15), \texttt{LocalizedStringResource}; SwiftUI
+        \texttt{Text("literal")} is a \texttt{LocalizedStringKey}.
+        Packages: \texttt{bundle: .module}. Always a \texttt{comment:}.
+  \item \textbf{Plurals}: ``Vary by plural'' — the language's CLDR
+        categories (table). Never \texttt{count == 1 ? :}.
+  \item \textbf{RTL}: \texttt{leading/trailing} + \texttt{.natural}
+        alignment mirror; \texttt{left/right} never do. Opt out per view with
+        \texttt{semanticContentAttribute} (\texttt{.playback} for media
+        controls); SwiftUI \texttt{\textbackslash.layoutDirection}.
+  \item \textbf{Formatters}: \texttt{date.formatted(\ldots)},
+        \texttt{.currency(code:)}, \texttt{Measurement} (km$\leftrightarrow$mi).
+        Formats follow \texttt{Locale.current} (region settings); the UI
+        language is \texttt{Bundle.main.preferredLocalizations}.
+  \item \textbf{Test}: pseudolanguages (Accented, Bounded, Double-Length,
+        Right-to-Left); vendors get \emph{Export Localizations}
+        (\texttt{.xcloc} = XLIFF + context).
+\end{itemize}
+
+\columnbreak
+
+\section{A volume row, done right}
+\begin{lstlisting}[language=SwiftSheet]
+HStack {                           // a volume row
+  Image(systemName: "speaker.wave.2").accessibilityHidden(true)
+  Text("Volume")                   // LocalizedStringKey
+  Slider(value: $level)
+}
+.accessibilityElement(children: .ignore)
+.accessibilityLabel("Volume")      // no "slider" - trait adds it
+.accessibilityValue(Text(level, format: .percent))
+.accessibilityAdjustableAction {   // swipe up / down
+  level += $0 == .increment ? 0.1 : -0.1 }
+.accessibilityIdentifier("settings.volume")   // tests only
+// catalog key "%lld files deleted", varied by plural
+let msg = String(localized: "\(count) files deleted",
+                 comment: "Toast after bulk delete")
+\end{lstlisting}
+
+\section{What VoiceOver says}
+\begin{tikzpicture}[sheet]
+  \node[scr, minimum width=66mm, minimum height=8mm] (row) at (3.3,0) {};
+  \node[font=\small, anchor=west] at (0.25,0) {Volume};
+  \draw[sheetGrey, thick] (2.0,0) -- (5.6,0);
+  \fill[sheetBlue] (4.5,0) circle (1.3mm);
+  \node[lbl, anchor=west] at (5.75,0) {70\%};
+  \node[part, draw=sheetBlue, fill=sheetBlue!10] (l) at (0.6,-1.05) {``Volume''\\\tiny label};
+  \node[part, draw=sheetGreen, fill=sheetGreen!10] (v) at (2.1,-1.05) {``70 percent''\\\tiny value};
+  \node[part, draw=sheetOrange, fill=sheetOrange!10] (t) at (3.65,-1.05) {``adjustable''\\\tiny trait};
+  \node[part, draw=sheetBrown, fill=sheetBrown!10, text width=19mm] (h) at (5.75,-1.05) {``swipe up or down\ldots''\\\tiny hint (after pause)};
+  \foreach \n in {l,v,t,h} \draw[flow] (row.south -| \n) -- (\n.north);
+  \node[lbl, text=sheetRed, anchor=west] at (0,-1.75)
+       {\textbf{identifier} \texttt{"settings.volume"} — never spoken, XCUITest only};
+\end{tikzpicture}
+
+\section{Positional arguments \& mirroring}
+\begin{tikzpicture}[sheet]
+  % positional args
+  \node[part, draw=sheetBlue, fill=sheetBlue!6, anchor=west] (en) at (0,0)
+       {EN \texttt{"\%1\$@ has \%2\$lld items"}};
+  \node[part, draw=sheetBlue, fill=sheetBlue!6, anchor=west] (xx) at (0,-0.7)
+       {XX \texttt{"\%2\$lld items belong to \%1\$@"}};
+  \node[lbl, anchor=west, align=left, text=sheetGreen] at (4.75,-0.35)
+       {translator may\\reorder: \textbf{indices}};
+  % mirroring
+  \node[scr, minimum width=31mm, minimum height=7mm] (ltr) at (1.55,-1.75) {};
+  \node[lbl, anchor=south west] at (ltr.north west) {LTR (English)};
+  \node[part, draw=sheetBlue, fill=sheetBlue!10] at (0.45,-1.8) {icon};
+  \node[font=\scriptsize] at (1.8,-1.8) {Title};
+  \node[font=\scriptsize] at (2.8,-1.8) {$\rangle$};
+  \node[scr, minimum width=31mm, minimum height=7mm] (rtl) at (5.25,-1.75) {};
+  \node[lbl, anchor=south east] at (rtl.north east) {RTL (Arabic)};
+  \node[part, draw=sheetBlue, fill=sheetBlue!10] at (6.35,-1.8) {icon};
+  \node[font=\scriptsize] at (5.1,-1.8) {Title};
+  \node[font=\scriptsize] at (4.1,-1.8) {$\langle$};
+  \draw[hot, <->] (ltr.east) -- node[lbl, below=4pt, text=sheetOrange]{mirror} (rtl.west);
+  \node[lbl, anchor=west] at (0,-2.4)
+       {\texttt{leading/trailing} flip automatically; \texttt{left/right} and frame maths stay put};
+\end{tikzpicture}
+
+\section{Numbers}
+{\scriptsize
+\begin{tabular}{@{}l l l@{}}
+  \textbf{Contrast} (WCAG AA) & text $\le$ 17 pt & \textbf{4.5:1} \\
+                              & $\ge$ 18 pt, or bold & \textbf{3:1} \\[2pt]
+  \textbf{Hit target} default / min & iOS, iPadOS, watchOS & \textbf{44} / 28 pt \\
+                              & visionOS & 60 / 28 pt \\
+                              & macOS · tvOS & 28 / 20 · 66 / 56 pt \\
+\end{tabular}\\[4pt]
+\begin{tabular}{@{}l l@{}}
+  \textbf{CLDR plurals} & \\
+  ja & \texttt{other} \\
+  en & \texttt{one other} \\
+  pl · ru & \texttt{one few many other} \\
+  ar & \texttt{zero one two few many other} \\
+\end{tabular}}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``Play button'' as label $\to$ ``Play button, button''.}
+  \trap{\texttt{isAccessibilityElement} on a container hides its children.}
+  \trap{\texttt{preferredFont} without the \texttt{adjustsFont\ldots} flag $\to$ never re-scales.}
+  \trap{UI tests matching localized labels — use \texttt{accessibilityIdentifier}.}
+  \trap{\texttt{"\textbackslash(n) " + "items"} — breaks word order \emph{and} plurals.}
+  \trap{\texttt{Text(aStringVar)} is \emph{not} localized — only literals / keys.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``L-V-T-H''} — Label, Value, Trait, Hint (the order VoiceOver speaks).
+\textbf{Localize sentences, not words}; \textbf{lead, don't left}.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Auto Layout \& self-sizing cells · SwiftUI environment values · XCUITest · SF Symbols (auto-mirroring) · \texttt{FormatStyle}}
+
+\end{document}

@@ -1,0 +1,78 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>watchOS &amp; visionOS — the two other platforms — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/ios-platform/watchos-visionos.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">50</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">watchOS &amp; visionOS — the two other platforms</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">ios-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> <strong>watchOS</strong>: a <strong>separate bundle on a separate device</strong> — glance-first, mostly suspended, talks
+to the phone through <strong>WatchConnectivity</strong> (four channels with different delivery guarantees) or the network
+itself. <strong>visionOS</strong>: SwiftUI scenes placed in space — <strong>windows, volumes, immersive spaces</strong> — driven by
+<strong>gaze + pinch</strong>, where the <strong>system, never the app, knows where the user looks</strong>.</p>
+<p class="sheet-tools"><a class="sheet-download" href="watchos-visionos.pdf" download>Download PDF</a> <a href="watchos-visionos.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/watchos-visionos.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="watchos-visionos-fig1.svg" width="626" height="143" class="wide" alt="watchOS &amp; visionOS — the two other platforms — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>watchOS</h2>
+<ul>
+<li><strong>Structure</strong>: SwiftUI <code>App</code> (watchOS 7); one watch target since Xcode 14. Own bundle, version,  install — no shared process or files with the iPhone app.</li>
+<li><strong>Independent</strong> (<code>WKRunsIndependentlyOfCompanionApp</code>, or <code>WKWatchOnly</code>) vs companion:  independent apps network themselves; WatchConnectivity is an optimisation. App Groups share only <em>on
+ one device</em>.</li>
+<li><strong>Complications = WidgetKit</strong> (watchOS 9; ClockKit deprecated): <code>.accessoryCircular / Rectangular /
+ Inline / Corner</code>; timeline entries render without waking you. Widgets also fill the <strong>Smart Stack</strong>  (watchOS 10), ranked by relevance.</li>
+<li><strong>Background</strong>: mostly suspended. <code>WKApplicationRefreshBackgroundTask</code>; with a complication on the  active face <span class="math">≈</span><strong>4 refreshes/hour</strong>. Complete every task or lose budget.  <code>WKExtendedRuntimeSession</code>: fixed types (mindfulness, smart alarm…).</li>
+<li><strong>Workouts</strong>: <code>HKWorkoutSession</code> + <code>HKLiveWorkoutBuilder</code> = the sanctioned long-running mode.  HealthKit hides <em>read</em> denial — looks like no data. Always On: <code>\.isLuminanceReduced</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>WatchConnectivity table</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>API</strong></th><th><strong>Reachable?</strong></th><th><strong>Delivery · use</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>sendMessage</code></td><td>required</td><td>now or error; watch<span class="math">→</span>phone wakes the iOS app in background, phone<span class="math">→</span>watch does not · live request/reply</td></tr>
+<tr><td><code>updateApplicationContext</code></td><td>no</td><td>background, latest only · current state, settings</td></tr>
+<tr><td><code>transferUserInfo</code></td><td>no</td><td>background FIFO, survives relaunch · events that must all arrive</td></tr>
+<tr><td><code>transferFile</code></td><td>no</td><td>background queue · images, audio</td></tr>
+<tr><td><code>transferCurrentComplicationUserInfo</code></td><td>no</td><td>high priority, daily budget · complication data</td></tr>
+</tbody>
+</table></p>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">let</span> s <span class="hljs-operator">=</span> <span class="hljs-type">WCSession</span>.default   <span class="hljs-comment">// both sides: delegate + activate()</span>
+<span class="hljs-keyword">if</span> s.isReachable {
+  s.sendMessage(msg, replyHandler: <span class="hljs-literal">nil</span>, errorHandler: <span class="hljs-literal">nil</span>) }
+<span class="hljs-keyword">else</span> { <span class="hljs-keyword">try?</span> s.updateApplicationContext(state) }  <span class="hljs-comment">// latest wins</span>
+<span class="hljs-comment">// delegate runs on a BACKGROUND queue: hop to @MainActor</span></code></pre>
+</section>
+<section class="sheet-section">
+<h2>visionOS</h2>
+<ul>
+<li><strong>Scenes</strong>: <code>WindowGroup</code> (window) · <code>.windowStyle(.volumetric)</code> + <code>.defaultSize(…, in: .meters)</code>  (volume) · <code>ImmersiveSpace(id:)</code> + <code>.immersionStyle</code>. <code>await openImmersiveSpace(id:)</code> and check the result.</li>
+<li><strong><code>RealityView { content in }</code></strong>: RealityKit entities in metres; <code>update:</code> syncs state;  <code>attachments:</code> pin SwiftUI views to entities. <code>TapGesture().targetedToAnyEntity()</code> fires only on  entities with <code>InputTargetComponent</code> + <code>CollisionComponent</code>.</li>
+<li><strong>Input</strong>: <em>indirect</em> = look + pinch; <em>direct</em> = touch content in reach. The <strong>hover highlight
+ is drawn by the system out of process</strong> — the app gets only the pinch-as-tap, never gaze.  <code>.hoverEffect()</code>; targets <span class="math">≥</span> 60 pt.</li>
+<li><strong>ARKit</strong> (<code>ARKitSession</code> + hand / scene-reconstruction / plane / world providers): needs  authorisation (<code>NSHandsTrackingUsageDescription</code>, <code>NSWorldSensingUsageDescription</code>) and an  open immersive space.</li>
+<li><strong>Ornaments</strong>: <code>.ornament(attachmentAnchor: .scene(.bottom))</code> — controls outside the window.</li>
+<li><strong>Porting iPad</strong>: “Designed for iPad” runs unmodified in a window; the visionOS destination adds glass,  ornaments, volumes, spaces — then fix touch/hover assumptions and tiny targets.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><strong><code>updateApplicationContext</code> for events</strong> — the 2nd call overwrites the 1st; use <code>transferUserInfo</code>.</li>
+<li class="trap"><strong><code>sendMessage</code> while not reachable</strong> — nothing queued; no fallback = data lost.</li>
+<li class="trap"><strong><code>isReachable</code> <span class="math">≠</span> paired</strong>: check <code>isPaired</code> / <code>isWatchAppInstalled</code> (iOS); iOS side must  also handle <code>sessionDidBecomeInactive</code> / <code>sessionDidDeactivate</code> (watch switching) and reactivate.</li>
+<li class="trap"><strong>Received file used later</strong> — the inbox file is deleted when <code>session(_:didReceive:)</code> returns; move it.</li>
+<li class="trap"><strong>“Log what the user looked at”</strong> on visionOS — impossible by design.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>Watch: “message now, context latest, userInfo all, file big.”</strong> <strong>Vision: “window, volume, space —
+the system sees the eyes, you see the pinch.”</strong></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> <code>widgets-live-activities</code> (timelines, budget) ·
+<code>background-execution</code> · <code>app-clips-handoff</code> (Continuity) · <code>swiftui-gestures-canvas</code> ·
+<code>accessibility-localization</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=ios-platform" title="area">ios-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=platform-apis" title="topic">platform-apis</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=ui" title="topic">ui</a></li><li class="sheet-tag"><a href="/folios.html?tag=watchos">watchos</a></li><li class="sheet-tag"><a href="/folios.html?tag=watchconnectivity">watchconnectivity</a></li><li class="sheet-tag"><a href="/folios.html?tag=wcsession">wcsession</a></li><li class="sheet-tag"><a href="/folios.html?tag=updateapplicationcontext">updateapplicationcontext</a></li><li class="sheet-tag"><a href="/folios.html?tag=transferuserinfo">transferuserinfo</a></li><li class="sheet-tag"><a href="/folios.html?tag=complications">complications</a></li><li class="sheet-tag"><a href="/folios.html?tag=hkworkoutsession">hkworkoutsession</a></li><li class="sheet-tag"><a href="/folios.html?tag=visionos">visionos</a></li><li class="sheet-tag"><a href="/folios.html?tag=immersive-space">immersive-space</a></li><li class="sheet-tag"><a href="/folios.html?tag=volumes">volumes</a></li><li class="sheet-tag"><a href="/folios.html?tag=realityview">realityview</a></li><li class="sheet-tag"><a href="/folios.html?tag=gaze-and-pinch">gaze-and-pinch</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=ios-platform%2Fwatchos-visionos.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/new?category=folio-comments&amp;title=watchOS%20%26%20visionOS%20%E2%80%94%20the%20two%20other%20platforms&amp;body=About%20the%20folio%3A%20https%3A%2F%2Ffolio.gurgul.pro%2Fios-platform%2Fwatchos-visionos.html%0A%0A">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

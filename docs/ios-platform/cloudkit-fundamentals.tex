@@ -1,0 +1,226 @@
+% cloudkit-fundamentals.tex — CloudKit building blocks: container, public / private / shared
+% databases, default vs custom zones, CKRecord / CKRecord.ID / Reference / CKAsset, operations vs
+% async convenience API, save policies + change tags, queries, indexes, dev vs production schema,
+% subscriptions + silent push, account status, the CKError codes you must handle, quotas.
+% Not repeated (neighbours): sync theory, clocks, CRDTs (architecture/sync-engines.tex);
+% CKSyncEngine, NSPersistentCloudKitContainer, SwiftData sync, CKShare (cloudkit-sync-sharing.tex);
+% APNs itself (ios-platform/push-notifications.tex).
+% Sources (checked 2026-09-29) — developer.apple.com/documentation/cloudkit/…: CKDatabase (three
+% databases; public readable without an account, writes need one; async API names; low default
+% QoS + configuredWith), CKRecordZone (one default zone in public + private; custom zones only in
+% the private database; atomic writes; references never cross zones), CKRecord (1 MB limit,
+% assets excluded; field types; development-only just-in-time keys; indexes; encodeSystemFields),
+% CKModifyRecordsOperation.isAtomic (default true, per zone), CKError.Code.serverRecordChanged
+% (client / server / ancestor copies; merge into the server copy), CKQuerySubscription (public +
+% private only), CKDatabaseSubscription (private + shared; default zone excluded; coalesced),
+% CKAccountStatus (5 cases), CKShare (shareable records live in a custom zone of the private DB).
+% @labels: area=ios-platform kind=api platform=ios topic=data,networking,platform-apis
+% @tags: cloudkit, ckcontainer, ckdatabase, record-zones, ckrecord, ckasset, change-tag, ckerror, ckquery, cksubscription, silent-push, icloud-account
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={class,final,struct,enum,func,var,let,init,case,switch,for,in,where,
+    if,else,return,guard,self,nil,try,await,async,throws,throw,do,catch,as,
+    true,false,String,Int,Task},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {<=}{{\hbox{<}\hbox{=}}}2 {>=}{{\hbox{>}\hbox{=}}}2
+           {&&}{{\hbox{\&}\hbox{\&}}}2 {||}{{\hbox{|}\hbox{|}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  panel/.style={draw=#1, thick, rounded corners=3pt, fill=#1!5},
+  zone/.style={draw=#1, thick, rounded corners=2pt, fill=#1!12, font=\scriptsize,
+               inner sep=1.5pt, align=center, minimum height=6mm},
+  rec/.style={draw=sheetGrey, fill=white, font=\tiny, inner sep=1pt, minimum width=5mm,
+              minimum height=2.6mm},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=left},
+  dbh/.style={font=\bfseries\small, text=#1},
+}
+
+\begin{document}
+
+\sheettitle{CloudKit fundamentals — databases, zones, records, errors}{ios-platform · folio}
+
+\oneliner{Apple's hosted database behind the user's iCloud account. A \textbf{container} holds
+three databases — \textbf{public} (everyone, your quota), \textbf{private} (this user, \emph{their}
+quota), \textbf{shared} (zones others shared with me). \textbf{Records} live in \textbf{zones}; a save
+is checked against the record's \textbf{change tag}, so a conflict is an \emph{error you resolve},
+never a silent overwrite. Only \textbf{custom zones} give atomic writes, change tokens and sharing.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[box, font=\scriptsize] (ctr) at (8.3,3.75)
+    {\textbf{CKContainer} \ct{iCloud.com.example.app} — \ct{CKContainer.default()} /
+     \ct{CKContainer(identifier:)}};
+  \node[lbl, anchor=west, text=sheetBrown] at (13.3,3.75) {per app or shared by a\\team's apps; never deleted};
+  \draw[panel=sheetOrange] (0,0.42) rectangle (5.2,3.25);
+  \draw[panel=sheetBlue]   (5.7,0.42) rectangle (10.9,3.25);
+  \draw[panel=sheetGreen]  (11.4,0.42) rectangle (16.6,3.25);
+  \draw[flow] ([xshift=-22mm]ctr.south) -- (2.6,3.25);
+  \draw[flow] (ctr.south) -- (8.3,3.25);
+  \draw[flow] ([xshift=22mm]ctr.south) -- (14.0,3.25);
+  \node[dbh=sheetOrange] at (2.6,3.02) {public \ct{publicCloudDatabase}};
+  \node[dbh=sheetBlue] at (8.3,3.02) {private \ct{privateCloudDatabase}};
+  \node[dbh=sheetGreen!60!black] at (14.0,3.02) {shared \ct{sharedCloudDatabase}};
+  % public
+  \node[zone=sheetOrange, minimum width=46mm] at (2.6,2.3) {\ct{\_defaultZone} — the \textbf{only} zone\\[1pt]
+    \tikz{\node[rec]{Quake};\node[rec] at (0.6,0){Quake};\node[rec] at (1.2,0){Quake};}};
+  \node[lbl, anchor=north west] at (0.1,1.78)
+    {readable by \textbf{every} user, even signed out;\\
+     writes need an iCloud account · \textbf{your app's} quota\\
+     no custom zones $\to$ no atomic batch, no tokens:\\
+     sync = \textbf{query} + \ct{CKQuerySubscription}\\
+     e.g. catalogue, feed, leaderboard};
+  % private
+  \node[zone=sheetGrey, minimum width=18mm, text=black!70] at (6.85,2.3) {\ct{\_defaultZone}\\no atomic · no\\tokens · no share};
+  \node[zone=sheetBlue, minimum width=26mm] at (9.4,2.3) {custom zone \ct{Notes}\\[1pt]
+    \tikz{\node[rec]{Note};\node[rec] at (0.6,0){Note};\node[rec] at (1.2,0){Tag};}};
+  \node[lbl, anchor=north west] at (5.8,1.78)
+    {only this user, \textbf{account required}\\
+     storage: the \textbf{user's} iCloud quota\\
+     custom zone: \textbf{atomic} batch · \textbf{change-token}\\
+     delta fetch · \textbf{zone-wide} or hierarchy \textbf{share}\\
+     \ct{CKDatabaseSubscription}: custom zones only};
+  % shared
+  \node[zone=sheetGreen, minimum width=21mm] at (12.65,2.3) {Alice's\\\ct{Trips} zone};
+  \node[zone=sheetGreen, minimum width=21mm] at (15.2,2.3) {Bob's \ct{Notes}\\hierarchy};
+  \node[lbl, anchor=north west] at (11.5,1.78)
+    {zones \textbf{other users} shared with me,\\
+     after I \textbf{accept} their \ct{CKShare}\\
+     storage: the \textbf{owner's} quota · no new zones\\
+     \ct{CKDatabaseSubscription} ✓ · query sub \ensuremath{\times}\\
+     new zones: \ct{databaseChanges(since:)}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Records}
+\begin{itemize}
+  \item \ct{CKRecord} = \ct{recordType} + fields (String, number, Data, Date, CLLocation, arrays,
+        \ct{CKAsset}, \ct{Reference}), $\leq$ \textbf{1 MB} without assets. \ct{CKRecord.ID} =
+        \ct{recordName} (yours, e.g. UUID $\to$ idempotent retry) + \ct{zoneID}: a record never
+        changes zone.
+  \item System fields: \ct{recordChangeTag}, \ct{creationDate}, \ct{modificationDate},
+        \ct{creatorUserRecordID}, \ct{parent}, \ct{share}. Local cache? keep
+        \ct{encodeSystemFields(with:)} or every save conflicts.
+  \item \ct{CKRecord.Reference(recordID:action:)}: \textbf{same zone only}; \ct{.deleteSelf}
+        cascades. \ct{CKAsset(fileURL:)}: uploaded apart, fetched to a \emph{temporary} file — copy it.
+\end{itemize}
+
+\hd{Operations vs async API}
+\begin{itemize}
+  \item \textbf{Async} (iOS 15): \ct{record(for:)}, \ct{save(\_:)},
+        \ct{modifyRecords(saving:deleting:…)}, \ct{records(matching:…)},
+        \ct{recordZoneChanges(…)}. Results are \textbf{per item} (\ct{[ID: Result]}): no
+        throw $\neq$ all saved.
+  \item \textbf{CKOperation} subclasses (\ct{CKModifyRecordsOperation}, \ct{CKQueryOperation}, …):
+        per-record callbacks, progress, cancel, dependencies, long-lived. Default QoS is low.
+  \item Save policy: \ct{.ifServerRecordUnchanged} (default, tag must match) ·
+        \ct{.changedKeys} / \ct{.allKeys} (overwrite, no check). \ct{isAtomic} (default
+        \ct{true}): all-or-nothing \emph{per custom zone}.
+\end{itemize}
+
+\hd{Example — save, and resolve a conflict}
+\begin{lstlisting}[language=SwiftSheet]
+let db = CKContainer(identifier: "iCloud.com.example.app")
+           .privateCloudDatabase
+func rename(_ id: CKRecord.ID, to title: String) async throws {
+  var rec = try await db.record(for: id)    // carries change tag
+  for _ in [1, 2, 3] {
+    rec["title"] = title
+    do { _ = try await db.save(rec); return } // tag must match
+    catch let e as CKError where e.code == .serverRecordChanged {
+      guard let server = e.serverRecord else { throw e }
+      rec = server           // merge INTO the server copy (new tag)
+    } catch let e as CKError where e.retryAfterSeconds != nil {
+      try await Task.sleep(for: .seconds(e.retryAfterSeconds ?? 1))
+    }
+  }
+}
+\end{lstlisting}
+
+\hd{The change tag turns a race into an error}
+\begin{tikzpicture}[sheet, m/.style={font=\tiny, inner sep=1pt, align=center}]
+  \node[box, font=\scriptsize, minimum width=10mm] at (0,2.35) {iPhone};
+  \node[box, font=\scriptsize, minimum width=10mm, draw=sheetGreen, fill=sheetGreen!8] at (3.6,2.35) {server};
+  \node[box, font=\scriptsize, minimum width=10mm, draw=sheetOrange, fill=sheetOrange!8] at (7.2,2.35) {iPad};
+  \foreach \x in {0,3.6,7.2} \draw[sheetGrey, thick] (\x,2.1) -- (\x,-0.1);
+  \draw[hot, draw=sheetBlue] (0,1.95) -- node[m, above, sloped]{save, tag \textbf{t1}} (3.6,1.78);
+  \node[m, fill=white, text=sheetGreen!50!black] at (3.6,1.6) {ok $\to$ \textbf{t2}};
+  \draw[hot, draw=sheetOrange] (7.2,1.45) -- node[m, above, sloped]{save, tag \textbf{t1} (stale)} (3.6,1.28);
+  \draw[hot, draw=sheetRed] (3.6,1.05) -- node[m, above, sloped, text=sheetRed]{\ct{.serverRecordChanged}} (7.2,0.88);
+  \node[m, anchor=east, text=sheetRed, align=right] at (3.5,0.72) {\ct{clientRecord} (mine)\\\ct{serverRecord} (t2)\\\ct{ancestorRecord} (t1)};
+  \draw[hot, draw=sheetGreen] (7.2,0.35) -- node[m, above, sloped]{merged into the \textbf{t2} copy} (3.6,0.18);
+  \node[m, fill=white, text=sheetGreen!50!black] at (3.6,0.0) {ok $\to$ \textbf{t3}};
+  \node[m, anchor=west, align=left, text=sheetGrey] at (0.12,1.3) {merge into client or\\ancestor = old tag\\= conflict again};
+\end{tikzpicture}
+
+\columnbreak
+
+\hd{Queries, indexes, schema environments}
+\begin{itemize}
+  \item \ct{CKQuery(recordType:predicate:)} + sort, paged by \ct{queryCursor}. Indexes:
+        \textbf{Queryable} (equality; on \ct{recordName} to list all), \textbf{Sortable}
+        (ranges, sort), \textbf{Searchable} (tokens).
+  \item \textbf{Development}: an unknown type or key is \emph{created} on save. \textbf{Production}:
+        it is an error. CloudKit Console $\to$ \emph{Deploy Schema Changes}; production is
+        \textbf{add-only}. Xcode runs use Development; \textbf{TestFlight + App Store use Production}.
+\end{itemize}
+
+\hd{Subscriptions + silent push}
+\begin{itemize}
+  \item \ct{CKQuerySubscription} (public + private) · \ct{CKRecordZoneSubscription} (one zone)
+        · \ct{CKDatabaseSubscription} (private + shared, every custom zone — how you hear of
+        \emph{new} shared zones).
+  \item \ct{shouldSendContentAvailable = true} $\to$ silent push (Background Mode \emph{Remote
+        notifications}, no prompt). \textbf{Coalesced, droppable}: a hint to fetch, not data.
+\end{itemize}
+
+\hd{Account}
+\ct{accountStatus()}: \ct{.available} · \ct{.noAccount} · \ct{.restricted} ·
+\ct{.couldNotDetermine} · \ct{.temporarilyUnavailable}. On \ct{.CKAccountChanged}, a
+new \ct{userRecordID()} $\to$ \textbf{wipe old data}.
+
+\hd{Errors you must handle — \ct{CKError.Code}}
+{\footnotesize\setstretch{0.95}\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}L{27mm}L{48mm}@{}}
+\toprule
+\ct{serverRecordChanged} & merge into \ct{e.serverRecord}, save again \\
+\ct{partialFailure} & per item: \ct{e.partialErrorsByItemID} \\
+\ct{batchRequestFailed} & atomic zone: another item failed; fix, resend \\
+\ct{requestRateLimited}, \ct{zoneBusy}, \ct{serviceUnavailable} & wait \ct{e.retryAfterSeconds}, then retry — never a hot loop \\
+\ct{limitExceeded} & too many items / bytes: split the batch \\
+\ct{changeTokenExpired} & refetch the zone from a \ct{nil} token \\
+\ct{zoneNotFound} & create the zone, retry \\
+\ct{userDeletedZone} & user wiped iCloud data: ask before re-upload \\
+\ct{quotaExceeded} & user's iCloud full: tell them, stop retrying \\
+\ct{notAuthenticated} & no account: check \ct{accountStatus()} \\
+\bottomrule
+\end{tabular}}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Default zone ``to keep it simple'' — no atomic batch, tokens or share; create a custom zone.}
+  \trap{Resaving your own copy after a conflict — old tag, fails forever.}
+  \trap{Fine in Development, empty in Production — schema not deployed.}
+  \trap{Private-DB \ct{quotaExceeded} is the \emph{user's} storage, not yours.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Container $\to$ 3 DBs $\to$ zones $\to$ records.} Custom zone = atomic + tokens
++ share; stale tag = merge.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} cloudkit-sync-sharing · sync-engines ·
+push-notifications · background-execution · persistence · coredata-migrations-swiftdata}
+
+\end{document}

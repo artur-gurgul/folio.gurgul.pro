@@ -1,0 +1,204 @@
+% eventkit-contacts.tex — EventKit (the iOS 17 write-only / full access split, EKEventStore, the model,
+% fetching + recurring occurrences, spans, commit batching, change notifications, identifiers) and
+% Contacts (CNContactStore, keysToFetch, the iOS 18 limited access, ContactAccessButton, the pickers,
+% save requests, unified contacts, change history, the Notes entitlement).
+% NOT repeated here: the generic permission state machine + primer (app-hardening-privacy),
+% privacy manifests / nutrition labels (privacy-compliance), Calendar/TimeZone maths
+% (foundation-dates-formatters), the Photos limited library (photokit-photos-picker).
+% Sources (checked 2026-09-29):
+%   developer.apple.com/documentation/eventkit/accessing-the-event-store (iOS 17 keys; old key alone
+%     -> access auto-denied; write-only sees ONE virtual calendar, reads return nothing, the person
+%     chooses the calendar; EventKitUI needs no access; NSContactsUsageDescription for EventKitUI)
+%   developer.apple.com/documentation/eventkit/ekeventstore/requestwriteonlyaccesstoevents(completion:) (iOS 17;
+%     cannot read events it created; request before fetching or reset())
+%   developer.apple.com/documentation/eventkit/ekeventstore/requestfullaccesstoevents(completion:) (write-only
+%     app must request full before fetching; EKEventEditViewController needs no access)
+%   developer.apple.com/documentation/eventkit/ekeventstore/requestaccess(to:completion:) (deprecated 17;
+%     on 17+ no prompt, completes with an error)
+%   developer.apple.com/documentation/eventkit/ekauthorizationstatus (.fullAccess, .writeOnly; .authorized deprecated)
+%   developer.apple.com/documentation/eventkit/ekeventstore/predicateforevents(withstart:end:calendars:) (4-year span)
+%   developer.apple.com/documentation/eventkit/ekeventstore/events(matching:) (synchronous; committed only)
+%   developer.apple.com/documentation/eventkit/retrieving-events-and-reminders (not sorted: compareStartDate;
+%     fetchReminders async; event(withIdentifier:) returns the first occurrence)
+%   developer.apple.com/documentation/eventkit/updating-with-notifications (EKEventStoreChanged: refetch the range)
+%   developer.apple.com/documentation/eventkit/ekobject/refresh() (false = deleted)
+%   developer.apple.com/documentation/eventkit/ekevent/eventidentifier (changes when the calendar changes)
+%   developer.apple.com/documentation/eventkit/ekcalendaritem/calendaritemexternalidentifier (shared by
+%     occurrences, duplicates possible, Exchange differs iOS vs macOS)
+%   developer.apple.com/videos/play/wwdc2023/10052 + its sample "Accessing Calendar using EventKit and EventKitUI"
+%     (editor renders out of process; EKCalendarChooser needs write-only or full)
+%   Event Kit Programming Guide (archived): an event store is expensive to initialise — create one, reuse it
+%   developer.apple.com/documentation/contacts/cnauthorizationstatus/limited (iOS 18)
+%   developer.apple.com/documentation/contactsui/contactaccessbutton (iOS 18; hidden when authorized)
+%   developer.apple.com/documentation/swiftui/view/contactaccesspicker(ispresented:completionhandler:) (iOS 18)
+%   developer.apple.com/documentation/contactsui/cncontactpickerviewcontroller (no access, no prompt)
+%   developer.apple.com/documentation/contacts/cncontactstore (fetch off main; CNContactStoreDidChange)
+%   developer.apple.com/documentation/contacts/cnchangehistoryfetchrequest (iOS 13; enumerator(for:))
+%   developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.contacts.notes
+%     (Apple approval; without it CNError.unauthorizedKeys)
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis,security,data
+% @tags: eventkit, ekeventstore, write-only-access, ekevent, ekreminder, recurrence, eventkitui, contacts-framework, cncontactstore, limited-contacts, contactaccessbutton, cncontactpickerviewcontroller
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,return,if,else,guard,case,self,in,
+    private,try,await,async,true,false,nil,as},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {||}{{\hbox{|}\hbox{|}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  rung/.style={box, font=\scriptsize, text width=40mm, minimum height=9mm, inner sep=1.5pt, align=left},
+  row/.style={font=\bfseries\scriptsize, anchor=east, align=right},
+}
+
+\begin{document}
+
+\sheettitle{EventKit \& Contacts — access levels, model, sync}{ios-platform · folio}
+
+\oneliner{Calendars, reminders and contacts are \textbf{private databases} shared by every app.
+Climb the \textbf{access ladder} only as far as the feature needs: a \textbf{system UI} that needs
+\textbf{no permission} (\ct{EKEventEditViewController}, \ct{CNContactPickerViewController}) $\to$ a
+\textbf{partial} grant (\ct{.writeOnly} events, iOS 17 · \ct{.limited} contacts, iOS 18) $\to$
+\textbf{full access}. One long-lived \ct{EKEventStore} / \ct{CNContactStore}; on ``store changed'', refetch.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[ttl] at (-0.2,3.2) {The access ladder — ask for the lowest rung that works};
+  \draw[hot, very thick, draw=sheetGrey!60] (7.6,3.2) -- node[lbl, above]{more data $\to$ longer purpose string, more App Review scrutiny, more users say no} (16.4,3.2);
+  \node[lbl, font=\scriptsize\bfseries, text=sheetGreen!50!black] at (3.75,2.85) {0 · system UI, no prompt};
+  \node[lbl, font=\scriptsize\bfseries, text=sheetOrange!80!black] at (8.45,2.85) {1 · partial grant};
+  \node[lbl, font=\scriptsize\bfseries, text=sheetRed] at (13.15,2.85) {2 · full access};
+  % events
+  \node[row] at (1.5,2.25) {Events\\{\tiny calendars}};
+  \node[rung, draw=sheetGreen, fill=sheetGreen!8] (e0) at (3.75,2.25) {\ct{EKEventEditViewController}: renders\\\textbf{out of process}, no key; add/edit — but\\the app never sees what was saved};
+  \node[rung, draw=sheetOrange, fill=sheetOrange!8] (e1) at (8.45,2.25) {\ct{.writeOnly} · \ct{requestWriteOnlyAccessToEvents}\\key \ct{NSCalendarsWriteOnlyAccess…}\\1 \emph{virtual} calendar; reads return \textbf{nothing}};
+  \node[rung, draw=sheetRed, fill=sheetRed!7] (e2) at (13.15,2.25) {\ct{.fullAccess} · \ct{requestFullAccessToEvents}\\key \ct{NSCalendarsFullAccessUsage…}\\read + write every calendar};
+  % reminders
+  \node[row] at (1.5,1.4) {Reminders};
+  \node[rung, minimum height=5.5mm, draw=sheetGrey, fill=black!4, text=sheetGrey] (r0) at (3.75,1.4) {no EventKitUI editor for reminders};
+  \node[rung, minimum height=5.5mm, draw=sheetGrey, fill=black!4, text=sheetGrey] (r1) at (8.45,1.4) {\textbf{no} write-only level for reminders};
+  \node[rung, minimum height=5.5mm, draw=sheetRed, fill=sheetRed!7] (r2) at (13.15,1.4) {\ct{.fullAccess} · \ct{requestFullAccessToReminders}\\key \ct{NSRemindersFullAccessUsage…}};
+  % contacts
+  \node[row] at (1.5,0.55) {Contacts};
+  \node[rung, draw=sheetGreen, fill=sheetGreen!8] (c0) at (3.75,0.55) {\ct{CNContactPickerViewController}\\no access, no prompt: the app gets\\only the contact / property picked};
+  \node[rung, draw=sheetOrange, fill=sheetOrange!8] (c1) at (8.45,0.55) {\ct{.limited} (iOS 18) · user-chosen subset;\\grow it: \ct{ContactAccessButton},\\\ct{.contactAccessPicker}, Settings};
+  \node[rung, draw=sheetRed, fill=sheetRed!7] (c2) at (13.15,0.55) {\ct{.authorized} · \ct{requestAccess(for: .contacts)}\\key \ct{NSContactsUsageDescription}\\(one key for limited \emph{and} full)};
+  \draw[flow, draw=sheetOrange] (e1.east) -- node[lbl, above]{ask} node[lbl, below]{again} (e2.west);
+  \draw[flow, draw=sheetOrange] (c1.east) -- (c2.west);
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (-0.2,-0.2)
+     {iOS 17+: only the old \ct{NSCalendarsUsageDescription} $\to$ every request \textbf{auto-denied}; \ct{requestAccess(to:)} is deprecated, completes with an\\
+      \textbf{error, no prompt}. \ct{EKAuthorizationStatus.authorized} is deprecated $\to$ \ct{.writeOnly} / \ct{.fullAccess}.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{EventKit}
+\begin{itemize}
+  \item \textbf{One \ct{EKEventStore}}, created once and kept: expensive to initialise; objects from one
+        store must not be used with another. Fetched \emph{before} the grant? \ct{reset()} after it.
+  \item \textbf{Model}: \ct{EKSource} (iCloud, Exchange, CalDAV, local) $\to$ \ct{EKCalendar}
+        (\ct{allowsContentModifications}) $\to$ \ct{EKCalendarItem} = \ct{EKEvent} | \ct{EKReminder}.
+  \item \ct{EKEvent}: \ct{startDate}/\ct{endDate}, \ct{isAllDay}, \ct{timeZone} (\ct{nil} = \emph{floating},
+        ``lunch at noon'' in any zone), \ct{recurrenceRules}, \ct{alarms} (\ct{EKAlarm(relativeOffset:)}, or a
+        geofence: \ct{structuredLocation} + \ct{proximity}). \ct{EKReminder}: \ct{dueDateComponents}
+        (DateComponents, not a Date), \ct{isCompleted}.
+  \item \textbf{Fetch}: \ct{predicateForEvents(withStart:end:calendars:)} — span capped at
+        \textbf{4 years}, silently — then \ct{events(matching:)}: \textbf{synchronous} (off main),
+        \textbf{committed only}, \textbf{unsorted} (\ct{compareStartDate}); a recurring event returns
+        \textbf{one \ct{EKEvent} per occurrence}. Reminders: \ct{fetchReminders(matching:completion:)} is \textbf{async}.
+  \item \textbf{Save}: \ct{save(\_:span:commit:)}, \ct{remove(\_:span:commit:)}. Batch: \ct{commit: false}
+        $\times$ N, then one \ct{commit()}; \ct{reset()} drops the uncommitted.
+  \item \textbf{Changes}: \ct{.EKEventStoreChanged} (any app, any sync) $\to$ \textbf{refetch the visible
+        range}. One object you are editing: \ct{refresh()} — \ct{false} = deleted.
+\end{itemize}
+
+\hd{Example — write-only, weekly, with an alarm}
+\begin{lstlisting}[language=SwiftSheet]
+let store = EKEventStore()          // app-wide, created once
+func addSwimLessons(start: Date) async throws {
+  guard try await store.requestWriteOnlyAccessToEvents() else { return }
+  let e = EKEvent(eventStore: store)
+  e.title = "Swim lesson"
+  e.calendar = store.defaultCalendarForNewEvents // user picks real one
+  e.startDate = start; e.endDate = start + 45 * 60
+  e.addRecurrenceRule(EKRecurrenceRule(recurrenceWith: .weekly,
+      interval: 1, end: EKRecurrenceEnd(occurrenceCount: 10)))
+  e.addAlarm(EKAlarm(relativeOffset: -15 * 60)) // 15 min before
+  try store.save(e, span: .futureEvents, commit: true)
+}   // write-only: cannot read this event back afterwards
+\end{lstlisting}
+
+\hd{Identifiers — which one to store}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{48mm}@{}}
+\toprule
+\ct{eventIdentifier} & local; \textbf{changes} if the event moves calendar; \ct{event(withIdentifier:)} gives a series' \textbf{first} occurrence \\
+\ct{calendarItem-}\newline\ct{Identifier} & local, unique in this database \\
+\ct{calendarItem-}\newline\ct{ExternalIdentifier} & the \textbf{server's} id, same on every device; shared by all occurrences (+ start date); \textbf{duplicates} possible (ICS import, shared + invited) \\
+\bottomrule
+\end{tabular}}
+
+\hd{Saving an edit to a recurring series}
+\begin{tikzpicture}[sheet, oc/.style={cell, minimum width=9mm, font=\tiny\ttfamily}]
+  \foreach \i/\d in {0/Mon 1,1/Mon 8,2/Mon 15,3/Mon 22,4/Mon 29,5/Mon 5} {
+    \node[oc, fill=sheetBlue!8] (a\i) at (\i*1.12,0.85) {\d};
+    \node[oc, fill=sheetBlue!8] (b\i) at (\i*1.12,0) {\d};
+  }
+  \node[oc, fill=sheetOrange!25, draw=sheetOrange, thick] at (2*1.12,0.85) {Mon 15};
+  \foreach \i/\d in {2/Mon 15,3/Mon 22,4/Mon 29,5/Mon 5} {\node[oc, fill=sheetRed!18, draw=sheetRed, thick] at (\i*1.12,0) {\d};}
+  \node[lbl, anchor=west, text=sheetOrange!80!black] at (-0.55,1.22) {\ct{span: .thisEvent} on the 15th $\to$ only it changes (a \emph{detached} occurrence)};
+  \node[lbl, anchor=west, text=sheetRed] at (-0.55,0.4) {\ct{span: .futureEvents} on the 15th $\to$ it and every later occurrence change};
+  \node[lbl, anchor=north west, align=left] at (-0.55,-0.32) {All six share one \ct{calendarItemExternalIdentifier}; \ct{events(matching:)} returns\\each one in range as its own \ct{EKEvent}, told apart by \ct{occurrenceDate}.};
+\end{tikzpicture}
+
+\columnbreak
+
+\hd{Contacts}
+\begin{itemize}
+  \item \ct{CNContactStore}: \ct{requestAccess(for: .contacts)} — then branch on
+        \ct{authorizationStatus(for:)}: a \ct{Bool} cannot say limited vs full. Fetches do I/O: \textbf{off main}.
+  \item \textbf{\ct{keysToFetch}} gives \emph{partial} contacts. Reading an unfetched key throws
+        \ct{CNContactPropertyNotFetchedException} — ObjC, a \textbf{crash} Swift cannot catch; check
+        \ct{isKeyAvailable(\_:)}. Display names need \ct{CNContactFormatter}'s required keys.
+  \item \textbf{Unified}: one person linked across iCloud / Exchange / Gmail containers comes back as one
+        \ct{CNContact} (\ct{unifiedContacts(matching:keysToFetch:)}). Big lists: identifiers first, details in batches.
+  \item \textbf{Write}: \ct{mutableCopy()} $\to$ \ct{CNMutableContact}; \ct{CNSaveRequest}
+        \ct{add}/\ct{update}/\ct{delete}; \ct{store.execute(req)}.
+  \item \textbf{Sync}: \ct{CNContactStoreDidChange} $\to$ refetch. Incremental: \ct{CNChangeHistoryFetchRequest}
+        (13) from a saved \ct{currentHistoryToken}, run with \ct{enumerator(for:)}.
+  \item \textbf{Limited} (18): fetches see only the subset. \ct{ContactAccessButton(queryString:)} beside
+        your search shows matches; a tap shares that contact. \textbf{Hidden} when \ct{.authorized}.
+        \ct{.contactAccessPicker(isPresented:)} returns the \textbf{newly shared} ids.
+  \item \textbf{Notes field}: \ct{com.apple.developer.contacts.notes} needs Apple's \textbf{approval};
+        without it \ct{CNContactNoteKey} $\to$ \ct{CNError.unauthorizedKeys}.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Full calendar access to ``add to calendar'' — the editor needs \textbf{no} access; write-only if you
+        save silently.}
+  \trap{Write-only then fetching: empty results, \emph{including your own events} — request full access first.}
+  \trap{Storing \ct{eventIdentifier} as a sync key: moves with the calendar; use the external id + start date.}
+  \trap{Ten-year query: silently cut to \textbf{4 years} — page by range. Contacts: unfetched key $=$ crash, not \ct{nil}.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``UI, then partial, then full. One store, refetch on change.''} Events: \emph{editor $\to$ write-only
+$\to$ full}; contacts: \emph{picker $\to$ limited $\to$ authorized}; reminders: \emph{full or nothing}.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} app-hardening-privacy (permission states) ·
+privacy-compliance · photokit-photos-picker (same picker-vs-limited shape) · foundation-dates-formatters · app-intents}
+
+\end{document}

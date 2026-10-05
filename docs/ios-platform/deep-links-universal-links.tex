@@ -1,0 +1,186 @@
+% deep-links-universal-links.tex — custom URL schemes vs Universal Links, the
+% AASA file, Associated Domains, Apple's CDN, scene/SwiftUI entry points, cold
+% vs warm launch, routing to a coordinator, why a link opens Safari, testing.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/xcode/supporting-associated-domains (location, no
+%     extension, https, no redirects; service types; *. wildcard, not for appclips; alternate
+%     modes; iOS 14+ fetch via Apple's CDN — within 24 h, devices re-check about weekly)
+%   developer.apple.com/documentation/xcode/supporting-universal-links-in-your-app (components)
+%   developer.apple.com/library/archive/documentation/General/Conceptual/AppSearch (128 KB limit)
+%   developer.apple.com/documentation/uikit/uiscenedelegate (willConnectTo, continue, openURLContexts)
+%   developer.apple.com/documentation/swiftui/view/onopenurl(perform:)
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis,architecture
+% @tags: universal-links, aasa, apple-app-site-association, associated-domains, custom-url-scheme, nsuseractivity, onopenurl, scene-continue, cold-start-link, router, deferred-deep-link
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,
+    if,else,return,guard,self,nil,true,false,in,async,await,try,
+    URL,String,Bool,Int},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, minimum height=6mm, inner sep=2pt},
+  ok/.style={->, thick, draw=sheetGreen},
+  no/.style={->, thick, draw=sheetRed},
+  lb/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  hd/.style={font=\bfseries\small, anchor=west},
+  q/.style={diamond, aspect=2.4, draw=sheetOrange, fill=sheetOrange!8, thick,
+            font=\scriptsize, inner sep=0.5pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Deep links · Universal Links}{ios-platform · folio}
+
+\oneliner{A \textbf{Universal Link} is a plain \texttt{https://} URL that opens
+your app \emph{only if} the domain has proved, via its
+\texttt{apple-app-site-association} file, that it trusts your app ID; otherwise it
+opens the website. A \textbf{custom scheme} (\texttt{myapp://}) is unverified,
+can be claimed by any app, and fails when the app is missing. Every entry point
+should parse to one route and hand it to one \textbf{router}.}
+
+\smallskip
+\noindent\begin{tikzpicture}[sheet]
+  % --- verification row
+  \node[hd] at (-0.1,0.55) {1 · Verification (at install / update, then periodically)};
+  \node[sb] (srv) at (1.3,-0.2) {your server\\\texttt{/.well-known/}\\\texttt{apple-app-site-association}};
+  \node[sb, fill=sheetGrey!10, draw=sheetGrey] (cdn) at (6.1,-0.2) {Apple CDN\\(caches AASA)};
+  \node[sb] (dev) at (10.4,-0.2) {device \texttt{swcd}\\stores app $\leftrightarrow$ domain};
+  \node[sb, fill=sheetGreen!10, draw=sheetGreen] (ent) at (14.9,-0.2) {app entitlement\\\texttt{applinks:example.com}};
+  \draw[flow] (cdn) -- node[lb, above]{HTTPS GET, no redirects} (srv);
+  \draw[flow] (dev) -- node[lb, above]{fetch} node[note, below, font=\scriptsize\itshape]{\texttt{?mode=developer}: direct} (cdn);
+  \draw[flow] (dev) -- node[lb, above]{reads domains} (ent);
+  % --- tap row
+  \node[hd] at (-0.1,-1.0) {2 · A tap on \texttt{https://example.com/p/42}};
+  \node[sb, fill=white] (tap) at (0.9,-1.95) {user \textbf{taps}\\a link};
+  \node[q] (d1) at (4.0,-1.95) {app installed\\+ path matches?};
+  \node[q] (d2) at (7.9,-1.95) {user didn't pick\\Safari; not same\\domain in Safari?};
+  \node[sb, fill=sheetGreen!12, draw=sheetGreen, align=left] (entry) at (11.7,-1.95)
+    {cold: \texttt{willConnectTo} options\\warm: \texttt{scene(\_:continue:)}\\SwiftUI: \texttt{onOpenURL}};
+  \node[sb, fill=sheetBlue!15] (router) at (15.2,-1.95) {\texttt{Route(url:)}\\$\to$ \textbf{router}};
+  \node[sb, fill=sheetRed!10, draw=sheetRed] (saf) at (7.9,-3.25) {opens in \textbf{Safari} (web fallback)};
+  \draw[flow] (tap) -- (d1);
+  \draw[ok] (d1) -- node[lb, above]{yes} (d2);
+  \draw[ok] (d2) -- node[lb, above]{yes} (entry);
+  \draw[flow] (entry) -- (router);
+  \draw[no] (d1.south) |- node[lb, pos=0.25, left]{no} (saf.west);
+  \draw[no] (d2.south) -- node[lb, right]{no} (saf.north);
+  \node[note, anchor=west, align=left] at (10.0,-3.25) {custom scheme: \texttt{openURLContexts} /\\
+    \texttt{connectionOptions.urlContexts} $\to$ same router};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{AASA}: JSON at \texttt{https://<domain>/.well-known/}\allowbreak
+        \texttt{apple-app-site-association}: no \texttt{.json} extension,
+        \texttt{application/json}, valid TLS, \textbf{no redirects},
+        \(\le\) 128 KB, unsigned. \texttt{appIDs} =
+        \texttt{TEAMID.bundle.id}. \texttt{components} match \texttt{"/"} path,
+        \texttt{"?"} query, \texttt{"\#"} fragment, with \texttt{*}/\texttt{?}
+        wildcards and \texttt{"exclude": true}; first match wins. The same file
+        also serves \texttt{webcredentials} (passwords), \texttt{appclips} and
+        \texttt{activitycontinuation} (Handoff).
+  \item \textbf{Associated Domains} entitlement:
+        \texttt{applinks:example.com}, \texttt{applinks:*.example.com}. Each
+        subdomain counts as a separate domain; \texttt{appclips:} takes no wildcard.
+  \item \textbf{Apple's CDN} (iOS 14+): the device fetches from Apple, not from
+        you; the CDN fetches within \textbf{24 h}, devices re-check about
+        \textbf{weekly} — AASA changes are \textbf{not instant}. In development use
+        \texttt{applinks:host?mode=developer} + Settings $\to$ Developer $\to$
+        Associated Domains Development.
+  \item \textbf{Entry points}: a Universal Link is an \texttt{NSUserActivity}
+        (\texttt{NSUserActivityTypeBrowsingWeb}, \texttt{.webpageURL}).
+        \textbf{Cold}: \texttt{connectionOptions.}\allowbreak\texttt{userActivities}
+        in \texttt{willConnectTo}. \textbf{Warm}: \texttt{scene(\_:continue:)}.
+        Scheme (\texttt{CFBundleURLTypes}): warm
+        \texttt{scene(\_:openURLContexts:)}, cold \texttt{connectionOptions.}\allowbreak
+        \texttt{urlContexts}. SwiftUI:
+        \texttt{onOpenURL} gets both; \texttt{onContinueUserActivity} also works.
+  \item \textbf{Routing}: parse once (\texttt{URLComponents} $\to$
+        \texttt{enum Route}). Scenes, push taps, Quick Actions and Spotlight
+        all call the \textbf{same coordinator}. At cold start \textbf{hold the
+        route} until the UI and session are ready (e.g. after login).
+\end{itemize}
+
+\section{AASA}
+\begin{lstlisting}
+{ "applinks": { "details": [ {
+    "appIDs": ["ABCDE12345.com.you.app"],
+    "components": [
+      { "/": "/help/*", "exclude": true },
+      { "/": "/p/*", "?": { "ref": "?*" } },  // needs ?ref=
+      { "/": "/order/*" } ] } ] } }
+\end{lstlisting}
+
+\section{Remember}
+\textbf{Prove · Tap · Route}: the domain proves, the user taps, one coordinator routes.
+
+\columnbreak
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+func scene(_ s: UIScene, willConnectTo _: UISceneSession,
+           options o: UIScene.ConnectionOptions) {
+  setUpWindowAndCoordinator()                  // first
+  if let url = o.userActivities.first?.webpageURL
+      ?? o.urlContexts.first?.url { coordinator.open(url) } }
+func scene(_ s: UIScene, continue ua: NSUserActivity) {
+  guard ua.activityType == NSUserActivityTypeBrowsingWeb,
+        let url = ua.webpageURL else { return }
+  coordinator.open(url) }
+func scene(_ s: UIScene,
+           openURLContexts c: Set<UIOpenURLContext>) {
+  if let url = c.first?.url { coordinator.open(url) } }
+// open: Route(url:) -> show screen; unknown route -> Safari
+// SwiftUI: RootView().onOpenURL { router.open($0) }
+\end{lstlisting}
+
+\section{Why did it open Safari?}
+\begin{itemize}
+  \item AASA invalid or stale: a \textbf{redirect} (proxy 301 to
+        \texttt{www}), wrong type, bad cert, or the CDN still has the old copy.
+  \item Entitlement or team ID wrong; path not matched, or hit an \texttt{exclude}.
+  \item URL \textbf{typed or pasted} into Safari. Only \emph{taps} count.
+  \item \textbf{Same-domain navigation}: a link on \texttt{example.com} to
+        \texttt{example.com} stays in Safari.
+  \item The user once chose \textbf{Safari} (breadcrumb or long-press). This
+        is sticky per domain; long-press $\to$ Open in App undoes it.
+  \item Loaded in your own \texttt{WKWebView}, or a JS redirect with no tap.
+\end{itemize}
+
+\section{Universal Link vs custom scheme}
+{\footnotesize
+\begin{tabular}{@{}l l l@{}}
+\toprule
+ & \texttt{https://} Universal Link & \texttt{myapp://} scheme \\ \midrule
+proves the app & the domain's AASA & nothing — any app can claim \\
+app not installed & opens the website & fails \\
+declared in & Associated Domains & \texttt{CFBundleURLTypes} \\
+arrives as & \texttt{NSUserActivity} & \texttt{UIOpenURLContext} \\
+\bottomrule
+\end{tabular}}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Only handling \texttt{scene(\_:continue:)}: cold-start links arrive in
+        \texttt{willConnectTo} and get lost.}
+  \trap{Custom schemes are not proof of identity: never put tokens or secrets
+        in them.}
+  \trap{\textbf{Deferred} deep links (install, then land on the content) are
+        not built in: attribution SDK or your own server hand-off.}
+  \trap{Test by \emph{tapping} (Notes, Messages) or
+        \texttt{xcrun simctl openurl booted <url>}; see Apple's copy at
+        \texttt{app-site-association.}\allowbreak\texttt{cdn-apple.com/a/v1/<domain>}.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} push notifications (tap $\to$ router) · coordinator pattern · App Clips (\texttt{appclips}) · Smart App Banner · Handoff / \texttt{NSUserActivity} · Password AutoFill (\texttt{webcredentials})}
+
+\end{document}
