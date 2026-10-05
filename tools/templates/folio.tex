@@ -1,0 +1,75 @@
+% folio.tex — the anatomy of a folio. Copy to src/<subject>/<name>.tex and replace
+% every part. One subject, one A4 page, dense facts + pictures, no noise.
+%
+% Header comment (keep it — the build and the reader both use it):
+%   line 1      what this folio covers, in one line
+%   Sources:    where every fact can be checked (docs, specs, papers, man pages)
+%   @labels:    key=value pairs, e.g. area=<subject> kind=<what> platform=<if any>
+%   @tags:      comma list; reuse tags other folios already use
+%
+% Sources: <url or reference>, <url or reference>
+% @labels: area=c-systems kind=memory
+% @tags: stack, heap, malloc, lifetime, dangling-pointer
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\begin{document}
+
+\sheettitle{Stack vs heap}{c-systems · folio}
+
+% One sentence that would be worth keeping if it were the only thing kept.
+\oneliner{The \textbf{stack} holds a function's locals and dies with its frame
+(LIFO, automatic, fast); the \textbf{heap} holds what \texttt{malloc} returns and
+lives until \texttt{free} (manual, slower, fragmentable).}
+
+% A picture first when the subject has structure: flows, layers, comparisons.
+\begin{multicols}{2}
+
+\section{How it works}
+\begin{itemize}
+  \item Each call pushes a \emph{frame}: return address, saved registers, locals.
+        Return = move the stack pointer back — nothing is erased.
+  \item The stack is small (8~MiB main thread on Linux, often 4--16~KiB on an
+        RTOS task) and grows \emph{down}; overflow is a crash, not an error code.
+  \item \texttt{malloc} asks the allocator for a block; the allocator asks the
+        OS (\texttt{brk}/\texttt{mmap}) only when its free lists run dry.
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=C]
+int *bad(void)  { int x = 42; return &x; }   // dangling: frame gone
+int *good(void) { int *p = malloc(sizeof *p);
+                  if (p) *p = 42; return p; } // lives until free(p)
+\end{lstlisting}
+
+\columnbreak
+
+\section{Picture}
+\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\small] at (0,3.1) {stack};
+  \node[cell, minimum width=22mm, fill=sheetBlue!10] (m) at (0,2.5) {main()};
+  \node[cell, minimum width=22mm, fill=sheetBlue!18] (g) at (0,1.95) {good(): p};
+  \node[cell, minimum width=22mm, draw=sheetRed, dashed] (b) at (0,1.4) {bad(): x (gone)};
+  \draw[flow] (-1.45,2.7) -- node[left, note]{grows} (-1.45,1.2);
+  \node[font=\bfseries\small] at (3.3,3.1) {heap};
+  \node[cell, minimum width=16mm, fill=sheetGreen!15] (h) at (3.3,1.95) {42};
+  \draw[hot] (g.east) -- (h.west);
+\end{tikzpicture}
+
+% Misconceptions stated as facts — not interview questions.
+\section{Traps}
+\begin{itemize}
+  \trap{``The stack is faster memory'' — no: same RAM. Allocation is faster
+        (one pointer bump) and it stays hot in cache.}
+  \trap{Returning \texttt{\&local} often \emph{works} in a test — the frame
+        is not wiped until the next call reuses it.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Stack = scope, heap = \texttt{free}.} Whoever calls \texttt{malloc} owns the \texttt{free}.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} memory leaks · \texttt{alloca} / VLAs · RAII (C++) · ownership (Rust)}
+
+\end{document}
