@@ -21,9 +21,12 @@ interview prep. The rules are in `CLAUDE.md`; this is the procedure.
 ## 2. Write from the template
 
 Start from `tools/templates/folio.tex`. Keep its header comment (description,
-`Sources:`, `@labels:`, `@tags:`). Parts, in order:
+`Sources:`, `@labels:`, `@tags:`). **There is no fixed structure** — shape each
+folio by its subject; these are common parts to pick from, not a required
+order. Every folio needs only: title, one subject, one page, dense facts,
+pictures where possible.
 
-| Part | Purpose |
+| Common part | Purpose |
 |---|---|
 | `\sheettitle{Title}{subject · folio}` | the subject, named the way readers search for it |
 | `\oneliner{…}` | the one sentence worth keeping if nothing else is |
@@ -31,7 +34,7 @@ Start from `tools/templates/folio.tex`. Keep its header comment (description,
 | `How it works` | the mechanism, as dense bullet facts |
 | `Example` | the smallest code or case that shows it |
 | `Traps` | misconceptions stated as facts (never "interview" anything) |
-| `Remember` | the bold takeaway |
+| `Remember` | the bold takeaway — only if the one-liner does not already say it |
 | `Related:` line | neighbouring folios / subjects |
 
 Adapting older notes: drop Q&A lists and "Likely questions", rename
@@ -39,7 +42,8 @@ Adapting older notes: drop Q&A lists and "Likely questions", rename
 
 ## 3. Density checklist — every line must pass
 
-- Is it a **fact** (checkable), not narrative or encouragement?
+- Is it a **fact** (checkable), not narrative, encouragement or a wordy explanation?
+- Is it said **once**? A fact repeated in the one-liner, a diagram and a list is noise.
 - Would a reader **lose something** if it went? If not, cut it.
 - Could a **picture or table** say it in less space? Then draw it.
 - Is the page **full**? Empty space on the A4 is room for more facts — find

@@ -7,7 +7,6 @@ html(lang="en")
     meta(name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by")
 
     link(rel="icon" href="/static/favicon.svg" type="image/svg+xml")
-    link(rel="alternate" type="application/atom+xml" title=page.title href="#{site.url}/atom.xml")
     meta(name="theme-color" content="#0a5fd6")
     link(rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin)
     link(rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin)
@@ -15,11 +14,14 @@ html(lang="en")
     link(rel="stylesheet" href="/static/css/hightlight.css")
     link(rel="stylesheet" href="/static/css/sheet.css")
   body
+    //- a folio page (a .tex page) gets the wide layout: its diagrams and tables
+    //- are drawn for an A4 width and are unreadable in a 680 px reading column
+    - const isFolio = (context.sheets || []).some(s => s.url === page.finalPath)
     .container
       .sidebar
         include sidebar.pug
       .scroll
-        .content
+        .content(class=isFolio ? "folio-page" : undefined)
           h1.title= page.title
           #post!= page.file.html
           .footer

@@ -3,6 +3,22 @@
  * printup-sheet.sty's palette (sheetBlue/Green/Brown/Orange/Red/Grey) so a
  * \textcolor on paper keeps its meaning on the web. */
 
+/* ── a folio page uses the screen ───────────────────────────────────────
+ * Its diagrams and tables are drawn for an A4 width; in the 680 px reading
+ * column the diagram labels shrank to ~6 px and the table overflowed. Folio
+ * pages (default.pug marks them .folio-page) get a wide content area; the
+ * front page keeps the reading column. On a phone nothing changes. A table
+ * that is still wider than the space scrolls inside itself, never the page. */
+.content.folio-page {
+	max-width: calc(1100px + 6rem);
+}
+
+.content.folio-page .sheet-table {
+	display: block;
+	max-width: 100%;
+	overflow-x: auto;
+}
+
 /* ── the side panel: the memo filter ────────────────────────────────────── */
 
 .side-filter {

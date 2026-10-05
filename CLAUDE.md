@@ -15,6 +15,12 @@ memorising.
 tutorial, not a blog post. A section called "Likely questions" or "Interview
 …" does not belong in a folio.
 
+**There is no fixed structure.** Each folio is shaped separately, by its
+subject, against the goals: **one A4 page · one subject · dense information,
+not wordy explanations · graphs and drawings wherever possible.** The template
+is a starting point, not a form to fill in; drop, merge or invent sections as
+the subject needs. Repetition is noise: say a fact once.
+
 ## Layout
 
 ```
