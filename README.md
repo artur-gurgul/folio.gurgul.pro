@@ -21,7 +21,8 @@ page you keep next to you.
 ## Contributing
 
 Report a wrong fact, suggest a folio, or fix one yourself — every folio page
-has "Edit on GitHub" and "Report a problem" links. How it works, and the checks
+links its "LaTeX source" on GitHub, and has "Report a problem" and "Discuss this
+folio" links. How it works, and the checks
 a pull request must pass: [`CONTRIBUTING.md`](CONTRIBUTING.md). The rules in
 [`CLAUDE.md`](CLAUDE.md) apply to people as much as to Claude Code.
 
