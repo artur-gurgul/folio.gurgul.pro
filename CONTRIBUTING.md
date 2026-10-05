@@ -11,6 +11,7 @@ is welcome — reviewing facts is as valuable as writing them.
 | **Fix it yourself** | "Edit on GitHub" under the folio opens its source; GitHub creates the pull request for you. |
 | **Suggest a new folio** | [Suggest a folio](https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=folio-suggestion.yml): the subject, the facts worth keeping, a picture, sources. |
 | **Report a broken page** | [Website problem](https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=website-problem.yml). |
+| **Talk about a folio** | "Discuss this folio" under the folio starts a thread in the *Folio comments* category of [Discussions](https://github.com/artur-gurgul/folio.gurgul.pro/discussions). Discussions live on GitHub under GitHub's terms — they are not part of this repository's CC0 content. |
 | **Discuss an idea** | [Discussions](https://github.com/artur-gurgul/folio.gurgul.pro/discussions). |
 
 ## Pull requests
