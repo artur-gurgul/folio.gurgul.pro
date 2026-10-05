@@ -30,6 +30,36 @@
 	margin: 0 0.4em;
 }
 
+/* laptop widths (861–1299 px): the 300 px sidebar and 3 rem side padding left
+ * a folio ~700 px at a 1100 px window — the diagram shrank back towards
+ * unreadable. A narrower sidebar and less padding give the folio ~130 px. */
+@media (min-width: 861px) and (max-width: 1299px) {
+	:root {
+		--sidebar-width: 220px;
+	}
+
+	.content.folio-page {
+		padding-left: 1.5rem;
+		padding-right: 1.5rem;
+	}
+}
+
+/* phones: a figure drawn across an A4 shrinks to ~1/3 in a 390 px column and
+ * its labels become unreadable. Wide figures keep a readable minimum width and
+ * scroll sideways inside their own strip, as the table does — never the page. */
+@media (max-width: 860px) {
+	.content.folio-page .sheet-figure {
+		overflow-x: auto;
+		-webkit-overflow-scrolling: touch;
+	}
+
+	.content.folio-page .sheet-figure img.wide {
+		width: auto;
+		max-width: none;
+		min-width: 760px;
+	}
+}
+
 /* ── the side panel: the memo filter ────────────────────────────────────── */
 
 .side-filter {
