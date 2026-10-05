@@ -1,0 +1,198 @@
+% app-extensions.tex — what an extension is (own process, own sandbox), the
+% extension points, containing app vs host app, sharing through App Groups and
+% Keychain access groups, NSExtensionContext, API limits, signalling, debugging.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG
+%     (App Extension Programming Guide: containing vs host app, activation rule, custom keyboard limits)
+%   developer.apple.com/documentation/foundation/nsextensioncontext · .../nsitemprovider
+%   developer.apple.com/documentation/usernotifications/unnotificationserviceextension (about 30 s)
+%   developer.apple.com/documentation/xcode/configuring-app-groups
+%   developer.apple.com/documentation/widgetkit/widgetcenter
+%   developer.apple.com/documentation/xcode/understanding-the-exception-types-in-a-crash-report (0xdead10cc)
+% (Memory ceilings are undocumented; this folio gives no per-type numbers.)
+% @labels: area=ios-platform kind=concept platform=ios topic=platform-apis,architecture discussion=10
+% @tags: app-extensions, appex, app-groups, keychain-access-group, nsextensioncontext, nsitemprovider, share-extension, containing-app, host-app, darwin-notification, extension-memory-limit
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,defer,
+    override,super,if,else,return,guard,self,nil,true,false,in,for,async,await,
+    try,as,Task},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  proc/.style={draw=sheetGrey, dashed, rounded corners=3pt, inner sep=3pt},
+  nd/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5.5mm},
+  ext/.style={nd, draw=sheetOrange, fill=sheetOrange!12},
+  app/.style={nd, draw=sheetGreen, fill=sheetGreen!12},
+  sys/.style={nd, draw=sheetGrey, fill=black!6},
+  store/.style={nd, draw=sheetBlue, fill=sheetBlue!10, minimum height=6mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\scriptsize\bfseries, anchor=north west, inner sep=1pt},
+}
+
+\begin{document}
+
+\sheettitle{App extensions — own process, shared disk}{ios-platform · folio}
+
+\oneliner{An extension is a \texttt{.appex} inside the \textbf{containing app},
+launched by the system for a \textbf{host app} \textbf{in its own process} — own
+sandbox, bundle id, entitlements, a far smaller memory limit. It shares \textbf{no
+memory} with its app: they meet only in an \textbf{App Group}, a \textbf{Keychain
+access group}, or through the system.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % processes
+  \node[app, minimum width=26mm, minimum height=13mm] (host) at (1.35,2.0) {};
+  \node[ttl] at (host.north west) {host app process};
+  \node[lbl] at (1.35,1.85) {Photos, Safari, Mail\dots\\user taps \textbf{Share}};
+  \node[sys, minimum width=25mm, minimum height=13mm] (sys) at (5.4,2.0) {};
+  \node[ttl] at (sys.north west) {iOS (extension point)};
+  \node[lbl] at (5.4,1.85) {matches \texttt{NSExtension-}\\\texttt{ActivationRule},\\launches the \texttt{.appex}};
+  \node[ext, minimum width=30mm, minimum height=13mm] (ext) at (9.75,2.0) {};
+  \node[ttl] at (ext.north west) {extension process};
+  \node[lbl] at (9.75,1.85) {\texttt{extensionContext}\\no \texttt{UIApplication.shared}\\killed when done};
+  \node[app, minimum width=29mm, minimum height=13mm] (ca) at (14.95,2.0) {};
+  \node[ttl] at (ca.north west) {containing app process};
+  \node[lbl] at (14.95,1.85) {may not be running;\\its singletons are\\\textbf{not} visible to the extension};
+  \draw[hot] ([yshift=3mm]host.east) -- node[lbl, above]{items} ([yshift=3mm]sys.west);
+  \draw[hot] ([yshift=3mm]sys.east) -- node[lbl, above]{\texttt{inputItems}} ([yshift=3mm]ext.west);
+  \draw[flow] ([yshift=-4mm]ext.west) -- node[lbl, below]{\texttt{complete\dots}} ([yshift=-4mm]sys.east);
+  \draw[flow] ([yshift=-4mm]sys.west) -- node[lbl, below]{results} ([yshift=-4mm]host.east);
+  \draw[->, thick, sheetRed, dashed] ([yshift=3mm]ext.east) -- node[lbl, above, text=sheetRed]{Darwin notify} ([yshift=3mm]ca.west);
+  \node[lbl, text=sheetRed] at (12.35,2.0) {name only,\\no payload};
+  \draw[->, thick, sheetGrey, dashed] ([yshift=-4mm]ext.east) -- node[lbl, below]{URL (widgets)} ([yshift=-4mm]ca.west);
+  % shared storage
+  \node[store, minimum width=86mm, anchor=west] (grp) at (7.9,0.55)
+    {\textbf{App Group} \texttt{group.com.you.app}: \texttt{UserDefaults(suiteName:)} · \texttt{containerURL(forSecurity\dots)}};
+  \node[store, minimum width=86mm, anchor=west] (kc) at (7.9,-0.1)
+    {\textbf{Keychain access group} (\texttt{kSecAttrAccessGroup}) — tokens, secrets};
+  \draw[<->, thick, sheetBlue] (ext.south) -- (ext.south |- grp.north);
+  \draw[<->, thick, sheetBlue] (ca.south) -- (ca.south |- grp.north);
+  \node[lbl, align=left, anchor=west, text=sheetBrown] at (0,0.25)
+    {\textbf{containing} app = ships the extension (you)\\\textbf{host} app = where the user invokes it (anyone's)\\host $\leftrightarrow$ containing app: \textbf{never} a direct channel};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Extension points (common)}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{56mm}@{}}
+\toprule
+\textbf{Share / Action} & share sheet in any app; Action can hand back modified items \\
+\textbf{Widget} & WidgetKit timeline, archived views, no live process \\
+\textbf{Notif. Service} & \texttt{mutable-content: 1} push, $\approx$30 s to edit/decrypt/attach, no UI \\
+\textbf{Notif. Content} & custom VC for an expanded notification, per \texttt{category} \\
+\textbf{Keyboard} & not used for secure/phone-pad fields; no network or App Group without \emph{Full Access} \\
+\textbf{App Intents / Intents} & Siri, Shortcuts, Spotlight actions \\
+\textbf{File Provider} & a cloud drive inside the Files app \\
+\textbf{Network Ext.} & VPN packet tunnel, content filter, DNS proxy; special entitlement \\
+\textbf{also} & Safari web ext., Photo Editing, iMessage, Call Directory, Broadcast Upload \\
+\bottomrule
+\end{tabular}}
+
+\section{How it works}
+\begin{itemize}
+  \item A \textbf{separate target}: bundle id under the app's
+        (\texttt{com.you.app.share}), its own profile and entitlements. Info.plist
+        \texttt{NSExtension} $\to$ \texttt{NSExtensionPointIdentifier},
+        \texttt{NSExtensionPrincipalClass} or \texttt{\dots MainStoryboard},
+        \texttt{NSExtensionAttributes}.
+  \item \textbf{\texttt{NSExtensionContext}}: \texttt{inputItems} $\to$
+        \texttt{NSExtensionItem.\allowbreak attachments} $\to$ \texttt{NSItemProvider}
+        (\texttt{hasItemConforming\dots}, async \texttt{loadItem}); finish with
+        \texttt{completeRequest(\allowbreak returningItems:)} or
+        \texttt{cancelRequest(withError:)}.
+  \item \textbf{Lifetime} is the system's: launched on demand, killed soon after
+        completing. \textbf{API limits}: \texttt{UIApplication.shared} is marked
+        unavailable; a shared framework sets \textbf{``Allow app extension API
+        only''} so misuse fails at build time. \texttt{extensionContext.open(\_:)}
+        is honoured only by some points — a share extension cannot open its app;
+        widgets use \texttt{widgetURL}/\texttt{Link}.
+  \item \textbf{Memory} ceilings: per point, undocumented, far below an app's —
+        widgets and NSEs are famously tight. Downsample, don't cache.
+  \item \textbf{Shared data}: App Group entitlement on \emph{both} targets; files or
+        a SQLite/Core Data store in \texttt{containerURL}, writes through
+        \texttt{NSFileCoordinator}; the app nudges widgets with
+        \texttt{WidgetCenter.shared.\allowbreak reloadTimelines(ofKind:)}.
+  \item \textbf{Long upload}: background \texttt{URLSession} +
+        \texttt{sharedContainer\allowbreak Identifier} = the group; events go to the
+        containing app (\texttt{handleEventsFor\allowbreak BackgroundURLSession}).
+  \item \textbf{Debug}: run the extension scheme, pick a host app (Xcode attaches
+        when invoked) or \emph{Attach to Process by Name}; log with \texttt{Logger}
+        + Console.app; the memory gauge shows the extension's own limit.
+\end{itemize}
+
+\columnbreak
+
+\section{Example — share extension $\to$ its app}
+\begin{lstlisting}[language=SwiftSheet]
+final class ShareVC: UIViewController {
+  override func viewDidLoad() { super.viewDidLoad(); Task {
+    let ctx = extensionContext!, id = UTType.url.identifier
+    let item = ctx.inputItems.first as? NSExtensionItem
+    guard let p = item?.attachments?.first(where: {
+            $0.hasItemConformingToTypeIdentifier(id) }),
+          let url = try? await p.loadItem(
+            forTypeIdentifier: id, options: nil) as? URL
+    else { return ctx.cancelRequest(
+             withError: CocoaError(.fileReadUnknown)) }
+    let shared = UserDefaults(suiteName: "group.com.you.app")
+    shared?.set(url.absoluteString, forKey: "pendingURL")
+    ctx.completeRequest(returningItems: nil) // may die now
+  } } }
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{UserDefaults.standard} in app + widget $\to$ two different files.
+        Use the suite, entitlement on \emph{both} targets.}
+  \trap{Singletons and caches are per process: after the extension writes, the
+        app's cache is stale — reload on foreground or on a Darwin notification.}
+  \trap{\texttt{URLSession.shared} then \texttt{completeRequest} — the process is
+        killed mid-request. Use a background session.}
+  \trap{Shared SQLite: a suspended process holding its file lock is killed
+        (\texttt{0xdead10cc}); coordinate writers.}
+  \trap{\texttt{NSExtensionActivationRule} = \texttt{TRUEPREDICATE} is for
+        development only — App Review rejects it.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Own process · own sandbox · shared disk, never shared memory.}
+
+\section{Which channel for what}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{51mm}@{}}
+\toprule
+app $\to$ widget & write the App Group store, \texttt{reloadTimelines(ofKind:)} \\
+login token & Keychain access group (an App Group id works too) \\
+big upload & background session, \texttt{sharedContainerIdentifier} \\
+``I wrote'' & Darwin notification (name only) $\to$ read the group store \\
+open the app & widgets: \texttt{widgetURL} / \texttt{Link}; share ext.: no \\
+\bottomrule
+\end{tabular}}
+
+\section{\texttt{NSExtensionPointIdentifier}}
+{\footnotesize
+\begin{tabular}{@{}l l@{}}
+Share · Action & \texttt{com.apple.share-services} · \texttt{com.apple.ui-services} \\
+Widget & \texttt{com.apple.widgetkit-extension} \\
+Notif. Service & \texttt{com.apple.usernotifications.service} \\
+Notif. Content & \texttt{com.apple.usernotifications.content-extension} \\
+Keyboard & \texttt{com.apple.keyboard-service} \\
+File Provider & \texttt{com.apple.fileprovider-nonui} \\
+Photo Editing & \texttt{com.apple.photo-editing} \\
+\end{tabular}}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} widgets-live-activities
+(timelines, budget) · push-notifications (Notification Service Extension) ·
+keychain-secure-enclave (access groups) · background-execution (\texttt{0xdead10cc},
+background URLSession) · app-intents · deep-links-universal-links}
+
+\end{document}

@@ -1,0 +1,235 @@
+% process-death-scenarios.tex — "the OS killed the app mid-checkout": how iOS and
+% Android terminate apps, what survives (disk, Keychain, restoration data,
+% background transfers, the server!) vs what does not (memory), restoring the
+% screen + the draft on iOS / Android / React Native, idempotent payments and
+% StoreKit's unfinished transactions, and how to test it.
+% Sources (checked 2026-09-25):
+%   developer.apple.com/documentation/uikit/uiapplicationdelegate/applicationwillterminate(_:)
+%     (not called for a suspended app; ~5 s when it is called)
+%   developer.apple.com/documentation/storekit (unfinished transactions re-delivered
+%     through Transaction.updates until finish())
+%   reactnavigation.org/docs/state-persistence (initialState + onStateChange,
+%     serialisable params, skip when a deep link opened the app, error-boundary reset)
+%   github.com/software-mansion/react-native-screens README (RNScreensFragmentFactory
+%     "discards any Activity state persisted during the Activity restart process")
+%   datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/ (Idempotency-Key
+%     for POST/PATCH; an expired Internet-Draft, widely implemented)
+%   developer.android.com (SavedStateHandle, "Don't keep activities", adb am kill)
+% Not repeated: the scene/session model and NSUserActivity restoration code
+% (ios-platform/state-restoration-multiwindow), Activity lifecycle + "what survives
+% what" bars (cross-platform/android-compose-lifecycle), jetsam/watchdog codes
+% (ios-platform/background-execution).
+% @labels: area=ios-platform kind=concept platform=cross-platform topic=platform-apis,data,testing discussion=41
+% @tags: process-death, app-termination, jetsam, state-restoration, scenestorage, savedstatehandle, navigation-state-persistence, form-draft, idempotency-key, unfinished-transactions, dont-keep-activities, adb-am-kill
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={struct,final,class,var,let,func,return,if,guard,else,self,nil,true,false,
+    try,await,async,throws,switch,case,private,didSet,for,in},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={==}{{\hbox{=}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {??}{{\hbox{?}\hbox{?}}}2}
+\lstdefinelanguage{TSSheet}{
+  morekeywords={const,let,return,await,async,if,null,undefined},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {===}{{\hbox{=}\hbox{=}\hbox{=}}}3 {==}{{\hbox{=}\hbox{=}}}2
+           {??}{{\hbox{?}\hbox{?}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstset{basicstyle=\ttfamily\footnotesize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}
+
+\tikzset{
+  seg/.style={draw=white, line width=0.6pt, minimum height=4.6mm, inner sep=0pt,
+              font=\tiny\bfseries, anchor=west},
+  rl/.style={font=\scriptsize\bfseries, anchor=east, align=right, inner sep=1pt},
+  ev/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+}
+\newcommand\seg[5]{\node[seg, minimum width=#2cm, fill=#3] at (#1,#4) {#5};}
+
+\begin{document}
+
+\sheettitle{Process death — ``the OS killed the app mid-checkout''}{ios-platform · folio}
+
+\oneliner{A backgrounded app is \textbf{suspended}, and a suspended app can be
+\textbf{killed without any callback} (iOS jetsam, Android low-memory killer). When
+the user comes back it is a \textbf{cold launch}: everything in \textbf{memory is gone},
+everything on \textbf{disk / Keychain / restoration data survives} — and the
+\textbf{server may already have done the payment}. So persist the screen \emph{and}
+the draft before leaving, and make the operation \textbf{idempotent} so resuming can
+ask ``did it happen?'' instead of doing it twice.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[rl] at (2.3,0) {app};
+  \node[rl] at (2.3,-0.55) {memory};
+  \node[rl] at (2.3,-1.1) {disk · Keychain};
+  \node[rl] at (2.3,-1.65) {server};
+  % app state
+  \seg{2.45}{3.2}{sheetGreen!55}{0}{active: fills card, taps Pay}
+  \seg{5.65}{1.6}{sheetOrange!55}{0}{bg: bank app}
+  \seg{7.25}{2.3}{black!22}{0}{suspended}
+  \seg{9.55}{2.2}{sheetRed!40}{0}{not running}
+  \seg{11.75}{4.3}{sheetBlue!40}{0}{cold launch: restore $\to$ ask server}
+  \draw[->, thick, sheetRed] (9.55,0.6) node[ev, above, text=sheetRed]{jetsam / LMK: no callback} -- (9.55,0.25);
+  \draw[->, thick, sheetOrange] (5.65,0.6) node[ev, above, text=sheetOrange]{3-D Secure / bank app / SMS} -- (5.65,0.25);
+  % memory
+  \seg{2.45}{2.35}{sheetGreen!25}{-0.55}{form state, VMs}
+  \seg{5.0}{4.55}{sheetGreen!25}{-0.55}{JS VM, nav stack, in-flight \ct{Task}s}
+  \seg{9.55}{2.2}{sheetRed!15}{-0.55}{\textcolor{sheetRed}{GONE}}
+  \seg{11.75}{4.3}{sheetGreen!25}{-0.55}{rebuilt from disk + server}
+  % disk
+  \seg{2.45}{2.35}{sheetBlue!25}{-1.1}{\textcolor{sheetBlue}{1} draft + key saved}
+  \node[seg, minimum width=11.05cm, fill=sheetBlue!15, text=black] at (5.0,-1.1) {step · \ct{Idempotency-Key} · restoration activity / \ct{@SceneStorage} / Bundle · tokens in Keychain};
+  % server
+  \draw[hot] (4.9,-0.05) -- node[ev, pos=0.93, left, text=sheetOrange]{2 send} (4.9,-1.43);
+  \node[seg, minimum width=11.05cm, fill=sheetOrange!25, text=black] at (5.0,-1.65) {POST /payments \ct{Idempotency-Key: 7f3c…} $\to$ charged, order \#1042 stored};
+  \draw[hot] (16.3,-0.25) -- (16.3,-1.65) -- (16.1,-1.65);
+  \node[ev, anchor=north east, text=sheetOrange] at (16.45,-1.92) {3 GET status by key $\to$ ``paid'': show receipt};
+  \node[ev, anchor=north west, text=sheetRed] at (5.0,-1.92) {the response never reached the app — without the key a retry charges twice};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\small\setstretch{1.0}\raggedright
+
+\section{Ways an app dies}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{29mm}>{\raggedright\arraybackslash}p{26mm}@{}}
+\toprule
+\textbf{kill} & \textbf{callback?} & \textbf{restore?}\\ \midrule
+iOS jetsam (suspended) & none; \ct{applicationWillTerminate} only if running in bg & yes: restoration data kept\\
+iOS watchdog / crash & none & crash in restore $\to$ data discarded\\
+user swipes app away & none reliable & \textbf{no} — user meant ``quit''\\
+Android process death (LMK) & none; \ct{onSaveInstanceState} ran at \ct{onStop} & yes: task + Bundles\\
+Android config change & \ct{onDestroy} + recreate & VM survives (not death)\\
+reboot / OS / app update & none & disk only\\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item \textbf{iOS}: the system relaunches into the saved scene; you rebuild it
+        from \ct{stateRestorationActivity} / \ct{@SceneStorage} (small UI state:
+        ids, step, tab) + the draft on disk. Save on \ct{sceneDidEnterBackground},
+        not in \ct{willTerminate}.
+  \item \textbf{Android}: the task and back stack come back; the \emph{top}
+        Activity is recreated from its Bundle and a \textbf{new} process —
+        \ct{Application.onCreate} runs again, every singleton and static is fresh.
+        \ct{SavedStateHandle} / \ct{rememberSaveable} hold ids; big data goes to
+        disk (Bundle $\approx$ 1 MB Binder limit).
+  \item \textbf{React Native}: the JS VM is gone; the app boots JS from scratch at
+        the initial route. Persist navigation state (React Navigation
+        \ct{initialState} + \ct{onStateChange}) and drafts yourself
+        (AsyncStorage / MMKV; secrets in Keychain/Keystore). On Android,
+        \textbf{react-native-screens} discards the restored fragment state
+        (\ct{RNScreensFragmentFactory}) to avoid crashes — so native restore
+        will not bring your screens back.
+\end{itemize}
+
+\section{What survives}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{36mm}>{\raggedright\arraybackslash}p{39mm}@{}}
+\toprule
+\textcolor{sheetGreen!55!black}{\textbf{survives}} & \textcolor{sheetRed}{\textbf{lost}}\\ \midrule
+files, DB, \ct{UserDefaults} already written & objects, caches, singletons, JS state\\
+Keychain / Keystore items & in-flight requests on a default session\\
+restoration data, Bundles (system kill) & timers, \ct{Task}s, coroutines, listeners\\
+background \ct{URLSession} transfers & ``we'll save it in \ct{willTerminate}''\\
+\textbf{the server's side of the request} & the response you never received\\
+\bottomrule
+\end{tabular}}
+
+\section{Test it — on purpose}
+\begin{itemize}
+  \item \textbf{iOS}: background the app, then \emph{Stop} in Xcode (or
+        \ct{xcrun simctl terminate booted com.example.app}), relaunch.
+        Simulator \emph{Debug $\to$ Simulate Memory Warning} tests
+        \emph{warnings}, not death. Swipe-away is \emph{not} the test.
+  \item \textbf{Android}: \ct{adb shell am kill com.example.app} while in the
+        background = real process death; Developer options \emph{Don't keep
+        activities} only destroys Activities; \emph{Background process limit:
+        none} for soak testing.
+  \item Automate one UI test: fill the form, kill, relaunch, assert the draft.
+\end{itemize}
+
+\section{Design checklist — a death-proof flow}
+\begin{enumerate}
+  \item Every screen can be rebuilt from \textbf{route + ids} — no object handed
+        over in memory that exists nowhere else.
+  \item Drafts persisted on change (debounced), \emph{before} leaving the app.
+  \item Side-effecting calls carry an idempotency key; the server has a
+        \textbf{status endpoint} for it.
+  \item Session state re-hydrates lazily (token from Keychain, user from cache)
+        — never ``set by the login screen''.
+  \item Restored ids validated; missing $\to$ a sane fallback screen.
+  \item Drafts cleared on success, cancel and logout (privacy).
+\end{enumerate}
+
+\columnbreak
+
+\section{Example — a checkout that survives}
+\begin{lstlisting}[language=SwiftSheet]
+struct CheckoutDraft: Codable {
+  var cartID: String, step: Int
+  var payKey: UUID?          // set once, at "Pay"
+}
+@MainActor final class Checkout {
+  var draft: CheckoutDraft { didSet { store.save(draft) } }
+  func pay() async throws {  // key saved BEFORE the call
+    let key = draft.payKey ?? UUID(); draft.payKey = key
+    try await api.pay(draft.cartID, idempotencyKey: key)
+  }
+  func resume() async throws { // on cold launch
+    guard let key = draft.payKey else { return }
+    switch try await api.paymentStatus(key) {
+    case .paid: route(.receipt); store.clear()
+    case .notFound, .failed: route(.pay)  // safe to retry
+    case .pending: route(.waiting) }
+  } }
+\end{lstlisting}
+\begin{lstlisting}[language=TSSheet]
+<NavigationContainer            // React Navigation
+  initialState={deepLink ? undefined : saved}
+  onStateChange={s => storage.set("nav", JSON.stringify(s))}>
+\end{lstlisting}
+
+\section{Payments and purchases}
+\begin{itemize}
+  \item \textbf{Idempotency key}: client makes one UUID per \emph{intent}, persists
+        it with the draft, sends it on every retry (\ct{Idempotency-Key} on
+        POST/PATCH); the server stores the result per key and replays it. On
+        resume: \textbf{query status}, never blindly re-POST.
+  \item Server truth wins: order state comes from the server / webhook, not
+        from ``the app saw 200''. Redirect flows (3-D Secure, bank app) return
+        via a universal link into a possibly \emph{cold} app — the route must
+        work from zero.
+  \item \textbf{StoreKit 2}: a purchase interrupted by a kill is re-delivered
+        through \ct{Transaction.updates} (listen from launch) until you
+        \ct{finish()} it — grant content first, then finish.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Relying on \ct{applicationWillTerminate} / \ct{onDestroy} — not called on
+        a system kill of a suspended app.}
+  \trap{Restoring into a screen whose data is gone — validate ids, fall back.}
+  \trap{Relaunched in the background before first unlock: \ct{.complete} files and
+        \ct{WhenUnlocked} Keychain items are unreadable.}
+  \trap{Persisting RN nav state that crashes on restore — the user is stuck;
+        reset it from an error boundary.}
+  \trap{Android: a singleton filled by the splash/login screen is \ct{null} when
+        the process is restored straight onto screen 3 — classic NPE.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Memory dies, disk lives, the server remembers.} Save before you send; ask
+before you retry.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} state-restoration-multiwindow
+(NSUserActivity) · android-compose-lifecycle · background-execution (jetsam) ·
+api-design (idempotency) · storekit2 · rn-navigation}
+
+\end{document}

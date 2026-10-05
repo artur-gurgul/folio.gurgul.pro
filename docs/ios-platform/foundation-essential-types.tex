@@ -1,0 +1,190 @@
+% foundation-essential-types.tex — URL vs URLComponents, Data slicing, the sandbox
+% directories, NSCache, Measurement, number formatting, UUID, Bundle.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/foundation/url/init(string:) (iOS 17: invalid characters are
+%     percent-encoded, RFC 3986) · url/init(filepath:directoryhint:relativeto:) and the directory statics (iOS 16)
+%   developer.apple.com/documentation/foundation/urlcomponents (percentEncodedQueryItems, iOS 11; "+" not encoded)
+%   developer.apple.com/documentation/foundation/nscache (thread-safe, evicts, does not copy keys)
+%   developer.apple.com/documentation/foundation/optimizing-your-app-s-data-for-icloud-backup
+%     (Caches/tmp not backed up, purgeable; isExcludedFromBackup)
+%   developer.apple.com/documentation/foundation/measurement · .../decimal · .../uuid (version 4)
+%   developer.apple.com/documentation/uikit/uidevice/identifierforvendor
+%   developer.apple.com/documentation/foundation/fileprotectiontype (classes; default
+%     completeUntilFirstUserAuthentication)
+% @labels: area=ios-platform kind=api platform=apple topic=data,language discussion=33
+% @tags: urlcomponents, percent-encoding, data-slice, sandbox-directories, application-support, caches-directory, isexcludedfrombackup, nscache, measurement, decimal, currency-formatting, uuid
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,static,
+    true,false,AnyObject,Void,String,Bool,Data,Int,Decimal},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.6mm},
+  dir/.style={sb, anchor=west, align=left, text width=#1},
+  keep/.style={draw=sheetGreen, fill=sheetGreen!10},
+  gone/.style={draw=sheetOrange, fill=sheetOrange!10},
+  ro/.style={draw=sheetGrey, fill=black!4},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  byte/.style={cell, minimum width=5.2mm, minimum height=4.6mm, font=\ttfamily\scriptsize},
+  uc/.style={cell, minimum height=4.6mm, minimum width=0mm, inner xsep=2pt, font=\ttfamily\scriptsize},
+}
+
+\begin{document}
+
+\sheettitle{Foundation — the essential types}{ios-platform · folio}
+
+\oneliner{Most Foundation bugs come from doing by hand what a type already does
+correctly: build URLs with \textbf{URLComponents}, format numbers with a
+\textbf{formatter}/\texttt{.formatted}, convert with \textbf{Measurement} — and respect
+the \textbf{sandbox lifecycle}: Caches and tmp are purgeable, the container path
+changes, \texttt{Data} slices keep their parent's indices.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── sandbox ──
+  \node[font=\bfseries\small, anchor=west] at (-0.1,3.35) {the sandbox — who survives what};
+  \node[dir=62mm, ro] (b) at (0,2.8) {\textbf{MyApp.app} (Bundle) — code-signed, \textbf{read-only}, replaced on update};
+  \node[dir=62mm, ro] (dc) at (0,2.2) {\textbf{Data container} \texttt{…/Application/<UUID>/} — path changes: keep \emph{relative} paths};
+  \node[dir=47mm, keep] (docs) at (0.5,1.55) {\texttt{Documents/} — user files (Files app: \texttt{UIFileSharingEnabled})};
+  \node[dir=47mm, keep] (as) at (0.5,1.0) {\texttt{Library/Application Support/} — app data; \textbf{create it first}};
+  \node[dir=47mm, gone] (ca) at (0.5,0.35) {\texttt{Library/Caches/} — regenerable (images, responses)};
+  \node[dir=47mm, gone] (tmp) at (0.5,-0.2) {\texttt{tmp/} — scratch, delete when done};
+  \foreach \n in {docs,as,ca,tmp} \draw[sheetGrey] (0.25,1.95) |- (\n.west);
+  \draw[decorate, decoration={brace, amplitude=3pt}, sheetGreen] (5.45,1.8) -- (5.45,0.75);
+  \draw[decorate, decoration={brace, amplitude=3pt}, sheetOrange] (5.45,0.6) -- (5.45,-0.45);
+  \node[lbl, anchor=west, text=sheetGreen!60!black] at (5.55,1.28) {backed up\\never purged};
+  \node[lbl, anchor=west, text=sheetOrange] at (5.55,0.08) {\textbf{no} backup\\\textbf{purged}: low\\disk / not running};
+  \node[lbl, anchor=west] at (-0.1,-0.75) {big re-downloadable data kept in App Support $\to$ set \texttt{isExcludedFromBackup}};
+  \draw[sheetGrey!40] (7.45,3.5) -- (7.45,-1.0);
+  % ── Data slice ──
+  \node[font=\bfseries\small, anchor=west] at (7.55,3.35) {\texttt{Data} slice keeps the parent's indices};
+  \foreach \i in {0,...,9} {
+    \node[byte, fill=black!4] (p\i) at ({8.25+\i*0.54},2.75) {\i};
+    \node[lbl, text=sheetGrey] at ({8.25+\i*0.54},2.37) {[\i]};}
+  \node[lbl, anchor=east] at (7.97,2.75) {\texttt{data}};
+  \foreach \i in {5,...,9} \node[byte, draw=sheetBlue, fill=sheetBlue!12] (s\i) at ({8.25+\i*0.54},1.6) {\i};
+  \node[lbl, anchor=east] at ({8.25+5*0.54-0.3},1.6) {\texttt{let tail = data[5...]}};
+  \foreach \i in {5,...,9} \draw[flow, thin] (p\i.south) ++(0,-0.25) -- (s\i.north);
+  \node[lbl, text=sheetGreen!60!black, anchor=west] at ({8.25+9*0.54+0.35},1.6) {\texttt{startIndex} = 5\\\texttt{endIndex} = 10};
+  \node[byte, draw=sheetRed, fill=sheetRed!8] at (8.25,1.05) {?};
+  \node[lbl, anchor=west, text=sheetRed] at (8.6,1.05) {\texttt{tail[0]} — out of bounds: \textbf{crash}};
+  \node[lbl, anchor=west, text=sheetGreen!60!black] at (7.55,0.6) {fix: \texttt{tail[tail.startIndex]} · \texttt{tail.first} · \texttt{Data(tail)[0]} (re-based copy)};
+  \node[lbl, anchor=west] at (7.55,0.25) {same for \texttt{ArraySlice}, \texttt{Substring}; \texttt{Data.SubSequence} \emph{is} \texttt{Data}: no type warns you};
+  \draw[sheetGrey!40] (7.45,-0.05) -- (16.5,-0.05);
+  % ── URL anatomy ──
+  \node[font=\bfseries\small, anchor=west] at (7.55,-0.3) {URLComponents — one property per part};
+  \node[uc, fill=sheetBlue!10] (u1) at (8.0,-0.85) {https};
+  \node[uc, right=0pt of u1] (u2) {://};
+  \node[uc, right=0pt of u2, fill=sheetGreen!12] (u3) {api.x.io};
+  \node[uc, right=0pt of u3] (u4) {:8443};
+  \node[uc, right=0pt of u4, fill=sheetBrown!15] (u5) {/v1/search};
+  \node[uc, right=0pt of u5, fill=sheetOrange!12] (u6) {?q=a\%20b\%2Bc};
+  \node[uc, right=0pt of u6] (u7) {\#top};
+  \foreach \n/\t in {u1/scheme, u3/host, u4/port, u5/path, u6/queryItems, u7/fragment} \node[lbl, below] at (\n.south) {\t};
+  \node[lbl, anchor=west, text=sheetOrange] at (u7.east) {\ space $\to$ \texttt{\%20}, \textbf{\texttt{+} left as is}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{URL} = parsed, immutable. \texttt{URL(string:)} is \texttt{nil} on invalid
+        input (iOS 17+: percent-encodes it instead, RFC 3986 — differs by OS). Files:
+        \texttt{URL(filePath:)} (iOS 16), not \texttt{URL(string: "/p")}.
+  \item \textbf{URLComponents} = builder: set \texttt{scheme}/\texttt{host}/\texttt{path}/\texttt{queryItems},
+        read \texttt{.url}; never interpolate input into a URL string.
+        \texttt{percentEncodedQueryItems} (iOS 11) when you encode yourself.
+  \item \textbf{Data} — value type, COW, \texttt{Hashable} by content; base64 built in, hex
+        not. \texttt{Data(contentsOf:)} is \textbf{synchronous} — files only, never network.
+        Write with \texttt{[.atomic, .completeFileProtection]}.
+  \item \textbf{Directories} (iOS 16 statics) — \texttt{URL.documentsDirectory},
+        \texttt{.applicationSupportDirectory}, \texttt{.cachesDirectory},
+        \texttt{.temporaryDirectory}; before: \texttt{FileManager.urls(for:in:)}.
+        App Support may not exist yet: \texttt{createDirectory}. Extensions share an App
+        Group container.
+  \item \textbf{NSCache} — thread-safe; evicts under memory pressure; limits are
+        \emph{hints}; keys/values must be \textbf{classes}; keys \emph{not copied}; not
+        enumerable, not \texttt{Codable} — a memory tier, never storage. \texttt{Dictionary}:
+        deterministic, value keys, but unbounded and needs a lock/actor.
+  \item \textbf{Measurement} — \texttt{Measurement(value: 5, unit: UnitLength.kilometers)}
+        \texttt{.converted(to: .miles)}; \texttt{.formatted(.measurement(width:
+        .abbreviated, usage: .road))} picks km/mi by locale.
+  \item \textbf{Numbers} — money is \texttt{Decimal}; \texttt{.formatted(.currency(code:
+        "EUR"))}; \texttt{0.25.formatted(.percent)} $\to$ ``25\%''. Locale decides
+        \emph{layout}, not \emph{which} currency — set \texttt{currencyCode}.
+  \item \textbf{UUID} — v4, 122 random bits: idempotency keys, local ids;
+        \texttt{uuidString} is \textbf{upper}case. \texttt{identifierForVendor} resets when the
+        vendor's last app goes.
+  \item \textbf{Bundle} — read-only; SPM: \texttt{Bundle.module}; test resources:
+        \texttt{Bundle(for: Self.self)}, not \texttt{.main} (the host app).
+  \item \textbf{NotificationCenter vs KVO} — broadcast by name vs one \texttt{@objc
+        dynamic} property; keep and remove the token either way.
+\end{itemize}
+
+\columnbreak
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+var c = URLComponents(string: "https://api.example.com/search")!
+c.queryItems = [URLQueryItem(name: "q", value: "a b+c")]
+c.percentEncodedQuery = c.percentEncodedQuery?   // form servers
+  .replacingOccurrences(of: "+", with: "%2B")    // read + as space
+let url = c.url!                  // ...search?q=a%20b%2Bc
+
+let tail = data[5...]             // startIndex 5, not 0
+let head = tail[tail.startIndex]  // or Data(tail)[0]
+
+var dir = URL.applicationSupportDirectory          // iOS 16
+var rv = URLResourceValues(); rv.isExcludedFromBackup = true
+try dir.setResourceValues(rv)                      // needs var
+let price = Decimal(string: "19.99")!              // not 19.99
+price.formatted(.currency(code: "EUR"))  // "19,99 €" in de_DE
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{+} in a query value (base64, phone numbers) — \texttt{URLComponents} leaves
+        it; a form-decoding server reads a \textbf{space}. Encode it as \texttt{\%2B}.}
+  \trap{\texttt{slice[0]} on \texttt{Data}/\texttt{ArraySlice} — indices are the parent's.}
+  \trap{Storing an absolute file path — the container UUID changes on update/restore.}
+  \trap{Images ``vanish'' from \texttt{Caches/} — that is the contract; persistent
+        data belongs in Application Support.}
+  \trap{\texttt{Decimal(19.99)} goes through \texttt{Double}: already inexact; use
+        \texttt{Decimal(string:)} or integer minor units.}
+  \trap{\texttt{numberStyle = .currency} alone shows \texttt{\$} for a euro amount on a US
+        phone — bind \texttt{currencyCode}.}
+  \trap{Relying on \texttt{NSCache} keeping a value or honouring \texttt{countLimit} exactly.}
+\end{itemize}
+
+\section{File protection — when can the file be read?}
+{\footnotesize
+\begin{tabular}{@{}l l@{}}
+\toprule
+\texttt{.complete} & only while the device is unlocked \\
+\texttt{.completeUnlessOpen} & new files writable locked; open stays open \\
+\texttt{.completeUntilFirstUserAuthentication} & after first unlock — \textbf{default} \\
+\texttt{.none} & always \\
+\bottomrule
+\end{tabular}}\\[1pt]
+{\scriptsize Set per write (\texttt{Data.WritingOptions .completeFileProtection…}) or as a
+\texttt{FileProtectionType} attribute; background work that reads \texttt{.complete} files
+while locked fails.}
+
+\section{Remember}
+\textbf{Build, don't concatenate. Slices keep indices. Caches and tmp are
+borrowed. Money is Decimal, currency is explicit.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} foundation dates \&
+formatters · persistence (storage decision table) · strings \& collections (slices,
+\texttt{Substring}) · keychain · observation \& Combine · URLSession networking}
+
+\end{document}

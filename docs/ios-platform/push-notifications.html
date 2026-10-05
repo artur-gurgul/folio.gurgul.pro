@@ -1,0 +1,83 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Push notifications (APNs) — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/ios-platform/push-notifications.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">50</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Push notifications (APNs)</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">ios-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Your <strong>server</strong> never talks to the phone: it POSTs JSON over
+HTTP/2 to <strong>APNs</strong>, addressed by a <strong>device token</strong> (one app install on
+one device, one environment) and authenticated by <em>your</em> key. The app only
+asks permission, obtains and uploads the token, and reacts to delivery.</p>
+<p class="sheet-tools"><a class="sheet-download" href="push-notifications.pdf" download>Download PDF</a> <a href="push-notifications.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/push-notifications.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="push-notifications-fig1.svg" width="625" height="182" class="wide" alt="Push notifications (APNs) — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>How it works</h2>
+<ul>
+<li><strong>Token auth (.p8)</strong>, preferred: one key for <em>all</em> your  apps and both environments, never expires. The server signs a  <strong>JWT</strong> (ES256; <code>kid</code> = key id, <code>iss</code> = team id,  <code>iat</code>), reuses it and refreshes every 20–60 min.  <strong>Certificate (.p12)</strong>: one per app, expires yearly.</li>
+<li><strong>Authorization</strong> (<code>UNUserNotificationCenter</code>):  <code>.alert .sound .badge</code>. <code>.provisional</code> (iOS 12): no  prompt, lands <em>quietly</em> in Notification Center, user decides  later. <code>.criticalAlert</code>: ignores mute/Focus, needs an  <strong>Apple-approved entitlement</strong>. <strong>Time-sensitive</strong> is an  <em>interruption level</em> (<code>passive · active · time-sensitive
+ · critical</code>, iOS 15) set in the payload + capability; it breaks  through Focus. Check with <code>getNotificationSettings</code>.</li>
+<li><strong>Alert</strong> push: push-type <code>alert</code>, priority 10.  <strong>Background (silent)</strong>: only <code>&quot;content-available&quot;:1</code>,  push-type <code>background</code>, <strong>priority 5</strong>, needs the  <code>remote-notification</code> background mode. The app wakes in  <code>didReceiveRemoteNotification(…)</code> for ~30 s  and must call its <code>fetchCompletionHandler</code>.</li>
+<li><strong>Service Extension</strong> (NSE): separate process, runs only for a  <em>visible</em> alert with <code>&quot;mutable-content&quot;:1</code>; ~30 s in  <code>didReceive(_:withContentHandler:)</code> to decrypt, rewrite or attach  media (<code>UNNotificationAttachment</code>).  <code>serviceExtensionTimeWillExpire()</code> ships the best attempt.  <strong>Content Extension</strong>: custom expanded UI, picked by  <code>UNNotificationExtensionCategory</code>.</li>
+<li><strong>Categories</strong>: register <code>UNNotificationCategory</code> +  <code>UNNotificationAction</code> (<code>.foreground</code>,  <code>.destructive</code>, text input) at launch. Payload  <code>&quot;category&quot;</code> picks one; the tap arrives as  <code>response.actionIdentifier</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-comment">// didFinishLaunching: set the delegate BEFORE it returns</span>
+<span class="hljs-keyword">let</span> c <span class="hljs-operator">=</span> <span class="hljs-type">UNUserNotificationCenter</span>.current(); c.delegate <span class="hljs-operator">=</span> <span class="hljs-keyword">self</span>
+c.requestAuthorization(options: [.alert, .sound]) { <span class="hljs-keyword">_</span>, <span class="hljs-keyword">_</span> <span class="hljs-keyword">in</span> }
+app.registerForRemoteNotifications()  <span class="hljs-comment">// token even if denied</span>
+<span class="hljs-keyword">func</span> <span class="hljs-title function_">application</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">a</span>: <span class="hljs-type">UIApplication</span>,
+  <span class="hljs-params">didRegisterForRemoteNotificationsWithDeviceToken</span> <span class="hljs-params">t</span>: <span class="hljs-type">Data</span>) {
+  api.upload(t.map { <span class="hljs-type">String</span>(format: <span class="hljs-string">&quot;%02x&quot;</span>, <span class="hljs-variable">$0</span>) }.joined()) }
+<span class="hljs-keyword">func</span> <span class="hljs-title function_">userNotificationCenter</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">c</span>: <span class="hljs-type">UNUserNotificationCenter</span>,
+  <span class="hljs-params">willPresent</span> <span class="hljs-params">n</span>: <span class="hljs-type">UNNotification</span>) <span class="hljs-keyword">async</span>
+  -&gt; <span class="hljs-type">UNNotificationPresentationOptions</span> { [.banner, .sound] }
+<span class="hljs-keyword">func</span> <span class="hljs-title function_">userNotificationCenter</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">c</span>: <span class="hljs-type">UNUserNotificationCenter</span>,
+  <span class="hljs-params">didReceive</span> <span class="hljs-params">r</span>: <span class="hljs-type">UNNotificationResponse</span>) <span class="hljs-keyword">async</span> {
+  router.open(r.notification.request.content.userInfo) }</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Payload (<span class="math">≤</span> 4 KB; VoIP 5 KB)</h2>
+<pre class="sheet-code"><code class="hljs language-plaintext">{&quot;aps&quot;:{&quot;alert&quot;:{&quot;title&quot;:&quot;Door&quot;,&quot;body&quot;:&quot;Opened&quot;},
+  &quot;sound&quot;:&quot;default&quot;,&quot;badge&quot;:3,&quot;category&quot;:&quot;DOOR&quot;,
+  &quot;mutable-content&quot;:1,&quot;interruption-level&quot;:&quot;time-sensitive&quot;},
+ &quot;route&quot;:&quot;/door/7&quot;}                 // own keys beside &quot;aps&quot;
+{&quot;aps&quot;:{&quot;content-available&quot;:1}}     // silent</code></pre>
+<p><strong>Test:</strong> <code>xcrun simctl push booted &lt;bundle-id&gt; x.apns</code>, or drag a <code>.apns</code> file onto the Simulator; on a device, Apple’s Push Notifications Console or <code>curl --http2</code>.</p>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">Device token <span class="math">≠</span> .p8 key: the token addresses the install, the key  authenticates the server.</li>
+<li class="trap">Works from Xcode, fails in TestFlight: Xcode builds use the  <strong>sandbox</strong> host, TestFlight/App Store use <strong>production</strong>.  Tokens differ, so you get <code>BadDeviceToken</code>.</li>
+<li class="trap">Silent pushes are <strong>best-effort</strong>: throttled (a few per hour),  coalesced, delayed in Low Power Mode, and <strong>never</strong> delivered to  an app the user force-quit.</li>
+<li class="trap">NSE “never runs”: no <code>mutable-content</code>, no visible alert, or it  crashed on its tight memory limit (the original is shown).</li>
+<li class="trap">Foreground: nothing shows unless <code>willPresent</code> returns options.</li>
+<li class="trap">The token can <strong>change</strong> (restore, reinstall, new device). Re-register  every launch. <code>token.description</code> is not the hex string.</li>
+<li class="trap">Permission is only for <em>alerts</em>. The token and silent pushes work  without it.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>APNs answers</h2>
+<p><table class="sheet-table">
+<tbody>
+<tr><td>200</td><td>accepted</td><td>—</td></tr>
+<tr><td>400</td><td>bad request (<code>BadDeviceToken</code>, <code>BadTopic</code>…)</td><td>fix, do not retry</td></tr>
+<tr><td>403</td><td><code>ExpiredProviderToken</code>, <code>InvalidProviderToken</code></td><td>new JWT</td></tr>
+<tr><td>410</td><td><code>Unregistered</code> — token no longer valid</td><td><strong>delete</strong> the token</td></tr>
+<tr><td>413</td><td>payload too large</td><td>shrink</td></tr>
+<tr><td>429</td><td>too many requests (same token)</td><td>back off</td></tr>
+<tr><td>500 · 503</td><td>APNs error · unavailable</td><td>retry later</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>Ask · Register · Upload · Send · Deliver.</strong> The <strong>key</strong> names the sender; the <strong>token</strong> names the phone.</p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> background execution · deep links / router · app extensions &amp; App Groups · PushKit + CallKit (VoIP) · Live Activities · <code>setBadgeCount</code> (iOS 16)</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=ios-platform" title="area">ios-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=ios" title="platform">ios</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=platform-apis" title="topic">platform-apis</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=networking" title="topic">networking</a></li><li class="sheet-tag"><a href="/folios.html?tag=apns">apns</a></li><li class="sheet-tag"><a href="/folios.html?tag=device-token">device-token</a></li><li class="sheet-tag"><a href="/folios.html?tag=p8-jwt">p8-jwt</a></li><li class="sheet-tag"><a href="/folios.html?tag=silent-push">silent-push</a></li><li class="sheet-tag"><a href="/folios.html?tag=content-available">content-available</a></li><li class="sheet-tag"><a href="/folios.html?tag=notification-service-extension">notification-service-extension</a></li><li class="sheet-tag"><a href="/folios.html?tag=mutable-content">mutable-content</a></li><li class="sheet-tag"><a href="/folios.html?tag=unusernotificationcenter">unusernotificationcenter</a></li><li class="sheet-tag"><a href="/folios.html?tag=provisional-authorization">provisional-authorization</a></li><li class="sheet-tag"><a href="/folios.html?tag=interruption-level">interruption-level</a></li><li class="sheet-tag"><a href="/folios.html?tag=sandbox-vs-production">sandbox-vs-production</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=ios-platform%2Fpush-notifications.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/42">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

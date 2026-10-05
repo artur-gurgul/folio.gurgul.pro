@@ -1,0 +1,191 @@
+% operationqueue-deep.tex — the Operation state machine, KVO-compliant async Operation,
+% dependencies, maxConcurrentOperationCount, QoS vs queuePriority, cooperative
+% cancellation, BlockOperation, OperationQueue.main, Operation vs GCD vs async/await,
+% common bugs.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/foundation/operation (state KVO keys; a queue ignores
+%     isAsynchronous and always calls start() on a separate thread; cancel() — unfinished
+%     dependencies ignored; completionBlock set to nil once it starts, iOS 8+; circular
+%     dependencies deadlock; QueuePriority raw values)
+%   developer.apple.com/documentation/foundation/operationqueue (defaultMaxConcurrentOperationCount
+%     = -1; addBarrierBlock and progress, iOS 13; underlyingQueue; isSuspended)
+%   developer.apple.com/documentation/foundation/qualityofservice (raw values)
+%   Concurrency Programming Guide, "Operation Queues" (async operation KVO)
+% @labels: area=ios-platform kind=api platform=apple topic=concurrency discussion=39
+% @tags: operation, operationqueue, async-operation, kvo, isfinished, adddependency, maxconcurrentoperationcount, cancellation, queuepriority, qos, blockoperation, gcd
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,override,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,defer,
+    true,false,AnyObject,Void,String,Bool},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  st/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=8mm, minimum width=15mm},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  op/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5.5mm, minimum width=14mm},
+  cx/.style={op, draw=sheetRed, fill=sheetRed!8},
+}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\sheettitle{Operation \& OperationQueue}{ios-platform · folio}
+
+\oneliner{An \texttt{Operation} is a \textbf{single-shot}, KVO-observable unit of work;
+an \texttt{OperationQueue} starts it when \texttt{isReady} (every dependency
+\texttt{isFinished}), caps parallelism with \texttt{maxConcurrentOperationCount}, and drops it
+when it posts \texttt{isFinished}. \textbf{Cancellation is a flag}, dependencies are
+\textbf{ordering only} (no data), and an async subclass must drive its own state
+\textbf{with KVO} — or it never finishes.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── state machine ──
+  \node[font=\bfseries\small, anchor=west] at (-0.1,2.85) {State machine (KVO keys the queue watches)};
+  \node[st, draw=sheetGrey, fill=black!5] (p) at (0.65,2.0) {pending\\deps unfinished};
+  \node[st] (r) at (3.1,2.0) {\texttt{isReady}};
+  \node[st, draw=sheetOrange, fill=sheetOrange!10] (e) at (5.8,2.0) {\texttt{isExecuting}};
+  \node[st, draw=sheetGreen!70!black, fill=sheetGreen!10] (f) at (8.95,2.0) {\texttt{isFinished}\\left the queue};
+  \draw[flow] (p) -- node[lbl, above]{deps all}  node[lbl, below]{finished} (r);
+  \draw[flow] (r) -- node[lbl, above]{queue calls} node[lbl, below]{\texttt{start()}} (e);
+  \draw[flow] (e) -- node[lbl, above]{\texttt{main()} returns} node[lbl, below]{or \texttt{finish()}} (f);
+  \draw[->, thick, sheetRed, rounded corners=4pt] (p.south) -- ++(0,-0.5) -| (f.south);
+  \node[lbl, text=sheetRed, fill=white] at (4.9,1.1)
+    {\texttt{cancel()} before start: deps \textbf{ignored} → ready → \texttt{start()} sees the flag → finished; \texttt{main()} never runs};
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (-0.1,0.55)
+    {\texttt{isCancelled} is an orthogonal \textbf{flag}, settable in any state. While executing
+     it changes nothing\\unless \emph{your} code checks it.};
+  \node[lbl, anchor=west, align=left, text=sheetBrown] at (-0.1,0.0)
+    {async subclass without \texttt{willChange/didChange} for \texttt{"isFinished"}: the queue
+     never sees the end →\\dependents never start and the concurrency slot is never freed.};
+  % ── dependency graph ──
+  \draw[sheetGrey!40] (10.05,2.95) -- (10.05,-0.25);
+  \node[font=\bfseries\small, anchor=west] at (10.15,2.85) {Dependencies — a graph across queues};
+  \node[lbl, anchor=west, text=sheetBlue] at (10.15,2.45) {\texttt{net} queue, \texttt{maxConcurrentOperationCount = 2}};
+  \node[op] (d1) at (11.1,1.9) {download A};
+  \node[cx] (d2) at (11.1,1.05) {download B\\\textbf{cancelled}};
+  \node[op] (dc) at (13.1,1.5) {decode};
+  \node[op, draw=sheetGreen!70!black, fill=sheetGreen!10] (ui) at (15.35,1.5) {show\\on \texttt{.main}};
+  \draw[flow] (d1) -- (dc); \draw[flow, sheetRed] (d2) -- (dc); \draw[flow] (dc) -- (ui);
+  \node[lbl, text=sheetRed, align=left, anchor=west] at (10.15,0.35)
+    {a cancelled op still \textbf{finishes} → \texttt{decode} runs anyway:\\
+     check \texttt{dependencies} for \texttt{isCancelled} / an error};
+  \node[lbl, anchor=west] at (10.15,-0.1) {\texttt{decode.addDependency(dA)} — arrow = ``must finish before''};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Sync op}: override \texttt{main()}; finished when it returns (async work
+        started inside is \emph{not} awaited). \textbf{Async op}: override
+        \texttt{start()} (never \texttt{super.start()}), \texttt{isAsynchronous = true},
+        own \texttt{isExecuting}/\texttt{isFinished} behind a lock, KVO for both, finish
+        exactly once — also when cancelled before starting.
+  \item A queue \textbf{always} calls \texttt{start()} on a separate thread and ignores
+        \texttt{isAsynchronous}; it matters only when you call \texttt{start()} yourself.
+  \item \texttt{b.addDependency(a)}: works across queues; ``finished'' includes cancelled; a
+        cycle never becomes ready (silent hang). Results: \texttt{b} reads
+        \texttt{a.output} (or an adapter op copies it).
+  \item \texttt{maxConcurrentOperationCount} defaults to −1 (system decides);
+        \texttt{1} = serial, but order = readiness → \texttt{queuePriority} → insertion.
+  \item \texttt{qualityOfService} (\texttt{.userInteractive … .background}) sets the
+        thread's priority and energy class; \texttt{queuePriority}
+        (\texttt{.veryLow … .veryHigh}) only reorders \emph{ready} ops in \emph{one} queue.
+  \item \texttt{BlockOperation}: its blocks run concurrently, finished when all return.
+        \texttt{addBarrierBlock} (iOS 13) waits for everything queued before it.
+        \texttt{isSuspended} stops \emph{starting} ops. \texttt{OperationQueue.main} =
+        serial, main thread; \texttt{underlyingQueue} targets a \texttt{DispatchQueue}.
+  \item \texttt{completionBlock} runs after finish on an \textbf{arbitrary thread}, and is
+        set to \texttt{nil} once it starts (iOS 8+).
+\end{itemize}
+
+\section{Example — KVO-correct async Operation}
+\begin{lstlisting}[language=SwiftSheet]
+class AsyncOperation: Operation {
+  private let lock = NSLock()
+  private var _exec = false, _done = false
+  private func locked<T>(_ f: () -> T) -> T {
+    lock.lock(); defer { lock.unlock() }; return f() }
+  override var isAsynchronous: Bool { true }
+  override var isExecuting: Bool { locked { _exec } }
+  override var isFinished: Bool { locked { _done } }
+  override func start() {              // never super.start()
+    if isCancelled { finish(); return } // still must finish
+    willChangeValue(forKey: "isExecuting")
+    locked { _exec = true }
+    didChangeValue(forKey: "isExecuting")
+    run { self.finish() } }            // subclass: async work
+  func run(_ done: @escaping () -> Void) { done() }
+  final func finish() {                // exactly once
+    let keys = ["isExecuting", "isFinished"]
+    keys.forEach(willChangeValue(forKey:))
+    locked { _exec = false; _done = true }
+    keys.forEach(didChangeValue(forKey:)) }
+}
+\end{lstlisting}
+
+\columnbreak
+
+\section{Operation vs GCD vs async/await}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}L{14mm}L{21mm}L{19mm}L{20mm}@{}}
+\toprule
+\textbf{Need} & \textbf{Operation} & \textbf{GCD} & \textbf{Swift concurrency} \\
+\midrule
+dependency graph & \texttt{addDependency}, cross-queue & group \texttt{notify}, by hand & \texttt{async let}, ordered \texttt{await} \\
+cancel a graph & \texttt{cancelAll…()} sets flags & work item \texttt{cancel()}: only if not started & \texttt{task.cancel()} reaches child tasks \\
+cap parallelism & \texttt{maxConcurrent…} & semaphore / serial queue & task group: seed $n$, add one per finish \\
+observe state & KVO, \texttt{progress} (iOS 13) & — & — \\
+delay & — & \texttt{asyncAfter} & \texttt{Task.sleep(for:)} \\
+\bottomrule
+\end{tabular}}
+{\footnotesize Operation still wins for: a \textbf{cancellable graph} across queues, a hard
+concurrency cap, KVO/\texttt{Progress} UI, subclassable reusable \emph{types}, legacy code.
+New code on async/await: task groups + \texttt{Task.checkCancellation()}.}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Async op without the manual KVO → stuck ``executing'' forever.}
+  \trap{\texttt{cancel()} does not stop a running op or its \texttt{URLSessionTask} —
+        check \texttt{isCancelled} and cancel the task yourself.}
+  \trap{Cancelled dependency = finished → the dependent still runs.}
+  \trap{\texttt{op.completionBlock = \{ use(op.result) \}} captures \texttt{op} strongly —
+        a cycle until it runs; use \texttt{[unowned op]}. Hop to main for UI.}
+  \trap{Adding the same instance twice / after it finished →
+        \texttt{NSInvalidArgumentException}. Single-shot.}
+  \trap{\texttt{waitUntilAllOperationsAreFinished()} / \texttt{waitUntilFinished: true} on
+        main → hang, watchdog \texttt{0x8badf00d}.}
+\end{itemize}
+
+\section{The two priorities, side by side}
+{\footnotesize
+\begin{tabular}{@{}l r l r@{}}
+\toprule
+\texttt{qualityOfService} & raw & \texttt{queuePriority} & raw \\ \midrule
+\texttt{.userInteractive} & 0x21 & \texttt{.veryHigh} & 8 \\
+\texttt{.userInitiated} & 0x19 & \texttt{.high} & 4 \\
+\texttt{.default} & $-1$ & \texttt{.normal} & 0 \\
+\texttt{.utility} & 0x11 & \texttt{.low} & $-4$ \\
+\texttt{.background} & 0x09 & \texttt{.veryLow} & $-8$ \\
+\bottomrule
+\end{tabular}}\\[1pt]
+{\scriptsize QoS = which CPU/energy class the \emph{thread} gets (across the whole system);
+queue priority = which \emph{ready} op this queue starts first. Neither beats a dependency.}
+
+\section{Remember}
+\textbf{Ready → Executing → Finished; cancel is only a flag; no KVO, no finish.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} concurrency (GCD, actors) ·
+concurrency-patterns (bounded parallelism) · async-sequences-streams · KVO
+(observation-and-combine) · background-execution · crashes-symbolication (0x8badf00d)}
+
+\end{document}

@@ -1,0 +1,85 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Core Location + MapKit — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/ios-platform/corelocation-mapkit.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">50</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Core Location + MapKit</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">ios-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Core Location fuses GPS/Wi-Fi/cell into fixes under a permission the user can
+<strong>shrink any time</strong> (While Using/Always <em>and</em> Precise/Approximate); the right
+service is the <strong>cheapest one that answers the question</strong>. MapKit draws
+it: <strong>annotations</strong> = points (reused views), <strong>overlays</strong> = shapes (renderers).</p>
+<p class="sheet-tools"><a class="sheet-download" href="corelocation-mapkit.pdf" download>Download PDF</a> <a href="corelocation-mapkit.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/corelocation-mapkit.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="corelocation-mapkit-fig1.svg" width="629" height="169" class="wide" alt="Core Location + MapKit — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Core Location</h2>
+<ul>
+<li><code>CLLocationManager</code>: strong ref, created on main (callbacks use the  creating thread’s run loop). <code>locationManagerDidChangeAuthorization</code>  (iOS 14) fires at creation too — read <code>authorizationStatus</code> there.</li>
+<li>Info.plist <code>NSLocationWhenInUseUsageDescription</code> (+  <code>…AlwaysAndWhenInUse…</code> for Always); missing <span class="math">→</span> no prompt.</li>
+<li><code>requestLocation()</code> = one fix, then stops (needs  <code>didFailWithError</code>). <code>startUpdatingLocation()</code> = stream, tuned  by <code>desiredAccuracy</code>, <code>distanceFilter</code>, <code>activityType</code>.</li>
+<li><strong>iOS 17</strong>: <code>CLLocationUpdate.liveUpdates()</code> =  <code>AsyncSequence</code>, no delegate; a held  <code>CLBackgroundActivitySession</code> keeps it alive in the background. <strong><code>CLMonitor</code></strong> (actor) replaces  <code>startMonitoring(for:)</code>: <code>add(condition, identifier:)</code>, then  iterate <code>events</code> (<code>.satisfied</code>/<code>.unsatisfied</code>).</li>
+<li><strong>iOS 18</strong>: <code>CLServiceSession(authorization: .whenInUse)</code> declares what  a feature <em>needs</em>; Core Location prompts as appropriate. Iterating  <code>liveUpdates</code>/<code>events</code> holds one implicitly (off with  <code>NSLocationRequireExplicitServiceSession</code>). <strong>Always</strong> only takes  effect while a <code>.always</code> session is held — started in the foreground.</li>
+<li><strong>Background</strong>: mode <code>location</code> + <code>allowsBackground
+ LocationUpdates = true</code>, started in the foreground.</li>
+<li>Quality: <code>horizontalAccuracy &lt; 0</code> = invalid; first fix often cached  (check <code>timestamp</code>). <code>CLGeocoder</code>: network, rate-limited.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>MapKit</h2>
+<ul>
+<li><strong>Annotation</strong> (<code>MKAnnotation</code> point) <span class="math">→</span> <code>viewFor:</code>  <span class="math">→</span> <strong>reused</strong> <code>MKAnnotationView</code> (<code>register</code> +  <code>dequeueReusable…</code>; <code>MKMarkerAnnotationView</code>).  <strong>Overlay</strong> (<code>MKPolyline</code>/<code>Polygon</code>/  <code>Circle</code>/<code>MKTileOverlay</code>) <span class="math">→</span> <code>rendererFor:</code>  <span class="math">→</span> <code>MKOverlayRenderer</code>, scales with zoom.</li>
+<li><strong>Clustering</strong> (iOS 11): shared <code>clusteringIdentifier</code> <span class="math">→</span>  <code>MKClusterAnnotation</code>; <code>displayPriority</code>.</li>
+<li><strong>Search</strong>: <code>MKLocalSearchCompleter</code> (as you type) <span class="math">→</span>  <code>MKLocalSearch</code> <span class="math">→</span> <code>[MKMapItem]</code>. <strong>Directions</strong>:  <code>MKDirections.Request</code> <span class="math">→</span> <code>calculate</code> <span class="math">→</span> <code>MKRoute</code>  (<code>polyline</code>, <code>expectedTravelTime</code>); or hand off:  <code>openInMaps(launchOptions:)</code>.</li>
+<li><strong>SwiftUI <code>Map</code> (iOS 17)</strong>: content builder (<code>Marker</code>,  <code>Annotation</code>, <code>MapPolyline</code>, <code>MapCircle</code>,  <code>UserAnnotation</code>), <code>MapCameraPosition</code> (<code>.automatic</code>,  <code>.region</code>, <code>.userLocation(fallback:)</code>),  <code>.onMapCameraChange</code>, <code>.mapControls</code>. iOS 16  <code>Map(coordinateRegion:)</code> is deprecated.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example — iOS 17 async + SwiftUI Map</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">let</span> bg <span class="hljs-operator">=</span> <span class="hljs-type">CLBackgroundActivitySession</span>() <span class="hljs-comment">// hold: bg updates</span>
+<span class="hljs-keyword">for</span> <span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> u <span class="hljs-keyword">in</span> <span class="hljs-type">CLLocationUpdate</span>.liveUpdates() {
+  <span class="hljs-keyword">guard</span> <span class="hljs-keyword">let</span> loc <span class="hljs-operator">=</span> u.location <span class="hljs-keyword">else</span> { <span class="hljs-keyword">continue</span> }
+  track(loc) }                         <span class="hljs-comment">// + u.isStationary</span>
+<span class="hljs-keyword">let</span> m <span class="hljs-operator">=</span> <span class="hljs-keyword">await</span> <span class="hljs-type">CLMonitor</span>(<span class="hljs-string">&quot;stores&quot;</span>)      <span class="hljs-comment">// actor, 20 max</span>
+<span class="hljs-keyword">await</span> m.add(<span class="hljs-type">CLMonitor</span>.<span class="hljs-type">CircularGeographicCondition</span>(
+  center: shop, radius: <span class="hljs-number">150</span>), identifier: <span class="hljs-string">&quot;shop-7&quot;</span>)
+<span class="hljs-keyword">for</span> <span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> e <span class="hljs-keyword">in</span> <span class="hljs-keyword">await</span> m.events {
+  <span class="hljs-keyword">if</span> <span class="hljs-keyword">case</span> .satisfied <span class="hljs-operator">=</span> e.state { arrived(e.identifier) } }
+<span class="hljs-type">Map</span>(position: <span class="hljs-variable">$camera</span>, selection: <span class="hljs-variable">$picked</span>) {
+  <span class="hljs-type">ForEach</span>(shops) { s <span class="hljs-keyword">in</span>
+    <span class="hljs-type">Marker</span>(s.name, coordinate: s.coord).tag(s.id) }
+  <span class="hljs-type">MapPolyline</span>(route.polyline).stroke(.blue, lineWidth: <span class="hljs-number">4</span>)
+  <span class="hljs-type">UserAnnotation</span>() }</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">Reading <code>authorizationStatus</code> right after <code>request…</code> —  still <code>.notDetermined</code>; the answer comes in the delegate.</li>
+<li class="trap">No first prompt offers “Always”. A cold <code>requestAlways</code> gives  <em>provisional</em> Always; the upgrade prompt shows <strong>once</strong> — after  that, and after Don’t Allow, only Settings.</li>
+<li class="trap"><strong>Blue pill</strong>: mandatory for While-Using background use;  <em>off</em> by default for Always (opt in via  <code>showsBackgroundLocationIndicator</code>).</li>
+<li class="trap"><code>allowsBackgroundLocationUpdates</code> without the <code>location</code>  mode crashes; <code>pausesLocationUpdatesAutomatically</code> silently stops a  background tracker.</li>
+<li class="trap"><strong>20 regions</strong> per app: monitor the nearest 19 + one big region round  the user whose <em>exit</em> re-plans. Geofences lag by minutes; radii under  <span class="math">≈</span>100 m are unreliable.</li>
+<li class="trap">Returning a view for <code>MKUserLocation</code> hides the blue dot — return  <code>nil</code>. <code>CLGeocoder</code> per keystroke is throttled.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2><code>desiredAccuracy</code> constants</h2>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><code>…BestForNavigation</code> · <code>…Best</code></td><td>highest (navigation) · best available</td></tr>
+<tr><td><code>…NearestTenMeters</code> · <code>…HundredMeters</code></td><td>10 m · 100 m</td></tr>
+<tr><td><code>…Kilometer</code> · <code>…ThreeKilometers</code></td><td>1 km · 3 km</td></tr>
+<tr><td><code>kCLLocationAccuracyReduced</code> (iOS 14)</td><td>approximate, as if Precise off</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>Cheapest service that answers it</strong> · permission can <strong>shrink</strong> any time · <strong>points = reused views, shapes = renderers</strong>.</p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> background-execution
+(modes, relaunch) · app-hardening-privacy (permission state machine) ·
+swiftui-uikit-interop (wrapping <code>MKMapView</code>) · tableview-diffable (reuse) ·
+Look Around (<code>MKLookAroundSceneRequest</code>)</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=ios-platform" title="area">ios-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=ios" title="platform">ios</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=platform-apis" title="topic">platform-apis</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=performance" title="topic">performance</a></li><li class="sheet-tag"><a href="/folios.html?tag=core-location">core-location</a></li><li class="sheet-tag"><a href="/folios.html?tag=cllocationmanager">cllocationmanager</a></li><li class="sheet-tag"><a href="/folios.html?tag=location-authorization">location-authorization</a></li><li class="sheet-tag"><a href="/folios.html?tag=significant-change">significant-change</a></li><li class="sheet-tag"><a href="/folios.html?tag=geofencing">geofencing</a></li><li class="sheet-tag"><a href="/folios.html?tag=clmonitor">clmonitor</a></li><li class="sheet-tag"><a href="/folios.html?tag=cllocationupdate">cllocationupdate</a></li><li class="sheet-tag"><a href="/folios.html?tag=background-location">background-location</a></li><li class="sheet-tag"><a href="/folios.html?tag=mapkit">mapkit</a></li><li class="sheet-tag"><a href="/folios.html?tag=annotations">annotations</a></li><li class="sheet-tag"><a href="/folios.html?tag=overlays">overlays</a></li><li class="sheet-tag"><a href="/folios.html?tag=clustering">clustering</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=ios-platform%2Fcorelocation-mapkit.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/29">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

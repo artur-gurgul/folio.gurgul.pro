@@ -1,0 +1,202 @@
+% core-graphics-drawing.tex — Core Graphics (Quartz 2D): the CGContext state machine
+% (saveGState/restoreGState, CTM, clip), UIKit vs CG coordinates, paths + fill rules,
+% strokes, clipping, gradients, shadows + transparency layers, UIGraphicsImageRenderer
+% vs the deprecated UIGraphicsBeginImageContext, draw(_:) vs CAShapeLayer, PDF out and in,
+% CGImage anatomy (bitmap info, bytesPerRow, colour spaces).
+% NOT repeated here: ImageIO downsampling code + lazy decode (swiftui/rendering-pipeline.tex),
+% decoded-bytes maths (architecture/image-loading-pipeline.tex), CAShapeLayer animation and
+% commit phases (ios-platform/core-animation-rendering.tex), SwiftUI Canvas
+% (swiftui/swiftui-gestures-canvas.tex).
+% Sources (checked 2026-09-29):
+%   developer.apple.com/documentation/coregraphics/cgcontext/savegstate() (what the graphics
+%     state holds; "the current path is not considered part of the graphics state")
+%   developer.apple.com/documentation/uikit/uigraphicsbeginimagecontext(_:) and
+%     .../uigraphicsbeginimagecontextwithoptions(_:_:_:) (deprecated iOS 27.0, "Use
+%     UIGraphicsImageRenderer instead")
+%   developer.apple.com/documentation/uikit/uigraphicsimagerendererformat/preferredrange
+%     (iOS 12; automatic / extended / standard)
+%   WWDC18 219 "Image and Graphics Best Practices" (renderer picks the format)
+% @labels: area=ios-platform kind=api platform=ios topic=ui,performance,platform-apis discussion=25
+% @tags: core-graphics, cgcontext, graphics-state, ctm, coordinate-flip, uibezierpath, clipping, cggradient, uigraphicsimagerenderer, draw-rect, pdf-rendering, cgimage
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,guard,else,return,true,false,nil,self,class,final,
+    override,in,as,if,for,struct},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  gs/.style={draw=sheetBlue, fill=sheetBlue!8, font=\tiny, inner sep=1.5pt,
+             minimum height=5mm, text width=33mm, align=left},
+  dst/.style={box, font=\tiny, inner sep=1.5pt, text width=34mm, align=left},
+  hdr/.style={font=\bfseries\scriptsize, text=sheetBlue, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Core Graphics — CGContext, paths, images, PDF}{ios-platform · folio}
+
+\oneliner{Core Graphics (Quartz 2D) is a C, \textbf{CPU}, immediate-mode 2D renderer. You talk to a
+\ct{CGContext} — a \textbf{state machine} (CTM, clip, colours, line style, shadow, alpha, blend mode)
+with a stack you push/pop with \ct{saveGState()} / \ct{restoreGState()} — build a \textbf{path},
+then \textbf{paint} it (fill / stroke), and the context rasterises into its destination: a
+\textbf{bitmap}, a view's \textbf{backing store}, or a \textbf{PDF} (vectors kept). UIKit's
+\ct{UIBezierPath}, \ct{UIGraphicsImageRenderer} and \ct{draw(\_:)} are thin wrappers over it.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- A: coordinate systems ----------
+  \node[hdr] at (-0.1,2.45) {A. Two coordinate systems};
+  \draw[sheetBlue, thick, fill=sheetBlue!5] (0,0) rectangle (2.1,1.9);
+  \fill[sheetRed] (0,1.9) circle (1.4pt);
+  \draw[->, thick, sheetRed] (0,1.9) -- (0.8,1.9) node[lbl, below, text=sheetRed]{x};
+  \draw[->, thick, sheetRed] (0,1.9) -- (0,1.1) node[lbl, right, text=sheetRed]{y $\downarrow$};
+  \node[font=\Large\bfseries, text=sheetOrange] at (1.35,0.75) {\scalebox{1}[-1]{R}};
+  \node[lbl, text=sheetOrange!80!black, align=left] at (1.25,0.3) {raw \ct{CGImage}};
+  \node[lbl, anchor=north, text width=25mm] at (1.05,-0.05) {\textbf{UIKit} — top-left\\\ct{draw(\_:)}, image renderer};
+  \draw[sheetGreen!60!black, thick, fill=sheetGreen!5] (2.6,0) rectangle (4.7,1.9);
+  \fill[sheetRed] (2.6,0) circle (1.4pt);
+  \draw[->, thick, sheetRed] (2.6,0) -- (3.4,0) node[lbl, above, text=sheetRed]{x};
+  \draw[->, thick, sheetRed] (2.6,0) -- (2.6,0.8) node[lbl, right, text=sheetRed]{y $\uparrow$};
+  \node[font=\Large\bfseries, text=sheetGreen!50!black] at (3.95,1.15) {R};
+  \node[lbl, anchor=north, text width=25mm] at (3.65,-0.05) {\textbf{Quartz} — bottom-left\\raw \ct{CGContext}, PDF, CI};
+  \node[lbl, anchor=north, text=sheetOrange!80!black, text width=50mm] at (2.35,-0.55)
+     {\ct{ctx.draw(cgImage, in:)} in a UIKit context $\to$ \textbf{upside down}\\Fix:
+      \ct{translateBy(0, h)} + \ct{scaleBy(1, -1)}\\or let \ct{UIImage.draw(in:)} do it};
+  \draw[sheetGrey!40] (5.05,2.55) -- (5.05,-1.3);
+  % ---------- B: the graphics-state stack ----------
+  \node[hdr] at (5.2,2.45) {B. Graphics-state stack};
+  \node[gs, fill=black!4, draw=sheetGrey] (s0) at (6.95,0.35) {\textbf{0} CTM = scale(3) · clip = bounds\\fill = black · line 1 pt · no shadow};
+  \node[gs] (s1) at (6.95,1.05) {\textbf{1} + translate · clip $\cap$ card\\fill = blue · shadow on};
+  \node[gs, draw=sheetOrange, fill=sheetOrange!10] (s2) at (6.95,1.75) {\textbf{2} + rotate 15$^\circ$ · clip $\cap$ circle};
+  \draw[hot] (8.95,0.2) -- node[lbl, sloped, above]{\ct{saveGState} = push} (8.95,1.95);
+  \draw[flow, draw=sheetGreen!60!black] (9.75,1.95) -- node[lbl, sloped, below, text=sheetGreen!40!black]{\ct{restoreGState} = pop} (9.75,0.2);
+  \node[lbl, text=sheetRed, text width=46mm, align=left, anchor=north west] at (5.2,-0.05)
+     {\textbf{clip only shrinks} — the only way back is \ct{restoreGState}.\\The \textbf{current path is NOT in the state}: \ct{fillPath} /
+      \ct{strokePath} \emph{consume} it.};
+  \draw[sheetGrey!40] (10.25,2.55) -- (10.25,-1.3);
+  % ---------- C: destinations ----------
+  \node[hdr] at (10.4,2.45) {C. One API, three destinations};
+  \node[box, font=\scriptsize, minimum width=14mm] (ctx) at (11.1,0.9) {\ct{CGContext}\\CPU};
+  \node[dst] (bm) at (14.55,1.8) {\textbf{bitmap} $\to$ \ct{CGImage}: \ct{UIGraphicsImageRenderer},\\\ct{CGContext(data:…)} — any thread};
+  \node[dst, draw=sheetOrange, fill=sheetOrange!8] (vw) at (14.55,0.9) {\textbf{backing store} of a view: \ct{draw(\_:)}\\w·h·scale$^2$·4 B, main thread};
+  \node[dst, draw=sheetGreen!60!black, fill=sheetGreen!8] (pdf) at (14.55,0.0) {\textbf{PDF}: \ct{UIGraphicsPDFRenderer} —\\vectors + text stay vectors};
+  \draw[flow] (ctx.east) -- (bm.west); \draw[flow] (ctx.east) -- (vw.west); \draw[flow] (ctx.east) -- (pdf.west);
+  \node[lbl, text width=58mm, align=left, anchor=north west] at (10.4,-0.55)
+     {Same drawing code, any destination: a \ct{UIBezierPath} stroked in \ct{draw(\_:)} can be
+      stroked into a PDF page unchanged. The CTM already holds the screen scale, so you draw in \textbf{points}.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Order}: set state $\to$ build path (\ct{move(to:)}, \ct{addLine}, \ct{addCurve},
+        \ct{addArc}, \ct{addRect}, \ct{addEllipse(in:)}, \ct{closePath}) $\to$ paint
+        (\ct{fillPath}, \ct{strokePath}, \ct{drawPath(using: .fillStroke)}). Painting clears the path.
+  \item \textbf{CTM} maps user space $\to$ device space; \ct{translateBy} / \ct{rotate(by:)} /
+        \ct{scaleBy} \emph{concatenate}, so order matters (rotate-then-translate $\neq$
+        translate-then-rotate). Wrap every local transform in save/restore.
+  \item \textbf{Fill rules}: non-zero winding (default) vs \textbf{even-odd}
+        (\ct{fillPath(using: .evenOdd)}, \ct{usesEvenOddFillRule}) — a ring = two circles,
+        even-odd punches the hole regardless of direction.
+  \item \textbf{Strokes} straddle the path: half the width lands outside. A 1-pixel hairline =
+        width \ct{1/scale} centred on a pixel (offset \ct{0.5/scale}), or it smears over two.
+  \item \textbf{Clipping}: \ct{clip()} / \ct{addClip()} intersects the clip with the current path.
+        \textbf{Gradients} (\ct{CGGradient} + \ct{drawLinearGradient} / \ct{drawRadialGradient})
+        fill the \emph{whole clip} — clip to your shape first.
+  \item \textbf{Shadows} (\ct{setShadow(offset:blur:color:)}) apply to \emph{every} later draw;
+        to shadow a group once: \ct{beginTransparencyLayer} … \ct{endTransparencyLayer}.
+  \item \textbf{CGImage} = immutable bitmap: width, height, \ct{bitsPerComponent},
+        \ct{bitsPerPixel}, \ct{bytesPerRow} (may be \emph{padded} past w·4 — never assume),
+        colour space, \ct{bitmapInfo}. iOS-native: 8-bit \textbf{BGRA premultiplied}
+        (\ct{.premultipliedFirst} + \ct{.byteOrder32Little}); pass \ct{bytesPerRow: 0} to let
+        CG align it.
+  \item \textbf{Colour spaces}: sRGB · \textbf{Display P3} (wide colour) · extended sRGB (values
+        outside 0–1, 16-bit float, 8 B/px). \ct{UIGraphicsImageRendererFormat.preferredRange}
+        (iOS 12): \ct{.automatic} picks by content, \ct{.standard} forces 8-bit sRGB.
+  \item \textbf{Renderer vs old API}: \ct{UIGraphicsImageRenderer} (iOS 10) is block-scoped (no
+        unbalanced begin/end), reusable, picks scale + range; \ct{UIGraphicsBeginImageContext(WithOptions)}
+        is \textbf{deprecated in the iOS 27 SDK}.
+\end{itemize}
+
+\hd{Example — badge: clip, gradient, restore, flip}
+\begin{lstlisting}[language=SwiftSheet]
+let fmt = UIGraphicsImageRendererFormat(); fmt.scale = 1   // exact pixels
+let r = UIGraphicsImageRenderer(size: CGSize(width: 300, height: 300),
+                                format: fmt)
+let badge = r.image { rc in
+  let ctx = rc.cgContext                        // UIKit-flipped: top-left
+  ctx.saveGState()                              // push
+  UIBezierPath(roundedRect: rc.format.bounds, cornerRadius: 48).addClip()
+  let g = CGGradient(colorsSpace: nil, colors: [UIColor.systemBlue.cgColor,
+            UIColor.systemTeal.cgColor] as CFArray, locations: [0, 1])!
+  ctx.drawLinearGradient(g, start: .zero, end: CGPoint(x: 0, y: 300),
+                         options: [])           // fills the CLIP, not a shape
+  ctx.restoreGState()                           // pop: clip gone again
+  ctx.translateBy(x: 0, y: 300); ctx.scaleBy(x: 1, y: -1)  // to Quartz y-up
+  ctx.draw(logoCG, in: CGRect(x: 100, y: 100, width: 100, height: 100))
+}
+\end{lstlisting}
+
+\columnbreak
+
+\hd{\ct{draw(\_:)} rules}
+\ct{rect} is the \emph{dirty} area — draw only what intersects it; \ct{setNeedsDisplay(\_ rect:)}
+narrows it. Never call \ct{draw} yourself. Default \ct{contentMode = .scaleToFill} \emph{stretches the
+old bitmap} on resize — set \ct{.redraw}. Opaque view + solid \ct{backgroundColor} = no blending.
+
+\hd{Which drawing tool?}
+{\scriptsize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{26mm}@{}}
+\toprule
+\textbf{tool} & \textbf{cost} & \textbf{use for} \\ \midrule
+\ct{draw(\_:)} override & CPU redraw into a backing store on every \ct{setNeedsDisplay} & custom content that changes rarely \\
+\ct{CAShapeLayer} & path rendered by the render server; no app bitmap & shapes, rings, animated \ct{path} / \ct{strokeEnd} \\
+renderer $\to$ \ct{UIImage} & one CPU draw, then just an image & badges, thumbnails, export, snapshots \\
+\ct{CGContext(data:…)} & you own the bytes & pixel access, custom formats \\
+\ct{UIGraphicsPDFRenderer} & vectors, resolution-free & invoices, reports, print \\
+\bottomrule
+\end{tabular}}
+
+\hd{PDF — out and in}
+\begin{lstlisting}[language=SwiftSheet]
+let a4 = CGRect(x: 0, y: 0, width: 595, height: 842)    // points = 1/72 inch
+let data = UIGraphicsPDFRenderer(bounds: a4).pdfData { ctx in
+  ctx.beginPage()                                         // one per page
+  "Invoice".draw(at: CGPoint(x: 48, y: 48), withAttributes: attrs) }
+let page = CGPDFDocument(url as CFURL)?.page(at: 1)      // 1-BASED index
+// render: scale the CTM to fit getBoxRect(.mediaBox), flip, drawPDFPage(page)
+\end{lstlisting}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{\ct{clip()} without \ct{saveGState} — nothing outside that shape can be drawn again.}
+  \trap{Gradient floods the view: forgot to clip to the path first.}
+  \trap{Animating by \ct{setNeedsDisplay} every frame — a full CPU redraw per frame; animate a
+        layer property or use \ct{CAShapeLayer}.}
+  \trap{``300×300'' export is 900×900 px: the renderer's default \ct{scale} is the screen's.}
+  \trap{Reading pixels with \ct{bytesPerRow = width·4} — rows are padded; alpha is
+        \emph{premultiplied}, so un-premultiply before comparing colours.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``State, path, paint — save before you clip; UIKit looks down, Quartz looks up.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rendering-pipeline (ImageIO downsampling,
+lazy decode) · core-animation-rendering (CAShapeLayer, commit) · image-loading-pipeline (bytes per
+pixel) · swiftui-gestures-canvas (Canvas) · core-image-filters · metal-essentials}
+
+\end{document}

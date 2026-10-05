@@ -1,0 +1,240 @@
+% arkit-realitykit.tex — ARKit on iPhone/iPad: visual-inertial odometry, the session /
+% configuration / frame model, coordinate spaces, anchors, raycasting, tracking states, world
+% maps + collaboration, depth and occlusion; RealityKit: ARView vs RealityView, the
+% Entity-Component-System, custom components + systems; SceneKit's deprecation.
+% NOT repeated here: visionOS scenes and ARKitSession data providers (watchos-visionos),
+% Metal frame loop (metal-essentials), AVCaptureSession (avfoundation-camera-audio).
+% Sources (checked 2026-09-29) — primary, developer.apple.com/documentation/...:
+%   arkit/understanding-world-tracking (VIO: camera features + motion data; blank walls, dark,
+%     excessive motion degrade tracking; plane estimates are refined over time)
+%   arkit/verifying-device-support-and-user-permission (iOS 11, A9+, UIRequiredDeviceCapabilities
+%     arkit, NSCameraUsageDescription, face tracking needs a privacy policy)
+%   arkit/arcamera/transform (camera space: x along the long axis in landscapeLeft, y up,
+%     z out of the screen) · arkit/arconfiguration/worldalignment-swift.enum/gravity
+%   arkit/arcamera/trackingstate-swift.enum/reason (4 reasons, iOS 11)
+%   arkit/arfacetrackingconfiguration (TrueDepth up to iOS 13; Neural Engine devices from iOS 14)
+%   arkit/arbodytrackingconfiguration · arkit/argeotrackingconfiguration (iOS 14, A12+, GPS,
+%     supported areas, checkAvailability, ARGeoAnchor)
+%   arkit/arframe/scenedepth (iOS 14, LiDAR, frameSemantics) · arkit/arframe/capturedimage
+%     (full-range YCbCr) · arkit/arlightestimate/ambientintensity (lumens, 1000 = neutral)
+%   arkit/arworldtrackingconfiguration/scenereconstruction (iOS 13.4, LiDAR, ARMeshAnchor)
+%   arkit/arconfiguration/framesemantics-swift.struct/personsegmentationwithdepth (iOS 13)
+%   arkit/arraycastquery/target-swift.enum · arkit/arsession/trackedraycast(_:updatehandler:)
+%   arkit/arframe/hittest(_:types:) (deprecated iOS 14, use raycast)
+%   arkit/arworldmap (iOS 12, NSSecureCoding, initialWorldMap) · arkit/arframe/worldmappingstatus-swift.enum
+%   arkit/arworldtrackingconfiguration/iscollaborationenabled (iOS 13, you own transport, ~4 users)
+%   arkit/arcoachingoverlayview (iOS 13) · arkit/arscnview (deprecated iOS 26: use RealityView)
+%   realitykit/arview (iOS 13) · realitykit/realityview (iOS 18, visionOS 1) ·
+%   realitykit/realityviewcamera (.spatialTracking / .virtual, iOS 18) · realitykit/spatialtrackingsession (iOS 18)
+%   realitykit/system (iOS 15) · realitykit/sceneupdatecontext/entities(matching:updatingsystemwhen:) (iOS 18)
+%   realitykit/anchorentity (init(raycastResult:), plane target) · realitykit/arview/makeraycastquery(from:allowing:alignment:)
+%   WWDC25 session 288 "Bring your SceneKit project to RealityKit" (SceneKit deprecated, soft)
+%   Apple Developer Forums thread 695404 (Apple engineer: "delegate is retaining N ARFrames",
+%     warning above 10, camera drops frames at 15-20)
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis,ui,hardware discussion=14
+% @tags: arkit, realitykit, visual-inertial-odometry, arsession, arframe, anchors, raycast, world-map, lidar, realityview, entity-component-system, usdz
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,guard,else,return,true,false,nil,self,Self,struct,class,final,
+    static,init,for,in,if,try,await,import,some,continue},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {*=}{{\hbox{*}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  nd/.style={box, font=\tiny, inner sep=1.5pt, align=center},
+  st/.style={box, font=\tiny, inner sep=1.5pt, minimum height=4.5mm},
+  hdr/.style={font=\bfseries\scriptsize, text=sheetBlue, anchor=west},
+  ax/.style={->, thick},
+}
+
+\begin{document}
+
+\sheettitle{ARKit + RealityKit — tracking, anchors, entities}{ios-platform · folio}
+
+\oneliner{\textbf{ARKit} fuses feature points tracked across camera frames with the \textbf{IMU}
+(\textbf{visual-inertial odometry}) into a 6-DoF \textbf{camera pose} in a gravity-aligned world in
+\textbf{metres}; each tick is an \ct{ARFrame}, and what it recognises (planes, images, faces, meshes)
+becomes \textbf{anchors} it keeps correcting. \textbf{RealityKit} renders on top: an
+\textbf{Entity-Component-System} engine (\ct{ARView} in UIKit, \ct{RealityView} in SwiftUI from
+iOS 18) drawing USD content locked to those anchors.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- A: the per-frame loop ----------
+  \node[hdr] at (-0.2,2.75) {A. The per-frame loop};
+  \node[nd, text width=15mm] (cam) at (0.6,2.0) {\textbf{camera}\\video frames};
+  \node[nd, text width=15mm] (imu) at (0.6,1.0) {\textbf{IMU}\\accelerometer +\\gyro, higher rate};
+  \node[nd, text width=14mm, draw=sheetOrange, fill=sheetOrange!8] (vio) at (2.65,1.5)
+     {\textbf{VIO}\\feature points\\across frames\\+ motion data\\$\to$ 6-DoF pose};
+  \node[nd, text width=23mm, align=left, draw=sheetGreen!60!black, fill=sheetGreen!8] (fr) at (5.1,1.5)
+     {\textbf{\ct{ARFrame}}\\
+      \ct{capturedImage} (YCbCr)\\
+      \ct{camera.transform}\\
+      \ct{camera.intrinsics}\\
+      \ct{camera.trackingState}\\
+      \ct{anchors} · \ct{lightEstimate}\\
+      \ct{sceneDepth} (LiDAR)};
+  \node[nd, text width=19mm] (su) at (7.75,2.1) {\textbf{recognition}\\planes · images ·\\faces · bodies · mesh};
+  \node[nd, text width=19mm, draw=sheetOrange, fill=sheetOrange!8] (anc) at (7.75,0.9) {\textbf{anchors}\\world transform,\\\emph{refined} over time};
+  \node[nd, text width=13mm, draw=sheetGreen!60!black, fill=sheetGreen!10] (rend) at (10.05,1.5) {\textbf{renderer}\\\ct{ARView} ·\\\ct{RealityView} ·\\Metal};
+  \draw[flow] (cam) -- (vio); \draw[flow] (imu) -- (vio);
+  \draw[hot] (vio) -- (fr);
+  \draw[flow] (fr.east) -- (su.west); \draw[flow] (su) -- (anc);
+  \draw[flow] (anc.east) -- (rend.west |- anc.east);
+  \draw[hot] (fr.north) -- ++(0,0.3) -| node[lbl, above, pos=0.25, text=sheetOrange!80!black]{pose + camera image $\to$ background} (rend.north);
+  % tracking state machine
+  \node[font=\bfseries\tiny, anchor=west, text=sheetBlue, align=left] at (-0.2,-0.3) {\ct{camera.}\\\ct{trackingState}};
+  \node[st, draw=sheetGrey, fill=black!5] (na) at (2.1,-0.3) {\ct{.notAvailable}};
+  \node[st, draw=sheetOrange, fill=sheetOrange!10, align=left] (lim) at (5.35,-0.3)
+     {\ct{.limited(reason)}: \ct{.initializing} ·\\\ct{.excessiveMotion} · \ct{.insufficientFeatures}\\· \ct{.relocalizing} (after interruption / map)};
+  \node[st, draw=sheetGreen!60!black, fill=sheetGreen!12] (ok) at (8.9,-0.3) {\ct{.normal}};
+  \draw[flow] (na) -- (lim);
+  \draw[hot, draw=sheetGreen!60!black] (lim) -- (ok);
+  \draw[hot] (ok.south) to[out=-100, in=-5] node[lbl, below, pos=0.5]{fast motion · blank wall · dark} (lim.south east);
+  \draw[sheetGrey!40] (11.0,2.9) -- (11.0,-0.95);
+  % ---------- B: coordinate spaces ----------
+  \node[hdr] at (11.1,2.75) {B. Two spaces (right-handed, metres)};
+  \coordinate (o) at (11.85,1.25);
+  \draw[ax, sheetGreen!60!black] (o) -- ++(0,1.05) node[lbl, right]{$+y$ = up};
+  \draw[ax, sheetRed] (o) -- ++(0.95,0) node[lbl, right]{$+x$};
+  \draw[ax, sheetBlue] (o) -- ++(-0.45,-0.45) node[lbl, below]{$+z$};
+  \draw[ax, sheetBlue, dashed] (o) -- ++(0.5,0.5) node[lbl, above right, text=sheetBlue]{$-z$};
+  \node[lbl, anchor=north west, align=left] at (11.1,0.6) {\textbf{world}: origin = device\\at \ct{run()}; $y$ against gravity;\\$-z$ = first view direction};
+  % camera: phone in landscape
+  \draw[thick, rounded corners=2pt, fill=black!4] (14.0,1.0) rectangle (15.3,1.7);
+  \draw[sheetBlue, thick] (14.65,1.35) circle (0.09); \fill[sheetBlue] (14.65,1.35) circle (0.03);
+  \draw[ax, sheetRed] (15.3,1.35) -- ++(0.4,0) node[lbl, below]{$+x$};
+  \draw[ax, sheetGreen!60!black] (14.65,1.7) -- ++(0,0.4) node[lbl, right]{$+y$};
+  \node[lbl, text=sheetBlue] at (14.65,1.12) {$+z$ out};
+  \node[lbl, anchor=north west, align=left] at (13.75,0.6) {\textbf{camera}: axes fixed to the\\device in landscapeLeft;\\looks down $-z$};
+  \node[lbl, anchor=west, align=left, text=sheetOrange!80!black] at (11.1,-0.6)
+     {\ct{camera.transform}, \ct{anchor.transform}: 4$\times$4, local $\to$ world};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How ARKit works}
+\begin{itemize}
+  \item \ct{ARSession} runs \textbf{one} configuration; \ct{run(cfg, options: [.resetTracking,
+        .removeExistingAnchors])} starts over, \ct{pause()} frees the camera. The delegate gets
+        frames, anchor add/update/remove, tracking-state changes, interruptions.
+\end{itemize}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{64mm}@{}}
+\toprule
+\multicolumn{2}{@{}l}{\ct{AR\ldots Configuration}} \\ \midrule
+World & back camera, 6 DoF: planes, images, objects, mesh, depth, people \\
+Face & front: \ct{ARFaceAnchor} mesh + \ct{blendShapes} 0–1 (\ct{jawOpen}…); TrueDepth up to iOS 13, any Neural Engine device from iOS 14 \\
+Body & \ct{ARBodyAnchor} skeleton · \textbf{Image}: known images only \\
+Geo & \ct{ARGeoAnchor} at lat/long; A12+, GPS, outdoors, supported cities \\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item \textbf{Anchors}: \ct{ARPlaneAnchor} (horizontal/vertical, \ct{classification}) ·
+        \ct{ARImageAnchor} (reference image + \textbf{physical size}) · \ct{ARObjectAnchor}
+        (\ct{.arobject}) · \ct{ARMeshAnchor} (LiDAR, \ct{sceneReconstruction = .mesh}, iOS 13.4).
+  \item \textbf{Raycast} (iOS 13; \ct{hitTest} deprecated in 14): screen point $\to$
+        \ct{ARRaycastQuery}; target \ct{.estimatedPlane} (instant, rough) ·
+        \ct{.existingPlaneGeometry} (inside a detected plane) · \ct{.existingPlaneInfinite}.
+        \ct{trackedRaycast} re-fires as understanding improves; \ct{stopTracking()}.
+  \item \textbf{Depth}: \ct{frameSemantics} \ct{.personSegmentationWithDepth} (iOS 13, people
+        occlude content) · \ct{.sceneDepth} (iOS 14, LiDAR depth + confidence). Check
+        \ct{supportsFrameSemantics} first.
+  \item \textbf{Persist}: at \ct{worldMappingStatus \hbox{=}\hbox{=} .mapped}, \ct{getCurrentWorldMap} $\to$
+        \ct{ARWorldMap} (\ct{NSSecureCoding}) $\to$ later \ct{initialWorldMap}; state is
+        \ct{.relocalizing} until the room is recognised. \textbf{Shared}: \ct{isCollaborationEnabled};
+        you ship \ct{CollaborationData} (e.g. Multipeer) $\to$ \ct{update(with:)}; best $\leq$ 4 users.
+  \item Limited tracking: show a hint, place nothing; or \ct{ARCoachingOverlayView} (iOS 13,
+        \ct{goal: .horizontalPlane}…). \ct{lightEstimate}: 1000 lm = neutral.
+\end{itemize}
+
+\hd{Example — tap to place (ARView)}
+\begin{lstlisting}[language=SwiftSheet]
+let cfg = ARWorldTrackingConfiguration()
+cfg.planeDetection = [.horizontal]
+if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+  cfg.sceneReconstruction = .mesh }            // LiDAR only
+arView.session.run(cfg)
+guard let q = arView.makeRaycastQuery(from: tapPoint,
+        allowing: .estimatedPlane, alignment: .horizontal),
+      let hit = arView.session.raycast(q).first else { return }
+let a = AnchorEntity(raycastResult: hit)
+a.addChild(ModelEntity(mesh: .generateBox(size: 0.1),  // 10 cm
+                       materials: [SimpleMaterial()]))
+arView.scene.addAnchor(a)
+var t = matrix_identity_float4x4; t.columns.3.z = -0.5 // 50 cm ahead
+session.add(anchor: ARAnchor(transform: frame.camera.transform * t))
+\end{lstlisting}
+
+\hd{RealityKit}
+\begin{itemize}
+  \item \textbf{ECS}: \ct{Entity} = identity + hierarchy; \textbf{components} = data (\ct{Transform},
+        \ct{ModelComponent}, \ct{CollisionComponent}, \ct{PhysicsBodyComponent},
+        \ct{AnchoringComponent}, yours); \textbf{systems} (iOS 15) = behaviour, run each frame over
+        the entities that match a query.
+  \item \ct{AnchorEntity(.plane(...))} lets RealityKit do the ARKit anchoring; also
+        \ct{(raycastResult:)}, \ct{(world:)}, \ct{(anchor:)}.
+  \item \ct{ARView} (UIKit, iOS 13): owns an \ct{ARSession}; \ct{cameraMode .ar/.nonAR}.
+        \ct{RealityView} (SwiftUI; visionOS 1, \textbf{iOS 18}): \ct{content.camera = .spatialTracking}
+        (passthrough + tracking) or \ct{.virtual}; \ct{SpatialTrackingSession} picks tracking and
+        scene understanding (occlusion, shadows).
+  \item Assets are \textbf{USD/USDZ}, authored in \textbf{Reality Composer Pro} (ships with Xcode).
+        \textbf{SceneKit is deprecated} (WWDC25, soft: no removal date); \ct{ARSCNView} deprecated in
+        iOS 26 $\to$ \ct{RealityView}.
+\end{itemize}
+
+\hd{Example — a custom component + system (iOS 18)}
+\begin{lstlisting}[language=SwiftSheet]
+struct Spin: Component { var speed: Float = 1 }
+struct SpinSystem: System {
+  static let q = EntityQuery(where: .has(Spin.self))
+  init(scene: Scene) {}
+  func update(context: SceneUpdateContext) {
+    for e in context.entities(matching: Self.q,
+                              updatingSystemWhen: .rendering) {
+      guard let s = e.components[Spin.self] else { continue }
+      let dt = Float(context.deltaTime)                 // seconds
+      e.transform.rotation = simd_quatf(angle: s.speed * dt,
+                                axis: [0, 1, 0]) * e.transform.rotation } } }
+// once: Spin.registerComponent(); SpinSystem.registerSystem()
+RealityView { content in
+  content.camera = .spatialTracking          // passthrough + tracking
+  let a = AnchorEntity(.plane(.horizontal, classification: .any,
+                              minimumBounds: [0.2, 0.2]))
+  let box = ModelEntity(mesh: .generateBox(size: 0.1),
+                        materials: [SimpleMaterial()])
+  box.components.set(Spin(speed: 2)); a.addChild(box); content.add(a) }
+\end{lstlisting}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{\textbf{Holding \ct{ARFrame}s} (a property, an async closure, slow Vision work on the delegate
+        queue) drains the camera's buffer pool: ``delegate is retaining N ARFrames'', then the feed
+        freezes. Copy out what you need.}
+  \trap{Placing content while \ct{.limited} or before a plane settles $\to$ drift; planes grow and merge.}
+  \trap{\textbf{No AR in the Simulator}; gate every feature on \ct{isSupported} / \ct{supports…}
+        (LiDAR, face, geo). \ct{arkit} in required capabilities only if AR is the whole app.}
+  \trap{No \ct{NSCameraUsageDescription} $\to$ crash; face tracking also needs a privacy policy.
+        Wrong reference-image \textbf{physical size} $\to$ content floats or sinks.}
+  \trap{\textbf{Thermal}: camera + VIO + mesh + occlusion + rendering. Stop plane detection when done;
+        \ct{pause()} off screen.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Camera + IMU $\to$ pose $\to$ anchors; entities = ids, components = data, systems = behaviour.''}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} core-motion-sensors (the IMU) · watchos-visionos (visionOS ARKit) ·
+metal-essentials · avfoundation-camera-audio · coreml-vision-on-device · corelocation-mapkit}
+
+\end{document}

@@ -1,0 +1,260 @@
+% app-intents.tex — App Intents: AppIntent, @Parameter, perform(), AppEntity + EntityQuery, AppEnum,
+% AppShortcutsProvider, surfaces, execution (supportedModes), dependencies, vs SiriKit; Spotlight /
+% donation in brief; iOS 26 / 26.4 / 27 additions.
+% Sources (checked 2026-09-25):
+%   developer.apple.com/documentation/appintents (AppIntent, AppEntity, EntityQuery, AppShortcutsProvider,
+%   IntentModes, SnippetIntent, IntentValueQuery, CancellableIntent, LongRunningIntent)
+%   developer.apple.com/videos/play/wwdc2025/275 "Explore new advances in App Intents"
+%   developer.apple.com/videos/play/wwdc2026/345 "Discover new capabilities in the App Intents framework"
+% What those sources confirmed:
+%   iOS 26: SnippetIntent (+ reload(), perform() re-run after a snippet button), requestConfirmation(actionName:
+%   snippetIntent:), requestChoice(between:dialog:view:), IntentValueQuery + SemanticContentDescriptor,
+%   UndoableIntent (undoManager), supportedModes / IntentModes (openAppWhenRun DEPRECATED in 26.0 — "Please
+%   provide 'supportedModes' instead"), continueInForeground(_:alwaysConfirm:), @ComputedProperty,
+%   @DeferredProperty, @UnionValue, AppIntentsPackage (protocol is iOS 17; Swift packages + static libraries in 26).
+%   iOS 26.4 (not 27): CancellableIntent, withIntentCancellationHandler.
+%   iOS 27: LongRunningIntent (performBackgroundTask, must report progress), EntityCollection, SyncableEntity,
+%   allowedExecutionTargets: IntentExecutionTargets, App Intents Testing framework (AnyAppIntent, IntentDefinitions…).
+%   Left off (session summary only, doc page not checked): ValueRepresentation, RelevantEntities, view annotations.
+% @labels: area=ios-platform kind=api platform=apple topic=platform-apis discussion=11
+% @tags: appintent, appentity, entityquery, appshortcutsprovider, siri, shortcuts, snippetintent, supportedmodes, intentvaluequery, visual-intelligence, longrunningintent, dependency
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,static,some,init,
+    if,else,return,guard,self,nil,private,true,false,in,try,await,async,throws,
+    Void,String,Bool,Int},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {??}{{\hbox{?}\hbox{?}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\arr{\texttt{\hbox{-}\hbox{>}}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcommand\vv[1]{\textcolor{sheetOrange}{\textbf{#1}}}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  surf/.style={box, draw=sheetGreen, fill=sheetGreen!8, minimum width=17mm,
+               minimum height=5mm, font=\scriptsize, inner sep=2pt},
+  core/.style={box, draw=sheetOrange, fill=sheetOrange!10, very thick,
+               font=\small\bfseries},
+  stp/.style={box, minimum height=5mm, font=\scriptsize, inner sep=2pt},
+}
+
+\begin{document}
+
+\sheettitle{App Intents · Siri, Shortcuts, Spotlight, widgets (iOS 16 $\to$ 27)}{ios-platform · folio}
+
+\oneliner{App Intents (iOS 16+) exposes an app \textbf{action} to the system as
+plain Swift: a struct conforming to \texttt{AppIntent} with \texttt{@Parameter}s
+and an \texttt{async perform()}. Write it \textbf{once}; Siri, Shortcuts,
+Spotlight, the Action button, interactive widgets, Control Center and visual intelligence all run the
+\emph{same} type — no \texttt{.intentdefinition} file, usually no extension.}
+
+\begin{multicols}{2}
+\footnotesize\setstretch{1.0}\raggedright
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{\texttt{AppIntent}}: \ct{static let title: LocalizedStringResource},
+        \ct{@Parameter(title:)} properties, \ct{func perform() async throws} \arr\
+        \ct{some IntentResult}. Results: \ct{.result()}, \ct{.result(value:)} (chains in Shortcuts),
+        \ct{.result(dialog:)} (Siri speaks), \ct{.result(view:)} (snippet).
+  \item \textbf{Parameter types}: primitives, \ct{Date}, \ct{URL}\ldots;
+        \textbf{\ct{AppEnum}} (fixed cases + \ct{caseDisplayRepresentations})
+        or \textbf{\ct{AppEntity}} (dynamic domain objects).
+  \item \textbf{\ct{AppEntity}}: \ct{id}, \ct{displayRepresentation},
+        \ct{typeDisplayRepresentation}, \ct{static var defaultQuery}. Its
+        \textbf{\ct{EntityQuery}}: \ct{entities(for: ids)} (required — resolve saved ids),
+        \ct{suggestedEntities()} (picker), \ct{EntityStringQuery.entities(matching:)} (spoken text).
+        \vv{26}: \ct{@ComputedProperty} (getter reads your model / \ct{UserDefaults} — no stored
+        copy), \ct{@DeferredProperty} (\ct{get async throws}: fetched only if the system asks).
+  \item \textbf{Asking the user}: \ct{\$room.requestValue()}, \ct{requestDisambiguation},
+        \ct{requestConfirmation}. \vv{26}: \ct{requestConfirmation(actionName:snippetIntent:)} shows a
+        snippet; \ct{requestChoice(between:dialog:view:)} with \ct{Option(title:style:)} returns the
+        pick or throws on cancel. \ct{ParameterSummary} = the Shortcuts-editor sentence.
+  \item \textbf{\ct{AppShortcutsProvider}}: \ct{static var appShortcuts} of
+        \ct{AppShortcut(intent:phrases:\ldots)} — in Siri, Spotlight, Shortcuts on install, zero setup.
+        Every phrase contains \ct{\textbackslash(.applicationName)}; max \textbf{10}; one entity/enum
+        parameter per phrase — \ct{updateAppShortcutParameters()} when its values change.
+  \item \textbf{Where \ct{perform()} runs}: background by default, app UI not loaded, about
+        \textbf{30\,s}. \vv{26} \ct{static let supportedModes: IntentModes} — \ct{.background},
+        \ct{.foreground(.immediate / .dynamic / .deferred)}, combinable; in \ct{.dynamic} call
+        \ct{continueInForeground(\_:alwaysConfirm:)}. \ct{openAppWhenRun} is \textbf{deprecated in 26}
+        (``provide \ct{supportedModes}''). Widget buttons run in the widget extension;
+        \ct{LiveActivityIntent} / \ct{AudioPlaybackIntent} in the app.
+        \vv{27} \ct{allowedExecutionTargets} (\ct{IntentExecutionTargets}: main app, App Intents
+        extension, WidgetKit extension) pins the process.
+  \item \textbf{Dependencies}: \ct{@Dependency var store: Store}, registered at launch with
+        \ct{AppDependencyManager.shared.add \{ store \}} — not singletons reached from \ct{perform()}.
+  \item \textbf{Special conformances}: \ct{WidgetConfigurationIntent} (17), \ct{SetFocusFilterIntent},
+        \ct{ControlConfigurationIntent} (Control Center, 18), \ct{OpenIntent} (opens an entity).
+        \vv{26} \ct{UndoableIntent}: its \ct{undoManager} registers undo for the in-app action.
+        \ct{AppIntentsPackage} (17, frameworks) now also for Swift packages + static libraries.
+\end{itemize}
+
+\hd{Example}
+\begin{lstlisting}[language=SwiftSheet]
+struct ToggleLight: AppIntent {
+  static let title: LocalizedStringResource = "Toggle Light"
+  static let supportedModes: IntentModes = [.background, .foreground(.dynamic)]
+  @Parameter(title: "Room") var room: RoomEntity
+  @Dependency var lights: LightService
+  func perform() async throws -> some IntentResult & ProvidesDialog {
+    let on = try await lights.toggle(room.id)      // modes: iOS 26
+    return .result(dialog: "\(room.name) is \(on ? "on" : "off")")
+  }
+}
+// iOS 26: ask mid-perform with a custom snippet view
+let archive = Option(title: "Archive", style: .default)
+let delete  = Option(title: "Delete",  style: .destructive)
+let pick = try await requestChoice(between: [.cancel, archive, delete],
+    dialog: "Archive or delete \(album.name)?", view: AlbumCard(album))
+struct RoomSnippet: SnippetIntent {                       // iOS 26
+  @Parameter var room: RoomEntity
+  func perform() async throws -> some IntentResult & ShowsSnippetView {
+    .result(view: RoomCard(room))      // Button(intent: ToggleLight())...
+  }                                    // RoomSnippet.reload() on change
+}
+\end{lstlisting}
+
+\hd{Spotlight \& donation (in brief)}
+\ct{NSUserActivity} (\ct{isEligibleForSearch/Prediction}, Handoff) · Core Spotlight
+\ct{CSSearchableItem} + \ct{CSSearchableIndex} · \ct{IndexedEntity} (18) · \textbf{donate}
+(\ct{IntentDonationManager.shared.donate(intent:)}) after in-app use — feeds \emph{suggestions}, does
+not expose the action.
+
+\hd{Which protocol when}
+{\scriptsize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{46mm}@{}}
+\toprule
+need & adopt \\ \midrule
+show / edit UI inline in Siri, Spotlight & \ct{SnippetIntent} (26) \\
+open the app on an entity & \ct{OpenIntent} · \ct{supportedModes} (26) \\
+configure a widget / a control & \ct{WidgetConfigurationIntent} · \ct{ControlConfigurationIntent} \\
+button in a Live Activity / audio & \ct{LiveActivityIntent} · \ct{AudioPlaybackIntent} \\
+undo from the app's UI & \ct{UndoableIntent} (26) \\
+be found by image search & \ct{IntentValueQuery} (26) \\
+clean up on cancel · work past 30\,s & \ct{CancellableIntent} (26.4) · \ct{LongRunningIntent} (27) \\
+\bottomrule
+\end{tabular}}
+
+\columnbreak
+
+\hd{Write once, surface everywhere}
+\begin{tikzpicture}[sheet]
+  \node[core, minimum width=22mm, minimum height=9mm, align=center] (i) at (0,0)
+       {AppIntent\\[-1pt]\scriptsize\mdseries\texttt{perform()}};
+  \foreach \a/\t in {90/Siri (voice),
+                     45/Shortcuts app,
+                     0/Spotlight,
+                    -45/Action button,
+                    -90/Interactive widget,
+                   -135/Control Center (18),
+                    180/Visual intel. (26),
+                    135/Focus · Live Activity}{
+    \node[surf] (s\a) at (\a:2.6 and 1.2) {\t};
+    \draw[hot, <-] (s\a) -- (i);
+  }
+\end{tikzpicture}
+
+\hd{``Toggle kitchen in Lumen''}
+\begin{tikzpicture}[sheet]
+  \node[stp] (ph) at (0,0) {Siri phrase};
+  \node[stp] (sc) at (2.15,0) {\texttt{AppShortcut}};
+  \node[stp, draw=sheetBrown, fill=sheetBrown!8] (q) at (4.6,0) {\texttt{EntityQuery}};
+  \node[stp, draw=sheetOrange, fill=sheetOrange!10] (p) at (4.6,-1.1) {\texttt{perform()}};
+  \node[stp, draw=sheetGreen, fill=sheetGreen!8] (r) at (2.15,-1.1) {\texttt{IntentResult}};
+  \node[stp, fill=black!4, draw=sheetGrey, align=center] (out) at (0,-1.1) {dialog / value\\[-1pt]/ snippet};
+  \draw[flow] (ph) -- (sc);
+  \draw[flow] (sc) -- node[lbl, above]{``kitchen''} (q);
+  \draw[flow] (q) -- node[lbl, left]{\texttt{RoomEntity}} (p);
+  \draw[flow] (p) -- (r);
+  \draw[flow] (r) -- (out);
+  \node[lbl, anchor=west, align=left, text=sheetOrange] at (4.75,-0.55)
+       {0 or 2+ matches $\to$\\\texttt{requestDisambiguation}};
+\end{tikzpicture}
+
+\hd{New in iOS 26 · 26.4 · 27}
+\begin{itemize}
+  \item \vv{26} \textbf{Interactive snippets}: \ct{SnippetIntent} returns
+        \ct{ShowsSnippetView}; its buttons/toggles run other intents, then the system calls its
+        \ct{perform()} \emph{again} to redraw; \ct{reload()} when your data changes.
+  \item \vv{26} \textbf{Visual intelligence}: an \ct{IntentValueQuery} with
+        \ct{values(for input: SemanticContentDescriptor)} (\ct{input.pixelBuffer}) returns your
+        entities for on-screen / camera image search; \ct{@UnionValue} enum when results mix entity types.
+  \item \vv{26.4} \ct{CancellableIntent}: \ct{withIntentCancellationHandler(operation:onCancel:)}
+        gets a reason — no progress past the 30\,s limit, or the person cancelled.
+  \item \vv{27} \ct{LongRunningIntent} (a \ct{ProgressReportingIntent}):
+        \ct{performBackgroundTask \{ \ldots \}} runs past 30\,s \emph{if} it keeps updating
+        \ct{progress}. \ct{EntityCollection<T>}: a parameter of ids only (\ct{.identifiers},
+        \ct{resolvedEntities()} when needed). \ct{SyncableEntity}: id stable across devices
+        (\ct{SyncableEntityIdentifier(local:stable:)}) so Siri can hand off. \textbf{App Intents
+        Testing} framework (\ct{AnyAppIntent}, \ct{ResolvedIntentResult}, \ct{IntentDefinitions}).
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Phrase without \ct{\textbackslash(.applicationName)} — never matches.}
+  \trap{UI from a background \ct{perform()} — declare \ct{supportedModes} (pre-26:
+        \ct{openAppWhenRun}, now deprecated).}
+  \trap{``App Intents replaced SiriKit'' — not all: messaging, VoIP calling, media, CarPlay still
+        use \ct{INIntent} + an Intents extension.}
+  \trap{Assuming app state in \ct{perform()}; entities persist by \emph{id} and re-resolve via the query.}
+  \trap{Long work in \ct{perform()} with no progress — cancelled at \textasciitilde30\,s; report
+        progress (\ct{LongRunningIntent} in 27).}
+  \trap{Expensive entity fields computed eagerly — \ct{@DeferredProperty}; copied state —
+        \ct{@ComputedProperty}.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``I-E-Q-S''}: \textbf{I}ntent does it, \textbf{E}ntity names it, \textbf{Q}uery finds it,
+\textbf{S}hortcut says it — \textbf{Modes} say where it runs.
+
+\hd{\ct{supportedModes} (26) — when the app comes forward}
+\begin{tikzpicture}[sheet]
+  \tikzset{bg/.style={fill=black!12, draw=none}, fg/.style={fill=sheetOrange!55, draw=none},
+           md/.style={font=\scriptsize, anchor=east}, nt/.style={font=\tiny, anchor=west, text=black!75}}
+  \node[font=\tiny, text=black!60] at (2.05,0.35) {resolve params};
+  \node[font=\tiny, text=black!60] at (4.4,0.35) {\ct{perform()}};
+  \foreach \y/\m/\s/\n in {0/.background/9/{never — app UI not loaded},
+                           -0.6/.foreground(.immediate)/2.9/{right after params resolve},
+                           -1.2/.foreground(.dynamic)/4.2/{if \ct{continueInForeground} + conditions permit},
+                           -1.8/.foreground(.deferred)/5.4/{during the action / shortly before done}}{
+    \node[md] at (1.15,\y) {\ct{\m}};
+    \fill[bg] (1.2,\y-0.12) rectangle (6.0,\y+0.12);
+    \ifdim\s pt<9pt \fill[fg] (\s,\y-0.12) rectangle (6.0,\y+0.12); \fi
+    \draw[black!60] (2.9,\y-0.16) -- (2.9,\y+0.16);
+    \node[nt] at (1.2,\y-0.27) {\n};
+  }
+  \node[font=\tiny, anchor=west] at (6.1,-0.6) {\textcolor{sheetOrange}{\rule{2mm}{1.5mm}} app};
+  \node[font=\tiny, anchor=west] at (6.1,-0.9) {\textcolor{black!25}{\rule{2mm}{1.5mm}} bkgd};
+\end{tikzpicture}
+
+\hd{Timeline — what arrived when}
+\begin{tikzpicture}[sheet]
+  \tikzset{yr/.style={font=\bfseries\scriptsize, text=sheetBlue},
+           ev/.style={font=\tiny, align=center, text=black!85, text width=12mm, anchor=north}}
+  \draw[thick, sheetGrey, ->] (0,0) -- (8.3,0);
+  \foreach \x/\y/\t in {
+      0.6/16/{\ct{AppIntent}\\\ct{AppShortcuts}\\\ct{AppEntity}},
+      1.95/17/{interactive widgets\\\ct{WidgetConfig.}\\\ct{AppIntentsPackage}},
+      3.3/18/{Controls\\\ct{IndexedEntity}},
+      4.65/26/{snippets · modes\\visual intel.\\\ct{UndoableIntent}},
+      6.0/26.4/{\ct{Cancellable-}\\\ct{Intent}},
+      7.35/27/{\ct{LongRunning-}\\\ct{Intent} · Sync-\\able · Testing}}{
+    \fill[sheetBlue] (\x,0) circle (0.6mm);
+    \node[yr, above=1pt] at (\x,0) {\y};
+    \node[ev] at (\x,-0.12) {\t};
+  }
+\end{tikzpicture}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} WidgetKit interactive widgets · Live Activities ·
+deep links / \texttt{onOpenURL} · localization (\texttt{LocalizedStringResource}) · SiriKit legacy ·
+background-execution (30\,s budgets) · Foundation Models (tools)}
+
+\end{document}

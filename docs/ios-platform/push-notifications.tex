@@ -1,0 +1,195 @@
+% push-notifications.tex — APNs flow, token vs certificate auth, authorization
+% (provisional / time-sensitive / critical), alert vs background push, Service
+% and Content extensions, categories/actions, delegate + foreground display,
+% token refresh, testing.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/usernotifications/establishing-a-token-based-connection-to-apns
+%     (.p8, ES256 JWT, refresh no more than every 20 min and no less than every 60 min)
+%   developer.apple.com/documentation/usernotifications/sending-notification-requests-to-apns
+%     (hosts, headers, 4 KB / VoIP 5 KB) · .../handling-notification-responses-from-apns (status codes)
+%   developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app
+%     (content-available, priority 5, "no more than two or three per hour")
+%   developer.apple.com/documentation/usernotifications/unauthorizationoptions (provisional, iOS 12)
+%   developer.apple.com/documentation/usernotifications/uninotificationinterruptionlevel (iOS 15)
+%   developer.apple.com/documentation/usernotifications/unnotificationserviceextension (about 30 s)
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis,networking discussion=42
+% @tags: apns, device-token, p8-jwt, silent-push, content-available, notification-service-extension, mutable-content, unusernotificationcenter, provisional-authorization, interruption-level, sandbox-vs-production
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,
+    if,else,return,guard,self,nil,true,false,in,async,await,try,
+    Data,String,Bool,Int},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  lane/.style={box, minimum width=24mm, minimum height=5.5mm, font=\small\bfseries},
+  life/.style={draw=sheetGrey, dashed},
+  msg/.style={->, thick, draw=sheetBlue},
+  snd/.style={->, very thick, draw=sheetOrange},
+  ret/.style={->, thick, dashed, draw=sheetGreen},
+  bad/.style={->, thick, dashed, draw=sheetRed},
+  m/.style={font=\scriptsize, above, inner sep=1.2pt},
+  num/.style={circle, fill=sheetOrange, text=white, font=\tiny\bfseries,
+              inner sep=0.6pt, minimum size=3.2mm},
+}
+
+\begin{document}
+
+\sheettitle{Push notifications (APNs)}{ios-platform · folio}
+
+\oneliner{Your \textbf{server} never talks to the phone: it POSTs JSON over
+HTTP/2 to \textbf{APNs}, addressed by a \textbf{device token} (one app install on
+one device, one environment) and authenticated by \emph{your} key. The app only
+asks permission, obtains and uploads the token, and reacts to delivery.}
+
+\smallskip
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \n/\x/\t/\e in {app/1.2/App/-4.35, ios/5.6/iOS {\normalfont\scriptsize(+ NSE)}/-4.35,
+                        apns/10.4/APNs/-3.35, srv/15.1/Your server/-2.95} {
+    \node[lane] (\n) at (\x,0) {\t};
+    \draw[life] (\n.south) -- (\x,\e);
+  }
+  % 1-3 authorise, register, token
+  \node[num] at (0.85,-0.75) {1};
+  \draw[msg] (1.2,-0.75) -- node[m]{\texttt{requestAuthorization(options:)}} (5.6,-0.75);
+  \node[num] at (0.85,-1.15) {2};
+  \draw[msg] (1.2,-1.15) -- node[m]{\texttt{registerForRemoteNotifications()}} (5.6,-1.15);
+  \draw[msg] (5.6,-1.15) -- node[m]{register this app + device} (10.4,-1.15);
+  \node[num] at (0.85,-1.55) {3};
+  \draw[ret] (10.4,-1.55) -- node[m]{device token} (5.6,-1.55);
+  \draw[ret] (5.6,-1.55) -- node[m]{\texttt{didRegister\dots DeviceToken: Data}} (1.2,-1.55);
+  % 4 upload
+  \node[num] at (0.85,-1.95) {4};
+  \draw[msg] (1.2,-1.95) -- node[m, pos=0.83]{hex token + user id, \textbf{every launch}} (15.1,-1.95);
+  % 5 send
+  \node[num] at (15.45,-2.35) {5};
+  \draw[snd] (15.1,-2.35) -- node[m]{\texttt{POST /3/device/<token>} + JWT} (10.4,-2.35);
+  \draw[bad] (10.4,-2.75) -- node[m]{200 · 410 \texttt{Unregistered} $\to$ delete} (15.1,-2.75);
+  % 6 deliver
+  \node[num] at (10.75,-3.15) {6};
+  \draw[snd] (10.4,-3.15) -- node[m]{deliver (offline: keeps only the \emph{last})} (5.6,-3.15);
+  \node[box, font=\scriptsize, fill=sheetOrange!10, draw=sheetOrange, align=center, inner sep=1.5pt] at (5.6,-3.55)
+    {\texttt{mutable-content:1} $\to$ NSE edits, \(\le\)30 s};
+  % 7 app callbacks
+  \node[num] at (0.85,-4.05) {7};
+  \draw[ret] (5.6,-4.05) -- node[m]{\texttt{willPresent} / \texttt{didReceive}} (1.2,-4.05);
+  % headers note
+  \node[note, anchor=north west, align=left] at (10.2,-3.45) {headers: \texttt{apns-topic} = bundle id · \texttt{apns-push-type}\\
+    \texttt{apns-priority} 10 / 5 · \texttt{apns-expiration} · \texttt{apns-collapse-id}\\
+    hosts: \texttt{api.push.apple.com} · \texttt{api.sandbox.push.apple.com}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Token auth (.p8)}, preferred: one key for \emph{all} your
+        apps and both environments, never expires. The server signs a
+        \textbf{JWT} (ES256; \texttt{kid} = key id, \texttt{iss} = team id,
+        \texttt{iat}), reuses it and refreshes every 20--60 min.
+        \textbf{Certificate (.p12)}: one per app, expires yearly.
+  \item \textbf{Authorization} (\texttt{UNUserNotificationCenter}):
+        \texttt{.alert .sound .badge}. \texttt{.provisional} (iOS 12): no
+        prompt, lands \emph{quietly} in Notification Center, user decides
+        later. \texttt{.criticalAlert}: ignores mute/Focus, needs an
+        \textbf{Apple-approved entitlement}. \textbf{Time-sensitive} is an
+        \emph{interruption level} (\texttt{passive · active · time-sensitive
+        · critical}, iOS 15) set in the payload + capability; it breaks
+        through Focus. Check with \texttt{getNotificationSettings}.
+  \item \textbf{Alert} push: push-type \texttt{alert}, priority 10.
+        \textbf{Background (silent)}: only \texttt{"content-available":1},
+        push-type \texttt{background}, \textbf{priority 5}, needs the
+        \texttt{remote-notification} background mode. The app wakes in
+        \texttt{didReceiveRemoteNotification(\dots)} for \textasciitilde30 s
+        and must call its \texttt{fetchCompletionHandler}.
+  \item \textbf{Service Extension} (NSE): separate process, runs only for a
+        \emph{visible} alert with \texttt{"mutable-content":1}; \textasciitilde30 s in
+        \texttt{didReceive(\_:withContentHandler:)} to decrypt, rewrite or attach
+        media (\texttt{UNNotificationAttachment}).
+        \texttt{serviceExtensionTimeWillExpire()} ships the best attempt.
+        \textbf{Content Extension}: custom expanded UI, picked by
+        \texttt{UNNotificationExtensionCategory}.
+  \item \textbf{Categories}: register \texttt{UNNotificationCategory} +
+        \texttt{UNNotificationAction} (\texttt{.foreground},
+        \texttt{.destructive}, text input) at launch. Payload
+        \texttt{"category"} picks one; the tap arrives as
+        \texttt{response.actionIdentifier}.
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+// didFinishLaunching: set the delegate BEFORE it returns
+let c = UNUserNotificationCenter.current(); c.delegate = self
+c.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+app.registerForRemoteNotifications()  // token even if denied
+func application(_ a: UIApplication,
+  didRegisterForRemoteNotificationsWithDeviceToken t: Data) {
+  api.upload(t.map { String(format: "%02x", $0) }.joined()) }
+func userNotificationCenter(_ c: UNUserNotificationCenter,
+  willPresent n: UNNotification) async
+  -> UNNotificationPresentationOptions { [.banner, .sound] }
+func userNotificationCenter(_ c: UNUserNotificationCenter,
+  didReceive r: UNNotificationResponse) async {
+  router.open(r.notification.request.content.userInfo) }
+\end{lstlisting}
+
+\columnbreak
+
+\section{Payload (\(\le\) 4 KB; VoIP 5 KB)}
+\begin{lstlisting}
+{"aps":{"alert":{"title":"Door","body":"Opened"},
+  "sound":"default","badge":3,"category":"DOOR",
+  "mutable-content":1,"interruption-level":"time-sensitive"},
+ "route":"/door/7"}                 // own keys beside "aps"
+{"aps":{"content-available":1}}     // silent
+\end{lstlisting}
+\textbf{Test:} \texttt{xcrun simctl push booted <bundle-id> x.apns}, or drag a
+\texttt{.apns} file onto the Simulator; on a device, Apple's Push Notifications
+Console or \texttt{curl~--http2}.
+
+\section{Traps}
+\begin{itemize}
+  \trap{Device token $\neq$ .p8 key: the token addresses the install, the key
+        authenticates the server.}
+  \trap{Works from Xcode, fails in TestFlight: Xcode builds use the
+        \textbf{sandbox} host, TestFlight/App Store use \textbf{production}.
+        Tokens differ, so you get \texttt{BadDeviceToken}.}
+  \trap{Silent pushes are \textbf{best-effort}: throttled (a few per hour),
+        coalesced, delayed in Low Power Mode, and \textbf{never} delivered to
+        an app the user force-quit.}
+  \trap{NSE ``never runs'': no \texttt{mutable-content}, no visible alert, or it
+        crashed on its tight memory limit (the original is shown).}
+  \trap{Foreground: nothing shows unless \texttt{willPresent} returns options.}
+  \trap{The token can \textbf{change} (restore, reinstall, new device). Re-register
+        every launch. \texttt{token.description} is not the hex string.}
+  \trap{Permission is only for \emph{alerts}. The token and silent pushes work
+        without it.}
+\end{itemize}
+
+\section{APNs answers}
+{\footnotesize
+\begin{tabular}{@{}l l l@{}}
+\toprule
+200 & accepted & — \\
+400 & bad request (\texttt{BadDeviceToken}, \texttt{BadTopic}…) & fix, do not retry \\
+403 & \texttt{ExpiredProviderToken}, \texttt{InvalidProviderToken} & new JWT \\
+410 & \texttt{Unregistered} — token no longer valid & \textbf{delete} the token \\
+413 & payload too large & shrink \\
+429 & too many requests (same token) & back off \\
+500 · 503 & APNs error · unavailable & retry later \\
+\bottomrule
+\end{tabular}}
+
+\section{Remember}
+\textbf{Ask · Register · Upload · Send · Deliver.} The \textbf{key} names the
+sender; the \textbf{token} names the phone.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} background execution · deep links / router · app extensions \& App Groups · PushKit + CallKit (VoIP) · Live Activities · \texttt{setBadgeCount} (iOS 16)}
+
+\end{document}

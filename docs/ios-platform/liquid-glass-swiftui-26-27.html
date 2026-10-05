@@ -1,0 +1,88 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Liquid Glass &amp; new SwiftUI (iOS 26 · 27) — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/ios-platform/liquid-glass-swiftui-26-27.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">50</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Liquid Glass &amp; new SwiftUI (iOS 26 · 27)</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">ios-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> <strong>Liquid Glass</strong> is a system <em>material</em> for the <strong>functional layer</strong>
+(tab bars, toolbars, sheets, key controls) that floats <em>above</em> a full-bleed
+<strong>content layer</strong>; it lenses and adapts to what is under it. Standard components get it
+free with the Xcode 26 SDK; custom views opt in with <code>.glassEffect()</code>, grouped in a
+<code>GlassEffectContainer</code> so shapes blend and <strong>morph</strong>.</p>
+<p class="sheet-tools"><a class="sheet-download" href="liquid-glass-swiftui-26-27.pdf" download>Download PDF</a> <a href="liquid-glass-swiftui-26-27.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/liquid-glass-swiftui-26-27.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="liquid-glass-swiftui-26-27-fig1.svg" width="597" height="108" class="wide" alt="Liquid Glass &amp; new SwiftUI (iOS 26 · 27) — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Liquid Glass (iOS 26)</h2>
+<ul>
+<li><code>.glassEffect(_:in:)</code> — default <code>.regular</code> in a <strong>capsule</strong> behind  the view’s bounds. <code>.regular</code> = adaptive, use almost always · <code>.clear</code> =  only over media, with a dimming layer · <code>.identity</code> = off, same layout.  <code>.tint(_:)</code>, <code>.interactive()</code> (bounce/shimmer on touch).</li>
+<li><code>GlassEffectContainer(spacing:)</code> renders its glass together; shapes nearer than  <code>spacing</code> <strong>blend</strong>. Morph: <code>glassEffectID(_:in:)</code> + <code>@Namespace</code>  + state change in <code>withAnimation</code>; <code>glassEffectUnion(id:</code>  <code>namespace:)</code> joins views; <code>glassEffectTransition(.matchedGeometry)</code>  or <code>.materialize</code>.</li>
+<li><code>.buttonStyle(.glass)</code> / <code>.glassProminent</code> (primary action).</li>
+<li><code>.tabBarMinimizeBehavior(.onScrollDown)</code> (iPhone) ·  <code>.tabViewBottomAccessory{}</code> (inline when minimised: read  <code>tabViewBottomAccessoryPlacement</code>) · <code>Tab(role: .search)</code> +  <code>.searchable</code>: the field replaces the bar.</li>
+<li>Toolbars share glass: <code>ToolbarSpacer(.fixed | .flexible)</code>,  <code>.sharedBackground</code><code>Visibility(.hidden)</code>, <code>.badge(n)</code>;  <code>.scrollEdgeEffectStyle(.hard, for: .top)</code>.</li>
+<li><code>.backgroundExtensionEffect()</code>: mirrors + blurs a view into the safe area  (hero image under a sidebar). Once per screen.</li>
+<li>UIKit: <code>UIGlassEffect</code>, <code>UIButton.Configuration.glass()</code>. Opt-out  <code>UIDesign</code><code>RequiresCompatibility</code>: honoured with the 26 SDK,  <strong>ignored when building for 27</strong>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Design + accessibility</h2>
+<ul>
+<li>Glass = <strong>navigation layer only</strong>; <strong>never glass on glass</strong> (fills/vibrancy on  top); <strong>tint for meaning</strong>, not decoration; drop custom bar backgrounds.</li>
+<li>Automatic: <strong>Reduce Transparency</strong> <span class="math">→</span> frostier · <strong>Increase Contrast</strong>  <span class="math">→</span> black/white + border · <strong>Reduce Motion</strong> <span class="math">→</span> no elastic effects. Test  <em>custom</em> glass with each.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">Glass on list cells, everywhere, or stacked on glass.</li>
+<li class="trap">Glass views without a container — no blend, no morph.</li>
+<li class="trap">“We’ll keep the old look” — opt-out ignored with the 27 SDK.</li>
+<li class="trap"><code>@State var m = Model()</code> + <code>init</code> assignment — error on 27.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<h3 class="sheet-hd">“Content below, glass above, one container, one ID.”</h3>
+</section>
+<section class="sheet-section">
+<h2>Example</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-meta">@Namespace</span> <span class="hljs-keyword">private</span> <span class="hljs-keyword">var</span> ns
+<span class="hljs-meta">@State</span> <span class="hljs-keyword">private</span> <span class="hljs-keyword">var</span> <span class="hljs-keyword">open</span> <span class="hljs-operator">=</span> <span class="hljs-literal">false</span>
+<span class="hljs-type">GlassEffectContainer</span>(spacing: <span class="hljs-number">16</span>) {
+  <span class="hljs-type">HStack</span>(spacing: <span class="hljs-number">16</span>) {
+    <span class="hljs-type">Button</span>(<span class="hljs-string">&quot;Edit&quot;</span>, systemImage: <span class="hljs-string">&quot;pencil&quot;</span>) {
+      withAnimation { <span class="hljs-keyword">open</span>.toggle() } }
+      .buttonStyle(.glass).glassEffectID(<span class="hljs-string">&quot;edit&quot;</span>, in: ns)
+    <span class="hljs-keyword">if</span> <span class="hljs-keyword">open</span> {
+      <span class="hljs-type">Image</span>(systemName: <span class="hljs-string">&quot;trash&quot;</span>).padding()
+        .glassEffect(.regular.tint(.red).interactive())
+        .glassEffectID(<span class="hljs-string">&quot;trash&quot;</span>, in: ns)   <span class="hljs-comment">// morphs out</span>
+    } } }
+<span class="hljs-type">TabView</span> { <span class="hljs-comment">/* Tabs */</span> <span class="hljs-type">Tab</span>(role: .search) { <span class="hljs-type">SearchView</span>() } }
+  .tabBarMinimizeBehavior(.onScrollDown)
+  .tabViewBottomAccessory { <span class="hljs-type">NowPlayingBar</span>() }</code></pre>
+</section>
+<section class="sheet-section">
+<h2>New SwiftUI — iOS 26</h2>
+<ul>
+<li><code>WebView(page)</code> + <code>WebPage</code> (WebKit, <code>@Observable</code>): <code>load</code>  returns an <code>AsyncSequence</code> of navigation events; <code>callJavaScript</code>.</li>
+<li><code>TextEditor(text: $attributed)</code> edits an <code>AttributedString</code> (rich text).</li>
+<li><code>@Animatable</code> synthesises <code>animatableData</code> (<code>@AnimatableIgnored</code>  opts out); a macro, so it back-deploys. Also <code>Chart3D</code>, SwiftUI instrument.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>New SwiftUI — iOS 27</h2>
+<ul>
+<li><strong><code>@State</code> is a macro</strong>: an <code>@Observable</code> object is created  <strong>lazily, once</strong> per view lifetime (back to iOS 17). <em>Source break</em>: default  value <em>and</em> <code>init</code> assignment <span class="math">→</span> error — drop the default (TN3211).</li>
+<li><code>@ContentBuilder</code> unifies builders (faster type-checking) · documents:  <code>WritableDocument</code> snapshot <span class="math">→</span> <code>DocumentWriter</code> writes off-main.</li>
+<li><code>.reorderable()</code> + <code>.reorderContainer(for:)</code> in any container ·  <code>.swipeActions</code> anywhere inside <code>.swipeActionsContainer()</code>.</li>
+<li><code>.alert(_:item:)</code>, <code>.confirmationDialog(_:item:)</code> · <code>AsyncImage</code>  obeys HTTP caching (<code>.asyncImageURLSession</code>).</li>
+<li><code>Tab(role: .prominent)</code>, <code>ToolbarOverflowMenu</code>,  <code>.visibilityPriority(.high)</code>, <code>.toolbarMinimizeBehavior(…)</code>.</li>
+</ul>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> animations (<code>matchedGeometryEffect</code>,
+springs) · swiftui-navigation (<code>TabView</code>, sheets) · accessibility-localization (settings,
+contrast) · SwiftUI instrument</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=ios-platform" title="area">ios-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=ios" title="platform">ios</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=ui" title="topic">ui</a></li><li class="sheet-tag"><a href="/folios.html?tag=liquid-glass">liquid-glass</a></li><li class="sheet-tag"><a href="/folios.html?tag=glasseffect">glasseffect</a></li><li class="sheet-tag"><a href="/folios.html?tag=glasseffectcontainer">glasseffectcontainer</a></li><li class="sheet-tag"><a href="/folios.html?tag=glasseffectid">glasseffectid</a></li><li class="sheet-tag"><a href="/folios.html?tag=glass-button-style">glass-button-style</a></li><li class="sheet-tag"><a href="/folios.html?tag=tabbarminimizebehavior">tabbarminimizebehavior</a></li><li class="sheet-tag"><a href="/folios.html?tag=tabviewbottomaccessory">tabviewbottomaccessory</a></li><li class="sheet-tag"><a href="/folios.html?tag=uidesignrequirescompatibility">uidesignrequirescompatibility</a></li><li class="sheet-tag"><a href="/folios.html?tag=webview">webview</a></li><li class="sheet-tag"><a href="/folios.html?tag=animatable-macro">animatable-macro</a></li><li class="sheet-tag"><a href="/folios.html?tag=state-macro">state-macro</a></li><li class="sheet-tag"><a href="/folios.html?tag=reorderable">reorderable</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=ios-platform%2Fliquid-glass-swiftui-26-27.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/37">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

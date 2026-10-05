@@ -1,0 +1,206 @@
+% healthkit.tex — HealthKit: setup, per-type authorization and the hidden read status,
+% the data model (samples, quantities, units, sources), the query family (sample,
+% statistics, statistics collection, anchored, observer, async descriptors), background
+% delivery + incremental sync, writing (sync identifiers), workouts on watchOS / iOS 17 /
+% iOS 26, clinical records, locked-device behaviour, App Review 5.1.3.
+% Neighbours NOT repeated: watchos-visionos (watch runtime), background-execution
+% (BGTaskScheduler), app-hardening-privacy (purpose strings in general), privacy-compliance (GDPR).
+% Sources (checked 2026-09-29):
+%   https://developer.apple.com/documentation/healthkit/setting-up-healthkit
+%   https://developer.apple.com/documentation/healthkit/hkhealthstore/ishealthdataavailable()
+%   https://developer.apple.com/documentation/healthkit/hkhealthstore/authorizationstatus(for:)
+%   https://developer.apple.com/documentation/healthkit/hkhealthstore/requestauthorization(toshare:read:completion:)
+%   https://developer.apple.com/documentation/healthkit/hkhealthstore/enablebackgrounddelivery(for:frequency:withcompletion:)
+%   https://developer.apple.com/documentation/healthkit/hkerror/code/errordatabaseinaccessible
+%   https://developer.apple.com/documentation/healthkit/hkanchoredobjectquerydescriptor
+%   https://developer.apple.com/documentation/healthkit/hkstatisticscollectionquerydescriptor
+%   https://developer.apple.com/documentation/healthkit/hkmetadatakeysyncidentifier
+%   https://developer.apple.com/documentation/healthkit/hkquantity/doublevalue(for:)
+%   https://developer.apple.com/documentation/healthkit/hkworkoutsession (iOS 17.0)
+%   https://developer.apple.com/documentation/healthkit/hkliveworkoutbuilder (iOS 26.0)
+%   https://developer.apple.com/documentation/healthkit/accessing-health-records
+%   https://developer.apple.com/videos/play/wwdc2025/322/  (workouts on iPhone and iPad)
+%   https://developer.apple.com/videos/play/wwdc2020/10664/ (statistics de-duplication)
+%   https://developer.apple.com/app-store/review/guidelines/ (2.5.1, 5.1.3)
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis,data,security discussion=34
+% @tags: healthkit, hkhealthstore, health-authorization, hkquantity, hkstatisticscollectionquery, hkanchoredobjectquery, hkobserverquery, background-delivery, hkworkoutsession, clinical-records, app-review
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={let,var,func,guard,else,return,try,await,async,in,true,false,nil,
+    if,for,Task},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt,
+  literate={??}{{\hbox{?}\hbox{?}}}2 {->}{{\hbox{-}\hbox{>}}}2
+           {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{HealthKit — authorization, data model, queries, sync}{ios-platform · folio}
+
+\oneliner{HealthKit is an \textbf{on-device, encrypted store} shared by apps, reached via \textbf{one long-lived \ct{HKHealthStore}}. Access is \textbf{per type and per direction}
+(read / share); \textbf{read status is never revealed} — a denied read looks like ``no data''.
+Data = \textbf{immutable samples}; totals come from \textbf{statistics queries}
+(they de-duplicate iPhone + Watch), changes from \textbf{observer + anchored} ones.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    cls/.style={box, font=\scriptsize, text width=22mm, inner sep=1.5pt, align=left},
+    sub/.style={box, font=\scriptsize, text width=46mm, inner sep=1.2pt, align=left, fill=white},
+    st/.style={box, font=\scriptsize, text width=21mm, inner sep=1.5pt, minimum height=8.5mm},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=left}]
+  % ---------- data model ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.2,3.75) {Data model — every object is immutable};
+  \node[cls] (obj) at (0.95,3.0) {\textbf{HKObject}\\\ct{uuid} · \ct{metadata}\\\ct{sourceRevision} · \ct{device}};
+  \node[cls, draw=sheetGreen, fill=sheetGreen!8] (smp) at (0.95,1.75) {\textbf{HKSample}\\\ct{sampleType}\\\ct{startDate} · \ct{endDate}};
+  \draw[flow] (obj) -- (smp);
+  \node[sub] (q) at (5.15,3.3) {\textbf{HKQuantitySample}: \ct{HKQuantity} + unit · steps, HR};
+  \node[sub] (c) at (5.15,2.8) {\textbf{HKCategorySample}: enum value · sleep, mindful};
+  \node[sub] (k) at (5.15,2.3) {\textbf{HKCorrelation}: groups samples · blood pressure, food};
+  \node[sub] (w) at (5.15,1.8) {\textbf{HKWorkout}: activity type, duration, events};
+  \node[sub, draw=sheetOrange] (r) at (5.15,1.3) {\textbf{HKClinicalRecord}: FHIR JSON · \textbf{read-only}};
+  \foreach \n in {q,c,k,w,r} \draw[flow] (smp.east) -- (\n.west);
+  \node[l, anchor=north west, text width=79mm] at (-0.2,0.95)
+    {\textbf{Types} describe, samples hold values: \ct{HKQuantityType(.stepCount)} is \textbf{cumulative}
+     (sum); heart rate is \textbf{discrete} (avg / min / max). \textbf{Characteristics} (birth date, blood type)
+     are not samples: read-only, \ct{store.dateOfBirthComponents()}. Units convert:
+     \ct{q.doubleValue(for: .count())}, \ct{HKUnit(from: "count/min")}.};
+
+  \draw[sheetGrey!40] (7.95,3.9) -- (7.95,-0.1);
+
+  % ---------- incremental sync ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (8.1,3.75) {Incremental sync — the observer says \emph{that}, the anchor says \emph{what}};
+  \node[st, draw=sheetGrey, fill=black!4] (src) at (9.25,2.95) {Watch / another app saves or deletes};
+  \node[st, draw=sheetGreen, fill=sheetGreen!8] (db) at (12.15,2.95) {\textbf{Health store}\\encrypted, on device};
+  \node[st] (obs) at (15.05,2.95) {\textbf{HKObserverQuery}\\handler: no payload};
+  \node[st] (anc) at (15.05,1.6) {\textbf{HKAnchoredObject-}\\\textbf{Query}(\ct{anchor})};
+  \node[st, draw=sheetOrange, fill=sheetOrange!8] (app) at (12.15,1.6) {added + \textbf{deleted}\\+ \ct{newAnchor}:\\apply, save anchor};
+  \node[st, draw=sheetRed, fill=sheetRed!6] (done) at (9.25,1.6) {call the\\\ct{completionHandler()}};
+  \draw[flow] (src) -- (db);
+  \draw[hot] (db) -- node[l, above]{wake} (obs);
+  \draw[flow] (obs) -- (anc);
+  \draw[flow] (anc) -- (app);
+  \draw[flow] (app) -- (done);
+  \node[l, anchor=north west, text width=83mm] at (8.1,0.95)
+    {\textcolor{sheetRed}{\textbf{Skip the completion}} $\to$ back-off relaunches; \textbf{3 misses} $\to$ background delivery stops.
+     \ct{enableBackgroundDelivery(for:frequency:)} (\ct{.immediate} \ct{.hourly} \ct{.daily} \ct{.weekly}): wakes
+     at most once per period; some types cap at hourly (\ct{stepCount} on iOS); iOS 15+ needs the
+     \ct{com.apple.developer.healthkit.background-delivery} entitlement. \textcolor{sheetOrange!80!black}{Register
+     observers in \ct{didFinishLaunching}. A wake while \textbf{locked} $\to$ reads fail: retry after unlock.}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Setup}: HealthKit capability (+ \emph{Clinical Health Records} only if used); plist
+        \ct{NSHealthShareUsageDescription} (\textbf{read}), \ct{NSHealthUpdateUsageDescription}
+        (\textbf{write}). Xcode adds \ct{healthkit} to \emph{required device capabilities} — remove it if optional.
+  \item \textbf{Availability}: \ct{isHealthDataAvailable()} first. iPhone, Watch, visionOS; iPad only from
+        \textbf{iPadOS 17}; macOS links the framework but gets \ct{false}. \textbf{One store per app}, kept.
+  \item \textbf{Authorization}: \ct{requestAuthorization(toShare:read:)}, per type. The sheet shows only for
+        types \emph{not yet decided}, then returns at once. \textbf{Success $=$ processed, not granted}.
+        \ct{authorizationStatus(for:)} reports \textbf{share only}; \ct{getRequestStatusForAuthorization}
+        says whether a prompt would show.
+  \item \textbf{Read denied} $\Rightarrow$ you see only \emph{your own} samples — so ``has diabetes data''
+        cannot leak through an error.
+  \item \textbf{Writing}: build an \ct{HKQuantitySample}, \ct{save}. You may \textbf{delete only what you
+        saved}. To ``edit'': \ct{HKMetadataKeySyncIdentifier} + a higher \ct{HKMetadataKeySyncVersion}
+        $\to$ HealthKit replaces the old sample. \ct{HKMetadataKeyWasUserEntered} marks manual entries.
+  \item \textbf{Locked device}: reads fail with \ct{errorDatabaseInaccessible}; \textbf{saves still
+        work} — staged, merged on unlock.
+\end{itemize}
+
+\hd{Example — steps per day, last 7 days (async, iOS 15.4+)}
+\begin{lstlisting}[language=SwiftSheet]
+let store = HKHealthStore()             // one per app, keep it
+let steps = HKQuantityType(.stepCount)
+guard HKHealthStore.isHealthDataAvailable() else { return }
+try await store.requestAuthorization(toShare: [], read: [steps])
+// returning = sheet dismissed, NOT "granted"; denied read = empty
+let cal = Calendar.current
+let start = cal.date(byAdding: .day, value: -6, to: cal.startOfDay(for: .now))!
+let week = HKQuery.predicateForSamples(withStart: start, end: .now)
+let q = HKStatisticsCollectionQueryDescriptor(
+  predicate: .quantitySample(type: steps, predicate: week),
+  options: .cumulativeSum,             // merges iPhone + Watch overlap
+  anchorDate: start,                   // buckets start at midnight
+  intervalComponents: DateComponents(day: 1))
+let days = try await q.result(for: store)  // results(for:) = live updates
+days.enumerateStatistics(from: start, to: .now) { s, _ in
+  print(s.startDate, s.sumQuantity()?.doubleValue(for: .count()) ?? 0) }
+\end{lstlisting}
+
+\hd{Workouts}
+\textbf{watchOS}: \ct{HKWorkoutSession} + \ct{HKLiveWorkoutBuilder}. \textbf{iOS 17}:
+\ct{HKWorkoutSession} on iPhone/iPad (a Watch session can \ct{startMirroringToCompanionDevice}).
+\textbf{iOS 26}: \ct{HKLiveWorkoutBuilder} on iPhone/iPad — standalone: \ct{prepare()} (countdown) $\to$
+\ct{startActivity} + \ct{beginCollection} $\to$ delegate streams metrics $\to$ \ct{stopActivity}, end,
+\ct{finishWorkout()}. Heart rate needs an external strap; the phone locks $\to$ show a Live Activity.
+Logging one after the fact: \ct{HKWorkoutBuilder}.
+
+\columnbreak
+
+\hd{Why summing raw samples over-counts}
+\begin{tikzpicture}[sheet, l/.style={font=\tiny, text=black!75, inner sep=1pt}]
+  \node[font=\scriptsize\bfseries, anchor=east] at (0.9,0.6) {Watch};
+  \node[font=\scriptsize\bfseries, anchor=east] at (0.9,0)   {iPhone};
+  \draw[sheetGrey] (1.0,-0.35) -- (7.3,-0.35);
+  \foreach \x/\t in {1.0/08:00,2.6/10:00,4.2/12:00,5.8/18:00,7.2/20:00}
+    { \draw[sheetGrey] (\x,-0.4) -- (\x,-0.3); \node[l, below] at (\x,-0.4) {\t}; }
+  \node[draw=sheetBlue, fill=sheetBlue!20, minimum width=16mm, minimum height=3.5mm, font=\tiny, anchor=west, inner sep=0pt] at (1.0,0.6) {950};
+  \node[draw=sheetGreen, fill=sheetGreen!20, minimum width=16mm, minimum height=3.5mm, font=\tiny, anchor=west, inner sep=0pt] at (1.0,0) {900 (same walk)};
+  \node[draw=sheetGreen, fill=sheetGreen!20, minimum width=12mm, minimum height=3.5mm, font=\tiny, anchor=west, inner sep=0pt] at (5.8,0) {1100};
+  \node[l, text=sheetGrey, anchor=west] at (4.4,0.6) {watch left at home};
+  \node[l, anchor=west, align=left] at (7.45,0.45) {samples: \textbf{\textcolor{sheetRed}{2950}}};
+  \node[l, anchor=west, align=left] at (7.45,0.05) {statistics: \textbf{\textcolor{sheetGreen!50!black}{2050}}};
+\end{tikzpicture}\par
+\textbf{Statistics queries merge overlapping sources}, as Health does; summing raw samples (or
+\ct{.separateBySource} totals) double-counts.
+
+\hd{The query family}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}p{18mm}@{}}
+\toprule
+\textbf{HK\ldots Query} & \textbf{Returns} & \textbf{Use for} \\ \midrule
+\ct{Sample} & snapshot; sort, limit & latest readings \\
+\ct{Statistics} & one sum / avg / min / max & today's total \\
+\ct{StatisticsCollection} & a statistic per interval & steps per day \\
+\ct{AnchoredObject} & adds + deletes + anchor & server sync \\
+\ct{Observer} & ``changed'' — no data & trigger, wake \\
+\bottomrule
+\end{tabular}}\par
+Async \ct{\ldots QueryDescriptor} (iOS 15.4+): \ct{result(for:)} one-shot, \ct{results(for:)} an
+\ct{AsyncSequence} of updates. Persist \ct{HKQueryAnchor} (\ct{NSSecureCoding}).
+
+\hd{Clinical records and App Review}
+\ct{HKClinicalRecord}: FHIR (allergies, meds, labs), \textbf{read-only}, own plist key.
+\textbf{5.1.3(i)}: no health data for ads, marketing or data mining; third parties only for health research,
+with permission. \textbf{(ii)}: no false data, \textbf{no personal health information in iCloud}.
+\textbf{2.5.1}: health/fitness use, integrate with Health.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Was read denied?'' is unknowable — design the empty state instead.}
+  \trap{Observer created in a view controller: a background wake finds no query. Register at launch.}
+  \trap{\ct{doubleValue(for:)} with an incompatible unit throws an ObjC exception — a crash, not a Swift error.}
+  \trap{Buckets anchored at ``now'' split days at 14:32 — anchor at midnight.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Write status is visible, read status never is; statistics merge, samples don't; the observer says
+\emph{that}, the anchor says \emph{what}.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} watchos-visionos (workout runtime) ·
+background-execution · app-hardening-privacy (purpose strings) · privacy-compliance (GDPR Art. 9) ·
+app-clips-handoff}
+
+\end{document}

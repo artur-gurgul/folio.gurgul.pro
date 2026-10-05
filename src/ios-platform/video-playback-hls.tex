@@ -1,0 +1,221 @@
+% video-playback-hls.tex — HLS (multivariant → media playlists → segments, TS vs fMP4, the EXT-X
+% tags that matter, live vs VOD, LL-HLS), ABR (throughput + buffer, caps), the AVFoundation model
+% (AVAsset → AVPlayerItem → AVPlayer → layer; status, timeControlStatus, reasonForWaitingToPlay,
+% isPlaybackLikelyToKeepUp, automaticallyWaitsToMinimizeStalling), startup latency, feeds with many
+% players, background audio, PiP, AirPlay, FairPlay (AVContentKeySession, SPC/CKC), offline
+% (AVAssetDownloadURLSession), QoE metrics (access/error logs); Android Media3 in one line.
+% Not repeated (neighbours): capture pipeline + AVAudioSession category table
+% (ios-platform/avfoundation-camera-audio.tex); segment arithmetic + HLS authoring numbers
+% (networking/data-transfer-optimisation.tex).
+% Sources (checked 2026-09-26): RFC 8216 (HLS tags); developer.apple.com "Enabling Low-Latency
+% HLS" (EXT-X-PART, PART-INF, PRELOAD-HINT, SERVER-CONTROL CAN-BLOCK-RELOAD / CAN-SKIP-UNTIL,
+% RENDITION-REPORT, EXT-X-SKIP, _HLS_msn/_HLS_part; latency "into the range of standard television
+% broadcasts"; LL-HLS is defined in the rfc8216bis 2nd-edition draft rev 7+, not RFC 8216 — fixed in
+% the 2026-09-26 fact-check);
+% AVPlayer.automaticallyWaitsToMinimizeStalling (default true since iOS 10; false → stall = paused,
+% rate 0), AVPlayer.WaitingReason (toMinimizeStalls, evaluatingBufferingRate, noItemToPlay,
+% interstitialEvent, waitingForCoordinatedPlayback), AVPlayerItem.preferredForwardBufferDuration
+% (0 = system chooses), .preferredPeakBitRate (bits/s, 0 = no cap), .preferredPeakBitRateFor
+% ExpensiveNetworks (iOS 15), .startsOnFirstEligibleVariant (iOS 14), .isPlaybackLikelyToKeepUp
+% (can be false while buffer full), AVPlayerLayer.isReadyForDisplay (KVO), AVPlayerItemAccessLogEvent
+% properties (not KVO-observable), AVAssetDownloadURLSession (makeAssetDownloadTask(download
+% Configuration:); older variants deprecated), AVContentKeyRequest.makeStreamingContentKeyRequestData
+% (SPC → key server → CKC), AVPictureInPictureController.canStartPictureInPictureAutomatically
+% FromInline (iOS 14.2), QA1668 (playerLayer.player = nil for background audio of a video).
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis,networking,performance discussion=53
+% @tags: hls, ll-hls, adaptive-bitrate, avplayer, avplayeritem, timecontrolstatus, video-feed, picture-in-picture, airplay, fairplay, avassetdownloadurlsession, media3
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,static,init,for,in,
+    if,else,return,guard,self,nil,try,await,async,throws,true,false,_},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  pl/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=6mm, align=center},
+  sg/.style={draw=sheetGrey, fill=black!4, font=\ttfamily\tiny, minimum height=4mm, minimum width=8mm, inner sep=0.5pt},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\scriptsize, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Video playback — HLS, ABR, AVPlayer in production}{ios-platform · folio}
+
+\oneliner{\textbf{HLS} = plain HTTP files: a \textbf{multivariant playlist} lists the same video
+at several bitrates, each variant is a \textbf{media playlist} of short \textbf{segments}
+(\ct{.ts} or fMP4). The player measures throughput and buffer and \textbf{switches variant at
+segment boundaries} (ABR). In AVFoundation you watch \textbf{state} —
+\ct{AVPlayerItem.status}, \ct{AVPlayer.timeControlStatus} + \ct{reasonForWaitingToPlay} — and
+tune \textbf{startup, caps and buffer}, never the download itself.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── playlist hierarchy ──
+  \node[ttl] at (-0.2,2.95) {Playlist hierarchy};
+  \node[pl, minimum width=30mm] (mv) at (2.4,2.45) {\ct{master.m3u8} (multivariant)};
+  \node[pl, draw=sheetOrange, fill=sheetOrange!8] (v1) at (0.45,1.35) {1080p\\\tiny 6 Mb/s};
+  \node[pl, draw=sheetOrange, fill=sheetOrange!8, very thick] (v2) at (1.7,1.35) {720p\\\tiny 3 Mb/s};
+  \node[pl, draw=sheetOrange, fill=sheetOrange!8] (v3) at (2.95,1.35) {360p\\\tiny 0.8 Mb/s};
+  \node[pl, draw=sheetGreen!60!black, fill=sheetGreen!8] (au) at (4.45,1.35) {audio · subs\\\tiny \ct{EXT-X-MEDIA}};
+  \foreach \v in {v1,v2,v3} \draw[flow] (mv.south) -- (\v.north);
+  \draw[flow] (mv.south) -- (au.north);
+  \node[lbl, anchor=west, text=sheetOrange] at (-0.25,1.95) {\ct{EXT-X-STREAM-INF}};
+  \node[sg, fill=sheetBlue!10] (i0) at (0.35,0.35) {init.mp4};
+  \foreach \i in {0,1,2,3} \node[sg] (s\i) at (1.3+\i*0.88,0.35) {s\i.m4s};
+  \draw[flow] (v2.south) -- (s0.north);
+  \node[lbl, anchor=north west, align=left] at (-0.25,0.05) {\ct{EXT-X-MAP} = fMP4 init; each \ct{EXTINF} $\le$ \ct{TARGETDURATION};\\each segment starts on a key frame $\to$ switch anywhere};
+  \draw[sheetGrey!40] (5.55,3.05) -- (5.55,-0.9);
+  % ── ABR timeline ──
+  \node[ttl] at (5.7,2.95) {ABR over time — throughput, chosen variant, buffer};
+  \def\X#1{7.0+0.76*#1}
+  \draw[->, sheetGrey] (7.0,0.2) -- (16.3,0.2) node[lbl, below left]{segment};
+  \draw[->, sheetGrey] (7.0,0.2) -- (7.0,2.75) node[lbl, left]{Mb/s};
+  \foreach \v/\t in {0.8/360p,3/720p,6/1080p}
+    { \draw[sheetGrey!50, dashed] (7.0,0.2+0.35*\v) -- (16.1,0.2+0.35*\v);
+      \node[lbl, anchor=east] at (7.0,0.2+0.35*\v) {\t}; }
+  \draw[thick, sheetOrange] (\X{0},1.95) -- (\X{1},2.65) -- (\X{2},2.75) -- (\X{3},2.62) -- (\X{4},2.47)
+        -- (\X{5},0.97) -- (\X{6},0.83) -- (\X{7},0.41) -- (\X{8},0.52) -- (\X{9},1.6) -- (\X{10},1.95) -- (\X{11},2.12);
+  \draw[very thick, sheetBlue] (\X{0},1.25) -- (\X{2},1.25) -- (\X{2},2.3) -- (\X{5},2.3) -- (\X{5},1.25)
+        -- (\X{7},1.25) -- (\X{7},0.48) -- (\X{9},0.48) -- (\X{9},1.25) -- (\X{12},1.25);
+  \node[lbl, text=sheetOrange, anchor=south] at (\X{10.2},2.15) {measured throughput};
+  \node[lbl, text=sheetBlue, anchor=south west, fill=white] at (\X{2.1},2.3) {variant (up: fits with margin)};
+  \node[lbl, text=sheetBlue, anchor=west, align=left] at (\X{9.1},0.85) {back up only when\\throughput holds};
+  \node[lbl, text=sheetRed, anchor=west, align=left] at (\X{5.1},1.75) {drop: still at 720p,\\buffer drains};
+  % buffer
+  \draw[sheetGreen!60!black, thick, fill=sheetGreen!15] (\X{0},-0.75) -- (\X{0},-0.65) -- (\X{1},-0.5) -- (\X{2},-0.35) -- (\X{3},-0.27)
+        -- (\X{4},-0.2) -- (\X{5},-0.32) -- (\X{6},-0.5) -- (\X{7},-0.75) -- (\X{8},-0.62) -- (\X{9},-0.45) -- (\X{10},-0.33) -- (\X{11},-0.25) -- (\X{11},-0.75) -- cycle;
+  \node[lbl, text=sheetGreen!50!black, anchor=east] at (7.0,-0.45) {buffer};
+  \fill[sheetRed!60] (\X{6.85},-0.8) rectangle (\X{7.45},-0.7);
+  \node[lbl, text=sheetRed, anchor=north] at (\X{7.2},-0.8) {stall: \ct{.waitingToPlayAtSpecifiedRate} (\ct{.toMinimizeStalls})};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\small\setstretch{1.0}
+
+\hd{HLS (RFC 8216)}
+\begin{itemize}
+  \item \textbf{Multivariant} playlist: \ct{EXT-X-STREAM-INF} per variant — \ct{BANDWIDTH} (peak
+        bit/s, required), \ct{AVERAGE-BANDWIDTH}, \ct{CODECS}, \ct{RESOLUTION}, \ct{FRAME-RATE}, group
+        refs; \ct{EXT-X-MEDIA} = alternate audio/subtitle renditions (\ct{GROUP-ID}, \ct{LANGUAGE});
+        \ct{EXT-X-I-FRAME-STREAM-INF} = key frames only, for scrubbing thumbnails.
+  \item \textbf{Media} playlist: \ct{EXT-X-TARGETDURATION}, \ct{EXT-X-MEDIA-SEQUENCE}, \ct{EXTINF}
+        per segment. \textbf{VOD} ends with \ct{EXT-X-ENDLIST}; \textbf{live} = sliding window the
+        client re-fetches about every target duration; \ct{EVENT} = append-only.
+        \ct{EXT-X-DISCONTINUITY} at an ad splice.
+  \item \textbf{Segments}: MPEG-TS or fMP4/CMAF + init (\ct{EXT-X-MAP}). \textbf{Keys}:
+        \ct{EXT-X-KEY} \ct{AES-128} / \ct{SAMPLE-AES}; FairPlay = \ct{skd://} URI.
+  \item \textbf{LL-HLS} (8216\textbf{bis} draft): \textbf{partial segments} (\ct{EXT-X-PART}, sub-second), \ct{PRELOAD-HINT},
+        \textbf{blocking reload} (\ct{?\_HLS\_msn=…\&\_HLS\_part=…} held until it exists; server says
+        \ct{CAN-BLOCK-RELOAD=YES}), \ct{RENDITION-REPORT}, delta playlists (\ct{EXT-X-SKIP}).
+        Latency $\approx$ TV broadcast.
+\end{itemize}
+
+\hd{ABR — what you control}
+\begin{itemize}
+  \item The player estimates bandwidth from segment downloads + buffer health and picks the start
+        variant itself; \ct{startsOnFirstEligibleVariant} (iOS 14) forces the first listed one.
+  \item Caps on \ct{AVPlayerItem}: \ct{preferredPeakBitRate} (bit/s, 0 = none) ·
+        \ct{…ForExpensiveNetworks} (iOS 15, cellular) · \ct{preferredMaximumResolution}.
+  \item \ct{preferredForwardBufferDuration} (s; 0 = system decides): low = fast start, more
+        stalls; high = memory + bytes wasted when the user scrolls away.
+\end{itemize}
+
+\hd{AVFoundation state — watch, don't poll}
+\begin{itemize}
+  \item \ct{AVURLAsset} (media; \ct{try await asset.load(.isPlayable, .duration)}) $\to$
+        \ct{AVPlayerItem} (presentation: \ct{status} \ct{.unknown/.readyToPlay/.failed},
+        \ct{isPlaybackLikelyToKeepUp}, \ct{loadedTimeRanges}, logs) $\to$ \ct{AVPlayer} (rate,
+        \ct{timeControlStatus} \ct{.paused/.waitingToPlayAtSpecifiedRate/.playing}) $\to$
+        \ct{AVPlayerLayer} · \ct{AVPlayerViewController} · SwiftUI \ct{VideoPlayer}.
+  \item \ct{reasonForWaitingToPlay}: \ct{.toMinimizeStalls}, \ct{.evaluatingBufferingRate},
+        \ct{.noItemToPlay}, \ct{.interstitialEvent}, \ct{.waitingForCoordinatedPlayback}.
+  \item \ct{automaticallyWaitsToMinimizeStalling} (default \textbf{true}): \ct{play()} may wait for
+        buffer. \ct{false} = start at once; an empty buffer then \emph{pauses} (rate 0).
+        Loops: \ct{AVPlayerLooper} + \ct{AVQueuePlayer}.
+\end{itemize}
+
+\hd{Example — observe, cap, measure}
+\begin{lstlisting}[language=SwiftSheet]
+let item = AVPlayerItem(asset: AVURLAsset(url: hlsURL))
+item.preferredForwardBufferDuration = 2          // feed: start fast
+item.preferredPeakBitRateForExpensiveNetworks = 1_500_000
+let player = AVPlayer(playerItem: item)
+obs = [item.observe(\.status) { it, _ in
+         if it.status == .failed { report(it.error) } },
+       player.observe(\.timeControlStatus) { p, _ in
+         spin(p.timeControlStatus == .waitingToPlayAtSpecifiedRate) },
+       layer.observe(\.isReadyForDisplay) { l, _ in    // hide poster
+         poster.isHidden = l.isReadyForDisplay }]
+NotificationCenter.default.addObserver(forName: .AVPlayerItemNewAccessLogEntry,
+    object: item, queue: .main) { _ in
+  guard let e = item.accessLog()?.events.last else { return }
+  qoe.send(e.startupTime, e.numberOfStalls, e.indicatedBitrate) }
+player.play()
+\end{lstlisting}
+{\footnotesize\textbf{Android}: Media3 \textbf{ExoPlayer} (\ct{HlsMediaSource}, DASH too),
+\ct{TrackSelectionParameters} caps, \ct{LoadControl} buffers, \ct{MediaSessionService} for
+background, Widevine DRM.}
+
+\columnbreak
+
+\hd{Startup time and feeds}
+\begin{itemize}
+  \item \textbf{Start fast}: create the asset/item \emph{before} the tap (prefetch the next cells),
+        load keys async, short buffer target, a low first variant, show a \textbf{poster} until
+        \ct{isReadyForDisplay}. Measure time-to-first-frame, not \ct{play()} returning.
+  \item \textbf{Feeds}: a \textbf{pool} of 2–3 \ct{AVPlayer}s, not one per cell; swap with
+        \ct{replaceCurrentItem(with:)}; only the most-visible cell plays (muted); set off-screen items
+        to \ct{nil} — each item holds buffers and a decoder. Cap resolution to the cell's pixels.
+\end{itemize}
+
+\hd{Background, PiP, AirPlay}
+\begin{itemize}
+  \item \textbf{Background audio}: \ct{AVAudioSession} \ct{.playback} + \ct{UIBackgroundModes: audio}. For a
+        video, \ct{playerLayer.player = nil} on background (QA1668), re-attach on foreground.
+  \item \textbf{PiP}: \ct{AVPictureInPictureController}, same mode;
+        \ct{canStartPictureInPictureAutomaticallyFromInline} (14.2). \ct{AVPlayerViewController}: free.
+  \item \textbf{AirPlay}: \ct{AVRoutePickerView}; with \ct{allowsExternalPlayback} the Apple TV
+        fetches the stream itself — its URLs and auth must work from there.
+\end{itemize}
+
+\hd{DRM, offline, metrics}
+\begin{itemize}
+  \item \textbf{FairPlay}: \ct{AVContentKeySession(keySystem: .fairPlayStreaming)} — key request $\to$
+        \ct{makeStreamingContentKeyRequestData} = \textbf{SPC} $\to$ your key server $\to$ \textbf{CKC}
+        $\to$ \ct{processContentKeyResponse}. Offline needs a \emph{persistable} key.
+  \item \textbf{Offline}: \ct{AVAssetDownloadURLSession} + \ct{makeAssetDownloadTask(downloadConfiguration:)};
+        the system picks the location — store the URL it returns.
+  \item \textbf{QoE}: \ct{accessLog()} events (\ct{indicatedBitrate}, \ct{observedBitrate},
+        \ct{numberOfStalls}, \ct{startupTime}, \ct{numberOfDroppedVideoFrames}) + \ct{errorLog()}; not
+        KVO — use the notifications. KPIs: startup time, rebuffer ratio, bitrate, fatal errors.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Waiting on \ct{AVPlayer.status} — it's the \emph{item's} \ct{status} that means ready.}
+  \trap{Spinner from \ct{rate == 0} — rate is the \emph{requested} speed; use \ct{timeControlStatus}.}
+  \trap{New \ct{AVPlayer} per cell: memory, decoders, hitches. One item in two players: exception.}
+  \trap{KVO token not stored $\to$ no callbacks; time observer never removed $\to$ leak.}
+  \trap{\ct{isPlaybackLikelyToKeepUp} can be false with a \emph{full} buffer — it's a prediction.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Playlist of playlists of segments} · the player picks, you \emph{cap} · watch the
+\emph{item} for ready, the \emph{player} for waiting · pool players in feeds.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} avfoundation-camera-audio (session
+categories) · data-transfer-optimisation (segment maths) · background-execution · rendering-pipeline}
+
+\end{document}

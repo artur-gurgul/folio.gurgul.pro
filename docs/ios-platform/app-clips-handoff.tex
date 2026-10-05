@@ -1,0 +1,164 @@
+% app-clips-handoff.tex — App Clips (invocations, size limits, experiences, ephemeral data + App Group
+% upgrade, SKOverlay, ephemeral notifications, location confirmation) and Handoff / Continuity
+% (NSUserActivity advertise + continue, web <-> native, Universal Clipboard, Continuity Camera,
+% Handoff vs deep link vs state restoration).
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/appclip/choosing-the-right-functionality-for-your-app-clip
+%     (size limits, the 100 MB conditions, frameworks with no runtime functionality, restrictions)
+%   developer.apple.com/documentation/appclip/creating-an-app-clip-with-xcode (bundle id)
+%   developer.apple.com/documentation/appclip/enabling-notifications-in-app-clips (8 hours)
+%   developer.apple.com/documentation/foundation/nsuseractivity · .../uikit/uipasteboard
+%   developer.apple.com/documentation/xcode/supporting-associated-domains (appclips:, activitycontinuation:)
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis discussion=9
+% @tags: app-clips, app-clip-size-limit, app-clip-experiences, skoverlay, ephemeral-notifications, app-groups, handoff, continuity, nsuseractivity, universal-clipboard, activitycontinuation
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,protocol,extension,return,if,else,
+    guard,case,switch,self,some,any,where,init,in,private,static,try,await,async,throws,nil,
+    @State,@main,@Observable,@MainActor,@Environment},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\begin{document}
+
+\sheettitle{App Clips \& Handoff / Continuity}{ios-platform · folio}
+
+\oneliner{Both ride on \textbf{\texttt{NSUserActivity}}. An \textbf{App Clip} is a small, separately built slice of
+your app that a \textbf{URL} (from a code, tag, link or map) launches \emph{without installing the app};
+\textbf{Handoff} moves \emph{your own} current activity to \emph{your own} nearby device (same iCloud account,
+BLE + Wi-Fi). Neither is a deep link, and neither is state restoration.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \tikzset{lb/.style={font=\tiny, inner sep=1pt, align=center},
+           st/.style={box, font=\tiny, inner sep=1.5pt, minimum height=5mm, text width=17mm},
+           sy/.style={st, draw=sheetGrey, fill=black!4},
+           us/.style={st, draw=sheetGreen, fill=sheetGreen!10},
+           hd/.style={font=\scriptsize\bfseries, anchor=west}}
+  % ---- App Clip flow ----
+  \node[hd] at (-0.2,3.4) {App Clip invocation};
+  \node[st, text width=20mm] (inv) at (0.9,2.3) {NFC tag · App Clip Code\\QR · Safari banner\\Maps · Messages};
+  \node[sy] (url) at (3.3,2.3) {URL $\to$ experience\\(ASC + AASA \texttt{appclips:})};
+  \node[sy] (card) at (5.6,2.3) {App Clip \textbf{card}\\(title, image, Open)};
+  \node[us] (clip) at (5.6,0.95) {clip launches:\\\texttt{NSUserActivity}\\\texttt{.webpageURL}};
+  \node[us, draw=sheetOrange, fill=sheetOrange!10] (ovl) at (3.3,0.95) {one task done\\\texttt{SKOverlay} → Store};
+  \node[us, draw=sheetBlue, fill=sheetBlue!8] (full) at (0.9,0.95) {full app reads the\\\textbf{App Group} container};
+  \draw[flow] (inv) -- (url); \draw[flow] (url) -- (card); \draw[flow] (card) -- node[lb, right]{download\\$\leq$ size limit} (clip);
+  \draw[flow] (clip) -- (ovl); \draw[flow] (ovl) -- (full);
+  \draw[hot] (url.north) to[out=60, in=120] node[lb, above, text=sheetOrange]{full app installed? it opens instead, with the same activity} (card.north);
+  \node[lb, text=sheetRed, text width=62mm] at (3.3,0.1) {clip + its data are ephemeral (removed after disuse); only what you put in the
+    shared App Group survives the upgrade};
+  % ---- Handoff sequence ----
+  \begin{scope}[xshift=9.0cm]
+    \node[hd] at (-0.2,3.4) {Handoff — continuation};
+    \node[lb, font=\scriptsize\bfseries] at (0.8,3.0) {Device A (Mac)};
+    \node[lb, font=\scriptsize\bfseries] at (6.0,3.0) {Device B (iPhone)};
+    \draw[sheetGrey, dashed] (0.8,2.85) -- (0.8,-0.1); \draw[sheetGrey, dashed] (6.0,2.85) -- (6.0,-0.1);
+    \node[lb, anchor=west, fill=white] at (0.85,2.6) {\texttt{becomeCurrent()} / \texttt{.userActivity(type)}};
+    \draw[->, thick, sheetBlue] (0.8,2.3) -- node[lb, above, text=sheetBlue]{BLE advert: activity type (small, encrypted)} (6.0,2.3);
+    \node[lb, anchor=east, fill=white] at (5.95,1.95) {icon in Dock / App Switcher; user taps};
+    \node[lb, anchor=east, fill=white] at (5.95,1.65) {\texttt{willContinueUserActivityWithType} — show progress};
+    \draw[<-, thick, sheetOrange] (0.8,1.35) -- node[lb, above, text=sheetOrange]{request payload} (6.0,1.35);
+    \node[lb, anchor=west, fill=white] at (0.85,1.05) {\texttt{updateUserActivityState(\_:)} if \texttt{needsSave}};
+    \draw[->, thick, sheetGreen] (0.8,0.75) -- node[lb, above, text=sheetGreen!60!black]{\texttt{userInfo} / \texttt{webpageURL} over a peer-to-peer link} (6.0,0.75);
+    \node[lb, anchor=east, fill=white, text width=40mm, align=right] at (5.95,0.25) {\texttt{scene(\_:continue:)} / \texttt{.onContinueUserActivity}
+      → route; no app? \texttt{webpageURL} opens in Safari};
+  \end{scope}
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{App Clips}
+\begin{itemize}
+  \item \textbf{Target}: own bundle id (parent id + suffix, e.g. \texttt{.Clip}), shipped with the full app; share code via
+        packages, strip the rest with your own \texttt{\#if APPCLIP} compilation condition.
+  \item \textbf{Size} (uncompressed binary): \textbf{10\,MB} (up to iOS 15), \textbf{15\,MB} (iOS 16), \textbf{100\,MB}
+        (iOS 17+ \emph{only if} digital invocations only — no App Clip Code, NFC, QR — \emph{and} no iOS 16 support;
+        an App Store Connect demo link gets 100\,MB with physical codes). Third-party SDKs eat it.
+  \item \textbf{Experiences} (App Store Connect): default (one card) + \textbf{advanced} per URL prefix / location.
+        Domain proof: \texttt{appclips:} associated domain + AASA. Launch: \texttt{webpageURL} of a
+        \texttt{NSUserActivityTypeBrowsingWeb} activity = your routing key.
+  \item \textbf{Ephemeral notifications}: \texttt{NSAppClipRequestEphemeralUserNotification} → up to \textbf{8 hours}
+        without a prompt. \texttt{NSAppClipRequestLocationConfirmation} + \texttt{APActivationPayload.confirmAcquired(in:)}
+        verifies the user is really at the code.
+  \item \textbf{Upgrade}: \texttt{SKOverlay.AppClipConfiguration} (\texttt{.appStoreOverlay} in SwiftUI); the full app
+        inherits only the \textbf{App Group} container. Test: \texttt{\_XCAppClipURL} scheme variable; on device,
+        Settings › Developer › Local Experiences.
+\end{itemize}
+
+\section{Handoff \& Continuity}
+\begin{itemize}
+  \item \textbf{Advertise}: \texttt{activityType} listed in \texttt{NSUserActivityTypes}; small plist \texttt{userInfo}
+        (+ \texttt{requiredUserInfoKeys}), \texttt{title}, \texttt{webpageURL}; \texttt{isEligibleForHandoff} (also
+        \texttt{ForSearch}, \texttt{ForPrediction}). Current via \texttt{becomeCurrent()} or a responder's
+        \texttt{userActivity}; refresh lazily with \texttt{needsSave} + \texttt{updateUserActivityState(\_:)}.
+  \item \textbf{Requirements}: same Apple ID / iCloud, BLE + Wi-Fi, Handoff on, same \textbf{Team ID} and activity type
+        in both apps. Big data: continuation streams (\texttt{supportsContinuationStreams}) or the cloud.
+  \item \textbf{Continue} per \emph{scene}: cold start → \texttt{connectionOptions.userActivities}; running →
+        \texttt{scene(\_:continue:)}.
+  \item \textbf{Web$\leftrightarrow$native}: app $\to$ Safari via \texttt{webpageURL}; Safari $\to$ app needs the
+        \texttt{activitycontinuation:} associated domain (Universal Links use \texttt{applinks:}).
+  \item \textbf{Universal Clipboard}: \texttt{UIPasteboard} items reach nearby devices; keep secrets local with
+        \texttt{setItems(\_:options: [.localOnly: true, .expirationDate: …])}.
+        \textbf{Continuity Camera}: iPhone as Mac camera/scanner — nothing to build on iOS.
+\end{itemize}
+
+\columnbreak
+
+\begin{lstlisting}[language=SwiftSheet]
+ArticleView(a)
+  .userActivity("com.acme.article") { act in   // advertise
+    act.userInfo = ["id": a.id]                  // what, not data
+    act.webpageURL = a.webURL                    // Safari fallback
+    act.isEligibleForHandoff = true }
+  .onContinueUserActivity("com.acme.article") { act in
+    if let id = act.userInfo?["id"] as? String { path.append(id) } }
+// clip AND full app: the same entry point
+.onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { act in
+  if let url = act.webpageURL { route(url) } }
+\end{lstlisting}
+
+\section{Four ways back into a screen}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{57mm}@{}}
+\toprule
+\textbf{Handoff} & same user, \emph{other nearby device}, in-progress activity \\
+\textbf{Deep link} & a URL anyone can send; opens the installed app (else web) \\
+\textbf{State restor.} & \emph{same device} after relaunch (\texttt{stateRestorationActivity}, \texttt{@SceneStorage}) \\
+\textbf{App Clip} & a URL when the full app is \emph{not} installed \\
+\bottomrule
+\end{tabular}}
+
+\section{What a clip cannot do}
+{\footnotesize
+\textbf{No background}: no background \texttt{URLSession}, no Background Modes, no Bluetooth kept while unused.
+\textbf{Silent frameworks} (unavailable / empty / error): AppIntents · BackgroundTasks · CallKit · CareKit ·
+Contacts(UI) · CoreMotion · EventKit(UI) · FileProvider · HealthKit · HomeKit · MediaPlayer · Messages ·
+MessageUI · NearbyInteraction · PhotoKit · ResearchKit · SensorKit · Speech.
+\textbf{Privacy}: no SKAdNetwork, no ATT prompt; \texttt{UIDevice.name} / \texttt{identifierForVendor} = \texttt{""};
+location ``When In Use'' only, reset daily at 4:00; no Face ID; extensions only for Live Activity widgets;
+CloudKit (iOS 16+) public database read-only.\par}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Quoting ``10\,MB'' without the OS version, or meaning the \emph{download} size.}
+  \trap{Full app does not handle the clip's URLs — once installed, every code opens the \emph{full} app.}
+  \trap{Clip and app share data freely — no: only an App Group; and the clip may vanish.}
+  \trap{Handoff activity never appears: type missing from \texttt{NSUserActivityTypes}, different Team ID, not current,
+        non-plist \texttt{userInfo}, BLE off / other iCloud account.}
+  \trap{Megabytes in \texttt{userInfo}; or expecting Handoff to carry your app's login — it resumes context, not auth.}
+  \trap{Reading the pasteboard on launch — iOS 16 asks ``Allow Paste''; use \texttt{UIPasteControl} / \texttt{detectPatterns}.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Clip: a URL, one task, a slot in the App Group. Handoff: my activity, my other device, same iCloud.''}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{deep-links-universal-links} (AASA) ·
+\texttt{app-and-vc-lifecycle} (scenes) · \texttt{corenfc-ios-android} · \texttt{swiftui-transferable-drag-drop} · \texttt{watchos-visionos}}
+
+\end{document}

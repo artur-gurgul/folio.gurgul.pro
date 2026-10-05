@@ -1,0 +1,185 @@
+% wallet-passes.tex — Apple Wallet passes: pass styles (incl. poster event ticket / semantic boarding
+% pass / poster generic), pass.json, .pkpass anatomy (manifest SHA-1 hashes, detached PKCS #7 signature
+% with the Pass Type ID certificate + WWDR intermediate), barcode vs NFC (VAS), relevance, the update
+% web service (empty APNs push -> changed serials -> fetch pass), PKPassLibrary / PKAddPassesViewController,
+% Verify with Wallet.
+% Apple Pay payments are the apple-pay-passkit folio.
+% Sources (checked 2026-10-05) — re-read "Building a pass" (SHA-1 manifest, PKCS #7 detached
+% signature with the pass type ID certificate); developer.apple.com/documentation/walletpasses (Pass, Pass.Barcodes, Pass.NFC,
+% Pass.RelevantDates, Building a pass, Adding a web service to update passes, Register a pass for update
+% notifications, Get the list of updatable passes, Send an updated pass, Creating a poster event pass using
+% semantic tags); developer.apple.com/documentation/passkit (PKPassLibrary, PKIdentityAuthorizationController);
+% WWDC24 10108 "What's new in Wallet and Apple Pay"; WWDC25 202 and WWDC26 209 "What's new in Wallet".
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis,security,protocols discussion=54
+% @tags: wallet, pkpass, passkit, pass-json, pass-signing, pkcs7, pass-type-id, pass-web-service, apns, nfc-pass, pkpasslibrary, verify-with-wallet
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,static,some,init,
+    if,else,return,guard,self,nil,private,true,false,in,try,await,async,throws,
+    switch,case,default,for,Void,String,Bool,Int},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2}
+\lstdefinelanguage{JSONSheet}{sensitive=true, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  f/.style={cell, font=\ttfamily\scriptsize, minimum width=30mm, minimum height=4.2mm, anchor=west, fill=sheetBlue!5},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  msg/.style={font=\tiny, inner sep=1pt, align=center},
+  life/.style={box, font=\scriptsize, minimum width=19mm},
+}
+
+\begin{document}
+
+\sheettitle{Wallet passes · .pkpass, signing, updates}{ios-platform · folio}
+
+\oneliner{A Wallet pass is a \textbf{signed zip} (\ct{.pkpass}): \ct{pass.json} + images +
+\ct{manifest.json} (SHA-1 of every file) + a \textbf{PKCS \#7 signature} of the manifest made with your
+\textbf{Pass Type ID certificate}. Wallet surfaces it when \textbf{relevant} (time, place) and keeps it
+current via \textbf{your web service}: an \textbf{empty APNs push} says ``changed'', the device \emph{pulls}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- anatomy ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.1,4.15) {Inside \ct{ticket.pkpass} (a zip)};
+  \node[f] (pj) at (0,3.6) {pass.json};
+  \node[f] at (0,3.18) {icon.png @2x @3x \textcolor{sheetRed}{\tiny required}};
+  \node[f] at (0,2.76) {logo · strip · thumbnail};
+  \node[f] at (0,2.34) {background · footer};
+  \node[f] (lp) at (0,1.92) {en.lproj/pass.strings};
+  \node[f, fill=sheetOrange!12, draw=sheetOrange] (mf) at (0,1.2) {manifest.json};
+  \node[f, fill=sheetRed!10, draw=sheetRed] (sg) at (0,0.55) {signature};
+  \draw[decorate, decoration={brace, amplitude=3pt}, sheetOrange, thick] (3.1,3.8) -- (3.1,1.72)
+     node[midway, right, lbl, text=sheetOrange!80!black, align=left]{SHA-1 of\\\textbf{every} file};
+  \draw[hot] (3.1,1.72) -- ++(0.25,0) |- (mf.east);
+  \draw[hot, draw=sheetRed] (mf.south) -- node[lbl, right, text=sheetRed]{signs} (sg.north);
+  \node[box, font=\tiny, text width=31mm, draw=sheetRed, fill=sheetRed!5, anchor=west] at (3.5,0.72)
+     {detached \textbf{PKCS \#7} of manifest.json,\\key of the \textbf{Pass Type ID cert}\\(\ct{pass.com.example.ticket})\\+ \textbf{WWDR intermediate} embedded};
+  \node[lbl, anchor=west, text=sheetGrey, align=left] at (-0.1,-0.25) {change one byte after signing $\to$ pass rejected.\\Served as \ct{application/vnd.apple.pkpass}.};
+
+  \draw[sheetGrey!40] (6.7,4.3) -- (6.7,-0.75);
+
+  % ---------- update loop ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (6.85,4.15) {Keeping a pass current — the web service};
+  \node[life] (w) at (7.6,3.6) {Wallet (device)};
+  \node[life, draw=sheetGreen, fill=sheetGreen!8] (s) at (13.0,3.6) {your server};
+  \node[life, draw=sheetGrey, fill=black!4] (a) at (15.7,3.6) {APNs};
+  \foreach \x in {7.6,13.0} \draw[sheetGrey, thick] (\x,3.35) -- (\x,-0.4);
+  \draw[sheetGrey, thick] (15.7,3.35) -- (15.7,1.7);
+  % 1 register
+  \draw[hot, draw=sheetBlue] (7.6,3.05) -- node[msg, above]{\textbf{1} \ct{POST /v1/devices/\{d\}/registrations/\{type\}/\{sn\}}}
+      node[msg, below, text=sheetGrey]{body \ct{\{pushToken\}} $\to$ 201 new · 200 known} (13.0,3.05);
+  % 2 change
+  \node[msg, text=sheetBrown, fill=white] at (13.0,2.55) {\textbf{2} gate changes: bump \ct{lastUpdated}};
+  % 3 + 4 push
+  \draw[hot] (13.0,2.2) -- node[msg, above]{\textbf{3} topic = pass type ID, \ct{\{\}}} (15.7,2.2);
+  \draw[hot] (15.7,1.85) -- node[msg, above, pos=0.62]{\textbf{4} empty push — no data, just ``ask me''} (7.6,1.85);
+  % 5 serials
+  \draw[hot, draw=sheetBlue] (7.6,1.35) -- node[msg, above]{\textbf{5} \ct{GET /v1/devices/\{d\}/registrations/\{type\}}}
+      node[msg, below]{\ct{?passesUpdatedSince=\{tag\}}} (13.0,1.35);
+  \draw[flow, draw=sheetGreen] (13.0,0.8) -- node[msg, above]{\ct{200 \{serialNumbers, lastUpdated\}} · 204 none} (7.6,0.8);
+  % 6 fetch
+  \draw[hot, draw=sheetBlue] (7.6,0.35) -- node[msg, above]{\textbf{6} \ct{GET /v1/passes/\{type\}/\{sn\}}}
+      node[msg, below, text=sheetGrey]{\ct{Authorization: ApplePass <token>}} (13.0,0.35);
+  \draw[flow, draw=sheetGreen] (13.0,-0.25) -- node[msg, above]{\ct{200} + new \ct{.pkpass}} (7.6,-0.25);
+  \node[msg, text=sheetBrown, anchor=west, align=left] at (13.1,-0.1) {field's \ct{changeMessage}\\(``Gate changed to \%@'')\\$\to$ lock-screen notification};
+  \node[msg, text=sheetGrey, anchor=west] at (6.85,-0.62) {pass deleted $\to$ \ct{DELETE} same registration URL · errors $\to$ \ct{POST /v1/log}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{One style key} in \ct{pass.json}: \ct{boardingPass} (+ \ct{transitType} air/train/bus/boat/generic) ·
+        \ct{eventTicket} · \ct{coupon} · \ct{storeCard} · \ct{generic}. Each holds \ct{headerFields},
+        \ct{primaryFields}, \ct{secondaryFields}, \ct{auxiliaryFields}, \ct{backFields}
+        (\ct{key}, \ct{label}, \ct{value}, \ct{changeMessage}).
+  \item \textbf{Richer layouts} via \ct{preferredStyleSchemes} + \ct{semantics}: poster event ticket
+        (iOS 18, \ct{"posterEventTicket"}), \ct{semanticBoardingPass} (iOS 26, live flight status),
+        poster generic (iOS 27). Keep the legacy fields — older iOS renders those.
+  \item \textbf{Identity} = \ct{passTypeIdentifier} + \ct{serialNumber}.
+        \textbf{Barcodes}: first one the device can show wins — QR, PDF417, Aztec, Code128 (iOS 27 adds
+        EAN-13, Code 39, Codabar, ITF).
+  \item \textbf{Relevance}: \ct{relevantDates} (start/end; single \ct{relevantDate} deprecated) ·
+        \ct{locations} ($\leq$ 10) + \ct{maxDistance} · \ct{beacons} — the \emph{system} decides to surface it.
+  \item \textbf{Lifecycle}: \ct{expirationDate}, \ct{voided} (used coupon), \ct{associatedStoreIdentifiers}
+        + \ct{appLaunchURL}.
+\end{itemize}
+
+\hd{Example — \ct{pass.json} (event ticket)}
+\begin{lstlisting}[language=JSONSheet]
+{ "formatVersion": 1,
+  "passTypeIdentifier": "pass.com.example.ticket",
+  "serialNumber": "T-000123", "teamIdentifier": "ABCDE12345",
+  "organizationName": "Example Events", "description": "Concert ticket",
+  "webServiceURL": "https://passes.example.com/",
+  "authenticationToken": "<random secret per pass>",
+  "relevantDates": [{ "startDate": "2026-10-10T19:00+02:00",
+                      "endDate":   "2026-10-10T23:00+02:00" }],
+  "barcodes": [{ "format": "PKBarcodeFormatQR", "message": "T-000123",
+                 "messageEncoding": "iso-8859-1" }],
+  "eventTicket": {
+    "primaryFields": [{ "key": "event", "label": "EVENT", "value": "The Band" }],
+    "secondaryFields": [{ "key": "gate", "label": "GATE", "value": "B",
+                          "changeMessage": "Gate changed to %@" }] } }
+\end{lstlisting}
+
+\hd{Barcode vs NFC}
+A barcode is a picture — a screenshot works anywhere. An \textbf{NFC pass} adds \ct{nfc}
+\{\ct{message} ($\leq$ 64 bytes), \ct{encryptionPublicKey} (P-256), \ct{requiresAuthentication}\}: the
+terminal speaks Apple's \textbf{Value Added Services} protocol and only the reader holding the private
+key can read it. Needs a \textbf{special NFC entitlement from Apple} — you cannot self-enable it.
+
+\hd{Signing — the build step (server side)}
+\begin{enumerate}
+  \item Portal: register \ct{pass.com.example.ticket}, download its \textbf{Pass Type ID certificate}.
+  \item Write \ct{manifest.json} = \{\ct{"pass.json": "<sha1 hex>"}, \ldots\} for \emph{every} file,
+        localized ones included.
+  \item \ct{signature} = detached PKCS \#7 (CMS) of \ct{manifest.json}, cert + private key, with the
+        \textbf{WWDR intermediate} embedded.
+  \item Zip, rename \ct{.pkpass}, serve with its MIME type $\to$ Safari/Mail offer \emph{Add to Apple Wallet}.
+\end{enumerate}
+The same cert sends the \textbf{update pushes}: expired $\to$ no new passes \emph{and} no updates.
+
+\hd{In the app — PassKit}
+\begin{lstlisting}[language=SwiftSheet]
+let pass = try PKPass(data: pkpassData)   // throws on a bad signature
+let lib = PKPassLibrary()
+if lib.containsPass(pass) { _ = lib.replacePass(with: pass) }
+else if let vc = PKAddPassesViewController(pass: pass) {
+  present(vc, animated: true) }            // user confirms "Add"
+\end{lstlisting}
+\ct{addPasses(\_:)} for several; \ct{PKAddPassButton} for the badge. Reading passes
+(\ct{passes()}) needs the \ct{com.apple.developer.pass-type-identifiers} entitlement and returns
+\textbf{only your} pass types.
+
+\hd{Verify with Wallet (identity)}
+\ct{PKIdentityAuthorizationController} (iOS 16, iPhone, special entitlement): ask for fields of an ID
+in Wallet; the user approves; an \textbf{encrypted CBOR} response goes to your \textbf{server} to decrypt.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Expecting data in the push: it is \ct{\{\}}; forget to bump \ct{lastUpdated} $\to$ nothing pulled.}
+  \trap{Editing a file after hashing, or one missing from the manifest $\to$ invalid pass.}
+  \trap{No WWDR intermediate in the signature $\to$ rejected with no detail.}
+  \trap{New \ct{serialNumber} for the same ticket = a second pass, not an update.}
+  \trap{\ct{sharingProhibited} hides Share, it is not DRM; a QR screenshots fine — NFC doesn't.}
+  \trap{Poster ticket without legacy fields $\to$ blank pass on older iOS.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Hash every file, sign the manifest; push nothing, pull everything.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} apple-pay-passkit (orders, payments) · push-notifications (APNs) ·
+tls-pki (X.509, chains) · encoding-encryption-hashing-signing · nfc-fundamentals · corenfc-ios-android · app-clips-handoff}
+
+\end{document}

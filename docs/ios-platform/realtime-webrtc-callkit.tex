@@ -1,0 +1,203 @@
+% realtime-webrtc-callkit.tex — real-time beyond WebSockets: WebRTC (signalling vs media, SDP offer/answer,
+% ICE, STUN/TURN, NAT traversal, DTLS-SRTP, topologies), CallKit (CXProvider, CXCallController, reporting
+% incoming calls), PushKit VoIP pushes + the iOS 13 must-report rule, audio session during calls,
+% background behaviour, SignalR / Socket.IO in one line.
+% Picture: call setup sequence — caller -> signalling -> VoIP push -> CallKit UI -> answer -> ICE -> media.
+% Sources (checked 2026-09-25): developer.apple.com — PKPushRegistryDelegate
+% pushRegistry(_:didReceiveIncomingPushWith:for:completion:) (iOS 13 rule, quoted), "Responding to VoIP
+% Notifications from PushKit" (apns-expiration 0, fulfil answer after connecting, remoteEnded / failed,
+% no PushKit without CallKit -> use an NSE), "Sending notification requests to APNs" (push type voip,
+% topic = bundle ID + .voip), CXProviderDelegate provider(_:didActivate:). WebRTC: IETF RFC 8829/9429
+% (JSEP), 3264 (offer/answer), 8445 (ICE), 8838 (trickle), 8489 (STUN), 8656 (TURN), 5764 (DTLS-SRTP),
+% 7874 / 7742 (Opus; VP8 + H.264). RTCAudioSession useManualAudio / isAudioEnabled: libwebrtc ObjC SDK.
+% NOT repeated: WebSocket mechanics (networking/websockets-realtime.tex), APNs + NSE basics
+% (push-notifications.tex), categories/modes table (avfoundation-camera-audio.tex), background modes
+% list (background-execution.tex).
+% @labels: area=ios-platform kind=api platform=ios topic=networking,protocols,platform-apis discussion=43
+% @tags: webrtc, sdp, offer-answer, ice, stun, turn, nat-traversal, dtls-srtp, sfu, callkit, pushkit, voip-push
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,for,in,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,as,
+    true,false,Task,Void,escaping},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {??}{{\hbox{?}\hbox{?}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{Real-time calls on iOS — WebRTC, CallKit, PushKit}{ios-platform · folio}
+
+\oneliner{A call is two planes: \textbf{signalling} (your server, any transport — usually a WebSocket —
+carrying \textbf{SDP offer/answer} and \textbf{ICE candidates}) and \textbf{media} (WebRTC:
+\textbf{ICE} finds a path through NATs with \textbf{STUN}, falls back to a \textbf{TURN} relay, then
+\textbf{DTLS-SRTP} encrypts audio/video peer-to-peer). On iOS the app is usually not running when the
+call arrives: a \textbf{PushKit VoIP push} wakes it, it \emph{must} report the call to \textbf{CallKit}
+at once, and CallKit owns the system call UI and the audio session.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet, yscale=1.12,
+    lane/.style={box, font=\scriptsize\bfseries, minimum width=21mm, minimum height=5mm, inner sep=1.5pt},
+    life/.style={draw=sheetGrey, dashed},
+    m/.style={font=\tiny, inner sep=1pt, fill=white, fill opacity=0.9, text opacity=1},
+    msg/.style={->, thick, draw=sheetBlue},
+    ice/.style={<->, thick, dashed, draw=sheetGrey},
+    med/.style={<->, very thick, draw=sheetGreen!70!black},
+    act/.style={box, font=\tiny, inner sep=1.2pt, draw=sheetOrange, fill=sheetOrange!10, align=center},
+    n/.style={circle, fill=sheetOrange, text=white, font=\tiny\bfseries, inner sep=0.4pt, minimum size=3mm}]
+  \foreach \k/\x/\t in {ca/0.9/Caller app, sg/4.3/Signalling server, ap/7.2/APNs (VoIP),
+                        ck/10.1/Callee: PushKit + CallKit, cb/13.0/Callee app (WebRTC), st/15.75/{STUN · TURN}} {
+    \node[lane] (\k) at (\x,0) {\t};
+    \draw[life] (\k.south) -- (\x,-5.05);
+  }
+  % 1 offer
+  \node[act, anchor=west] at (-0.2,-0.6) {\ct{CXStartCallAction} $\to$ \ct{createOffer}};
+  \node[n] at (1.1,-1.0) {1};
+  \draw[msg] (0.9,-1.0) -- node[m, above]{offer (SDP) over WebSocket} (4.3,-1.0);
+  % 2 push
+  \node[n] at (4.55,-1.4) {2};
+  \draw[msg, draw=sheetRed] (4.3,-1.4) -- node[m, above]{\ct{apns-push-type: voip} · topic \ct{<bundle>.voip} · expiration 0} (10.1,-1.4);
+  % 3 report
+  \node[n] at (9.85,-1.8) {3};
+  \node[act, draw=sheetRed, fill=sheetRed!7, anchor=west] at (10.25,-1.85) {\ct{reportNewIncomingCall} \textbf{now} $\to$ system call UI (even locked)};
+  % 4 connect
+  \node[n] at (12.75,-2.3) {4};
+  \draw[msg] (13.0,-2.3) -- node[m, above, pos=0.3]{connect in parallel, fetch the offer} (4.3,-2.3);
+  % 5 answer
+  \node[n] at (10.35,-2.7) {5};
+  \draw[msg, draw=sheetOrange] (10.1,-2.7) -- node[m, above]{\ct{CXAnswerCallAction}} (13.0,-2.7);
+  \draw[msg] (13.0,-3.05) -- node[m, above, pos=0.25]{answer (SDP): \ct{setRemote(offer)} $\to$ \ct{createAnswer} $\to$ \ct{setLocal}} (0.9,-3.05);
+  % 6 ICE
+  \node[n] at (0.65,-3.5) {6};
+  \draw[ice] (0.9,-3.5) -- node[m, above, pos=0.2]{ICE candidates, trickled both ways via signalling} (13.0,-3.5);
+  \draw[<->, thick, draw=sheetBrown] (13.0,-3.85) -- node[m, above]{binding $\to$ public addr} (15.75,-3.85);
+  \node[m, anchor=west, text=sheetBrown] at (13.1,-4.15) {TURN: relayed addr};
+  % 7 media
+  \node[n] at (0.65,-4.4) {7};
+  \draw[med] (0.9,-4.4) -- node[m, above, pos=0.5]{connectivity checks $\to$ DTLS handshake $\to$ \textbf{SRTP media} (peer-to-peer, or via TURN)} (13.0,-4.4);
+  % 8 audio
+  \node[n] at (9.85,-4.85) {8};
+  \draw[msg, draw=sheetOrange] (10.1,-4.85) -- node[m, above]{\ct{didActivate audioSession}} (13.0,-4.85);
+  \node[m, anchor=west, align=left] at (13.1,-4.85) {start audio;\\fulfil the answer};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\footnotesize\setstretch{1.0}\raggedright
+
+\hd{WebRTC}
+\begin{itemize}
+  \item \textbf{Signalling is not specified} by WebRTC (JSEP, RFC 8829/9429): you move SDP and
+        candidates over your own channel. \textbf{SDP} describes codecs, media sections, ICE ufrag/pwd
+        and the \textbf{DTLS certificate fingerprint}. Offer/answer (RFC 3264)\unverified:
+        \ct{createOffer} $\to$ \ct{setLocalDescription} $\to$ send; the peer
+        \ct{setRemoteDescription} $\to$ \ct{createAnswer} $\to$ \ct{setLocalDescription} $\to$ send back.
+  \item \textbf{ICE} (RFC 8445) gathers \textbf{candidates}: \emph{host} (LAN IP), \emph{server-reflexive}
+        (public IP:port a \textbf{STUN} server saw, RFC 8489), \emph{relay} (a \textbf{TURN} server
+        forwards, RFC 8656). Pairs are tested with STUN connectivity checks; the best working pair
+        wins. \textbf{Trickle ICE} (RFC 8838)\unverified{} sends candidates as they are found.
+  \item \textbf{NAT}: STUN + simultaneous sends punch holes in most NATs; a \emph{symmetric} NAT or a
+        UDP-blocking firewall defeats it $\to$ TURN (UDP, TCP or TLS on 443). TURN costs you
+        bandwidth — budget for it. Network change (Wi-Fi $\to$ cellular) $\to$ \textbf{ICE restart}.
+  \item \textbf{Security}: media is always encrypted. \textbf{DTLS} handshake on the chosen path,
+        checked against the SDP fingerprint; its keys feed \textbf{SRTP} (RFC 5764)\unverified. So a
+        tampered signalling channel = MITM: protect it (TLS + auth). Data channels = SCTP over DTLS.
+  \item \textbf{Codecs}: Opus audio; VP8 and H.264 mandatory for video. \textbf{Group calls}: mesh
+        (N$-$1 uplinks each: small groups only) · \textbf{SFU} forwards streams (simulcast layers) · MCU mixes
+        (server CPU).
+  \item \textbf{On iOS}: no Apple WebRTC framework for native apps — ship libwebrtc
+        (\ct{RTCPeerConnectionFactory}, \ct{RTCPeerConnection}, \ct{RTCIceServer}) or a vendor SDK.
+        With CallKit set \ct{RTCAudioSession.useManualAudio = true} and enable audio only in
+        \ct{didActivate}.
+\end{itemize}
+
+\hd{Example — PushKit $\to$ CallKit (the must-report path)}
+\begin{lstlisting}[language=SwiftSheet]
+let registry = PKPushRegistry(queue: .main)
+registry.delegate = self; registry.desiredPushTypes = [.voIP]
+func pushRegistry(_ r: PKPushRegistry,
+    didUpdate c: PKPushCredentials, for t: PKPushType) {
+  api.uploadVoIPToken(c.token) }          // not the alert token
+func pushRegistry(_ r: PKPushRegistry,
+    didReceiveIncomingPushWith p: PKPushPayload, for t: PKPushType,
+    completion: @escaping () -> Void) {
+  let from = p.dictionaryPayload["from"] as? String ?? "Unknown"
+  let u = CXCallUpdate()
+  u.remoteHandle = CXHandle(type: .generic, value: from)
+  let id = calls.uuid(for: p.dictionaryPayload)  // server callId to UUID
+  provider.reportNewIncomingCall(with: id, update: u) { _ in completion() }
+  signalling.connect()                   // in parallel, not before
+}
+func provider(_ p: CXProvider, perform a: CXAnswerCallAction) {
+  Task { await call.answer(); a.fulfill() } }   // fulfil once connected
+\end{lstlisting}
+
+\hd{Background}
+VoIP push launches or wakes the app (even after a force-quit). During the call the \ct{audio} +
+\ct{voip} background modes keep it running while audio flows; after hang-up it suspends as usual. The
+old always-connected VoIP socket (\ct{setKeepAliveTimeout}) is deprecated — PushKit replaced it.
+
+\hd{Over WebSocket, not WebRTC}
+\textbf{SignalR} (.NET: hubs, falls back WebSocket $\to$ SSE $\to$ long polling) and \textbf{Socket.IO}
+(Engine.IO: rooms, acks, starts with HTTP long polling then upgrades) are \emph{protocols on top} — a
+plain WebSocket client can't talk to them; use their client library.
+
+\columnbreak
+
+\hd{CallKit + PushKit — the rules}
+\begin{itemize}
+  \item \textbf{\ct{CXProvider}} (\ct{CXProviderConfiguration}: \ct{supportsVideo},
+        \ct{supportedHandleTypes}, \ct{maximumCallsPerCallGroup}, ringtone, icon) = \emph{system}
+        $\to$ app: it reports calls (\ct{reportNewIncomingCall}, \ct{reportOutgoingCall(with:connectedAt:)},
+        \ct{reportCall(with:endedAt:reason:)}) and delivers \emph{actions} to its delegate.
+        \textbf{\ct{CXCallController}} = app $\to$ system: \ct{request(CXTransaction(action:))} with
+        \ct{CXStartCallAction}, \ct{CXEndCallAction}, \ct{CXSetMutedCallAction},
+        \ct{CXSetHeldCallAction}. Every action: do the work, then \ct{fulfill()} or \ct{fail()}.
+        \ct{providerDidReset} $\to$ end everything.
+  \item \textbf{The iOS 13 rule} (Apple, PushKit docs): linking the iOS 13+ SDK, every
+        \ct{.voIP} push \textbf{must} be reported via \ct{reportNewIncomingCall}; \emph{``if you fail to
+        report a call to CallKit, the system will terminate your app''}, and repeated failures may
+        stop VoIP push delivery. So: report first, network second.
+  \item No CallKit (e.g. a chat ``ping'') $\to$ no PushKit: use ordinary pushes + an NSE. Caller hung
+        up before you connected $\to$ still report, then \ct{reportCall(\ldots reason: .remoteEnded)};
+        can't reach your server $\to$ \ct{.failed}. Don't send more VoIP pushes to cancel — use your
+        connection.
+  \item \textbf{Push}: \ct{apns-push-type: voip}, \ct{apns-topic} = bundle ID + \ct{.voip},
+        \ct{apns-expiration: 0} (a ring that arrives late is worse than none); token from
+        \ct{didUpdate pushCredentials} — separate from the alert token.
+  \item \textbf{Outgoing}: \ct{CXCallController.request} a \ct{CXStartCallAction} $\to$ your delegate's
+        \ct{perform} starts signalling, \ct{fulfill()} $\to$
+        \ct{reportOutgoingCall(with:startedConnectingAt:)} $\to$ \ldots\ct{connectedAt:} when media flows.
+        Recents / Siri hand the app an \ct{INStartCallIntent}; it then requests the same action.
+\end{itemize}
+
+\hd{Audio session during a call}
+Set \ct{.playAndRecord} + mode \ct{.voiceChat} (echo cancellation; \ct{.videoChat} for video) early,
+but \textbf{don't activate it yourself}: CallKit activates it (with call priority) and calls
+\ct{provider(\_:didActivate:)} — start audio I/O there, stop in \ct{didDeactivate}. Hold / a second
+call arrives as \ct{CXSetHeldCallAction}; mute as \ct{CXSetMutedCallAction} $\to$ disable the audio track.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Doing network work before \ct{reportNewIncomingCall} — the app is killed on iOS 13+.}
+  \trap{Using VoIP pushes for messages ``to wake the app'' — not allowed; NSE instead.}
+  \trap{\ct{setActive(true)} yourself / starting audio before \ct{didActivate} — silent call.}
+  \trap{``STUN is enough'' — some users need TURN; no TURN = calls that never connect.}
+  \trap{Thinking WebRTC defines signalling, or that SRTP keys travel in SDP (only the fingerprint does).}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Push $\to$ report $\to$ connect $\to$ answer $\to$ ICE $\to$ DTLS $\to$ SRTP $\to$ didActivate.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} websockets-realtime (signalling transport,
+reconnect) · push-notifications (APNs, NSE) · background-execution (modes) · avfoundation-camera-audio
+(categories, interruptions) · crypto-cryptokit (DTLS keys) · system-design-sdk-messenger}
+
+\end{document}

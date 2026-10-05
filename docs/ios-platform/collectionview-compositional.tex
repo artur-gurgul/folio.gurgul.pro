@@ -1,0 +1,220 @@
+% collectionview-compositional.tex — UICollectionViewCompositionalLayout: item → group →
+% section → layout, dimensions, orthogonal scrolling, supplementary/decoration items,
+% section providers, list configuration, cell registration + content configuration,
+% self-sizing, invalidation. Diffable data sources live on tableview-diffable.tex.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/uikit/uicollectionviewcompositionallayout (iOS 13)
+%   developer.apple.com/documentation/uikit/nscollectionlayoutgroup (repeatingSubitem:count:, iOS 16)
+%   developer.apple.com/documentation/uikit/uicollectionlayoutsectionorthogonalscrollingbehavior
+%   developer.apple.com/documentation/uikit/uicollectionlayoutsectionorthogonalscrollingproperties (iOS 17)
+%   developer.apple.com/documentation/uikit/uicollectionlayoutlistconfiguration (iOS 14)
+%   developer.apple.com/documentation/uikit/uicollectionview/cellregistration (iOS 14) ·
+%   .../uicollectionviewcell/configurationupdatehandler (iOS 15) · .../uihostingconfiguration (iOS 16)
+%   developer.apple.com/documentation/uikit/uicollectionviewdiffabledatasource/sectionidentifier(for:) (iOS 15)
+%   WWDC21 10252 "Make blazing fast lists and collection views" (registration inside the provider throws)
+% @labels: area=ios-platform kind=api platform=ios topic=ui discussion=21
+% @tags: uicollectionview, compositional-layout, nscollectionlayoutgroup, fractional-dimensions, orthogonal-scrolling, section-provider, list-configuration, cellregistration, content-configuration, supplementary-views, self-sizing
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,static,
+    switch,case,in,true,false,AnyObject,Void,String,Bool},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  lay/.style={draw=sheetGrey, thick, rounded corners=2pt, fill=black!2},
+  sec/.style={draw=sheetBlue, thick, rounded corners=2pt, fill=sheetBlue!6},
+  grp/.style={draw=sheetGreen, thick, rounded corners=1.5pt, fill=sheetGreen!8},
+  itm/.style={draw=sheetOrange, thick, rounded corners=1pt, fill=sheetOrange!12},
+  sup/.style={draw=sheetBrown, dashed, fill=sheetBrown!10},
+  card/.style={draw=sheetBlue, fill=sheetBlue!15, rounded corners=1pt},
+}
+
+\begin{document}
+
+\sheettitle{UICollectionView — compositional layout, registrations, configurations}{ios-platform · folio}
+
+\oneliner{A compositional layout (iOS 13) is \textbf{declared}, not computed in delegate
+callbacks: \textbf{items} sit in \textbf{groups} (the repeating unit), a group repeats
+along a \textbf{section}, sections stack into the \textbf{layout}. Every size is
+\texttt{.absolute}, \texttt{.estimated} or \texttt{.fractional} \emph{of its container}.
+Cells are dequeued from \textbf{registrations} and rendered from \textbf{content
+configurations} (iOS 14).}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── left: the nesting ──
+  \draw[lay] (0,-0.35) rectangle (7.5,3.3);
+  \node[lbl, anchor=north west] at (0.05,3.28) {\textbf{layout} — sections stack along the scroll axis};
+  \draw[sec] (0.2,-0.2) rectangle (7.3,2.95);
+  \node[lbl, anchor=north west] at (0.25,2.93) {\textbf{section} — \texttt{contentInsets} · \texttt{interGroupSpacing} · \texttt{orthogonal…}};
+  \draw[sup] (0.4,2.2) rectangle (7.1,2.55);
+  \node[lbl] at (3.75,2.375) {\textbf{header} = boundary supplementary, \texttt{.top}, \texttt{pinToVisibleBounds}};
+  % group
+  \draw[grp] (0.4,0.3) rectangle (5.15,2.0);
+  \node[lbl, anchor=north west] at (0.45,1.98) {\textbf{horizontal group} w \texttt{1.0} · h \texttt{.absolute(120)}};
+  \foreach \i in {0,1,2} {
+    \draw[itm] ({0.55+\i*1.55},0.45) rectangle ({1.9+\i*1.55},1.6);
+    \node[lbl] at ({1.225+\i*1.55},1.15) {\textbf{item}};
+    \node[lbl] at ({1.225+\i*1.55},0.8) {w \texttt{1/3} of\\the \emph{group}};}
+  % badge on item 3
+  \draw[sheetRed, fill=sheetRed!60] (5.03,1.6) circle (0.09);
+  \node[lbl, anchor=west, text=sheetRed] at (5.2,1.62) {badge};
+  % next group
+  \draw[grp, dashed] (5.35,0.3) rectangle (7.1,1.35);
+  \node[lbl] at (6.22,0.82) {next group $\to$\\repeats};
+  \node[lbl, text=sheetBrown, anchor=west] at (0.25,0.05) {section fill = \textbf{decoration} (no data, registered on the layout)};
+  % ── middle: the screen ──
+  \draw[thick, rounded corners=4pt, sheetGrey] (7.9,-0.35) rectangle (10.9,3.3);
+  % section 0 carousel
+  \node[lbl, anchor=west] at (7.95,3.1) {\textbf{s0} carousel};
+  \draw[card] (8.0,2.2) rectangle (8.2,2.95);
+  \draw[card, fill=sheetBlue!30] (8.3,2.2) rectangle (10.5,2.95);
+  \draw[card] (10.6,2.2) rectangle (10.8,2.95);
+  \draw[<->, thick, sheetOrange] (8.4,2.08) -- (10.4,2.08);
+  \node[lbl, text=sheetOrange] at (9.4,1.93) {orthogonal paging};
+  % section 1 grid
+  \node[lbl, anchor=west] at (7.95,1.72) {\textbf{s1} 2-col grid};
+  \foreach \r in {0,1} \foreach \c in {0,1}
+    \draw[itm] ({8.05+\c*1.4},{0.95-\r*0.6}) rectangle ({9.35+\c*1.4},{1.5-\r*0.6});
+  % section 2 list
+  \node[lbl, anchor=west] at (7.95,0.1) {\textbf{s2} list};
+  \foreach \r in {0,1} \draw[sheetGrey, fill=white] (8.05,{-0.1-\r*0.1}) rectangle (10.75,{-0.02-\r*0.1});
+  \draw[->, thick, sheetGrey] (11.05,3.1) -- node[lbl, right, align=left]{main\\scroll} (11.05,-0.2);
+  % ── right: dimensions ──
+  \node[font=\bfseries\small, anchor=west] at (11.75,3.15) {\texttt{NSCollectionLayoutDimension}};
+  \node[lbl, anchor=north west, align=left, text width=48mm] at (11.75,2.85) {
+    \texttt{.absolute(120)} — fixed points\\[1pt]
+    \texttt{.estimated(44)} — a guess; the cell's Auto Layout measures the real size\\[1pt]
+    \texttt{.fractionalWidth(0.5)} / \texttt{Height} — of the \textbf{container}: an
+    item's container is its \textbf{group}; a group's is the section's content area
+    (after insets). Height may be \texttt{.fractionalWidth} — squares.\\[3pt]
+    \textbf{orthogonal:} \texttt{.none} · \texttt{.continuous} ·
+    \texttt{.continuousGroupLeadingBoundary} · \texttt{.paging} (container width) ·
+    \texttt{.groupPaging} · \texttt{.groupPagingCentered} (one group)\\[3pt]
+    \textbf{s0} = group width \texttt{0.9} so neighbours peek; at \texttt{1.0} it looks like
+    \texttt{.paging}.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Group} — \texttt{.horizontal}/\texttt{.vertical(layoutSize:subitems:)},
+        \texttt{repeatingSubitem:count:} (iOS 16), groups nest (big tile + 2×2);
+        \texttt{.custom} returns explicit frames. \texttt{interItemSpacing}
+        (\texttt{.fixed}/\texttt{.flexible}) between items only.
+  \item \textbf{Section provider} — the closure init \texttt{\{ index, env in … \}}
+        builds each section; \texttt{env.container} (effective content size) +
+        \texttt{env.traitCollection} pick 2 vs 4 columns. Map index $\to$ your section
+        via \texttt{sectionIdentifier(for:)} (iOS 15), not raw indices.
+  \item \textbf{List} (iOS 14) — \texttt{UICollectionLayoutListConfiguration}:
+        \texttt{.plain}/\texttt{.grouped}/\texttt{.insetGrouped}/\texttt{.sidebar},
+        \texttt{headerMode}, swipe-action providers;
+        \texttt{.list(using:layoutEnvironment:)} per section mixes lists with grids —
+        the modern \texttt{UITableView}.
+  \item \textbf{Supplementary} — headers/footers = boundary items (\texttt{elementKind},
+        \texttt{alignment}, \texttt{pinToVisibleBounds}); badges = item-anchored
+        (\texttt{containerAnchor}); data-backed, via \texttt{SupplementaryRegistration}.
+        \textbf{Decoration} = visual only, class registered on the layout.
+  \item \textbf{Registration} (iOS 14) — \texttt{CellRegistration<Cell, Item>} +
+        \texttt{dequeueConfiguredReusableCell(using:for:item:)}: no string ids, typed
+        item. Create it \textbf{once}.
+  \item \textbf{Content configuration} — \texttt{defaultContentConfiguration()} $\to$
+        \texttt{UIListContentConfiguration} (\texttt{text}, \texttt{secondaryText},
+        \texttt{image}) $\to$ \texttt{cell.contentConfiguration}: a value describes the
+        look, the content view applies it. Custom: \texttt{UIContentConfiguration}
+        (\texttt{makeContentView()}, \texttt{updated(for:)}) + a \texttt{UIContentView}.
+        States: \texttt{configurationUpdateHandler} (iOS 15). SwiftUI:
+        \texttt{UIHostingConfiguration} (iOS 16).
+  \item \textbf{Self-sizing} — \texttt{.estimated} on \textbf{both} item and group for
+        that axis + a fully constrained cell; estimates near reality or content jumps.
+  \item \textbf{Invalidation} — a bounds change re-runs the provider (rotation for
+        free); \texttt{invalidateLayout()} for other inputs;
+        \texttt{setCollectionViewLayout(\_:animated:)} swaps layouts.
+\end{itemize}
+
+\section{Flow layout vs compositional}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{25mm}>{\raggedright\arraybackslash}p{28mm}@{}}
+\toprule
+ & flow layout & compositional \\ \midrule
+sizes & delegate \texttt{sizeForItemAt} & declared dimensions \\
+a section scrolls sideways & no & \texttt{orthogonal…} \\
+table-style lists & no — \texttt{UITableView} & \texttt{.list(using:)} \\
+badges, backgrounds & subclass the layout & supplementary · decoration \\
+adapt to width & invalidate, recompute & provider gets \texttt{env} \\
+\bottomrule
+\end{tabular}}
+
+\columnbreak
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+let layout = UICollectionViewCompositionalLayout { i, env in
+  if i > 0 { return .list(using: .init(appearance: .insetGrouped),
+                          layoutEnvironment: env) } // a list
+  let item = NSCollectionLayoutItem(layoutSize: .init(
+    widthDimension: .fractionalWidth(1),
+    heightDimension: .fractionalHeight(1)))  // fill the group
+  let group = NSCollectionLayoutGroup.horizontal(layoutSize:
+    .init(widthDimension: .fractionalWidth(0.9),   // peek
+          heightDimension: .absolute(180)), subitems: [item])
+  let s = NSCollectionLayoutSection(group: group)
+  s.orthogonalScrollingBehavior = .groupPagingCentered
+  return s }
+let reg = UICollectionView.CellRegistration<      // ONCE
+  UICollectionViewListCell, Item> { cell, _, item in
+  var c = cell.defaultContentConfiguration()
+  c.text = item.title; cell.contentConfiguration = c }
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{sizeForItemAt} does nothing — only the flow layout reads
+        \texttt{UICollectionViewDelegateFlowLayout}. The silent migration bug.}
+  \trap{\texttt{.fractionalHeight(1)} on an item = fill the \textbf{group}, not the screen.}
+  \trap{Item \texttt{contentInsets} (shrink each item, gaps double between neighbours) +
+        \texttt{interItemSpacing} = surprise gutters. Pick one; section insets for edges.}
+  \trap{\texttt{.estimated} on the item but \texttt{.absolute} on the group — no
+        self-sizing.}
+  \trap{Creating a \texttt{CellRegistration} inside the cell provider — re-registers per
+        cell; iOS 15+ raises an exception.}
+  \trap{An orthogonal section scrolls in its own internal scroll view —
+        \texttt{scrollViewDidScroll} does not fire; use
+        \texttt{visibleItemsInvalidationHandler} (per frame: keep it cheap).}
+\end{itemize}
+
+\section{Timeline}
+\begin{tikzpicture}[sheet]
+  \tikzset{yr/.style={font=\bfseries\scriptsize, text=sheetBlue},
+           ev/.style={font=\tiny, align=center, text=black!85, text width=15mm, anchor=north}}
+  \draw[thick, sheetGrey, ->] (0,0) -- (8.3,0);
+  \foreach \x/\y/\t in {
+      0.8/iOS 13/{compositional layout\\diffable data source},
+      2.45/iOS 14/{list configuration\\registrations\\content configs},
+      4.1/iOS 15/{\texttt{configuration-}\\\texttt{UpdateHandler}\\\texttt{reconfigureItems}},
+      5.75/iOS 16/{\texttt{UIHosting-}\\\texttt{Configuration}\\\texttt{repeatingSubitem}},
+      7.4/iOS 17/{orthogonal\\scrolling\\properties}}{
+    \fill[sheetBlue] (\x,0) circle (0.6mm);
+    \node[yr, above=1pt] at (\x,0) {\y};
+    \node[ev] at (\x,-0.12) {\t};
+  }
+\end{tikzpicture}
+
+\section{Remember}
+\textbf{Item in group in section in layout; fractions of the container; estimate both
+levels; register once, configure by value.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} table view + diffable data
+source (snapshots, \texttt{reconfigureItems}) · auto layout (self-sizing) · rendering
+pipeline · SwiftUI \texttt{List}/\texttt{LazyVGrid} · accessibility}
+
+\end{document}

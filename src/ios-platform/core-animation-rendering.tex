@@ -1,0 +1,215 @@
+% core-animation-rendering.tex — Core Animation below the surface: layer geometry (bounds,
+% position, anchorPoint, frame, transform), layer properties + specialised layers, the action
+% lookup behind implicit animations, explicit CAAnimation kinds, CAMediaTiming (pause/resume),
+% the commit transaction's four phases and what the render server + GPU then pay for (blending,
+% offscreen passes, rasterize cache, copied/misaligned images), the colour debug overlays,
+% CADisplayLink + ProMotion.
+% NOT repeated here: three trees, CATransaction basics, offscreen triggers + fixes table,
+% commit/render hitch timeline, image downsampling (swiftui/rendering-pipeline.tex); model vs
+% presentation graph, UIView animations (swiftui/animations.tex); SwiftUI instrument and hang
+% thresholds (debugging/swiftui-instrument-hitches-hangs.tex).
+% Sources (checked 2026-09-26):
+%   WWDC14 419 "Advanced Graphics and Animations for iOS Apps" (render server = separate process;
+%     commit = layout, display, prepare, commit; blending, offscreen causes, debug colours;
+%     rasterize cache ~2.5x screen, evicted after 100 ms unused) — transcript asciiwwdc.com/2014/sessions/419
+%   Tech Talk 10856 "Find and fix hitches in the commit phase" (phase triggers)
+%   developer.apple.com/documentation/quartzcore/calayer/action(forkey:) (4-step search, NSNull)
+%   developer.apple.com/documentation/quartzcore/calayer/anchorpoint (0.5,0.5, unit space)
+%   developer.apple.com/documentation/uikit/uiview/frame (undefined when transform != identity)
+%   Technical Q&A QA1673 "How to pause the animation of a layer tree"
+%   developer.apple.com/documentation/quartzcore/cadisplaylink/init(target:selector:) (retains target)
+%   developer.apple.com/documentation/quartzcore/optimizing-iphone-and-ipad-apps-to-support-promotion-displays
+%     (CADisableMinimumFrameDurationOnPhone, CAFrameRateRange iOS 15, targetTimestamp)
+% Marked unverified: the render server's process name (backboardd — third-party sources only) and
+% Xcode's on-device menu path for the colour overlays.
+% @labels: area=ios-platform kind=concept platform=ios topic=performance,ui discussion=22
+% @tags: core-animation, calayer, anchorpoint, layer-actions, cabasicanimation, camediatiming, commit-transaction, render-server, blending, offscreen-rendering, cadisplaylink, promotion
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,guard,else,return,true,false,nil,self,class,final,
+    CALayer,CABasicAnimation,CATransaction,CAMediaTimingFunction},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+
+\tikzset{
+  ph/.style={box, font=\scriptsize, inner sep=1.2pt, minimum height=9mm, text width=19mm},
+  app/.style={ph, draw=sheetBlue, fill=sheetBlue!10},
+  rs/.style={ph, draw=sheetGreen!70!black, fill=sheetGreen!10},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  dbg/.style={font=\tiny, inner sep=1.2pt, rounded corners=1pt, align=center},
+  ld/.style={box, font=\scriptsize, inner sep=1pt, minimum height=4.6mm, text width=33mm},
+}
+
+\begin{document}
+
+\sheettitle{Core Animation — layers, actions, timing, GPU cost}{ios-platform · folio}
+
+\oneliner{A \texttt{CALayer} is a \textbf{model object}: a bitmap (\texttt{contents}) plus
+geometry and animatable properties — no events, no layout constraints. Each run-loop turn your
+changes are \textbf{committed} (layout $\to$ display $\to$ prepare $\to$ commit) to the
+out-of-process \textbf{render server}, which interpolates animations and composites every layer
+on the GPU. Speed = a cheap commit + as few GPU passes as possible (no needless
+\textbf{blending}, \textbf{offscreen} passes, \textbf{copied} or \textbf{misaligned} images).}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\scriptsize, text=sheetBlue, anchor=west] at (-1.1,1.25) {your process — main thread, one commit per run-loop turn};
+  \node[app] (l) at (0,0) {\textbf{1 layout}\\\ct{layoutSubviews}\\constraint solve};
+  \node[app] (d) at (2.45,0) {\textbf{2 display}\\\ct{draw(\_:)} $\to$ CPU\\backing store};
+  \node[app] (p) at (4.9,0) {\textbf{3 prepare}\\decode images,\\convert formats};
+  \node[app] (c) at (7.35,0) {\textbf{4 commit}\\encode layer tree\\$\to$ IPC};
+  \node[font=\bfseries\scriptsize, text=sheetGreen!50!black, anchor=west] at (9.0,1.25) {render server + GPU — a separate process (\ct{backboardd}\unverified)};
+  \node[rs] (dcd) at (10.2,0) {decode tree,\\interpolate\\animations};
+  \node[rs] (gpu) at (12.65,0) {\textbf{GPU}: composite\\every layer,\\offscreen passes};
+  \node[ph, draw=sheetGrey, fill=black!6, text width=11mm] (dsp) at (14.75,0) {display\\(vsync)};
+  \draw[flow] (l) -- (d); \draw[flow] (d) -- (p); \draw[hot] (p) -- (c);
+  \draw[hot] (c) -- (dcd); \draw[flow] (dcd) -- (gpu); \draw[flow] (gpu) -- (dsp);
+  \draw[sheetGrey, dashed] (8.75,1.35) -- (8.75,-1.95);
+  % triggers under the app phases
+  \node[lbl, anchor=north] at (0,-0.6) {\ct{setNeedsLayout}, bounds\\change, add/remove view};
+  \node[lbl, anchor=north] at (2.45,-0.6) {\ct{setNeedsDisplay}; bytes =\\w·h·scale$^2$·4};
+  \node[lbl, anchor=north] at (4.9,-0.6) {first display of a\\not-yet-decoded image};
+  \node[lbl, anchor=north] at (7.35,-0.6) {big / deep trees\\cost more to encode};
+  % debug overlays under GPU
+  \node[dbg, fill=sheetRed!25, anchor=north] at (10.2,-0.6) {\textbf{Blended Layers}\\red = blended · green = opaque};
+  \node[dbg, fill=yellow!45, anchor=north] at (12.65,-0.6) {\textbf{Off-screen Rendered}\\yellow = extra pass};
+  \node[dbg, fill=cyan!25, anchor=north] at (4.9,-1.35) {\textbf{Copied Images}: cyan};
+  \node[dbg, fill=sheetGreen!25, anchor=north] at (10.2,-1.35) {\textbf{Hits Green / Misses Red}\\rasterize cache};
+  \node[dbg, fill=magenta!20, anchor=north] at (12.65,-1.35) {\textbf{Misaligned Images}\\scaled / not on pixels};
+  \node[lbl, anchor=north west, align=left, text=sheetGrey] at (14.1,-0.6) {Simulator: Debug\\menu. Device:\\Xcode Debug $\to$\\View Debugging $\to$\\Rendering\unverified};
+  \node[lbl, anchor=west, text=sheetGreen!45!black] at (9.0,-2.25) {once an animation is committed the server renders every frame itself — no further app work};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\small\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Geometry}: \ct{bounds} (own coordinates, size) · \ct{position} (in the
+        \emph{superlayer}, where the \ct{anchorPoint} sits) · \ct{anchorPoint} (unit space,
+        default (0.5, 0.5); every transform pivots here) · \ct{frame} is \emph{derived} and
+        not directly animatable — animate \ct{bounds}, \ct{position}, \ct{transform}.
+        \texttt{UIView.frame} is \textbf{undefined} once \ct{transform} is not identity: use
+        \ct{center} + \ct{bounds}.
+  \item \textbf{Properties}: \ct{contents} (a \ct{CGImage}), \ct{contentsScale}
+        (1.0 on a standalone layer — set it to the display scale; a view sets its own),
+        \ct{contentsGravity}, \ct{contentsCenter} (9-slice stretch), \ct{cornerRadius} +
+        \ct{cornerCurve = .continuous} + \ct{maskedCorners}, \ct{shadow*},
+        \ct{transform} (\ct{CATransform3D}; \ct{m34 = -1/d} for perspective),
+        \ct{sublayerTransform}, \ct{zPosition}.
+  \item \textbf{Specialised layers} draw on the GPU, not in \ct{draw(\_:)}:
+        \ct{CAShapeLayer} (path; animate \ct{strokeEnd} for a progress ring),
+        \ct{CAGradientLayer}, \ct{CAReplicatorLayer} (\ct{instanceCount},
+        \ct{instanceDelay}: loading dots), \ct{CAEmitterLayer}, \ct{CATextLayer},
+        \ct{CATransformLayer} (real 3D hierarchy), \ct{CAMetalLayer}, \ct{AVPlayerLayer}.
+  \item \textbf{Explicit animations}: \ct{CABasicAnimation(keyPath:)}
+        (from/to/by), \ct{CAKeyframeAnimation} (\ct{values} + \ct{keyTimes}, or a
+        \ct{path}), \ct{CASpringAnimation} (mass, stiffness, damping,
+        \ct{settlingDuration}), \ct{CAAnimationGroup}, \ct{CATransition} (fade, push).
+        \ct{add(\_:forKey:)} \emph{copies} the animation; the same key replaces the running
+        one. Key paths: \ct{"transform.rotation.z"}, \ct{"position.x"}. They drive only the
+        presentation — set the model value yourself.
+  \item \textbf{Timing} — \ct{CAMediaTiming}, adopted by layers \emph{and} animations:
+        \ct{beginTime} (layer time; \ct{CACurrentMediaTime() + 0.3} delays), \ct{duration},
+        \ct{repeatCount}, \ct{autoreverses}, \ct{fillMode} (\ct{.backwards} shows
+        \ct{fromValue} during a delay), \ct{speed} (\textbf{multiplies down the tree}),
+        \ct{timeOffset}. Pause: set \ct{speed} to 0 and \ct{timeOffset} to the layer's current
+        time (QA1673); scrub by changing \ct{timeOffset}.
+  \item \textbf{Blending}: the GPU mixes every non-opaque layer with what is beneath. An opaque
+        background colour, alpha 1 and \ct{isOpaque} let it skip that — e.g. give labels in
+        cells a solid background.
+  \item \textbf{Rasterize cache} (WWDC14): about \textbf{2.5× the screen} in size; an entry
+        unused for \textbf{100 ms} is evicted — so rasterizing things that come and go only
+        re-renders them.
+  \item \textbf{CADisplayLink} fires once per frame: add to \ct{.main} in
+        \ct{.common} mode (keeps firing while a scroll view tracks); it \textbf{retains its
+        target} — \ct{invalidate()} it; animate with \ct{targetTimestamp} (the deadline),
+        not \ct{timestamp}; iOS 15 \ct{preferredFrameRateRange = CAFrameRateRange(minimum:
+        maximum:preferred:)} is a hint. On iPhone, above 60 Hz needs Info.plist
+        \ct{CADisableMinimumFrameDurationOnPhone = YES}; UIKit/SwiftUI/\ct{CAAnimation}
+        pace themselves.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Standalone layer blurry on Retina — \ct{contentsScale} is still 1.0.}
+  \trap{Setting \ct{anchorPoint} and wondering why the view moved.}
+  \trap{Animating \ct{layer.frame}, or reading \ct{view.frame} after a rotation.}
+  \trap{\ct{CADisplayLink} in \ct{.default} mode stops during scrolling; never invalidated
+        $\to$ its target (your VC) leaks.}
+  \trap{Implicit + explicit animation on one property fight — disable actions for the model set.}
+  \trap{\ct{isOpaque = true} on a view that is not really opaque — undefined results.}
+\end{itemize}
+
+\columnbreak
+
+\section{Geometry on a hinge}
+\begin{tikzpicture}[sheet]
+  \draw[sheetGrey!35, step=0.5] (0,-0.5) grid (7.5,2.5);
+  \node[lbl, anchor=south west, text=sheetGrey] at (0,2.5) {superlayer coordinates (grid = 0.5 pt units)};
+  % default anchor
+  \draw[sheetBlue, thick, fill=sheetBlue!10] (0.5,0.7) rectangle (2.5,1.9);
+  \fill[sheetRed] (1.5,1.3) circle (1.6pt);
+  \node[lbl, text=sheetRed, anchor=north, fill=sheetBlue!10] at (1.5,1.22) {anchor (.5,.5)};
+  \node[lbl, anchor=north, fill=white] at (1.5,0.6) {\ct{position} = anchor's spot};
+  \node[lbl, anchor=north, fill=white] at (1.5,0.25) {rotate $\to$ spins in place};
+  % hinge anchor, rotated
+  \draw[sheetGrey, dashed] (4.2,0.7) rectangle (6.2,1.9);
+  \draw[sheetOrange, thick, fill=sheetOrange!12, rotate around={-30:(4.2,1.3)}] (4.2,0.7) rectangle (6.2,1.9);
+  \draw[sheetBrown, densely dotted, thick] (3.9,-0.22) rectangle (6.23,1.82);
+  \fill[sheetRed] (4.2,1.3) circle (1.6pt);
+  \node[lbl, text=sheetRed, anchor=east, fill=white] at (3.85,1.3) {anchor (0,.5)};
+  \node[lbl, anchor=west, align=left, fill=white, text=sheetBrown] at (6.3,1.55) {\ct{frame} =\\bounding\\box};
+  \node[lbl, anchor=north, fill=white] at (5.05,-0.3) {rotate $-30^\circ$: a door on its hinge};
+\end{tikzpicture}
+{\scriptsize Changing \ct{anchorPoint} keeps \ct{position} fixed, so the layer \textbf{jumps}:
+compensate \ct{position} by the same offset (× \ct{bounds.size}).\par}
+
+\section{The action search}
+\begin{tikzpicture}[sheet]
+  \node[ld, fill=sheetBlue!10] (a0) at (0,0) {\ct{layer.opacity = 0} $\to$ \ct{action(forKey:)}};
+  \node[ld] (a1) at (0,-0.62) {1 delegate \ct{action(for:forKey:)}};
+  \node[ld] (a2) at (0,-1.24) {2 layer's \ct{actions} dictionary};
+  \node[ld] (a3) at (0,-1.86) {3 \ct{style["actions"]}};
+  \node[ld] (a4) at (0,-2.48) {4 class \ct{defaultAction(forKey:)}};
+  \foreach \a/\b in {a0/a1,a1/a2,a2/a3,a3/a4} \draw[flow] (\a) -- (\b);
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (1.95,-0.62) {UIView (the delegate) returns \textbf{NSNull} outside\\an animation block $\to$ search stops: \textbf{snap}};
+  \node[lbl, anchor=west, align=left, text=sheetGreen!45!black] at (1.95,-1.24) {inside \ct{UIView.animate} it returns an animation};
+  \node[lbl, anchor=west, align=left] at (1.95,-2.2) {standalone layer, no delegate, nothing\\stops it $\to$ default 0.25\,s implicit animation};
+\end{tikzpicture}
+
+\section{Example — explicit, pause, resume}
+\begin{lstlisting}[language=SwiftSheet]
+CATransaction.begin(); CATransaction.setDisableActions(true)
+ring.strokeEnd = 1                    // MODEL = final value, no implicit anim
+CATransaction.commit()
+let a = CABasicAnimation(keyPath: "strokeEnd")
+a.fromValue = 0; a.duration = 0.6
+a.timingFunction = CAMediaTimingFunction(name: .easeOut)
+ring.add(a, forKey: "progress")       // presentation 0 -> 1, then stays at 1
+func pause(_ l: CALayer) {            // Apple QA1673
+  let t = l.convertTime(CACurrentMediaTime(), from: nil)
+  l.speed = 0; l.timeOffset = t }
+func resume(_ l: CALayer) {
+  let paused = l.timeOffset; l.speed = 1; l.timeOffset = 0; l.beginTime = 0
+  l.beginTime = l.convertTime(CACurrentMediaTime(), from: nil) - paused }
+\end{lstlisting}
+
+\section{Remember}
+\textbf{Layout · display · prepare · commit — then the server paints.} Pivot = anchor;
+frame = derived; NSNull = no animation; \ct{speed} 0 = pause.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rendering-pipeline (three trees,
+offscreen fixes, hitches) · animations (model vs presentation) · swiftui-instrument-hitches-hangs
+· instruments-performance}
+
+\end{document}

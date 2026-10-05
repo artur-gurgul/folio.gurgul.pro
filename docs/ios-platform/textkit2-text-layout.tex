@@ -1,0 +1,199 @@
+% textkit2-text-layout.tex — TextKit 1 vs TextKit 2 object model, viewport layout,
+% the one-way fallback to TextKit 1 when code touches .layoutManager, custom layout
+% fragments, editing transactions, which text view to pick, Core Text for custom drawing,
+% big-document performance.
+% Sources (checked 2026-09-29): WWDC21 10061 "Meet TextKit 2"; WWDC22 10090 "What's new
+% in TextKit and text views"; developer.apple.com/documentation/uikit/uitextview
+% (init(usingTextLayoutManager:), textLayoutManager, layoutManager).
+% Not repeated: AttributedString, rich-text editing, UITextInput (attributedstring-rich-text.tex);
+% Dynamic Type + UIFontMetrics (accessibility-localization.tex); String/UTF-16 (strings-and-collections.tex).
+% @labels: area=ios-platform kind=api platform=ios topic=ui,platform-apis,performance discussion=49
+% @tags: textkit2, textkit1, nstextlayoutmanager, nslayoutmanager, nstextcontentstorage, nstextlayoutfragment, viewport-layout, compatibility-mode, uitextview, core-text
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,static,some,init,
+    if,else,return,guard,self,nil,private,true,false,in,try,override,super,for},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {??}{{\hbox{?}\hbox{?}}}2 {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt, align=center},
+  k/.style={box, font=\scriptsize, text width=25mm, inner sep=2pt, minimum height=6mm},
+  k1/.style={k, draw=sheetGrey, fill=black!5},
+  frag/.style={draw=sheetBlue, fill=sheetBlue!12, minimum width=30mm, minimum height=3.2mm, inner sep=0pt, font=\tiny},
+  est/.style={draw=sheetGrey, dashed, fill=black!3, minimum width=30mm, minimum height=3.2mm, inner sep=0pt, font=\tiny, text=sheetGrey},
+}
+
+\begin{document}
+
+\sheettitle{TextKit 2 vs TextKit 1 — text layout on iOS}{ios-platform · folio}
+
+\oneliner{\textbf{TextKit} is the engine under \ct{UITextView} and \ct{UITextField}: a
+\textbf{storage} (the attributed text) $\to$ a \textbf{layout manager} $\to$ a \textbf{text
+container} (the shape to fill) $\to$ the \textbf{view}. \textbf{TextKit 2} (iOS 15, default for
+\ct{UITextView} since \textbf{iOS 16}) swaps glyph-based, whole-document layout for
+\textbf{element/fragment} objects laid out \textbf{only around the viewport}. Touching the old
+\ct{.layoutManager} silently and \textbf{permanently} drops a text view back to TextKit 1.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------------- TextKit 1 ----------------
+  \node[font=\bfseries\small, anchor=west] at (-0.2,4.05) {TextKit 1 (iOS 7)};
+  \node[k1] (s1) at (1.2,3.35) {\ct{NSTextStorage}\\\tiny NSMutableAttributedString};
+  \node[k1] (l1) at (1.2,2.3) {\ct{NSLayoutManager}\\\tiny chars $\to$ \textbf{glyphs} $\to$ line rects};
+  \node[k1] (c1) at (1.2,1.25) {\ct{NSTextContainer}\\\tiny size, exclusionPaths, padding};
+  \node[k1] (v1) at (1.2,0.2) {\ct{UITextView} (draws)};
+  \draw[flow] (s1) -- (l1); \draw[flow] (l1) -- (c1); \draw[flow] (c1) -- (v1);
+  \node[lbl, anchor=west, align=left, text=sheetGrey] at (-0.2,-0.45) {\ct{NSRange} (UTF-16) everywhere;\\non-contiguous layout \emph{optional}};
+  % ---------------- TextKit 2 ----------------
+  \node[font=\bfseries\small, anchor=west, text=sheetBlue] at (4.3,4.05) {TextKit 2 (iOS 15+)};
+  \node[k] (cm) at (5.6,3.35) {\ct{NSTextContentStorage}\\\tiny : NSTextContentManager (abstract)\\\tiny wraps an \ct{NSTextStorage}};
+  \node[k, fill=sheetGreen!8, draw=sheetGreen] (el) at (8.75,3.35) {\ct{NSTextParagraph}\\\tiny : NSTextElement (immutable)};
+  \node[k] (tlm) at (5.6,2.3) {\ct{NSTextLayoutManager}\\\tiny no glyph API};
+  \node[k, fill=sheetOrange!8, draw=sheetOrange] (lf) at (8.75,2.3) {\ct{NSTextLayoutFragment}\\\tiny 1 per element: frame, draw()};
+  \node[k, fill=sheetOrange!4, draw=sheetOrange] (ln) at (8.75,1.25) {\ct{NSTextLineFragment}\\\tiny 1 per line: typographic bounds};
+  \node[k] (vp) at (5.6,1.25) {\ct{NSTextViewportLayout-}\\\ct{Controller}\\\tiny lays out visible range only};
+  \node[k] (c2) at (5.6,0.2) {\ct{NSTextContainer} $\to$ view};
+  \draw[flow] (cm) -- (el);
+  \draw[flow] (cm) -- (tlm);
+  \draw[flow] (tlm) -- (lf);
+  \draw[flow] (lf) -- (ln);
+  \draw[flow] (tlm) -- (vp);
+  \draw[flow] (vp) -- (c2);
+  \draw[flow, dashed] (el) -- (lf);
+  \node[lbl, anchor=west, align=left, text=sheetGrey] at (4.3,-0.45) {\ct{NSTextLocation} / \ct{NSTextRange} (objects, not ints);\\layout \emph{always} non-contiguous; renders via Core Text};
+  % ---------------- fallback ----------------
+  \draw[hot, very thick, draw=sheetRed] (tlm.west) -- (l1.east);
+  \node[lbl, text=sheetRed, font=\tiny, align=center] at (3.35,2.62) {\textbf{reads}\\\ct{.layoutManager}};
+  \node[lbl, text=sheetRed, font=\tiny, align=center] at (3.35,1.98) {one-way\\switch to TK1};
+  % ---------------- viewport ----------------
+  \node[font=\bfseries\small, anchor=west] at (10.55,4.05) {Viewport layout};
+  \node[est] at (12.25,3.55) {estimated height};
+  \node[est] at (12.25,3.2) {estimated height};
+  \node[frag, fill=sheetBlue!6] at (12.25,2.8) {laid out (overdraw)};
+  \node[frag] at (12.25,2.4) {paragraph 41 fragment};
+  \node[frag] at (12.25,2.05) {paragraph 42 fragment};
+  \node[frag] at (12.25,1.7) {paragraph 43 fragment};
+  \node[frag] at (12.25,1.35) {paragraph 44 fragment};
+  \node[frag, fill=sheetBlue!6] at (12.25,0.95) {laid out (overdraw)};
+  \node[est] at (12.25,0.55) {estimated height};
+  \node[est] at (12.25,0.2) {\ldots 10 000 paragraphs};
+  \draw[sheetRed, very thick, rounded corners=2pt] (10.6,1.15) rectangle (13.9,2.6);
+  \node[lbl, text=sheetRed, anchor=west, align=left] at (14.0,1.9) {\textbf{viewport}\\(visible\\bounds)};
+  \node[lbl, anchor=west, align=left, text=sheetBrown] at (14.0,0.55) {scroll:\\new frags,\\height re-\\estimated};
+  \node[lbl, anchor=west, align=left, text=sheetGrey] at (10.55,-0.45) {delegate: \ct{WillLayout} $\to$ \ct{configureRendering-}\\\ct{SurfaceFor:} (per fragment) $\to$ \ct{DidLayout}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{TK1}: \ct{NSLayoutManager} maps chars to \textbf{glyphs} and lays out
+        \emph{from the document start} to whatever you query. Glyph APIs assume chars
+        $\leftrightarrow$ glyphs are contiguous — false for Indic/Arabic scripts; TK2 has none.
+  \item \textbf{TK2}: the content manager splits text into immutable \textbf{elements}; the
+        layout manager makes one \textbf{layout fragment} per element (\ct{layoutFragmentFrame},
+        \ct{textLineFragments}, \ct{draw(at:in:)}); the viewport controller decides which exist.
+        Cost scales with the \emph{screen}, not the document.
+  \item Pick per view: \ct{UITextView(usingTextLayoutManager: false)} (iOS 16) or IB ``Text
+        Layout''. TK1 view $\Rightarrow$ \ct{textLayoutManager} is \ct{nil}.
+  \item \textbf{Compatibility mode}: reading \ct{textView.layoutManager} (or
+        \ct{textContainer.layoutManager}) rebuilds the view on TK1 — \textbf{expensive, loses UI
+        state, no way back}. Catch it: breakpoint \ct{\_UITextViewEnablingCompatibilityMode}.
+  \item \textbf{Edits}: mutate the backing \ct{NSTextStorage} inside
+        \ct{performEditingTransaction \{\}} so elements and fragments refresh.
+  \item \textbf{Customise, storage untouched}: \ct{textContentStorage(\_:textParagraphWith:)}
+        (display-only attributes, e.g. dim comments) ·
+        \ct{textLayoutManager(\_:textLayoutFragmentFor:in:)} returns your fragment subclass
+        (bubbles, code-block backgrounds). \ct{NSTextList} in UIKit since iOS 16.
+\end{itemize}
+
+\hd{Example — count lines the TK2 way (no glyphs)}
+\begin{lstlisting}[language=SwiftSheet]
+let tv = UITextView(usingTextLayoutManager: true)
+guard let tlm = tv.textLayoutManager else { return } // nil = TK1
+var lines = 0
+tlm.enumerateTextLayoutFragments(from: tlm.documentRange.location,
+    options: [.ensuresLayout]) { frag in   // forces layout: costly
+  lines += frag.textLineFragments.count
+  return true                               // false = stop early
+}
+let cs = tlm.textContentManager as? NSTextContentStorage
+cs?.performEditingTransaction {             // edit so TK2 sees it
+  cs?.textStorage?.append(NSAttributedString(string: "\nmore")) }
+// DON'T: tv.layoutManager.numberOfGlyphs  -> falls back to TK1
+\end{lstlisting}
+
+\hd{Which view?}
+{\scriptsize
+\begin{tabular}{@{}L{0.21\linewidth}L{0.75\linewidth}@{}}
+\toprule
+\ct{UILabel} & display only: no selection, no tappable links, no scroll; cheapest \\
+\ct{UITextField} & one line of input; TK2 since iOS 15 \\
+\ct{UITextView} & selectable/editable, links, attachments; a scroll view —
+                  \ct{isScrollEnabled = false} to self-size \\
+SwiftUI & \ct{Text} to display · \ct{TextEditor} to edit (rich in iOS 26) \\
+Core Text & you draw: custom layout, columns, text on paths \\
+\bottomrule
+\end{tabular}}
+
+\hd{Attachments \& wrapping}
+\ct{NSTextAttachment} = one U+FFFC character carrying an image; TK2 can host a live view
+(\ct{NSTextAttachmentViewProvider}, iOS 15). Wrap around a shape:
+\ct{textContainer.exclusionPaths} (container coordinates).
+
+\columnbreak
+
+\hd{Core Text — when TextKit is too high-level}
+\begin{itemize}
+  \item C API under TextKit: \ct{CTFramesetter} $\to$ \ct{CTFrame} (fills a \ct{CGPath})
+        $\to$ \ct{CTLine}s $\to$ \ct{CTRun}s (one attribute set each). Size first:
+        \ct{CTFramesetterSuggestFrameSizeWithConstraints}.
+  \item \textbf{Bottom-left origin}: flip the \ct{CGContext} (\ct{scaleBy(x: 1, y: -1)}) and
+        reset \ct{textMatrix}. No selection, editing, a11y or hit-testing for free.
+\end{itemize}
+
+\hd{Big documents — performance}
+\begin{itemize}
+  \item Height outside the viewport is \textbf{estimated}: \ct{usageBoundsForTextContainer}
+        and the scroll indicator shift while scrolling. \ct{.ensuresLayout} over
+        \ct{documentRange} lays out \emph{everything} — keep it off the hot path.
+  \item Batch: \ct{beginEditing()}/\ct{endEditing()} (or one transaction) = one layout pass.
+  \item Syntax highlighting: restyle only the \emph{edited paragraph}
+        (\ct{NSTextStorageDelegate} \ct{didProcessEditing}), not the whole text per key.
+  \item Measure without a view: \ct{boundingRect(with:options:context:)} +
+        \ct{.usesLineFragmentOrigin} — then \ct{ceil}.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{\textbf{One stray \ct{.layoutManager}} — yours \emph{or a library's} — silently
+        turns that text view into TK1. Grep for it.}
+  \trap{``No glyphs, so no line rect'' — enumerate fragments / \ct{textLineFragments}.}
+  \trap{Mutating \ct{textStorage} outside \ct{performEditingTransaction} $\to$ stale layout.}
+  \trap{\ct{UITextView} vs \ct{UILabel} misaligned: \ct{textContainerInset} (8,0,8,0) +
+        \ct{lineFragmentPadding} 5 — zero both.}
+  \trap{\ct{NSRange} counts \textbf{UTF-16} units, not \ct{Character}s:
+        \ct{NSRange(range, in: string)}.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Storage $\to$ elements $\to$ fragments $\to$ viewport. Touch the layout manager and
+you're back in 2013.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} attributedstring-rich-text (editing, text input) ·
+strings-and-collections (UTF-16) · accessibility-localization (Dynamic Type) · swiftui-uikit-interop}
+
+\end{document}

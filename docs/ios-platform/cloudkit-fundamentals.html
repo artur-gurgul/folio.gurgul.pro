@@ -1,0 +1,86 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>CloudKit fundamentals — databases, zones, records, errors — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/ios-platform/cloudkit-fundamentals.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">50</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">CloudKit fundamentals — databases, zones, records, errors</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">ios-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Apple’s hosted database behind the user’s iCloud account. A <strong>container</strong> holds
+three databases — <strong>public</strong> (everyone, your quota), <strong>private</strong> (this user, <em>their</em>
+quota), <strong>shared</strong> (zones others shared with me). <strong>Records</strong> live in <strong>zones</strong>; a save
+is checked against the record’s <strong>change tag</strong>, so a conflict is an <em>error you resolve</em>,
+never a silent overwrite. Only <strong>custom zones</strong> give atomic writes, change tokens and sharing.</p>
+<p class="sheet-tools"><a class="sheet-download" href="cloudkit-fundamentals.pdf" download>Download PDF</a> <a href="cloudkit-fundamentals.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/cloudkit-fundamentals.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="cloudkit-fundamentals-fig1.svg" width="634" height="140" class="wide" alt="CloudKit fundamentals — databases, zones, records, errors — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">Records</span></h3>
+<ul>
+<li><code>CKRecord</code> = <code>recordType</code> + fields (String, number, Data, Date, CLLocation, arrays,  <code>CKAsset</code>, <code>Reference</code>), <span class="math">≤</span> <strong>1 MB</strong> without assets. <code>CKRecord.ID</code> =  <code>recordName</code> (yours, e.g. UUID <span class="math">→</span> idempotent retry) + <code>zoneID</code>: a record never  changes zone.</li>
+<li>System fields: <code>recordChangeTag</code>, <code>creationDate</code>, <code>modificationDate</code>,  <code>creatorUserRecordID</code>, <code>parent</code>, <code>share</code>. Local cache? keep  <code>encodeSystemFields(with:)</code> or every save conflicts.</li>
+<li><code>CKRecord.Reference(recordID:action:)</code>: <strong>same zone only</strong>; <code>.deleteSelf</code>  cascades. <code>CKAsset(fileURL:)</code>: uploaded apart, fetched to a <em>temporary</em> file — copy it.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Operations vs async API</span></h3>
+<ul>
+<li><strong>Async</strong> (iOS 15): <code>record(for:)</code>, <code>save(_:)</code>,  <code>modifyRecords(saving:deleting:…)</code>, <code>records(matching:…)</code>,  <code>recordZoneChanges(…)</code>. Results are <strong>per item</strong> (<code>[ID: Result]</code>): no  throw <span class="math">≠</span> all saved.</li>
+<li><strong>CKOperation</strong> subclasses (<code>CKModifyRecordsOperation</code>, <code>CKQueryOperation</code>, …):  per-record callbacks, progress, cancel, dependencies, long-lived. Default QoS is low.</li>
+<li>Save policy: <code>.ifServerRecordUnchanged</code> (default, tag must match) ·  <code>.changedKeys</code> / <code>.allKeys</code> (overwrite, no check). <code>isAtomic</code> (default  <code>true</code>): all-or-nothing <em>per custom zone</em>.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — save, and resolve a conflict</span></h3>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">let</span> db <span class="hljs-operator">=</span> <span class="hljs-type">CKContainer</span>(identifier: <span class="hljs-string">&quot;iCloud.com.example.app&quot;</span>)
+           .privateCloudDatabase
+<span class="hljs-keyword">func</span> <span class="hljs-title function_">rename</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">id</span>: <span class="hljs-type">CKRecord</span>.<span class="hljs-type">ID</span>, <span class="hljs-params">to</span> <span class="hljs-params">title</span>: <span class="hljs-type">String</span>) <span class="hljs-keyword">async</span> <span class="hljs-keyword">throws</span> {
+  <span class="hljs-keyword">var</span> rec <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> db.record(for: id)    <span class="hljs-comment">// carries change tag</span>
+  <span class="hljs-keyword">for</span> <span class="hljs-keyword">_</span> <span class="hljs-keyword">in</span> [<span class="hljs-number">1</span>, <span class="hljs-number">2</span>, <span class="hljs-number">3</span>] {
+    rec[<span class="hljs-string">&quot;title&quot;</span>] <span class="hljs-operator">=</span> title
+    <span class="hljs-keyword">do</span> { <span class="hljs-keyword">_</span> <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> db.save(rec); <span class="hljs-keyword">return</span> } <span class="hljs-comment">// tag must match</span>
+    <span class="hljs-keyword">catch</span> <span class="hljs-keyword">let</span> e <span class="hljs-keyword">as</span> <span class="hljs-type">CKError</span> <span class="hljs-keyword">where</span> e.code <span class="hljs-operator">==</span> .serverRecordChanged {
+      <span class="hljs-keyword">guard</span> <span class="hljs-keyword">let</span> server <span class="hljs-operator">=</span> e.serverRecord <span class="hljs-keyword">else</span> { <span class="hljs-keyword">throw</span> e }
+      rec <span class="hljs-operator">=</span> server           <span class="hljs-comment">// merge INTO the server copy (new tag)</span>
+    } <span class="hljs-keyword">catch</span> <span class="hljs-keyword">let</span> e <span class="hljs-keyword">as</span> <span class="hljs-type">CKError</span> <span class="hljs-keyword">where</span> e.retryAfterSeconds <span class="hljs-operator">!=</span> <span class="hljs-literal">nil</span> {
+      <span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> <span class="hljs-type">Task</span>.sleep(for: .seconds(e.retryAfterSeconds <span class="hljs-operator">??</span> <span class="hljs-number">1</span>))
+    }
+  }
+}</code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">The change tag turns a race into an error</span></h3>
+<figure class="sheet-figure"><img src="cloudkit-fundamentals-fig2.svg" width="316" height="105" alt="CloudKit fundamentals — databases, zones, records, errors — figure 2" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">Queries, indexes, schema environments</span></h3>
+<ul>
+<li><code>CKQuery(recordType:predicate:)</code> + sort, paged by <code>queryCursor</code>. Indexes:  <strong>Queryable</strong> (equality; on <code>recordName</code> to list all), <strong>Sortable</strong>  (ranges, sort), <strong>Searchable</strong> (tokens).</li>
+<li><strong>Development</strong>: an unknown type or key is <em>created</em> on save. <strong>Production</strong>:  it is an error. CloudKit Console <span class="math">→</span> <em>Deploy Schema Changes</em>; production is  <strong>add-only</strong>. Xcode runs use Development; <strong>TestFlight + App Store use Production</strong>.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Subscriptions + silent push</span></h3>
+<ul>
+<li><code>CKQuerySubscription</code> (public + private) · <code>CKRecordZoneSubscription</code> (one zone)  · <code>CKDatabaseSubscription</code> (private + shared, every custom zone — how you hear of  <em>new</em> shared zones).</li>
+<li><code>shouldSendContentAvailable = true</code> <span class="math">→</span> silent push (Background Mode <em>Remote
+ notifications</em>, no prompt). <strong>Coalesced, droppable</strong>: a hint to fetch, not data.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Account</span></h3>
+<p><code>accountStatus()</code>: <code>.available</code> · <code>.noAccount</code> · <code>.restricted</code> · <code>.couldNotDetermine</code> · <code>.temporarilyUnavailable</code>. On <code>.CKAccountChanged</code>, a new <code>userRecordID()</code> <span class="math">→</span> <strong>wipe old data</strong>.</p>
+<p><strong><span class="c-sheetblue">Errors you must handle — <code>CKError.Code</code></span></strong></p>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><code>serverRecordChanged</code></td><td>merge into <code>e.serverRecord</code>, save again</td></tr>
+<tr><td><code>partialFailure</code></td><td>per item: <code>e.partialErrorsByItemID</code></td></tr>
+<tr><td><code>batchRequestFailed</code></td><td>atomic zone: another item failed; fix, resend</td></tr>
+<tr><td><code>requestRateLimited</code>, <code>zoneBusy</code>, <code>serviceUnavailable</code></td><td>wait <code>e.retryAfterSeconds</code>, then retry — never a hot loop</td></tr>
+<tr><td><code>limitExceeded</code></td><td>too many items / bytes: split the batch</td></tr>
+<tr><td><code>changeTokenExpired</code></td><td>refetch the zone from a <code>nil</code> token</td></tr>
+<tr><td><code>zoneNotFound</code></td><td>create the zone, retry</td></tr>
+<tr><td><code>userDeletedZone</code></td><td>user wiped iCloud data: ask before re-upload</td></tr>
+<tr><td><code>quotaExceeded</code></td><td>user’s iCloud full: tell them, stop retrying</td></tr>
+<tr><td><code>notAuthenticated</code></td><td>no account: check <code>accountStatus()</code></td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">Default zone “to keep it simple” — no atomic batch, tokens or share; create a custom zone.</li>
+<li class="trap">Resaving your own copy after a conflict — old tag, fails forever.</li>
+<li class="trap">Fine in Development, empty in Production — schema not deployed.</li>
+<li class="trap">Private-DB <code>quotaExceeded</code> is the <em>user’s</em> storage, not yours.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<p><strong>Container <span class="math">→</span> 3 DBs <span class="math">→</span> zones <span class="math">→</span> records.</strong> Custom zone = atomic + tokens + share; stale tag = merge.</p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> cloudkit-sync-sharing · sync-engines ·
+push-notifications · background-execution · persistence · coredata-migrations-swiftdata</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=ios-platform" title="area">ios-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=ios" title="platform">ios</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=data" title="topic">data</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=networking" title="topic">networking</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=platform-apis" title="topic">platform-apis</a></li><li class="sheet-tag"><a href="/folios.html?tag=cloudkit">cloudkit</a></li><li class="sheet-tag"><a href="/folios.html?tag=ckcontainer">ckcontainer</a></li><li class="sheet-tag"><a href="/folios.html?tag=ckdatabase">ckdatabase</a></li><li class="sheet-tag"><a href="/folios.html?tag=record-zones">record-zones</a></li><li class="sheet-tag"><a href="/folios.html?tag=ckrecord">ckrecord</a></li><li class="sheet-tag"><a href="/folios.html?tag=ckasset">ckasset</a></li><li class="sheet-tag"><a href="/folios.html?tag=change-tag">change-tag</a></li><li class="sheet-tag"><a href="/folios.html?tag=ckerror">ckerror</a></li><li class="sheet-tag"><a href="/folios.html?tag=ckquery">ckquery</a></li><li class="sheet-tag"><a href="/folios.html?tag=cksubscription">cksubscription</a></li><li class="sheet-tag"><a href="/folios.html?tag=silent-push">silent-push</a></li><li class="sheet-tag"><a href="/folios.html?tag=icloud-account">icloud-account</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=ios-platform%2Fcloudkit-fundamentals.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/19">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

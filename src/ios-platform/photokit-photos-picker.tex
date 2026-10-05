@@ -1,0 +1,208 @@
+% photokit-photos-picker.tex — the two ways into the photo library: the out-of-process picker
+% (PHPickerViewController / SwiftUI PhotosPicker, no permission) vs PhotoKit (authorization levels,
+% .limited, the limited-library picker, PHAsset / PHFetchResult / PHImageManager, change observer
+% diffs, performChanges, identifiers), plus the memory traps.
+% NOT repeated here: Transferable representations + drag and drop (swiftui-transferable-drag-drop),
+% the generic permission state machine (app-hardening-privacy), decode/downsample maths
+% (image-loading-pipeline), camera capture (avfoundation-camera-audio).
+% Sources (checked 2026-09-29):
+%   developer.apple.com/documentation/photokit/delivering-an-enhanced-privacy-experience-in-your-photos-app
+%     (limited access iOS 14, created assets join the selection, no user albums, once-per-life-cycle
+%      prompt + PHPhotoLibraryPreventAutomaticLimitedAccessAlert, legacy authorizationStatus() says .authorized)
+%   developer.apple.com/documentation/photosui/photospicker (iOS 16; Image Transferable = PNG + JPEG only)
+%   developer.apple.com/documentation/photosui/photospickerstyle (.inline/.compact/.presentation, iOS 17)
+%   developer.apple.com/documentation/photosui/phpickerconfiguration (mode iOS 17, Selection.continuous iOS 17,
+%     preselectedAssetIdentifiers iOS 15 — needs init(photoLibrary:), cancel returns the preselection)
+%   developer.apple.com/documentation/photosui/phpickercapabilities
+%   developer.apple.com/documentation/photos/phimagemanager/requestimage(for:targetsize:contentmode:options:resulthandler:)
+%     (handler may run twice, first call possibly before the method returns, PHImageResultIsDegradedKey)
+%   developer.apple.com/documentation/photos/phimagerequestoptions/isnetworkaccessallowed (default false, IsInCloudKey)
+%   developer.apple.com/documentation/photos/phcachingimagemanager (same size/mode/options or no cache hit)
+%   developer.apple.com/documentation/photos/phfetchresult (lazy, count constant after fetch)
+%   developer.apple.com/documentation/photos/phphotolibrarychangeobserver (may arrive on a background queue)
+%   developer.apple.com/documentation/photos/phphotolibrary/performchanges(_:completionhandler:)
+%   developer.apple.com/documentation/photos/phcloudidentifier (iOS 15)
+%   developer.apple.com/documentation/foundation/nsitemprovider/loadfilerepresentation(fortypeidentifier:completionhandler:)
+%   developer.apple.com/documentation/photos/phbackgroundresourceuploadextension (iOS 26.1)
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis,security,memory discussion=40
+% @tags: photokit, phpickerviewcontroller, photospicker, limited-library, phauthorizationstatus, phasset, phfetchresult, phimagemanager, phcachingimagemanager, phphotolibrarychangeobserver, purpose-string, icloud-photos
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,return,if,else,guard,case,self,some,in,
+    private,try,await,async,for,continue,true,false,nil,@State},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {||}{{\hbox{|}\hbox{|}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  pr/.style={box, font=\scriptsize, inner sep=1.5pt},
+  stt/.style={box, font=\scriptsize, minimum height=4.5mm, inner sep=1.2pt},
+}
+
+\begin{document}
+
+\sheettitle{Photos — the picker vs PhotoKit, limited library}{ios-platform · folio}
+
+\oneliner{Two ways in. The \textbf{out-of-process picker} (\ct{PHPickerViewController} 14, SwiftUI \ct{PhotosPicker} 16)
+needs \textbf{no permission} — the app gets only the picked items. \textbf{PhotoKit} (\ct{PHPhotoLibrary},
+\ct{PHAsset}, \ct{PHImageManager}) is a live database behind \textbf{authorization}: \ct{.readWrite} — which may
+come back \textbf{\ct{.limited}}, a user-chosen subset (iOS 14) — or \ct{.addOnly}. Picker unless you \emph{are}
+a gallery, backup or editor app.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- panel A: two doors ----------
+  \node[ttl] at (-0.2,2.75) {Two doors into the library};
+  \node[pr, minimum height=19mm, text width=11mm] (app) at (0.45,1.3) {\textbf{your app}};
+  \draw[sheetGrey, dashed, rounded corners=2pt] (1.95,1.75) rectangle (4.95,2.5);
+  \node[lbl, anchor=north east, text=sheetGrey] at (4.95,2.48) {separate process};
+  \node[pr, draw=sheetGreen, fill=sheetGreen!10, text width=26mm] (pk) at (3.45,2.0) {\ct{PHPicker} / \ct{PhotosPicker}};
+  \node[pr, draw=sheetOrange, fill=sheetOrange!10, text width=26mm] (kit) at (3.45,0.55) {\textbf{PhotoKit}\\\ct{PHPhotoLibrary.shared()}};
+  \node[pr, draw=sheetBrown, fill=sheetBrown!10, minimum height=19mm, text width=11mm] (lib) at (6.35,1.3) {Photos\\library\\+ iCloud};
+  \draw[flow] (app.east |- 0,2.15) -- node[lbl, above]{present} (pk.west |- 0,2.15);
+  \draw[hot, draw=sheetGreen] (pk.west |- 0,1.85) -- node[lbl, below]{picked only} (app.east |- 0,1.85);
+  \draw[flow] (pk.east) -- node[lbl, above]{reads all} (lib.west |- pk.east);
+  \draw[flow] (app.east |- kit.west) -- node[lbl, above]{fetch} (kit.west);
+  \draw[hot, draw=sheetRed, very thick] (kit.east) -- node[lbl, above, text=sheetRed]{\textbf{auth}} (lib.west |- kit.east);
+  \node[lbl, text=sheetGreen!50!black] at (3.45,1.35) {no prompt · no Info.plist key · no \ct{PHAsset}};
+  \node[lbl, text=sheetRed] at (3.45,0.0) {one prompt · purpose string · sees only what is granted};
+
+  \draw[sheetGrey!40] (7.2,2.85) -- (7.2,-0.1);
+
+  % ---------- panel B: authorization(for:) ----------
+  \node[ttl] at (7.35,2.75) {\ct{requestAuthorization(for:)} — per access level};
+  \node[stt, text width=17mm] (nd) at (8.4,1.45) {\ct{.notDetermined}};
+  \node[stt, draw=sheetGreen, fill=sheetGreen!12, text width=17mm] (au) at (11.2,2.2) {\ct{.authorized} {\tiny all}};
+  \node[stt, draw=sheetOrange, fill=sheetOrange!12, text width=17mm] (li) at (11.2,1.45) {\ct{.limited} {\tiny subset}};
+  \node[stt, draw=sheetRed, fill=sheetRed!10, text width=17mm] (de) at (11.2,0.7) {\ct{.denied}};
+  \node[stt, draw=sheetGrey, fill=black!8, text width=17mm] (rs) at (8.4,0.45) {\ct{.restricted}\\{\tiny MDM / Screen Time}};
+  \draw[hot] (nd.east) -- node[lbl, above, sloped]{\ct{.readWrite}} (au.west);
+  \draw[hot] (nd.east) -- (li.west);
+  \draw[hot] (nd.east) -- (de.west);
+  \node[stt, draw=sheetBlue, fill=sheetBlue!6, text width=23mm, anchor=west] (lp) at (13.1,2.05) {\ct{presentLimited-}\\\ct{LibraryPicker(from:)}};
+  \node[stt, draw=sheetBlue, fill=sheetBlue!6, text width=23mm, anchor=west] (ob) at (13.1,0.95) {\ct{photoLibraryDidChange}\\{\tiny selection changed}};
+  \draw[flow, sheetOrange] (li.east) -- node[lbl, below right, pos=0.3]{add more} (lp.south west);
+  \draw[flow, sheetBlue] (lp.south -| ob.north) -- (ob.north);
+  \node[lbl, anchor=west, align=left, text=sheetBrown] at (7.35,2.3) {\ct{.addOnly}: authorized /\\denied, never limited};
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (12.6,0.2) {legacy \ct{authorizationStatus()} (no level)\\reports \ct{.limited} as \ct{.authorized}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Door 1 — the picker}
+\begin{itemize}
+  \item Result = \ct{PHPickerResult.itemProvider} (UIKit) or \ct{PhotosPickerItem} (a \ct{Transferable} placeholder).
+        UIKit: \ct{didFinishPicking} fires on Add \emph{and} Cancel — \textbf{you dismiss}.
+  \item Config: \ct{selectionLimit} (default 1, \textbf{0 = no limit}); \ct{filter} \ct{.images} \ct{.videos}
+        \ct{.livePhotos} \ct{.screenshots}, combined by \ct{.any(of:)} \ct{.all(of:)} \ct{.not}; encoding
+        \ct{.current} (keep HEIC) vs \ct{.compatible} (transcode).
+  \item \textbf{IDs} are \ct{nil} unless built with \ct{init(photoLibrary: .shared())} — required for
+        \ct{preselectedAssetIdentifiers} (15); fetching that \ct{PHAsset} still needs authorization.
+  \item \textbf{Embedded, iOS 17}: \ct{.photosPickerStyle(.inline)}, \ct{selectionBehavior: .continuous}
+        (live, no Add button), \ct{.photosPickerDisabledCapabilities([.search, .stagingArea])}.
+\end{itemize}
+
+\hd{Example — picker, no permission}
+\begin{lstlisting}[language=SwiftSheet]
+PhotosPicker(selection: $items, maxSelectionCount: 5,
+    matching: .all(of: [.images, .not(.screenshots)]),
+    preferredItemEncoding: .compatible) { Label("Add", systemImage: "photo") }
+.task(id: items) {
+  for item in items {                      // Image.self: PNG/JPEG only
+    guard let d = try? await item.loadTransferable(type: Data.self)
+    else { continue }                      // nil = type not offered
+    thumbs.append(downsample(d, maxPixels: 600)) } } // never full size
+\end{lstlisting}
+Video: \ct{FileRepresentation} / \ct{loadFileRepresentation} — temp file \textbf{deleted when the handler returns}.
+
+\hd{Door 2 — PhotoKit}
+\begin{itemize}
+  \item \ct{PHAsset} = metadata (\ct{mediaType}, \ct{pixelWidth}, \ct{creationDate}, \ct{localIdentifier});
+        \ct{PHAssetCollection} = album; \ct{PHAssetResource} = the original files.
+  \item \ct{fetchAssets} $\to$ \ct{PHFetchResult}: \textbf{lazy}, thread-safe, a \textbf{snapshot} (count fixed) —
+        updates come as \ct{PHChange}, often on a \textbf{background queue}.
+  \item \ct{requestImage(for:targetSize:contentMode:options:)}: size in \textbf{pixels}; keep the
+        \ct{PHImageRequestID}, \ct{cancelImageRequest} on reuse. \ct{isNetworkAccessAllowed} defaults
+        \textbf{false} $\to$ iCloud-only asset: \ct{PHImageResultIsInCloudKey}, no image.
+  \item \ct{PHCachingImageManager}: \ct{startCachingImages} for rows about to appear — then request with the
+        \textbf{same} size, mode, options, or it misses.
+  \item \textbf{Writes} only in \ct{performChanges \{\}} (creation / change requests, \ct{deleteAssets}); runs on
+        a serial background queue; editing or deleting shows a \textbf{confirmation per call} — batch.
+\end{itemize}
+
+\hd{Which door?}
+Avatar, attachment, ``import to edit'' $\to$ \textbf{picker}. Own gallery, backup, bulk edit $\to$
+\textbf{\ct{.readWrite}}, designed for \ct{.limited} too. Camera app that only saves $\to$ \textbf{\ct{.addOnly}}.
+Original bytes / RAW: \ct{PHAssetResourceManager.writeData(for:toFile:options:)}.
+
+\columnbreak
+
+\hd{Example — a PhotoKit grid}
+\begin{lstlisting}[language=SwiftSheet]
+let s = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+guard s == .authorized || s == .limited else { return showSettings() }
+assets = PHAsset.fetchAssets(with: .image, options: newestFirst)
+PHPhotoLibrary.shared().register(self)   // PHPhotoLibraryChangeObserver
+// cell: set the id BEFORE asking - the 1st callback can be synchronous
+cell.assetID = asset.localIdentifier
+cell.req = caching.requestImage(for: asset,
+    targetSize: CGSize(width: side * scale, height: side * scale),
+    contentMode: .aspectFill, options: opts) { img, info in
+  guard cell.assetID == asset.localIdentifier else { return } // reused
+  cell.image = img }       // called twice: degraded, then final
+\end{lstlisting}
+
+\hd{One request, two answers}
+\begin{tikzpicture}[sheet]
+  \draw[flow] (0,0) -- (7.4,0) node[lbl, right]{t};
+  \draw[thick, sheetBlue] (0.15,-0.1) -- (0.15,0.6) node[lbl, above, text=sheetBlue]{call};
+  \node[stt, draw=sheetGrey, fill=black!5, text width=17mm] at (1.6,0.4) {\#1 blurry\\{\tiny\ct{IsDegradedKey} true}};
+  \node[stt, draw=sheetGreen, fill=sheetGreen!10, text width=17mm] at (4.0,0.4) {\#2 sharp\\{\tiny degraded false}};
+  \node[stt, draw=sheetRed, fill=sheetRed!8, text width=18mm] at (6.3,0.4) {iCloud, network off\\{\tiny \ct{nil} + \ct{IsInCloudKey}}};
+  \node[lbl, text=sheetRed, anchor=west] at (0.0,-0.25) {\#1 may land \textbf{before} \ct{requestImage} returns · cached at full quality $\to$ one call};
+\end{tikzpicture}
+\textbf{Live grid}: \ct{change.changeDetails(for: old)} $\to$ on main swap in \ct{fetchResultAfterChanges};
+\ct{hasIncrementalChanges} ? batch \textbf{removed $\to$ inserted $\to$ moves $\to$ changed} : \ct{reloadData()}.
+
+\hd{Keys and the limited library}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{36mm}>{\raggedright\arraybackslash}p{36mm}@{}}
+\toprule
+\ct{NSPhotoLibraryUsageDescription} & \ct{.readWrite}: read, edit, add \\
+\ct{NSPhotoLibraryAddUsageDescription} & \ct{.addOnly} (iOS 11): save only \\
+\ct{PHPhotoLibraryPrevent-}\newline\ct{AutomaticLimitedAccessAlert} & YES = no auto ``select more'' prompt (default once per life cycle) \\
+picker, \ct{PhotosPicker} & \textbf{nothing} \\
+\bottomrule
+\end{tabular}}\par
+\textbf{\ct{.limited}}: fetches see only the selection; no user albums; assets you \textbf{create} join it;
+\ct{presentLimitedLibraryPicker} (15: returns new ids) grows it. \textbf{IDs}: \ct{localIdentifier} is per device —
+\ct{PHCloudIdentifier} (15) across devices. \textbf{26.1}: \ct{PHBackgroundResourceUploadExtension} (backup apps).
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Full library access to set an avatar — the picker needs no prompt and no key.}
+  \trap{\ct{authorizationStatus()} without a level: \ct{.limited} reads \ct{.authorized} — ``why 3 photos?''}
+  \trap{\ct{Image}'s \ct{Transferable} is PNG + JPEG only — load \ct{Data} or your own type.}
+  \trap{\ct{targetSize} in points, or \ct{PHImageManagerMaximumSize} for a thumb: 48 MB per 12 MP.}
+  \trap{Cancel after preselection returns the \emph{preselected} ids, not \ct{[]}.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Picker: no permission. PhotoKit: prompt, \emph{limited} = subset. Pixels, twice, back to main.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \ct{swiftui-transferable-drag-drop} · \ct{app-hardening-privacy}
+(permission states) · \ct{image-loading-pipeline} (downsample) · \ct{core-image-filters} · \ct{tableview-diffable} · \ct{avfoundation-camera-audio}}
+
+\end{document}

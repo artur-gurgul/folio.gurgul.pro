@@ -1,0 +1,229 @@
+% metal-essentials.tex — Metal for an app developer: the object model (device, queue, library,
+% pipeline state, buffers, textures, command buffer, encoders), what is built once vs per frame,
+% storage modes, TBDR load/store actions, MSL vertex/fragment/kernel, MTKView draw modes,
+% triple buffering with a semaphore, background GPU refusal, SwiftUI shader modifiers (iOS 17),
+% where apps meet Metal, and Metal 4 (iOS 26) at the level of its new objects.
+% NOT repeated here: CAMetalLayer among the specialised layers (ios-platform/core-animation-rendering.tex),
+% drawingGroup (swiftui/swiftui-gestures-canvas.tex), Core Image kernels (ios-platform/core-image-filters.tex),
+% Core ML compute units (ai/coreml-vision-on-device.tex).
+% Sources (checked 2026-09-29):
+%   developer.apple.com/documentation/metal/synchronizing-cpu-and-gpu-work (MaxFramesInFlight = 3,
+%     semaphore wait at frame start, signal in addCompletedHandler, why)
+%   developer.apple.com/documentation/metal/mtlstoragemode (shared / private / memoryless)
+%   developer.apple.com/documentation/metal/mtlrendercommandencoder/setvertexbytes(_:length:index:) (< 4 KB)
+%   developer.apple.com/documentation/metalkit/mtkview (three draw modes; currentRenderPassDescriptor
+%     obtains the drawable — "obtain drawables as late as possible")
+%   developer.apple.com/documentation/metalkit/mtkview/preferredframespersecond (default 60)
+%   developer.apple.com/documentation/swiftui/view/layereffect(_:maxsampleoffset:isenabled:),
+%     .../coloreffect(_:isenabled:), .../distortioneffect(_:maxsampleoffset:isenabled:),
+%     .../swiftui/shaderlibrary (iOS 17; [[ stitchable ]] signatures)
+%   developer.apple.com/documentation/metal/mtl4commandqueue (iOS 26) + WWDC25 205 "Discover
+%     Metal 4" (MTL4CommandAllocator, MTL4ArgumentTable, MTL4Compiler, residency sets, MTLTensor,
+%     ML encoder; Apple M1 / A14 Bionic and later)
+%   developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.background-tasks.continued-processing.gpu
+%     (iOS 26 background GPU for BGContinuedProcessingTask) + Apple forums thread 76818 (Apple
+%     engineer: "iOS prohibits GPU use by backgrounded apps")
+% @labels: area=ios-platform kind=api platform=apple topic=ui,performance,platform-apis discussion=38
+% @tags: metal, mtldevice, command-buffer, render-pipeline, msl, shaders, mtkview, triple-buffering, storage-mode, tbdr, swiftui-shaders, metal-4
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,guard,else,return,true,false,nil,self,class,final,
+    import,in,as,try,if,struct,using,namespace,vertex,fragment,kernel,constant,
+    device,float,float2,float4,half4,uint,uint2},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {>=}{{\hbox{>}\hbox{=}}}2 {<=}{{\hbox{<}\hbox{=}}}2
+           {&&}{{\hbox{\&}\hbox{\&}}}2 {||}{{\hbox{|}\hbox{|}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  once/.style={box, font=\tiny, inner sep=1.5pt, minimum height=8mm, text width=17mm},
+  per/.style={box, font=\tiny, inner sep=1.5pt, minimum height=8mm, text width=15mm,
+              draw=sheetOrange, fill=sheetOrange!8},
+  hdr/.style={font=\bfseries\scriptsize, text=sheetBlue, anchor=west},
+  tb/.style={draw=sheetGrey, font=\tiny, minimum height=4mm, inner sep=0pt, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Metal — device, pipelines, command buffers, frames in flight}{ios-platform · folio}
+
+\oneliner{Metal is Apple's low-overhead GPU API. You build the \textbf{expensive} objects
+\textbf{once} — device, command queue, \textbf{pipeline states} compiled from MSL shaders, buffers,
+textures — and every frame \textbf{record} commands into a transient \textbf{command buffer} through
+\textbf{encoders} (render / compute / blit), \ct{commit()} it, and the GPU runs it
+\textbf{asynchronously} while the CPU prepares the next frame. Correctness then hinges on one rule:
+the CPU must not overwrite data the GPU is still reading.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- A: object model ----------
+  \node[hdr] at (-0.95,2.5) {A. Build once $\to$ record every frame};
+  \node[lbl, anchor=west, text=sheetBlue, font=\tiny\bfseries] at (-0.95,2.1) {ONCE (load)};
+  \node[once] (dev) at (0,1.5) {\ct{MTLCreateSystem-}\\\ct{DefaultDevice()}};
+  \node[once] (q) at (2.05,1.5) {\textbf{command queue}\\one, thread-safe};
+  \node[once] (lib) at (4.1,1.5) {\textbf{library}\\\ct{default.metallib}\\(built by Xcode)};
+  \node[once, draw=sheetRed, fill=sheetRed!8] (pso) at (6.15,1.5) {\textbf{pipeline state}\\shaders + formats\\\textbf{compile = slow}};
+  \node[once] (res) at (8.2,1.5) {\textbf{buffers},\\\textbf{textures}};
+  \draw[flow] (dev) -- (q); \draw[flow] (q) -- (lib); \draw[flow] (lib) -- (pso);
+  \node[lbl, anchor=west, text=sheetOrange!80!black, font=\tiny\bfseries] at (-0.95,0.72) {EVERY FRAME};
+  \node[per] (cb) at (0,0) {\ct{makeCommand-}\\\ct{Buffer()}};
+  \node[per] (enc) at (2.05,0) {render encoder\\from the pass\\descriptor};
+  \node[per, text width=19mm] (cmd) at (4.3,0) {set pipeline · set\\buffers · \ct{draw-}\\\ct{Primitives}};
+  \node[per] (end) at (6.45,0) {\ct{endEncoding()}\\\ct{present(}\\\ct{drawable)}};
+  \node[per, draw=sheetGreen!60!black, fill=sheetGreen!10] (cm) at (8.4,0) {\ct{commit()}\\GPU runs async};
+  \draw[hot] (cb) -- (enc); \draw[hot] (enc) -- (cmd); \draw[hot] (cmd) -- (end); \draw[hot] (end) -- (cm);
+  \draw[flow, dashed] (q.south) -- (cb.north east);
+  \draw[flow, dashed] (pso.south) -- (cmd.north east);
+  \draw[flow, dashed] (res.south) -- (cmd.north east);
+  \node[lbl, anchor=north west, align=left] at (-0.95,-0.6) {Encoders: \textbf{render} (draws into attachments) · \textbf{compute}
+     (\ct{dispatchThreads}) · \textbf{blit} (copies, mipmaps). One open at a time;\\a command buffer is single-use.
+     \ct{addCompletedHandler} fires on a background thread when the GPU is done.};
+  \draw[sheetGrey!40] (9.45,2.6) -- (9.45,-1.25);
+  % ---------- B: triple buffering ----------
+  \node[hdr] at (9.55,2.5) {B. Three frames in flight, one semaphore};
+  \node[lbl, anchor=east] at (10.15,1.6) {\textbf{CPU}};
+  \node[lbl, anchor=east] at (10.15,0.8) {\textbf{GPU}};
+  \node[tb, fill=sheetBlue!20, minimum width=8mm] at (10.25,1.6) {write U0};
+  \node[tb, fill=sheetGreen!20, minimum width=8mm] at (11.05,1.6) {write U1};
+  \node[tb, fill=sheetOrange!20, minimum width=8mm] at (11.85,1.6) {write U2};
+  \node[tb, draw=sheetRed, fill=sheetRed!10, text=sheetRed, minimum width=8mm] at (12.65,1.6) {\textbf{wait()}};
+  \node[tb, fill=sheetBlue!20, minimum width=8mm] at (13.45,1.6) {write U0};
+  \node[tb, fill=sheetGreen!20, minimum width=8mm] at (14.25,1.6) {wait…};
+  \node[tb, fill=sheetBlue!20, minimum width=24mm] at (11.05,0.8) {GPU reads U0 (frame 0)};
+  \node[tb, fill=sheetGreen!20, minimum width=14mm] at (13.45,0.8) {reads U1};
+  \node[tb, fill=sheetOrange!20, minimum width=14mm] at (14.85,0.8) {reads U2};
+  \draw[hot, draw=sheetRed] (13.45,0.95) -- node[lbl, right, text=sheetRed, pos=0.4]{\ct{signal()}} (13.45,1.4);
+  \draw[flow] (10.25,0.35) -- (16.35,0.35) node[lbl, below left]{time};
+  \node[lbl, anchor=north west, align=left, text width=63mm] at (9.55,0.2)
+     {\ct{DispatchSemaphore(value: 3)}: \ct{wait()} before writing this frame's uniform buffer
+      \ct{U[frame \% 3]}; \ct{signal()} in \ct{addCompletedHandler}. The CPU can run at most 3 frames
+      ahead and never touches a buffer the GPU is reading — without it: flicker and torn data.
+      Every early \ct{return} must signal too, or the app hangs.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Lifetimes}: device, queue, library, pipeline states (render / compute) and big
+        resources are long-lived; pipeline compilation is the classic first-use hitch — build at
+        load (or cache with \ct{MTLBinaryArchive}). Command buffers and encoders are cheap and
+        single-use.
+  \item \textbf{Storage modes}: \ct{.shared} — CPU + GPU, one copy in unified memory;
+        \ct{.private} — GPU only, fastest for static meshes and render targets (fill via a blit);
+        \ct{.memoryless} — lives only in tile memory during a pass (depth, MSAA): no RAM at all.
+        Single-use data under \textbf{4 KB}: \ct{setVertexBytes}, no buffer.
+  \item \textbf{Tile-based GPUs}: Apple GPUs shade on-chip tiles, then write out. A pass's
+        \ct{loadAction} (\ct{.clear} / \ct{.dontCare} vs \ct{.load}) and \ct{storeAction}
+        (\ct{.dontCare} vs \ct{.store}) decide the memory traffic — never load or store what you
+        do not need.
+  \item \textbf{MSL} is C++-based: \ct{vertex}, \ct{fragment} and \ct{kernel} functions; bindings by
+        attribute — \ct{[[buffer(n)]]}, \ct{[[texture(n)]]}, \ct{[[vertex\_id]]},
+        \ct{[[stage\_in]]}, \ct{[[position]]}, \ct{[[thread\_position\_in\_grid]]}. Clip space: x, y in $-1$…$1$ (y up), depth 0…1;
+        texture coordinates start top-left.
+  \item \textbf{MTKView} (MetalKit) wraps a \ct{CAMetalLayer}. Modes: timer (default,
+        \ct{preferredFramesPerSecond} = 60) · on \ct{setNeedsDisplay} (\ct{isPaused} +
+        \ct{enableSetNeedsDisplay}) · explicit \ct{draw()}. Reading
+        \ct{currentRenderPassDescriptor} acquires the drawable — do it \textbf{as late as
+        possible}; the drawable pool is tiny.
+  \item \textbf{Background}: iOS refuses GPU work from a backgrounded app (the command buffer
+        fails) — pause on resign-active. iOS 26 exception:
+        \ct{BGContinuedProcessingTask} + the background-GPU entitlement, where
+        \ct{supportedResources} includes \ct{.gpu}.
+  \item \textbf{Metal 4} (iOS 26, A14 / M1 and later), opt-in beside the classic API:
+        \ct{MTL4CommandQueue}; command buffers made by the \emph{device} with your own
+        \ct{MTL4CommandAllocator}; \ct{MTL4ArgumentTable} for bindings; \ct{MTL4Compiler} for
+        explicit shader compilation; residency sets; \ct{MTLTensor} + an ML encoder; MetalFX
+        frame interpolation.
+\end{itemize}
+
+\hd{Example — the frame loop (MTKViewDelegate)}
+\begin{lstlisting}[language=SwiftSheet]
+func draw(in view: MTKView) {
+  inFlight.wait()                          // at most 3 frames ahead
+  let u = uniforms[frame % 3]; frame += 1  // THIS frame's copy only
+  write(time: CACurrentMediaTime(), into: u)
+  guard let cb = queue.makeCommandBuffer(),
+        let rpd = view.currentRenderPassDescriptor,   // drawable: late
+        let enc = cb.makeRenderCommandEncoder(descriptor: rpd),
+        let drawable = view.currentDrawable
+  else { inFlight.signal(); return }       // never leak a slot
+  enc.setRenderPipelineState(pipeline)     // built once, at load
+  enc.setVertexBuffer(u, offset: 0, index: 0)
+  enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+  enc.endEncoding(); cb.present(drawable)
+  cb.addCompletedHandler { [inFlight] _ in inFlight.signal() }
+  cb.commit()                              // GPU starts; CPU moves on
+}
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Shaders — vertex, fragment, compute (MSL)}
+\begin{lstlisting}[language=SwiftSheet]
+struct VOut { float4 pos [[position]]; float4 color; };
+vertex VOut vmain(uint id [[vertex_id]],
+                  constant float2 *pts [[buffer(0)]]) {
+  return { float4(pts[id], 0, 1), float4(1, 0.5, 0, 1) }; }
+fragment float4 fmain(VOut in [[stage_in]]) { return in.color; }
+kernel void invert(texture2d<float, access::read>  src [[texture(0)]],
+                   texture2d<float, access::write> dst [[texture(1)]],
+                   uint2 gid [[thread_position_in_grid]]) {
+  if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
+  float4 c = src.read(gid); dst.write(float4(1 - c.rgb, c.a), gid); }
+\end{lstlisting}
+
+\hd{SwiftUI shaders (iOS 17) — Metal without the setup}
+\ct{[[ stitchable ]]} MSL functions from \ct{ShaderLibrary}; SwiftUI passes \ct{position}
+(+ colour or layer), you pass \ct{.float}, \ct{.float2}, \ct{.color}, \ct{.image} arguments:
+{\scriptsize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{53mm}@{}}
+\toprule
+\ct{.colorEffect} & \ct{half4 f(float2 position, half4 color, args…)} \\
+\ct{.distortionEffect} & \ct{float2 f(float2 position, args…)}: source point \\
+\ct{.layerEffect} & \ct{half4 f(float2 position, SwiftUI::Layer l, args…)} \\
+\bottomrule
+\end{tabular}}
+\begin{lstlisting}[language=SwiftSheet]
+#include <metal_stdlib>
+#include <SwiftUI/SwiftUI_Metal.h>
+using namespace metal;
+[[ stitchable ]] half4 wave(float2 p, SwiftUI::Layer layer, float t) {
+  return layer.sample(float2(p.x, p.y + 6 * sin(p.x / 20 + t))); }
+Text("Hello").layerEffect(ShaderLibrary.wave(.float(t)),   // Swift
+                          maxSampleOffset: CGSize(width: 0, height: 6))
+\end{lstlisting}
+
+\hd{Where an app developer meets Metal}
+SwiftUI shaders · Core Image kernels · camera / video frames as textures (\ct{CVMetalTextureCache}) ·
+MPS, MPSGraph, Core ML on the GPU · SpriteKit, SceneKit, RealityKit, \ct{drawingGroup()} · games (MetalFX).
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Pipeline or queue built per frame — compile stalls.}
+  \trap{CPU rewrites a buffer the GPU still reads — flicker.}
+  \trap{Early \ct{return} without \ct{signal()} — frozen after 3 frames.}
+  \trap{\ct{waitUntilCompleted()} on main — CPU, GPU in series.}
+  \trap{\ct{.load} / \ct{.store} on every attachment — wasted bandwidth.}
+  \trap{Sampling off \ct{position} with no \ct{maxSampleOffset}.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Compile once, record every frame, commit and let go — three buffers, one semaphore.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} core-animation-rendering (CAMetalLayer,
+render server) · swiftui-gestures-canvas (\ct{drawingGroup}) · core-image-filters (CI kernels) ·
+core-graphics-drawing · coreml-vision-on-device · rendering-pipeline}
+
+\end{document}

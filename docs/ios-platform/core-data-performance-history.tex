@@ -1,0 +1,218 @@
+% core-data-performance-history.tex — Core Data in depth, part 2: faulting and the fetch knobs
+% (batch size, prefetching, projections, counts), NSFetchedResultsController with diffable
+% snapshots, NSBatchInsert/Update/DeleteRequest and merging their IDs, persistent history
+% tracking (tokens, authors, remote-change notifications, purging), app + extension sharing a
+% store, the Core Data launch arguments for debugging.
+% Not repeated (neighbours): contexts, merge policies, parent/child (ios-platform/core-data-contexts-concurrency.tex);
+% basics (ios-swift/persistence.tex); migrations (ios-platform/coredata-migrations-swiftdata.tex);
+% App Group container basics (ios-platform/app-extensions.tex); diffable data sources
+% (ios-platform/collectionview-compositional.tex).
+% Sources (checked 2026-09-29):
+%   https://developer.apple.com/documentation/coredata/consuming-relevant-store-changes
+%   https://developer.apple.com/documentation/coredata/nsbatchdeleterequest
+%   https://developer.apple.com/documentation/coredata/nsbatchinsertrequest
+%   https://developer.apple.com/documentation/coredata/nsfetchedresultscontrollerdelegate
+%   https://developer.apple.com/documentation/coredata/nsmanagedobjectcontext
+% @labels: area=ios-platform kind=api platform=apple topic=data,performance discussion=24
+% @tags: core-data, faulting, fetch-batch-size, prefetching, nsfetchedresultscontroller, diffable-data-source, nsbatchinsertrequest, nsbatchdeleterequest, persistent-history-tracking, remote-change-notification, app-groups, sqldebug
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,static,lazy,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,any,in,for,
+    true,false,as},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcommand\bangeq{\texttt{\hbox{!}\hbox{=}}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  st/.style={box, font=\scriptsize, inner sep=1.5pt, text width=18mm},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  tx/.style={draw=sheetGrey, font=\tiny, minimum width=12mm, minimum height=7mm,
+             inner sep=1pt, align=center},
+  rc/.style={draw=sheetGrey, minimum width=3.6mm, minimum height=3.6mm, inner sep=0pt},
+}
+
+\begin{document}
+
+\sheettitle{Core Data — faulting, FRC, batch requests \& persistent history}{ios-platform · folio}
+
+\oneliner{Fetched objects are \textbf{faults}, filled on first touch from the row cache or a SQL
+\texttt{SELECT} — performance = few round-trips. \textbf{Batch requests} run as SQL on the store:
+fast, but no context sees them until you \textbf{merge the returned IDs}. \textbf{Persistent
+history} logs every transaction (who, what) in the store, so each context, process and
+extension catches up from its own \textbf{token}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ───────── faults ─────────
+  \node[font=\bfseries\small, anchor=west] at (-0.15,4.15) {A fault's life — and the batch-size window};
+  \node[st, draw=sheetGrey, fill=black!5] (f) at (0.85,3.2) {\textbf{fault}\\\ct{objectID} only};
+  \node[st, draw=sheetGreen!70!black, fill=sheetGreen!10] (r) at (4.75,3.2) {\textbf{realized}\\values in context};
+  \node[st, draw=sheetRed, fill=sheetRed!6] (d) at (4.75,1.85) {row deleted\\elsewhere};
+  \draw[hot] ([yshift=1.5mm]f.east) -- node[lbl, above]{1st property access = \textbf{fire}} ([yshift=1.5mm]r.west);
+  \draw[flow] ([yshift=-1.5mm]r.west) -- ([yshift=-1.5mm]f.east);
+  \node[lbl, align=center] at (2.8,2.62) {\ct{refresh(\_:mergeChanges: false)}\\\ct{reset()} $\to$ fault again};
+  \draw[->, thick, sheetRed] (f.south) |- node[lbl, above, pos=0.75, text=sheetRed]{fire \textbf{fails}} (d.west);
+  \node[lbl, anchor=west, align=left, text=sheetGreen!50!black] at (5.75,3.5) {fire: row cache\\hit $\to$ no I/O};
+  \node[lbl, anchor=west, align=left, text=sheetOrange] at (5.75,2.9) {miss $\to$ one\\SQL \ct{SELECT}};
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (5.75,1.85) {\ct{NSObjectInaccessible}\\\ct{Exception} — or an\\\ct{isDeleted} object};
+  % batch-size strip
+  \node[lbl, anchor=west] at (-0.15,1.2) {\ct{fetchBatchSize = 4}: one query for \textbf{all IDs}, then rows page in as you index};
+  \foreach \i in {0,...,17} {
+    \pgfmathsetmacro\x{-0.05+0.42*\i}
+    \node[rc] (c\i) at (\x,0.75) {};
+  }
+  \foreach \i in {4,...,7} { \node[rc, fill=sheetGreen!35] at (c\i) {}; }
+  \foreach \i in {8,...,11} { \node[rc, fill=sheetOrange!35] at (c\i) {}; }
+  \draw[decorate, decoration={brace, amplitude=2pt, mirror}, thick, sheetGreen!60!black]
+    ([yshift=-0.5mm]c4.south west) -- node[lbl, below=2pt, text=sheetGreen!50!black]{on screen: loaded} ([yshift=-0.5mm]c7.south east);
+  \draw[decorate, decoration={brace, amplitude=2pt, mirror}, thick, sheetOrange]
+    ([yshift=-0.5mm]c8.south west) -- node[lbl, below=2pt, text=sheetOrange]{next batch on scroll} ([yshift=-0.5mm]c11.south east);
+  \node[lbl, anchor=west, text=sheetGrey] at (-0.15,-0.1) {grey = ID only · a Swift \ct{map}, \ct{sort} or \ct{filter} over it loads \textbf{every} batch};
+
+  \draw[sheetGrey!40] (8.45,4.3) -- (8.45,-0.3);
+
+  % ───────── history ─────────
+  \node[font=\bfseries\small, anchor=west] at (8.6,4.15) {Persistent history — the store's changelog};
+  \node[tx, fill=sheetRed!8] (t1) at (9.3,3.0) {T41\\\ct{app}};
+  \node[tx, fill=sheetRed!8] (t2) at (10.7,3.0) {T42\\\ct{importer}\\batch insert};
+  \node[tx] (t3) at (12.1,3.0) {T43\\\ct{widget}};
+  \node[tx] (t4) at (13.5,3.0) {T44\\\ct{app}};
+  \node[tx] (t5) at (14.9,3.0) {T45\\\ct{widget}};
+  \node[lbl, anchor=west, align=left, text=sheetGrey] at (15.65,3.0) {each save or\\batch op = one\\transaction};
+  \draw[decorate, decoration={brace, amplitude=3pt}, thick, sheetRed]
+    ([yshift=1mm]t1.north west) -- node[lbl, above=2pt, text=sheetRed]{purgeable} ([yshift=1mm]t2.north east);
+  % tokens
+  \draw[<-, thick, sheetGreen!60!black] (t1.south) -- ++(0,-0.35) node[lbl, below, text=sheetGreen!50!black]{app's token};
+  \draw[<-, thick, sheetBlue] (t3.south) -- ++(0,-0.35) node[lbl, below, text=sheetBlue]{widget's token};
+  \node[lbl, anchor=north west, align=left] at (8.6,1.75)
+    {\textbf{app wakes:} \ct{fetchHistory(after: T41)} $\to$ T42…T45\\
+     skip own author (\ct{author} \bangeq{} \ct{"app"}) $\to$ T42 T43 T45\\
+     \ct{viewContext.mergeChanges(fromContextDidSave:}\\
+     \hspace*{3mm}\ct{tx.objectIDNotification())} $\to$ save token = T45};
+  \node[lbl, anchor=north west, align=left, text=sheetRed] at (13.7,1.75)
+    {\textbf{purge} only behind the\\slowest reader:\\\ct{deleteHistory(before: T43)}\\removes T41, T42};
+  \node[lbl, anchor=west, align=left, text=sheetBlue] at (8.6,0.2)
+    {trigger: \ct{.NSPersistentStoreRemoteChange} — posted for \textbf{every} write, other processes too};
+  \node[lbl, anchor=west, align=left] at (8.6,-0.1)
+    {enable: \ct{NSPersistentHistoryTrackingKey} (iOS 11) + \ct{…RemoteChangeNotificationPostOptionKey} (iOS 13)};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Fetch knobs}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}L{31mm}L{42mm}@{}}
+\toprule
+\textbf{Knob (default)} & \textbf{Effect · use} \\ \midrule
+\ct{returnsObjectsAsFaults} (true) & \ct{false}: filled now; relationships still faults \\
+\ct{includesPropertyValues} (true) & \ct{false}: IDs only, no row cache — deletes \\
+\ct{fetchBatchSize} (0 = all) & IDs first, rows in pages — long lists, FRC \\
+\ct{relationshipKeyPaths}\newline\ct{ForPrefetching} & one query per key path, not a fault per object: kills \textbf{N+1} \\
+\ct{propertiesToFetch} +\newline\ct{.dictionaryResultType} & read-only dicts, no objects; + \ct{NSExpressionDescription} = SUM/AVG in SQL \\
+\ct{count(for:)} · \ct{fetchLimit} & \ct{SELECT COUNT} · \ct{LIMIT} \\
+\bottomrule
+\end{tabular}}\par
+A fetch \textbf{always runs SQL}; its faults then fire from the row cache it filled. Big
+import: save + \ct{reset()} every N rows.
+
+\hd{Batch requests — SQL on the store (SQLite only)}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}L{20mm}L{6mm}L{47mm}@{}}
+\toprule
+\textbf{Request} & \textbf{iOS} & \textbf{Notes · result type for IDs} \\ \midrule
+\ct{NSBatchUpdate}\newline\ct{Request} & 8 & \ct{propertiesToUpdate} = one \ct{UPDATE}\newline\ct{.updatedObjectIDsResultType} \\
+\ct{NSBatchDelete}\newline\ct{Request} & 9 & basic delete rules; \textbf{Deny} unsupported\newline\ct{.resultTypeObjectIDs} \\
+\ct{NSBatchInsert}\newline\ct{Request} & 13 & dicts or a handler; unique constraints checked; no relationships\unverified{} · \ct{.objectIDs} \\
+\bottomrule
+\end{tabular}}\par
+All skip the context: no validation, no \ct{willSave}, no notifications; objects in memory go
+stale. Merge the IDs: class method
+\ct{mergeChanges(fromRemoteContextSave:\allowbreak into:)} — or let history do it.
+
+\hd{Example — FRC + diffable, and a batch delete the UI sees}
+\begin{lstlisting}[language=SwiftSheet]
+let r = NSFetchRequest<Item>(entityName: "Item")
+r.sortDescriptors = [NSSortDescriptor(key: "date", ascending: false)]
+r.fetchBatchSize = 30
+frc = NSFetchedResultsController(fetchRequest: r, managedObjectContext:
+        viewContext, sectionNameKeyPath: nil, cacheName: nil)
+frc.delegate = self; try frc.performFetch()
+func controller(_ c: NSFetchedResultsController<NSFetchRequestResult>,
+    didChangeContentWith s: NSDiffableDataSourceSnapshotReference) {
+  dataSource.apply(s as NSDiffableDataSourceSnapshot<String, NSManagedObjectID>)
+}
+// inside bg.perform: 50k rows gone in one DELETE, then tell viewContext
+let del = NSBatchDeleteRequest(fetchRequest: NSFetchRequest(entityName: "Item"))
+del.resultType = .resultTypeObjectIDs
+let res = try bg.execute(del) as? NSBatchDeleteResult
+let ids = res?.result as? [NSManagedObjectID] ?? []
+NSManagedObjectContext.mergeChanges(fromRemoteContextSave:
+    [NSDeletedObjectsKey: ids], into: [viewContext])   // FRC animates it
+\end{lstlisting}
+
+\hd{NSFetchedResultsController}
+\begin{itemize}
+  \item Watches \textbf{one context} for one fetch request ($\geq$ 1 sort descriptor;
+        \ct{sectionNameKeyPath} follows the first sort key). It moves only when a change lands
+        \emph{in that context} — a save there or a merge.
+  \item iOS 13 \ct{controller(\_:didChangeContentWith:)}: a snapshot of
+        \ct{NSManagedObjectID}s (sections = \ct{String}); implement it and the per-row
+        callbacks stop. A \ct{CollectionDifference} variant exists too.
+  \item An in-place edit keeps the same ID, so the diff sees \emph{nothing}:
+        \ct{reconfigureItems} (iOS 15) the updated IDs, or let cells observe their object.
+\end{itemize}
+
+\hd{Persistent history}
+\begin{itemize}
+  \item Each \ct{NSPersistentHistoryTransaction}: \ct{token}, \ct{timestamp}, \ct{author},
+        \ct{contextName}, \ct{changes} (object ID, insert/update/delete,
+        \ct{updatedProperties}). Name writers: \ct{ctx.transactionAuthor = "importer"}.
+  \item Read on a background context with
+        \ct{NSPersistentHistoryChangeRequest.fetchHistory(after:)}; persist the last token
+        (\ct{NSSecureCoding}) per reader.
+  \item Purge with \ct{deleteHistory(before:)} a token, date or transaction. Once tracked,
+        opening the store \emph{without} the key makes it \textbf{read-only}.
+\end{itemize}
+
+\hd{App + extension on one store}
+Store URL in the App Group container; both targets set both keys on the store description
+\textbf{before} \ct{loadPersistentStores}. Each process has its
+own coordinator, so \ct{automaticallyMergesChangesFromParent} never sees the other — each
+reader keeps its own token in the group and merges foreign authors.
+
+\hd{Debug — launch arguments}
+\ct{-com.apple.CoreData.SQLDebug 1} (up to 4): every SQL statement + time — N+1 shows as a
+\ct{SELECT} per row. \ct{…ConcurrencyDebug 1}: crash on wrong-queue access.
+\ct{…MigrationDebug 1}: migration steps.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{FRC stale after an import: the change never reached its context (no merge, a
+        batch request, another process).}
+  \trap{Batch delete, UI still shows the rows — nobody merged the IDs.}
+  \trap{Purging on a timer before the widget read it: it silently misses changes.}
+  \trap{Reading \ct{objectID} or \ct{isFault} does not fire a fault.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Faults are free until touched; batches are fast until forgotten; history is read after
+your token and purged behind the slowest reader.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} core-data-contexts-concurrency ·
+persistence · coredata-migrations-swiftdata · app-extensions · collectionview-compositional ·
+sqlite-grdb-internals}
+
+\end{document}

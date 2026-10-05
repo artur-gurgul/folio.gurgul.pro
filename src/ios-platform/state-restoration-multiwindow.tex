@@ -1,0 +1,181 @@
+% state-restoration-multiwindow.tex — the UIScene model (application, session,
+% scene, window), AppDelegate vs SceneDelegate, iPad multitasking and size
+% classes, disconnect vs discard, NSUserActivity restoration, SwiftUI scenes,
+% and deep links winning over restoration.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/uikit/uiscenedelegate · .../uiscenesession ·
+%     .../uiapplicationdelegate/application(_:diddiscardscenesessions:)
+%   developer.apple.com/documentation/uikit/restoring-your-app-s-state (stateRestorationActivity;
+%     test: background, then stop in Xcode)
+%   developer.apple.com/documentation/uikit/uiapplication/requestscenesessionactivation(_:useractivity:options:errorhandler:)
+%   developer.apple.com/documentation/uikit/uitraitchangeobservable/registerfortraitchanges(_:handler:) (iOS 17)
+%   developer.apple.com/documentation/swiftui/navigationpath/codable (NavigationPath itself is not Codable)
+%   developer.apple.com/documentation/swiftui/scenestorage · .../openwindowaction
+% @labels: area=ios-platform kind=concept platform=ios topic=platform-apis,ui discussion=47
+% @tags: uiscene, uiscenesession, scenedelegate, multiwindow, state-restoration, nsuseractivity, staterestorationactivity, scene-disconnect, ipad-multitasking, size-classes, scenestorage, openwindow
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,defer,
+    override,super,if,else,return,guard,self,nil,true,false,in,for,async,await,
+    try,as},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  nd/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5mm},
+  per/.style={nd, draw=sheetBlue, fill=sheetBlue!12},
+  live/.style={nd, draw=sheetGreen, fill=sheetGreen!12},
+  gone/.style={nd, draw=sheetGrey, fill=black!5, dashed, text=black!60},
+  dq/.style={nd, draw=sheetOrange, fill=sheetOrange!10, align=center},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Scenes, multiwindow + state restoration}{ios-platform · folio}
+
+\oneliner{Since iOS 13 one \textbf{process} drives many \textbf{UI instances}: each
+window is a \texttt{UIWindowScene} with its own lifecycle, backed by a persistent
+\texttt{UISceneSession}. The system may \textbf{disconnect} a background scene to
+save memory and reconnect it later; restoration hands the scene back its own
+\texttt{NSUserActivity} so it rebuilds \textbf{UI state (ids, not model data)} —
+unless a deep link says where to go.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── object model ──
+  \node[font=\bfseries\small, anchor=west] at (0,3.3) {One process, many scenes};
+  \node[nd, minimum width=30mm] (app) at (2.4,2.65) {\texttt{UIApplication} + \texttt{AppDelegate}};
+  \node[per] (s1) at (0.9,1.75) {\texttt{UISceneSession}};
+  \node[per] (s2) at (3.9,1.75) {\texttt{UISceneSession}};
+  \node[live] (w1) at (0.9,0.95) {\texttt{UIWindowScene}};
+  \node[gone] (w2) at (3.9,0.95) {disconnected};
+  \node[live] (v1) at (0.9,0.15) {\texttt{UIWindow} $\to$ root VC};
+  \draw[flow] (app) -- (s1); \draw[flow] (app) -- (s2);
+  \draw[flow] (s1) -- (w1); \draw[flow, dashed] (s2) -- (w2); \draw[flow] (w1) -- (v1);
+  \node[lbl, anchor=west, text=sheetBlue, align=left] at (4.3,2.65) {session persists: id,\\\texttt{userInfo}, \texttt{stateRestoration-}\\\texttt{Activity}};
+  \node[lbl, anchor=west, text=sheetGreen!55!black] at (2.05,0.4) {live, own\\\texttt{SceneDelegate}};
+  \node[lbl, anchor=west, text=black!60] at (4.75,0.95) {\texttt{sceneDidDisconnect}:\\UI freed, session kept};
+  \node[lbl, anchor=west, text=sheetRed] at (2.9,-0.25) {user closes the window $\to$\\\texttt{didDiscardSceneSessions}};
+  % ── willConnectTo decision ──
+  \draw[sheetGrey!40] (7.25,3.45) -- (7.25,-0.55);
+  \node[font=\bfseries\small, anchor=west] at (7.4,3.3) {\texttt{scene(\_:willConnectTo:options:)} — who decides the first screen?};
+  \node[dq] (q1) at (8.75,2.35) {\texttt{options.urlContexts}\\\texttt{.userActivities}\\\texttt{.notificationResponse}};
+  \node[dq] (q2) at (12.0,2.35) {\texttt{session.state-}\\\texttt{RestorationActivity}?};
+  \node[live, align=center] (a1) at (8.75,0.75) {\textbf{1. route the link}\\(Universal Link, Handoff,\\notification tap)};
+  \node[live, align=center] (a2) at (12.0,0.75) {\textbf{2. restore}\\validate every id;\\missing $\to$ fallback};
+  \node[nd, align=center] (a3) at (15.2,0.75) {\textbf{3. default}\\root screen};
+  \draw[flow] (q1) -- node[lbl, left]{present} (a1);
+  \draw[flow] (q1) -- node[lbl, above]{none} (q2);
+  \draw[flow] (q2) -- node[lbl, left]{yes} (a2);
+  \draw[flow] (q2.east) -| node[lbl, above, pos=0.25]{nil} (a3);
+  \node[lbl, text=sheetRed, anchor=west] at (7.4,-0.3) {a link \textbf{beats} restoration — check connection options first, or the link is silently ignored};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Scenes and windows}
+\begin{itemize}
+  \item \textbf{AppDelegate} = process: \texttt{didFinishLaunching}, push token,
+        services, \texttt{configurationForConnecting}, \texttt{didDiscardSceneSessions}.
+        \textbf{SceneDelegate} = one window: \texttt{willConnectTo},
+        \texttt{sceneDidBecomeActive}/\texttt{WillResignActive}/\allowbreak
+        \texttt{WillEnterForeground}/\allowbreak\texttt{DidEnterBackground},
+        \texttt{sceneDid\allowbreak Disconnect}, \texttt{openURLContexts}, \texttt{continue}
+        (links while running). With scenes, the app delegate's
+        \texttt{applicationDidBecomeActive} family is \textbf{not called}.
+  \item Info.plist \texttt{UIApplicationSceneManifest}:
+        \texttt{UIApplication\allowbreak SupportsMultipleScenes = YES} or the app stays
+        single-window on iPad. Open a window with
+        \texttt{UIApplication.shared.\allowbreak requestScene\allowbreak
+        SessionActivation(\_:userActivity:\allowbreak options:\allowbreak
+        errorHandler:)}: \texttt{nil} session = new window; an existing one = bring
+        it forward — prefer that to spawning duplicates.
+  \item \textbf{Disconnect $\neq$ discard}: disconnect frees a background scene's UI
+        (session kept, may reconnect via \texttt{willConnectTo});
+        \textbf{discard} = the user closed it — clean up per-window data (may
+        arrive at the next launch).
+  \item \texttt{keyWindow} / \texttt{windows} are ambiguous with several scenes: use
+        \texttt{view.window?.windowScene} or \texttt{connectedScenes}.
+\end{itemize}
+
+\section{iPad multitasking}
+\begin{itemize}
+  \item Split View, Slide Over, Stage Manager (iPadOS 16), freely resizable windows
+        (iPadOS 26), external display: the
+        \textbf{system} sizes your window, live. Adapt to \textbf{size classes}
+        (\texttt{horizontalSizeClass} is \texttt{.compact} in a narrow pane on the
+        biggest iPad), never to \texttt{userInterfaceIdiom}.
+  \item React to traits: \texttt{registerForTraitChanges} (iOS 17; replaces
+        \texttt{traitCollectionDidChange}), \texttt{viewWillTransition(to:with:)};
+        \texttt{UISplitViewController} / \texttt{NavigationSplitView} collapse to a
+        stack in compact width.
+  \item Two windows share the process: a global ``current document'' breaks. Shared
+        model at app level, per-window state in the scene.
+\end{itemize}
+
+\section{Restoration + SwiftUI}
+\begin{itemize}
+  \item \texttt{userInfo} = property-list values: ids, offsets, tab, draft text.
+        One \texttt{NSUserActivity} can also drive Handoff
+        (\texttt{isEligibleForHandoff}) and Spotlight.
+  \item Restores after a \textbf{system} kill. Discarded after the user closes the
+        window / swipes the app away, or a crash during restore. \textbf{Test}:
+        background the app, \emph{then} Stop in Xcode, relaunch.
+  \item Legacy: \texttt{restorationIdentifier} + \texttt{encodeRestorableState(with:)},
+        opt-in \texttt{shouldSaveSecureApplicationState}.
+  \item \textbf{SwiftUI}: \texttt{WindowGroup} (multi-instance on iPadOS/macOS);
+        \texttt{@Environment(\textbackslash.openWindow)} $\to$
+        \texttt{openWindow(id:)} / \texttt{openWindow(value:)}.
+        \texttt{@SceneStorage("k")} = small per-scene values, restored
+        automatically; \texttt{@AppStorage} = one \texttt{UserDefaults} for all
+        windows. \texttt{scenePhase} is per scene (combined when read in
+        \texttt{App}).
+\end{itemize}
+
+\section{Example — restore, but let links win}
+\begin{lstlisting}[language=SwiftSheet]
+func scene(_ scene: UIScene,
+           willConnectTo session: UISceneSession,
+           options: UIScene.ConnectionOptions) {
+  guard let ws = scene as? UIWindowScene else { return }
+  window = UIWindow(windowScene: ws)
+  if let url = options.urlContexts.first?.url { router.open(url) }
+  else if let ua = options.userActivities.first {
+    router.continue(ua) }                      // UL / Handoff
+  else if let id = session.stateRestorationActivity?
+            .userInfo?["itemID"] as? String, store.exists(id) {
+    router.show(id) }                          // validated
+  window?.rootViewController = router.root
+  window?.makeKeyAndVisible() }
+// asked on entering the background: keep it cheap
+func stateRestorationActivity(for scene: UIScene)
+    -> NSUserActivity? {
+  let ua = NSUserActivity(activityType: "com.you.viewing")
+  ua.addUserInfoEntries(from: ["itemID": router.currentID])
+  return ua }
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Archiving model objects into restoration — store \textbf{ids} and re-fetch;
+        the record may be gone.}
+  \trap{\texttt{@AppStorage} for per-window UI state: two windows clobber each
+        other. \texttt{@StateObject} inside \texttt{WindowGroup} = one per window.}
+  \trap{\texttt{NavigationPath} is not \texttt{Codable} itself — persist
+        \texttt{path.codable} (a \texttt{CodableRepresentation}) as \texttt{Data}.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Session persists, scene comes and goes} · \textbf{link $>$ restore $>$
+default} · \textbf{ids, not models}.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} app-and-vc-lifecycle (scene
+states) · deep-links-universal-links (entry points) · swiftui-navigation (path) ·
+auto-layout (size classes) · background-execution (jetsam)}
+
+\end{document}

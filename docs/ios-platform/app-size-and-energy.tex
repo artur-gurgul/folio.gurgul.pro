@@ -1,0 +1,189 @@
+% app-size-and-energy.tex — app thinning (slicing, ODR, bitcode gone), the three sizes,
+% measuring size; energy: tail energy, batching, discretionary URLSession, location,
+% Low Power Mode, thermal state, MetricKit, Instruments.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/help/app-store-connect/reference/app-uploads/on-demand-resources-size-limits
+%     (the limits table; "deprecated as of iOS 27 … migrate to Background Assets")
+%   developer.apple.com/documentation/foundation/nsbundleresourcerequest (iOS 9.0, deprecated 27.0)
+%   developer.apple.com/documentation/backgroundassets (iOS 16; Apple-hosted asset packs;
+%     essential / prefetch / on-demand policies)
+%   developer.apple.com/documentation/foundation/urlsessionconfiguration/isdiscretionary
+%   developer.apple.com/documentation/corelocation (significant-change: 500 m, not more often than 5 min)
+%   developer.apple.com/library/archive/documentation/Performance/Conceptual/EnergyGuide-iOS (timer tolerance 10 %)
+%   developer.apple.com/documentation/metrickit · Xcode 14 release notes (bitcode deprecated)
+% Not claimed: a cellular cap configurable by entitlement; background sessions discretionary by default.
+% @labels: area=ios-platform kind=concept platform=ios topic=performance,build discussion=12
+% @tags: app-thinning, slicing, on-demand-resources, nsbundleresourcerequest, bitcode, app-size, radio-tail-energy, batching, isdiscretionary, low-power-mode, thermalstate, metrickit
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,static,
+    true,false,in,AnyObject,Void,String,Bool},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5mm},
+  var/.style={sb, draw=sheetGreen, fill=sheetGreen!10, minimum width=17mm},
+  odr/.style={sb, draw=sheetOrange, fill=sheetOrange!10, minimum width=17mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{App size \& energy — thinning, ODR, what drains the battery}{ios-platform · folio}
+
+\oneliner{\textbf{Size}: the App Store \emph{slices} one universal upload into
+per-device variants, \textbf{asset packs} move optional content out of the
+download, bitcode is \textbf{gone}. \textbf{Energy}: do \emph{less} work, \emph{less
+often}, in \emph{bigger batches}, woken by events not timers, at the lowest fidelity
+the user accepts — the radio \textbf{tail}, GPS and wakeups cost more than bytes.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── left: thinning ──
+  \node[font=\bfseries\small, anchor=west] at (-0.1,3.2) {one upload $\to$ per-device downloads};
+  \node[sb, minimum width=21mm, minimum height=15mm] (up) at (1.0,1.55) {\textbf{upload}\\universal \texttt{.ipa}\\all archs, @2x+@3x,\\all GPU variants};
+  \node[var] (v1) at (4.3,2.55) {iPhone, @3x};
+  \node[var] (v2) at (4.3,1.85) {iPhone, @2x};
+  \node[var] (v3) at (4.3,1.15) {iPad, @2x, GPU 4};
+  \node[lbl] at (4.3,0.62) {… one per device trait set};
+  \foreach \v in {v1,v2,v3} \draw[flow] (up.east) -- (\v.west);
+  \node[lbl, text=sheetGreen!60!black] at (2.6,0.8) {App Store\\\textbf{slicing}};
+  \node[sb, minimum width=15mm] (ph) at (7.1,2.55) {device};
+  \draw[hot] (v1) -- node[lbl, above]{download} node[lbl, below]{(compressed)} (ph);
+  \node[lbl, anchor=south] at (7.1,2.85) {\textbf{install} size = unpacked};
+  \node[odr] (t) at (4.3,-0.05) {asset packs / ODR tags (Apple-hosted)};
+  \draw[hot, dashed] (t.east) -| node[lbl, right, pos=0.75, align=left]{on\\demand} (ph.south);
+  \node[lbl, anchor=west] at (-0.1,-0.55) {cellular: \textbf{download} size vs the 200 MB prompt · loose files in Copy Bundle Resources ship to \emph{every} variant};
+  \draw[sheetGrey!40] (8.55,3.35) -- (8.55,-0.75);
+  % ── right: radio tail energy ──
+  \node[font=\bfseries\small, anchor=west] at (8.7,3.2) {radio tail: same 4 requests, spread vs batched};
+  % spread
+  \node[lbl, anchor=east] at (9.4,2.25) {spread};
+  \draw[sheetGrey] (9.5,1.85) -- (16.4,1.85);
+  \foreach \x in {9.7,11.3,12.9,14.5} {
+    \fill[sheetRed!70] (\x,1.85) rectangle ++(0.18,0.75);
+    \fill[sheetOrange!35] (\x+0.18,1.85) rectangle ++(1.25,0.4);}
+  \node[lbl, text=sheetRed, anchor=west] at (14.85,2.75) {radio high the whole minute};
+  % batched
+  \node[lbl, anchor=east] at (9.4,0.85) {batched};
+  \draw[sheetGrey] (9.5,0.45) -- (16.4,0.45);
+  \fill[sheetRed!70] (9.7,0.45) rectangle ++(0.55,0.75);
+  \fill[sheetOrange!35] (10.25,0.45) rectangle ++(1.25,0.4);
+  \node[lbl, text=sheetGreen!60!black, anchor=west] at (11.7,0.75) {one tail, then the radio \textbf{sleeps}};
+  % legend
+  \fill[sheetRed!70] (8.75,-0.15) rectangle ++(0.2,0.2); \node[lbl, anchor=west] at (9.0,-0.05) {transfer};
+  \fill[sheetOrange!35] (10.3,-0.15) rectangle ++(0.2,0.2); \node[lbl, anchor=west] at (10.55,-0.05) {tail: radio stays up seconds after the last byte (cellular $>$ Wi-Fi)};
+  \node[lbl, anchor=west] at (8.7,-0.55) {bytes are cheap; \emph{waking} the radio is not — the tail dominates small requests};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{App size}
+\begin{itemize}
+  \item \textbf{Slicing} — a variant per device: arch + asset-catalog traits (scale,
+        idiom, Metal GPU family, memory class). Only \textbf{asset catalogs} slice.
+  \item \textbf{Bitcode} — deprecated in Xcode 14; the App Store no longer takes it.
+  \item \textbf{Three sizes} — \emph{upload} (universal) · \emph{download} (compressed
+        variant; the cellular prompt checks it) · \emph{install} (unpacked). Over cellular
+        iOS asks above \textbf{200 MB} (iOS 13+; user-adjustable in Settings).
+  \item \textbf{ODR} (iOS 9, \textbf{deprecated in iOS 27}: ``Use Background Assets'') —
+        tagged resources hosted by the App Store: \emph{initial install},
+        \emph{prefetched}, \emph{on demand}. \texttt{NSBundleResourceRequest(tags:)} +
+        \texttt{beginAccessingResources}; the \textbf{live request} pins them — after
+        \texttt{endAccessingResources}/deinit they are purgeable.
+  \item \textbf{Background Assets} (iOS 16) — asset packs, Apple-hosted (App Store
+        Connect) or self-hosted (\texttt{BAURLDownload}); policies \emph{essential}
+        (before first launch) · \emph{prefetch} · \emph{on-demand}; \texttt{AssetPackManager}.
+  \item \textbf{Measure} — Organizer export, \emph{App Thinning: all variants} $\to$
+        \texttt{App Thinning Size Report.txt} (per variant, compressed + not); App Store
+        Connect file sizes; \texttt{assetutil} on \texttt{Assets.car}.
+  \item \textbf{Shrink} — catalog assets (HEIC, vectors), drop unused images/locales;
+        \texttt{-Osize}, dead-code stripping, symbols in the dSYM, fewer dylibs.
+\end{itemize}
+
+\section{Energy — what drains}
+\begin{itemize}
+  \item \textbf{Radio tail} (diagram) — every wake of cellular/Wi-Fi pays seconds of
+        high power. Polling every 10 s = the radio never sleeps; push (APNs rides one
+        shared system connection) = the OS pays.
+  \item \textbf{CPU wakeups} — timers, polling loops, chatty background work stop deep
+        idle. \texttt{timer.tolerance} $\geq$ 10\% lets iOS coalesce. Off-main $\neq$
+        cheaper: same joules.
+  \item \textbf{GPS} — continuous \texttt{kCLLocationAccuracyBest} is among the worst.
+        Least accuracy you need, \texttt{distanceFilter}, one-shot
+        \texttt{requestLocation()}, significant-change ($\sim$500 m, $\geq$ 5 min) or region
+        monitoring, \textbf{stop} when the screen closes. ``When In Use'' can still drain:
+        mode + accuracy decide, not the permission.
+  \item \textbf{Display + GPU} — \texttt{isIdleTimerDisabled} left on, needless 120 Hz
+        animation, offscreen passes.
+\end{itemize}
+
+\section{Energy — what to do}
+\begin{itemize}
+  \item \textbf{Batch} — buffer analytics, prefetch in one burst, flush on
+        Wi-Fi/charging. \texttt{isDiscretionary = true}: iOS picks the moment (automatic
+        for transfers started in the background). Respect Low Data Mode
+        (\texttt{allowsConstrainedNetworkAccess}).
+  \item \textbf{Low Power Mode} — pause prefetch, autoplay, decoration; never break what
+        the user just asked for. Read
+        \texttt{ProcessInfo.processInfo.isLowPowerModeEnabled}, observe
+        \texttt{NSProcessInfoPowerStateDidChange}.
+  \item \textbf{Thermal} — \texttt{thermalState} \texttt{.nominal}/\texttt{.fair}/\texttt{.serious}/\texttt{.critical}:
+        at \texttt{.serious} cut frame rate, quality, effects.
+  \item \textbf{Measure} — Xcode \emph{Energy Impact} gauge; Instruments \textbf{Energy
+        Log} (on device); field: \textbf{MetricKit} (iOS 13) \texttt{MXMetricPayload}
+        $\sim$daily — \texttt{cpuMetrics}, \texttt{locationActivityMetrics},
+        \texttt{networkTransferMetrics}, \texttt{cellularConditionMetrics},
+        \texttt{MXCPUExceptionDiagnostic}; Organizer $\to$ Energy.
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+let req = NSBundleResourceRequest(tags: ["level-3"])
+req.beginAccessingResources { error in // keep `req` alive
+  if let error { return showRetry(error) }
+  loadLevel3() }            // later: req.endAccessingResources()
+let cfg = URLSessionConfiguration
+  .background(withIdentifier: "sync")
+cfg.isDiscretionary = true             // iOS picks the moment
+cfg.allowsExpensiveNetworkAccess = false // no cellular
+let pi = ProcessInfo.processInfo
+if pi.isLowPowerModeEnabled
+   || [.serious, .critical].contains(pi.thermalState) {
+  prefetcher.pause() }                 // shed optional work
+\end{lstlisting}
+
+\section{Limits (iOS, App Store Connect)}
+{\footnotesize
+\begin{tabular}{@{}l r r@{}}
+\toprule
+ & before iOS 18 & iOS 18+ \\ \midrule
+app bundle & 2 GB & 4 GB \\
+one asset pack & 512 MB & 8 GB \\
+initial install + prefetched & 4 GB & no limit \\
+in use at once & 2 GB & no limit \\
+hosted in total (max 1000 packs) & 20 GB & 70 GB \\
+\bottomrule
+\end{tabular}}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``Enable bitcode for thinning'' — removed; slicing + asset packs remain.}
+  \trap{ODR read by path without a live request — never downloaded, or purged.
+        Packs move \emph{when} bytes arrive: loading UI, retry, offline.}
+  \trap{``One small request can't matter'' — tail energy. Batch it.}
+\end{itemize}
+\textbf{Remember: slice, pack, strip. Batch, defer, coarsen, stop.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} background execution ·
+push notifications · linking \& launch time · instruments \& performance · rendering
+pipeline · crashes \& MetricKit}
+
+\end{document}

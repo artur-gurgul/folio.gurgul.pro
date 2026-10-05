@@ -1,0 +1,202 @@
+% core-image-filters.tex — Core Image: CIImage as a lazy recipe, CIFilter (string API and the
+% typed CIFilterBuiltins API), CIContext cost + reuse + thread safety, render destinations,
+% filter concatenation + region of interest, extent (clampedToExtent / cropped), working colour
+% space, GPU vs CPU, custom Metal kernels (CIColorKernel / CIWarpKernel / CIKernel), the
+% live-camera path, the Vision hand-off.
+% NOT repeated here: Vision / Core ML requests themselves (ai/coreml-vision-on-device.tex),
+% camera session setup (ios-platform/avfoundation-camera-audio.tex), Core Graphics drawing
+% (ios-platform/core-graphics-drawing.tex).
+% Sources (checked 2026-09-29):
+%   developer.apple.com/documentation/coreimage/cicontext (one context per view or background
+%     task; holds an MTLCommandQueue + kernel and intermediate caches; CIContext and CIImage are
+%     immutable and shareable across threads, CIFilter is mutable and is not)
+%   developer.apple.com/documentation/coreimage/cicontextoption/workingcolorspace (default:
+%     extended sRGB with linear gamma)
+%   developer.apple.com/documentation/coreimage/ciimage/clampedtoextent() (blur edge softening,
+%     infinite extent, crop back with cropped(to:))
+%   developer.apple.com/documentation/coreimage/cikernel/init(functionname:frommetallibrarydata:)
+%     (iOS 11; -fcikernel compiler flag, MTLLINKER_FLAGS = -cikernel)
+%   developer.apple.com/documentation/coreimage/cikernel/init(source:) (Core Image Kernel
+%     Language deprecated iOS 12)
+%   developer.apple.com/documentation/coreimage/cifilter-swift.class/gaussianblur() (typed
+%     CIFilterBuiltins API, iOS 13); WWDC20 10008 "Optimize the Core Image pipeline for your video app"
+% @labels: area=ios-platform kind=api platform=ios topic=ui,performance,platform-apis discussion=26
+% @tags: core-image, ciimage, cifilter, cifilterbuiltins, cicontext, lazy-evaluation, filter-chain, extent, working-color-space, cikernel, metal, vision
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,guard,else,return,true,false,nil,self,class,final,
+    import,in,as,try,if,extern,float,float3,float4,dot,step},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  src/.style={box, font=\scriptsize, draw=sheetGrey, fill=black!5, text width=17mm, inner sep=1.5pt},
+  flt/.style={box, font=\scriptsize, draw=sheetOrange, fill=sheetOrange!10, text width=13mm, inner sep=1.5pt},
+  rnd/.style={box, font=\scriptsize, draw=sheetGreen!60!black, fill=sheetGreen!10, inner sep=1.5pt},
+  hdr/.style={font=\bfseries\scriptsize, text=sheetBlue, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Core Image — lazy filter graphs on the GPU}{ios-platform · folio}
+
+\oneliner{A \ct{CIImage} is a \textbf{recipe, not pixels}: applying a \ct{CIFilter} only extends a
+lazy graph. Nothing is computed until a \ct{CIContext} \textbf{renders} a rectangle of it — then
+Core Image walks the graph \emph{backwards} from that rectangle (region of interest),
+\textbf{concatenates} adjacent kernels into as few GPU (Metal) passes as it can, and writes the result
+to a \ct{CGImage}, pixel buffer, texture or file. Contexts are \textbf{expensive — make one and reuse
+it}; contexts and images are immutable and thread-safe, filters are mutable and are not.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- A: build (lazy) then render ----------
+  \node[hdr] at (-0.9,2.45) {A. Build a recipe (free) $\to$ render a rectangle (all the work)};
+  \node[src] (in) at (0,1.2) {\textbf{input}\\CGImage, pixel\\buffer, file URL};
+  \node[flt] (f1) at (2.25,1.2) {\textbf{exposure}\\color kernel};
+  \node[flt] (f2) at (4.0,1.2) {\textbf{sepia}\\color kernel};
+  \node[flt] (f3) at (5.75,1.2) {\textbf{blur}\\general kernel};
+  \node[src, text width=14mm, draw=sheetBlue, fill=sheetBlue!8] (out) at (7.6,1.2) {\ct{outputImage}\\still a recipe};
+  \draw[flow] (in) -- (f1); \draw[flow] (f1) -- (f2); \draw[flow] (f2) -- (f3); \draw[flow] (f3) -- (out);
+  \draw[decorate, decoration={brace, amplitude=3pt}, sheetGrey, thick] (-0.9,1.75) -- (8.5,1.75)
+     node[midway, above=2pt, lbl, text=sheetGrey]{no pixels yet — each \ct{outputImage} returns a bigger graph in microseconds};
+  \node[rnd, text width=26mm] (ctx) at (3.1,-0.25) {\ct{context.createCGImage(out, from: rect)}\\\textbf{render happens here}};
+  \draw[hot] (out.south) |- (ctx.east);
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}, sheetOrange, thick] (1.5,0.65) -- (4.75,0.65)
+     node[midway, below=2pt, lbl, text=sheetOrange!80!black]{\textbf{concatenated} into one GPU program};
+  \node[lbl, anchor=west, align=left, text=sheetGreen!40!black] at (4.95,0.3) {ROI: only the pixels \ct{rect} needs\\are computed; big images in tiles};
+  \node[lbl, anchor=north west, align=left, text width=95mm] at (-0.9,-0.75) {Destinations: \ct{createCGImage} · \ct{render(\_:to: CVPixelBuffer)} · a Metal texture + command buffer ·
+     \ct{CIRenderDestination} · \ct{heifRepresentation} / \ct{writeJPEGRepresentation}};
+  \draw[sheetGrey!40] (8.75,2.55) -- (8.75,-1.2);
+  % ---------- B: extent ----------
+  \node[hdr] at (8.85,2.45) {B. Extent — the blur trap};
+  \draw[sheetBlue, thick, fill=sheetBlue!25] (9.1,0.5) rectangle (10.3,1.7);
+  \node[lbl] at (9.7,0.3) {input 1200×1200};
+  \shade[inner color=sheetBlue!25, outer color=white] (10.7,0.35) rectangle (12.2,1.85);
+  \draw[sheetBlue, dashed] (10.85,0.5) rectangle (12.05,1.7);
+  \node[lbl, text=sheetRed] at (11.45,0.15) {blur: extent grows,\\edges fade to clear};
+  \fill[sheetBlue!25] (12.6,0.25) rectangle (14.0,1.95);
+  \draw[sheetBlue, dashed] (12.7,0.35) rectangle (13.9,1.85);
+  \node[lbl] at (13.3,1.1) {$\infty$};
+  \node[lbl] at (13.3,0.05) {\ct{clampedToExtent()}};
+  \draw[sheetGreen!60!black, very thick, fill=sheetBlue!25] (14.4,0.5) rectangle (15.6,1.7);
+  \node[lbl, text=sheetGreen!40!black] at (15.0,0.3) {\ct{cropped(to:)}};
+  \draw[flow] (10.35,1.1) -- (10.65,1.1); \draw[flow] (12.2,1.1) -- (12.55,1.1); \draw[flow] (14.05,1.1) -- (14.35,1.1);
+  \node[lbl, anchor=north west, align=left, text width=66mm] at (8.85,-0.2)
+     {Outside its extent an image is clear black. Clamp (repeat the edge pixels, infinite extent) \emph{before}
+      the blur, crop back to \ct{input.extent} \emph{after}. Generators (\ct{CIConstantColorGenerator},
+      checkerboard) are infinite too: rendering \ct{.infinite} fails — always crop.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Inputs}: \ct{CIImage(cgImage:)}, \ct{(cvPixelBuffer:)} (camera frames, no copy),
+        \ct{(image:)} from \ct{UIImage} — which \emph{drops}
+        \ct{imageOrientation}: apply \ct{.oriented(\_:)}. Origin is \textbf{bottom-left}, like Quartz.
+  \item \textbf{Two filter APIs}: stringly \ct{CIFilter(name: "CIGaussianBlur")} +
+        \ct{setValue(\_:forKey: kCIInputImageKey)} (typos = runtime \ct{nil}), or typed
+        \ct{import CoreImage.CIFilterBuiltins} (iOS 13) $\to$ \ct{CIFilter.gaussianBlur()} with
+        \ct{inputImage} / \ct{radius} properties.
+  \item \textbf{Lazy + concatenated}: chains of per-pixel (colour) kernels fuse into one program — no
+        intermediate texture per step; a blur or warp needs neighbours, so it may force one.
+  \item \textbf{CIContext} owns an \ct{MTLCommandQueue}, the compiled-kernel cache and intermediate
+        buffers. Apple: \emph{one per view that renders, or per background task} — never per image or
+        per frame. \ct{CIContext(mtlDevice:)} / \ct{(mtlCommandQueue:)} shares your Metal pipeline;
+        \ct{.useSoftwareRenderer: true} forces the (slow) CPU path.
+  \item \textbf{Colour}: inputs are converted into the \textbf{working space} — default
+        \textbf{extended sRGB, linear gamma}, so maths happens in linear light and values beyond 0–1
+        survive; output converts to the destination's space. Masks, depth, data:
+        \ct{.workingColorSpace: NSNull()} turns colour management off.
+  \item \textbf{Custom kernels} are Metal (MSL): \ct{CIColorKernel} (one pixel in, one out),
+        \ct{CIWarpKernel} (returns the \emph{source coordinate}), \ct{CIBlendKernel}, general
+        \ct{CIKernel} (samplers + an ROI callback). Build: \emph{Other Metal Compiler Flags}
+        \ct{-fcikernel}, user setting \ct{MTLLINKER\_FLAGS = -cikernel}. String kernels
+        (\ct{CIKernel(source:)}) are \textbf{deprecated since iOS 12}. MPS or a model inside the
+        graph: \ct{CIImageProcessorKernel}.
+  \item \textbf{Vision hand-off}: the same \ct{CIImage} feeds \ct{VNImageRequestHandler(ciImage:orientation:)};
+        results are \textbf{normalised} (0–1), \textbf{bottom-left} origin — convert with
+        \ct{VNImageRectForNormalizedRect}, then e.g. pixellate only the face rect and composite it back.
+\end{itemize}
+
+\hd{Example — one shared context, typed filters}
+\begin{lstlisting}[language=SwiftSheet]
+import CoreImage.CIFilterBuiltins
+let context = CIContext()                     // ONE, app-wide or per view
+func stylise(_ cg: CGImage) -> CGImage? {
+  let input = CIImage(cgImage: cg)
+  let blur = CIFilter.gaussianBlur()          // typed API, iOS 13
+  blur.inputImage = input.clampedToExtent()   // no fading edges
+  blur.radius = 8
+  let tone = CIFilter.sepiaTone()             // filters: NOT thread-safe
+  tone.inputImage = blur.outputImage; tone.intensity = 0.6
+  guard let out = tone.outputImage?.cropped(to: input.extent)
+  else { return nil }                         // still only a recipe
+  return context.createCGImage(out, from: out.extent)  // GPU work: HERE
+}
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Custom colour kernel (MSL) + applying it}
+\begin{lstlisting}[language=SwiftSheet]
+#include <CoreImage/CoreImage.h>            // Threshold.ci.metal
+extern "C" float4 threshold(coreimage::sample_t s, float t) {
+  float l = dot(s.rgb, float3(0.2126, 0.7152, 0.0722));  // luma
+  return float4(float3(step(t, l)), s.a);   // black or white
+}                                           // Swift side:
+let k = try CIColorKernel(functionName: "threshold",
+                          fromMetalLibraryData: metallibData)
+let bw = k.apply(extent: img.extent, arguments: [img, 0.5])
+\end{lstlisting}
+
+\hd{Live camera — stay on the GPU}
+\ct{AVCaptureVideoDataOutput} $\to$ \ct{CVPixelBuffer} $\to$ \ct{CIImage(cvPixelBuffer:)} $\to$ filters
+$\to$ \ct{context.render} into the \ct{MTKView} drawable's texture (or a
+\ct{CIRenderDestination}) — never \ct{createCGImage} per frame: that is a GPU$\to$CPU readback
+plus an allocation, 30–60 times a second.
+
+\hd{Which tool for an image effect?}
+{\scriptsize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{21mm}>{\raggedright\arraybackslash}p{51mm}@{}}
+\toprule
+\textbf{Core Image} & built-ins, graph optimisation, photo + video, RAW \\
+\textbf{SwiftUI shader} & one view's pixels (\ct{.colorEffect} / \ct{.layerEffect}, iOS 17) \\
+\textbf{Metal} & full control: your own passes, compute, 3D, ML \\
+\textbf{Core Graphics} & drawing shapes and text, not filtering pixels \\
+\bottomrule
+\end{tabular}}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{A new \ct{CIContext} per image or per frame — kernel recompiles, memory spikes, stutter.}
+  \trap{\ct{UIImage(ciImage:)} in a \ct{UIImageView}: still a recipe, rendered on every draw by
+        a context you do not control. Render to a \ct{CGImage} with your shared context.}
+  \trap{Soft transparent borders after a blur, or \ct{createCGImage(out, from: out.extent)}
+        is \ct{nil} (infinite extent) — clamp, then crop.}
+  \trap{Rotated photo — \ct{CIImage(image:)} drops the orientation.}
+  \trap{One \ct{CIFilter} shared between threads — a data race; share images and the context instead.}
+  \trap{Face box drawn in the wrong place — Vision is normalised and bottom-left, UIKit top-left.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``CIImage is the recipe, CIContext is the kitchen — build the kitchen once, cook only
+what's ordered.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} core-graphics-drawing · metal-essentials
+(MTKView, SwiftUI shaders) · coreml-vision-on-device (Vision requests) · avfoundation-camera-audio
+(capture session) · rendering-pipeline (decode + downsample)}
+
+\end{document}

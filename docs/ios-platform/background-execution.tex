@@ -1,0 +1,206 @@
+% background-execution.tex — app states, beginBackgroundTask, BGTaskScheduler
+% (refresh vs processing), background URLSession, background modes, silent
+% push, and what gets an app killed.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/backgroundtasks (BGTaskScheduler iOS 13, BGAppRefreshTask,
+%     BGProcessingTask, BGContinuedProcessingTask iOS 26 + its GPU entitlement)
+%   developer.apple.com/documentation/uikit/uiapplication/beginbackgroundtask(withname:expirationhandler:)
+%   developer.apple.com/documentation/foundation/downloading-files-in-the-background
+%   developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app (priority 5, throttled)
+%   developer.apple.com/documentation/xcode/addressing-watchdog-terminations (0x8badf00d)
+%   developer.apple.com/documentation/xcode/understanding-the-exception-types-in-a-crash-report (0xdead10cc)
+%   developer.apple.com/documentation/backgroundtasks/starting-and-terminating-tasks-during-development (LLDB)
+% (~30 s for beginBackgroundTask is observed behaviour, not a documented number.)
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis,performance discussion=17
+% @tags: begin-background-task, bgtaskscheduler, bgapprefreshtask, bgprocessingtask, background-urlsession, uibackgroundmodes, silent-push, jetsam, watchdog, 0x8badf00d, 0xdead10cc, suspended-state
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,
+    if,else,return,guard,self,nil,true,false,in,async,await,try,as,
+    Task,Bool,Int},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  seg/.style={draw=white, line width=0.6pt, minimum height=5mm, inner sep=0pt,
+              font=\scriptsize\bfseries, anchor=west},
+  bar/.style={rounded corners=1.5pt, minimum height=3.6mm, inner sep=0pt,
+              font=\scriptsize, anchor=west},
+  rl/.style={font=\scriptsize\bfseries, anchor=east, align=right},
+  ev/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  tick/.style={draw=sheetGrey, thin},
+}
+% segment of length #1 cm
+\newcommand\seg[5]{\node[seg, minimum width=#2cm, fill=#3] at (#1,#4) {#5};}
+
+\begin{document}
+
+\sheettitle{Background execution}{ios-platform · folio}
+
+\oneliner{After the user leaves, an app gets a few seconds and is then
+\textbf{suspended}: in memory, no CPU. Every way of running later is either a
+short \textbf{grant} (\texttt{beginBackgroundTask}), a \textbf{request} the
+system schedules when \emph{it} chooses (\texttt{BGTaskScheduler}, silent push), a
+\textbf{hand-off} to a daemon (background \texttt{URLSession}), or a
+\textbf{declared mode} that holds only while it is really in use (audio,
+location, \dots). None of them is guaranteed.}
+
+\smallskip
+\noindent\begin{tikzpicture}[sheet]
+  % row labels
+  \node[rl] at (2.6,0)    {app state};
+  \node[rl] at (2.6,-0.6) {\texttt{beginBackgroundTask}};
+  \node[rl] at (2.6,-1.15){\texttt{BGTaskScheduler}};
+  \node[rl] at (2.6,-1.85) {background \texttt{URLSession}};
+  % state bar
+  \seg{2.8}{1.6}{sheetGreen!55}{0}{Active}
+  \seg{4.4}{1.2}{sheetOrange!55}{0}{Background}
+  \seg{5.6}{4.0}{black!22}{0}{Suspended (frozen)}
+  \seg{9.6}{1.0}{sheetOrange!55}{0}{BG}
+  \seg{10.6}{1.8}{black!22}{0}{Suspended}
+  \seg{12.4}{1.4}{sheetRed!35}{0}{Not running}
+  \seg{13.8}{1.0}{sheetOrange!55}{0}{BG}
+  \seg{14.8}{1.7}{black!22}{0}{Suspended}
+  % events above
+  \draw[hot] (4.4,0.75) node[ev, above]{Home / app switch} -- (4.4,0.3);
+  \draw[->, thick, sheetRed] (12.4,0.75) node[ev, above, text=sheetRed]{jetsam: no callback} -- (12.4,0.3);
+  % beginBackgroundTask
+  \node[bar, minimum width=1.2cm, fill=sheetOrange!25, draw=sheetOrange] at (4.4,-0.6) {\textasciitilde30 s};
+  \node[ev, anchor=west] at (5.65,-0.6) {\texttt{endBackgroundTask} (also in the expiration handler) — or the watchdog kills you};
+  % BGTaskScheduler
+  \fill[sheetBlue] (3.0,-1.15) circle (1.3pt) node[ev, above=1pt]{\texttt{submit}};
+  \draw[flow, dashed] (3.05,-1.15) -- (5.4,-1.15);
+  \draw[tick, thick] (5.4,-1.0) -- (5.4,-1.3);
+  \node[ev, anchor=north] at (5.4,-1.3) {\texttt{earliestBeginDate}};
+  \draw[flow, dashed] (5.45,-1.15) -- (9.55,-1.15) node[ev, pos=0.52, above]{then the system picks (usage, battery)};
+  \node[bar, minimum width=1.0cm, fill=sheetBlue!25, draw=sheetBlue] at (9.6,-1.15) {run};
+  \node[ev, anchor=west] at (10.65,-1.15) {\texttt{setTaskCompleted} · re-submit};
+  % URLSession
+  \node[bar, minimum width=10.1cm, fill=sheetGreen!18, draw=sheetGreen] at (3.7,-1.85)
+    {\texttt{nsurlsessiond} keeps transferring — while suspended and after the app is killed by the system};
+  \draw[hot] (13.8,-1.85) -- (13.8,-0.3);
+  \node[ev, anchor=west, align=left] at (13.85,-1.6) {relaunch $\to$\\\texttt{handleEventsFor\dots}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{States}: Not running · Inactive · Active · \textbf{Background}
+        (running, off screen) · \textbf{Suspended} (in memory, threads frozen).
+        A suspended app can be purged with \textbf{no} callback, so save state
+        on entering the background.
+  \item \textbf{\texttt{beginBackgroundTask}}: time to \emph{finish} a save
+        or upload, \textasciitilde30 s (\texttt{backgroundTimeRemaining} is an
+        estimate). Every begin needs an \texttt{endBackgroundTask}, also in the
+        expiration handler.
+  \item \textbf{BGTaskScheduler} (iOS 13):
+        \textbf{\texttt{BGAppRefreshTask}} = short (\textasciitilde30 s),
+        keeps content fresh; \textbf{\texttt{BGProcessingTask}} = minutes,
+        deferrable maintenance (DB clean-up, ML), usually idle/overnight, can
+        set \texttt{requiresExternalPower} / \texttt{requiresNetworkConnectivity}.
+        Needs the identifiers in Info.plist
+        \texttt{BGTaskSchedulerPermittedIdentifiers}, background mode
+        \texttt{fetch} and/or \texttt{processing}, and \texttt{register} for
+        each \textbf{before launch finishes} (iOS may launch the app \emph{only} to run
+        it). Tasks are \textbf{one-shot}, so re-submit.
+        The system decides when, from app usage, battery, Low Power Mode and
+        the \emph{Background App Refresh} switch.
+  \item \textbf{\texttt{BGContinuedProcessingTask}} (iOS 26): \emph{user-started} work
+        (export) that \textbf{starts in the foreground} and goes on in the background;
+        \texttt{ProgressReporting} shown in a cancellable \textbf{Live Activity};
+        little progress = terminated first; GPU needs an entitlement.
+  \item \textbf{Background \texttt{URLSession}}:
+        \texttt{.background(withIdentifier:)} config, delegate-based (no
+        completion handlers), uploads from a file. The daemon transfers, then
+        relaunches the app in \texttt{handleEventsForBackgroundURLSession}:
+        store its handler, recreate the session with the \textbf{same id}, call
+        the handler on main after \texttt{urlSessionDidFinishEvents}.
+        \texttt{isDiscretionary} lets iOS wait for Wi-Fi and power.
+  \item \textbf{Background modes} (\texttt{UIBackgroundModes}):
+        \texttt{audio}, \texttt{location}, \texttt{voip} (PushKit + CallKit),
+        \texttt{bluetooth-central}/\texttt{-peripheral},
+        \texttt{remote-notification}, \texttt{external-accessory},
+        \texttt{fetch}, \texttt{processing}. The continuous ones hold only
+        \emph{while doing that work}. \textbf{Silent push}
+        (\texttt{content-available:1}, priority 5) = a throttled server-side
+        wake for \textasciitilde30 s.
+\end{itemize}
+
+\section{Which tool for which job}
+{\footnotesize
+\begin{tabular}{@{}l l@{}}
+\toprule
+finish a save on leaving & \texttt{beginBackgroundTask} \\
+fresh content at next open & \texttt{BGAppRefreshTask} \\
+nightly DB / ML clean-up & \texttt{BGProcessingTask} \\
+user-started export & \texttt{BGContinuedProcessingTask} (26) \\
+download 1 GB & background \texttt{URLSession} \\
+server says ``new data'' & silent push (throttled) \\
+playing, navigating, calling & the matching background mode \\
+\bottomrule
+\end{tabular}}
+
+\columnbreak
+
+\section{What gets you killed}
+\begin{itemize}
+  \item \textbf{Jetsam}: memory pressure; background/suspended and big apps go
+        first, with no callback. Keep the background footprint small.
+  \item \textbf{Watchdog} (\texttt{0x8badf00d}): main thread blocked too long
+        (slow launch, sync I/O), or a background task never ended.
+  \item \textbf{\texttt{0xdead10cc}}: suspended while holding a file lock
+        (SQLite in an App Group). Wrap the write in a background task.
+  \item Too much background CPU, or a faked mode (silent audio).
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+let bg = BGTaskScheduler.shared, rid = "com.you.refresh"
+// in didFinishLaunching, BEFORE it returns:
+bg.register(forTaskWithIdentifier: rid, using: nil) {
+  handle($0 as! BGAppRefreshTask) }
+func schedule() {
+  let r = BGAppRefreshTaskRequest(identifier: rid)
+  r.earliestBeginDate = .now + 15 * 60  // not before; no promise
+  try? bg.submit(r) }
+func handle(_ task: BGAppRefreshTask) {
+  schedule()                             // one-shot: re-arm first
+  let t = Task { task.setTaskCompleted(success: await sync()) }
+  task.expirationHandler = { t.cancel() } }
+var id = UIBackgroundTaskIdentifier.invalid  // finish a save
+id = app.beginBackgroundTask { app.endBackgroundTask(id) }
+store.save { app.endBackgroundTask(id) }
+\end{lstlisting}
+\textbf{Debug} (the debugger stops tasks running): pause, then in LLDB\\
+\texttt{\scriptsize e -l objc -- (void)[[BGTaskScheduler sharedScheduler]}\\
+\texttt{\scriptsize\ \ \_simulateLaunchForTaskWithIdentifier:@"com.you.refresh"]}\\
+(\texttt{\_simulateExpiration\dots} tests the expiration handler).
+
+\section{Traps}
+\begin{itemize}
+  \trap{``My BG task never runs'': running under the debugger, never re-submitted,
+        identifier missing from Info.plist, registered too late, user rarely
+        opens the app, Low Power Mode, or Background App Refresh is off.}
+  \trap{\texttt{earliestBeginDate} is a \emph{not-before} date, not a schedule.}
+  \trap{After the user \textbf{force-quits} (swipe up): no BG tasks, no silent
+        push, and pending background-session transfers are \textbf{cancelled}.
+        VoIP PushKit still works.}
+  \trap{On a background-session relaunch, recreate the session with the
+        \emph{same identifier} or its delegate events are never delivered.}
+  \trap{Skipping \texttt{setTaskCompleted} or the URLSession handler costs
+        future background time.}
+  \trap{\texttt{beginBackgroundTask} is for \emph{finishing}, not polling
+        (was \textasciitilde3 min, now \textasciitilde30 s).}
+\end{itemize}
+
+\section{Remember}
+\textbf{Grant · Request · Hand-off · Mode} — none is a promise.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} push notifications (silent, PushKit) · app / scene lifecycle · Core Location significant-change · CoreBluetooth state restoration · Live Activities}
+
+\end{document}

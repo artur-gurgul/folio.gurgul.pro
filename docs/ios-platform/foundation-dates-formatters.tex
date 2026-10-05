@@ -1,0 +1,180 @@
+% foundation-dates-formatters.tex — Date as an instant, Calendar/TimeZone/Locale,
+% DST-safe arithmetic, DateFormatter vs ISO8601DateFormatter vs FormatStyle, testing.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/foundation/date (reference date 2001-01-01 UTC) · .../calendar
+%   developer.apple.com/documentation/foundation/dateformatter (thread safety: iOS 7+; en_US_POSIX QA1480)
+%   developer.apple.com/documentation/foundation/iso8601dateformatter (.withFractionalSeconds, iOS 11)
+%   developer.apple.com/documentation/foundation/relativedatetimeformatter (iOS 13) · FormatStyle (iOS 15)
+%   developer.apple.com/documentation/swift/clock (Swift 5.7: ContinuousClock, SuspendingClock)
+%   unicode.org/reports/tr35/tr35-dates.html (date field symbols: y vs Y, d vs D, H vs h)
+%   EU summer time: last Sunday of March, 01:00 UTC (2026-03-29). Diagram arithmetic:
+%   796 437 000 s after 2001-01-01 = 2026-03-29 00:30 UTC.
+% @labels: area=ios-platform kind=api platform=apple topic=data,testing discussion=32
+% @tags: date, calendar, timezone, dst, dateformatter, en-us-posix, iso8601dateformatter, formatstyle, week-based-year,relativedatetimeformatter, continuousclock, inject-time
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,static,
+    true,false,AnyObject,Void,String,Bool,Date,Int},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5mm},
+  lens/.style={sb, draw=sheetGreen, fill=sheetGreen!10, align=left, minimum width=33mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Foundation — dates, calendars, formatters}{ios-platform · folio}
+
+\oneliner{A \texttt{Date} is an \textbf{instant}: a \texttt{Double} of seconds since
+\textbf{2001-01-01 00:00 UTC} — no zone, no calendar, no locale. \textbf{Calendar +
+TimeZone + Locale} are the lens that turns it into a human day and does the arithmetic;
+\textbf{formatters} are the (costly) bridge to strings — POSIX/ISO 8601 for machines,
+localized styles for people.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── left: one instant, four lenses ──
+  \node[font=\bfseries\small, anchor=west] at (-0.1,3.05) {one instant, four wall clocks};
+  \node[sb, minimum width=30mm, minimum height=13mm] (d) at (1.5,1.35)
+     {\textbf{Date}\\\texttt{796437000.0}\\s since 2001-01-01 UTC};
+  \node[lens] (u) at (5.6,2.55) {\texttt{UTC} \hfill Sun 29 Mar \textbf{00:30}};
+  \node[lens] (w) at (5.6,1.8)  {\texttt{Europe/Warsaw} CET \hfill Sun \textbf{01:30}};
+  \node[lens] (t) at (5.6,1.05) {\texttt{Asia/Tokyo} +9 \hfill Sun \textbf{09:30}};
+  \node[lens, draw=sheetRed, fill=sheetRed!7] (n) at (5.6,0.3) {\texttt{America/New\_York} EDT \hfill \textbf{Sat} 20:30};
+  \foreach \k in {u,w,t,n} \draw[flow] (d.east) -- (\k.west);
+  \node[lbl, anchor=west] at (-0.1,-0.35) {same \texttt{Date}, different \emph{day}: ``stored in UTC, shows the wrong day'' = the \textbf{display} zone};
+  \draw[sheetGrey!40] (7.95,3.2) -- (7.95,-0.5);
+  % ── right: DST spring-forward, Europe/Warsaw, Sun 29 Mar 2026 ──
+  \node[font=\bfseries\small, anchor=west] at (8.1,3.05) {+86400 s $\neq$ +1 day (Warsaw, DST 29 Mar 2026)};
+  \draw[thick, sheetGrey] (9.2,1.2) -- (16.2,1.2);
+  \node[lbl, anchor=east] at (9.15,1.2) {Sat\\10:00};
+  \draw[sheetGrey] ({9.2+8*0.28},1.12) -- ({9.2+8*0.28},1.28);
+  \node[lbl, below] at ({9.2+8*0.28},1.1) {18:00 {\color{sheetGrey}+8 h}};
+  % the gap
+  \fill[sheetRed] ({9.2+16*0.28},1.1) rectangle ({9.2+16*0.28+0.07},1.3);
+  \node[lbl, anchor=south east, text=sheetRed, align=right] at ({9.2+16*0.28+0.05},1.3) {Sun 02:00 CET $\to$ 03:00 CEST\\+16 h: the hour that never exists};
+  \draw[sheetGrey] ({9.2+23*0.28},1.1) -- ({9.2+23*0.28},1.3);
+  \draw[sheetGrey] ({9.2+24*0.28},1.1) -- ({9.2+24*0.28},1.3);
+  % arrows
+  \draw[->, thick, sheetGreen!70!black] (9.2,1.28) to[bend left=24]
+     node[lbl, above, text=sheetGreen!60!black, pos=0.45]{\texttt{cal.date(byAdding: .day, value: 1, to:)}} ({9.2+23*0.28},1.28);
+  \node[lbl, text=sheetGreen!60!black, anchor=south] at ({9.2+23*0.28},1.95) {Sun \textbf{10:00}\\23 h real};
+  \draw[->, thick, sheetRed] (9.2,1.1) to[bend right=12] ({9.2+24*0.28},1.1);
+  \node[lbl, text=sheetRed] at (12.6,0.45) {\texttt{date.addingTimeInterval(86400)} $\to$ Sun \textbf{11:00} CEST — wrong wall time};
+  \node[lbl, anchor=west] at (8.1,-0.35) {autumn: a 25 h day, 02:00--03:00 happens \emph{twice}; \texttt{startOfDay} $\neq$ 00:00 where midnight is skipped};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Date} — \texttt{timeIntervalSinceReferenceDate} (2001) /
+        \texttt{timeIntervalSince1970} (Unix); \texttt{Date.now} (iOS 15). Comparing
+        and storing instants needs no zone. JS sends \textbf{ms} epochs — divide by 1000.
+  \item \textbf{Calendar} carries \texttt{timeZone}, \texttt{locale},
+        \texttt{firstWeekday}: \texttt{date(byAdding:value:to:)},
+        \texttt{dateComponents(\_:from:to:)}, \texttt{startOfDay(for:)},
+        \texttt{isDateInToday}. \texttt{.current} = user settings (maybe Buddhist/Japanese); pin
+        \texttt{Calendar(identifier: .gregorian)} for business rules.
+  \item \textbf{Days between} = day delta of the two \texttt{startOfDay}s, never
+        \texttt{interval / 86400}. \texttt{DateInterval} for overlap/\texttt{contains}.
+  \item \textbf{DateFormatter} — ICU-backed, \textbf{expensive to create} (a Time
+        Profiler classic in \texttt{cellForRow}) $\to$ \texttt{static let}. Thread-safe to
+        format/parse (iOS 7+) if no one mutates it. User-facing:
+        \texttt{dateStyle}/\texttt{timeStyle} or
+        \texttt{setLocalizedDateFormatFromTemplate("MMMd")}, never a raw pattern.
+  \item \textbf{Fixed format} (wire, logs) = \texttt{locale = en\_US\_POSIX} + explicit
+        \texttt{timeZone}; else a 12-hour or non-Gregorian user setting breaks
+        \texttt{HH}/\texttt{yyyy} parsing.
+  \item \textbf{ISO8601DateFormatter} — default \texttt{.withInternetDateTime};
+        \texttt{.123Z} returns \textbf{nil} unless \texttt{.withFractionalSeconds} (iOS 11).
+        \texttt{JSONDecoder .iso8601} also rejects fractions $\to$ \texttt{.custom}.
+  \item \textbf{FormatStyle} (iOS 15) — value types, cached by the system:
+        \texttt{d.formatted(date: .abbreviated, time: .shortened)},
+        \texttt{.dateTime.weekday(.wide).hour()}, \texttt{.iso8601},
+        \texttt{.relative(presentation: .named)}; parse with
+        \texttt{Date(str, strategy: .iso8601)}.
+  \item \textbf{RelativeDateTimeFormatter} (iOS 13) — ``3 h ago'', ``yesterday''
+        (\texttt{dateTimeStyle = .named}); still a formatter: cache it, set calendar.
+  \item \textbf{Server vs device} — wire = instants (UTC ISO 8601 or epoch); render in the
+        user's zone. \emph{Local} rules (``9:00 every day'', birthdays, all-day events) =
+        \texttt{DateComponents} + a zone \textbf{identifier} (\texttt{Europe/Warsaw}),
+        never a fixed offset (\texttt{+02:00} changes with DST).
+\end{itemize}
+
+\section{Testing — inject time}
+\texttt{Date()} inside logic = untestable + flaky across CI zones. Inject
+\texttt{now: ()~\hbox{-}\hbox{>}~Date} (or a \texttt{Clock}, Swift 5.7 / iOS 16) \textbf{and} a
+\texttt{Calendar} with a fixed \texttt{TimeZone} + \texttt{Locale}; test the DST days
+and 23:59 $\to$ 00:00 explicitly. Elapsed time: \texttt{ContinuousClock} (counts
+sleep) / \texttt{SuspendingClock} (pauses) or \texttt{CACurrentMediaTime()} —
+\textbf{never} \texttt{Date() - start}: NTP or the user moves the wall clock.
+
+\columnbreak
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+enum Formatters {                     // build ONCE, reuse
+  static let wire: DateFormatter = {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX") // fixed fmt
+    f.timeZone = TimeZone(identifier: "UTC")
+    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXXXX" // yyyy!
+    return f }()
+}
+var cal = Calendar(identifier: .gregorian)
+cal.timeZone = TimeZone(identifier: "Europe/Warsaw")!
+let next = cal.date(byAdding: .day, value: 1, to: now)!
+let days = cal.dateComponents([.day],
+  from: cal.startOfDay(for: a), to: cal.startOfDay(for: b)).day
+now.formatted(date: .abbreviated, time: .shortened) // UI
+let d = try Date("2026-03-29T08:30:00Z", strategy: .iso8601)
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{+ 86400} = ``24 h later'', not ``tomorrow'' — 23/25 h days (diagram).}
+  \trap{\texttt{YYYY} = \emph{week-based} year: some late-December days print next year.
+        \texttt{DD} = day of year, \texttt{hh} = 12-hour. Use \texttt{yyyy}/\texttt{dd}/\texttt{HH}.}
+  \trap{Fixed format without \texttt{en\_US\_POSIX} — works on your phone, fails for
+        a user with 12-hour time or a Buddhist calendar.}
+  \trap{\texttt{.dateTime} / \texttt{dateStyle} output on the wire — localized, unparsable.}
+  \trap{Mutating \texttt{dateFormat}/\texttt{locale} of a shared formatter while another
+        thread formats — configure once, then read-only.}
+  \trap{Off-by-one ``expires in N days'' near midnight — compared instants, not
+        day boundaries in the \emph{user's} zone.}
+  \trap{Client-side time gates (trial, rate limit) — the user can roll the clock back;
+        enforce on the server.}
+\end{itemize}
+
+\section{Pattern letters (Unicode TR35)}
+{\footnotesize
+\begin{tabular}{@{}l l l l@{}}
+\toprule
+\texttt{yyyy} & calendar year & \texttt{YYYY} & \textbf{week-based} year \\
+\texttt{MM} · \texttt{MMM} & 03 · Mar & \texttt{dd} · \texttt{DD} & day of month · \textbf{of year} \\
+\texttt{HH} · \texttt{hh} & 0–23 · 1–12 & \texttt{a} & AM/PM \\
+\texttt{mm} · \texttt{ss} & minute · second & \texttt{SSS} & fraction \\
+\texttt{E} · \texttt{EEEE} & Sun · Sunday & \texttt{XXXXX} & \texttt{Z} or \texttt{+02:00} \\
+\bottomrule
+\end{tabular}}
+
+\section{Remember}
+\textbf{Instant in, instant out; the zone is chosen at the edge.} Add \emph{days} with a
+Calendar, \emph{durations} with a Clock, and never write \texttt{YYYY}.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} async \& network testing
+(clocks) · testable design seams · foundation essential types · strings \&
+collections · accessibility \& localization · Codable (\texttt{dateDecodingStrategy})}
+
+\end{document}

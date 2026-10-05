@@ -1,0 +1,203 @@
+% screen-time-api.tex — the Screen Time API: FamilyControls (authorization, picker, opaque
+% tokens), ManagedSettings (+ ManagedSettingsUI: stores, shields, named stores), DeviceActivity
+% (schedules, threshold events, monitor extension, usage reports), the four extensions, the
+% entitlement, App Group sharing, the privacy model, and the iOS 26.4 / 26.5 additions.
+% Neighbours NOT repeated: app-extensions (processes, App Groups in general),
+% background-execution, app-hardening-privacy, privacy-compliance.
+% Sources (checked 2026-09-29):
+%   https://developer.apple.com/documentation/familycontrols
+%   https://developer.apple.com/documentation/familycontrols/authorizationcenter/requestauthorization(for:)  (iOS 16)
+%   https://developer.apple.com/documentation/familycontrols/familycontrolsmember
+%   https://developer.apple.com/documentation/familycontrols/familyactivityselection
+%   https://developer.apple.com/documentation/familycontrols/familyactivitypicker
+%   https://developer.apple.com/documentation/familycontrols/authorizationstatus/approvedwithdataaccess  (iOS 26.4)
+%   https://developer.apple.com/documentation/familycontrols/familyactivitydata  (iOS 26.4)
+%   https://developer.apple.com/documentation/familycontrols/requesting-the-family-controls-entitlement
+%   https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.family-controls
+%   https://developer.apple.com/documentation/managedsettings/managedsettingsstore  (+ init(named:), iOS 16)
+%   https://developer.apple.com/documentation/managedsettings/shieldsettings
+%   https://developer.apple.com/documentation/managedsettings/token
+%   https://developer.apple.com/documentation/managedsettings/shieldactiondelegate
+%   https://developer.apple.com/documentation/managedsettings/shieldaction  (submenu items: iOS 26.4)
+%   https://developer.apple.com/documentation/managedsettings/shieldactionresponse  (openParentalControlsApp: iOS 26.5)
+%   https://developer.apple.com/documentation/managedsettingsui/shieldconfigurationdatasource
+%   https://developer.apple.com/documentation/deviceactivity/deviceactivitycenter  (+ MonitoringError)
+%   https://developer.apple.com/documentation/deviceactivity/deviceactivitymonitor
+%   https://developer.apple.com/documentation/deviceactivity/deviceactivityevent  (includesPastActivity: iOS 17.4)
+%   https://developer.apple.com/documentation/deviceactivity/deviceactivityreport
+%   https://developer.apple.com/documentation/deviceactivity/deviceactivityreportscene
+%   https://developer.apple.com/videos/play/wwdc2021/10123/   (Meet the Screen Time API)
+%   https://developer.apple.com/videos/play/wwdc2022/110336/  (What's new: individual, 50 named stores, most restrictive wins, reports)
+% @labels: area=ios-platform kind=api platform=ios topic=platform-apis,security discussion=44
+% @tags: screen-time, familycontrols, managedsettings, deviceactivity, family-activity-picker, opaque-tokens, shield, device-activity-monitor, device-activity-report, parental-controls, app-extensions, entitlements
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={let,var,func,class,override,try,await,async,in,true,false,nil,
+    if,for,return,struct,extension,static,import,super},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt,
+  literate={??}{{\hbox{?}\hbox{?}}}2 {->}{{\hbox{-}\hbox{>}}}2
+           {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{Screen Time API — FamilyControls · ManagedSettings · DeviceActivity}{ios-platform · folio}
+
+\oneliner{Three frameworks, one privacy trick. \textbf{FamilyControls} authorizes the app and lets the
+user pick apps/sites in a system picker that hands back \textbf{opaque tokens} — the app \textbf{never
+learns which apps}. \textbf{ManagedSettings} puts tokens into a \textbf{store} the \emph{system}
+enforces (shields, restrictions). \textbf{DeviceActivity} wakes a \textbf{monitor extension} on schedules
+and usage thresholds. Usage data is shown only by a \textbf{sandboxed report extension}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    nd/.style={box, font=\scriptsize, inner sep=1.5pt, align=center},
+    app/.style={nd, draw=sheetGreen, fill=sheetGreen!10, text width=30mm},
+    shr/.style={nd, draw=sheetBlue, fill=sheetBlue!10, text width=30mm},
+    ext/.style={nd, draw=sheetOrange, fill=sheetOrange!10, text width=38mm, align=left},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    ttl/.style={font=\scriptsize\bfseries, inner sep=1pt}]
+  % ---------- column titles ----------
+  \node[ttl, text=sheetGreen!50!black] at (1.6,4.8) {your app (sees tokens)};
+  \node[ttl, text=sheetBlue] at (5.6,4.8) {shared by app + extensions};
+  \node[ttl, text=sheetGrey] at (9.75,4.8) {iOS Screen Time};
+  \node[ttl, text=sheetOrange!80!black] at (14.2,4.8) {your extensions (system-launched)};
+  % ---------- host app ----------
+  \node[app] (auth) at (1.6,3.8) {\ct{AuthorizationCenter.shared}\\\ct{.requestAuthorization(for:)}\\{\tiny\ct{.child} (guardian) · \ct{.individual} (Face ID)}};
+  \node[app, fill=black!5, draw=sheetGrey] (pick) at (1.6,2.8) {\ct{FamilyActivityPicker}\\{\tiny user chooses; app sees no names}};
+  \node[app] (sel) at (1.6,1.8) {\ct{FamilyActivitySelection}\\{\tiny\ct{applicationTokens}}\\{\tiny\ct{categoryTokens}}\\{\tiny\ct{webDomainTokens}}};
+  \node[app] (sched) at (1.6,0.8) {\ct{DeviceActivityCenter()}\\\ct{.startMonitoring(\_:during:)}};
+  \node[app] (rv) at (1.6,-0.15) {\ct{DeviceActivityReport(}\\\ct{context, filter:)} view};
+  \draw[flow] (pick) -- (sel);
+  % ---------- shared ----------
+  \node[shr] (store) at (5.6,3.2) {\ct{ManagedSettingsStore(named:)}\\{\tiny\ct{.shield.applications = tokens}}\\{\tiny iOS 16: $\leq$ 50 / process}};
+  \node[shr] (grp) at (5.6,1.8) {\textbf{App Group}\\{\tiny selection is \ct{Codable}: JSON in}\\{\tiny \ct{UserDefaults(suiteName:)}}};
+  \draw[hot] (sel.east) -- node[l, above, pos=0.45]{encode} (grp.west);
+  \draw[hot] ([yshift=2mm]sel.east) -- (3.5,2.0) -- (3.5,3.2) -- (store.west);
+  \node[l, rotate=90, above] at (3.5,2.6) {assign};
+  % ---------- boundary ----------
+  \draw[sheetRed, very thick, dashed] (7.75,4.45) -- (7.75,-0.55);
+  \node[l, text=sheetRed, rotate=90, align=center] at (8.0,2.05) {\textbf{token boundary}\\names live right of it};
+  % ---------- system ----------
+  \node[nd, draw=sheetGrey, fill=black!6, text width=24mm, minimum height=37mm] (sys) at (9.75,2.25)
+    {\textbf{enforces} shields\\{\tiny most restrictive}\\{\tiny store wins}\\[3pt]\textbf{counts} foreground\\time per token\\[3pt]\textbf{launches}\\extensions when\\a boundary is\\crossed or a\\shield is shown};
+  \draw[hot] (store.east) -- node[l, above, pos=0.22]{persist} (sys.north west |- store.east);
+  \draw[hot] (sched.east) -- node[l, above, pos=0.35]{schedule + events} (sys.south west |- sched.east);
+  % ---------- extensions ----------
+  \node[ext] (mon) at (14.2,3.6) {\textbf{Device Activity Monitor}\\\ct{intervalDidStart/End(for:)}\\\ct{eventDidReachThreshold(\_:activity:)}};
+  \node[ext] (cfg) at (14.2,2.45) {\textbf{Shield Configuration}\\\ct{ShieldConfigurationDataSource}\\{\tiny title, subtitle, icon, colours, buttons}};
+  \node[ext] (act) at (14.2,1.3) {\textbf{Shield Action}\\\ct{ShieldActionDelegate.handle(action:for:)}\\{\tiny $\to$ \ct{.close} · \ct{.defer} (redraw) · \ct{.none}}};
+  \node[ext] (rep) at (14.2,-0.1) {\textbf{Device Activity Report}\\\ct{DeviceActivityReportScene}\\{\tiny SwiftUI · no network · data can't leave}};
+  \draw[hot] (sys.east |- mon.west) -- node[l, above]{wake} (mon.west);
+  \draw[hot] (sys.east |- cfg.west) -- node[l, above]{shield shown} (cfg.west);
+  \draw[flow] (act.west) -- node[l, above]{button tap} (sys.east |- act.west);
+  % monitor writes the named store (over the top)
+  \draw[hot, draw=sheetBlue] (mon.north) -- ++(0,0.35) -| node[l, above, pos=0.25]{monitor reads App Group, sets / clears the \emph{same} named store} (store.north);
+  % report: host embeds, extension renders
+  \draw[hot, draw=sheetRed] (rv.east |- rep.west) -- node[l, above, pos=0.3, text=sheetRed]{host embeds the view} node[l, above, pos=0.8, text=sheetRed]{gets \textbf{pixels only},\\never the data} (rep.west);
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Authorize} (iOS 16+, async throws). \ct{.child}: iCloud \textbf{Family Sharing child};
+        a guardian approves \emph{on the child's device} (Apple ID + password) $\to$ the app \textbf{can't
+        be deleted} without them, iCloud sign-out blocked. \ct{.individual}: Face ID / Touch ID /
+        passcode, \textbf{no} lock, many apps per device. Status: \ct{.notDetermined/.denied/.approved}.
+  \item \textbf{Tokens}: \ct{Token<T>} = \ct{ApplicationToken}, \ct{ActivityCategoryToken},
+        \ct{WebDomainToken} — \ct{Codable}, \ct{Hashable}, no name inside. SwiftUI \ct{Label(token)}:
+        the system draws icon + name, your code can't read it. \textbf{Revoking voids them all.}
+  \item \textbf{Store} groups: \ct{shield}, \ct{application} (\ct{denyAppRemoval}), \ct{appStore},
+        \ct{account}, \ct{media}, \ct{webContent}, \ct{passcode}, \ct{cellular}\ldots\ \ct{nil} removes
+        \emph{your} value. Settings \textbf{persist without your process}.
+  \item \textbf{Shield}: \ct{applications}, \ct{webDomains} (token sets); \ct{applicationCategories},
+        \ct{webDomainCategories}: \ct{.specific(\_:except:)} · \ct{.all(except:)} · \ct{.none}.
+  \item \textbf{Schedule}: \ct{DeviceActivitySchedule} (start/end \ct{DateComponents}, \ct{repeats},
+        \ct{warningTime}). \textbf{Event}: token sets + \ct{threshold} of cumulative \textbf{foreground}
+        time (empty sets = all); \ct{includesPastActivity} iOS 17.4. \ct{warningTime} adds
+        \ct{interval\-Will\-Start/\-EndWarning}, \ct{eventWillReachThresholdWarning}. Throws
+        \ct{MonitoringError} (\ct{.excessiveActivities}, \ct{.intervalTooShort}\ldots).
+\end{itemize}
+
+\hd{Example — allow social apps only 17:00–20:00}
+\begin{lstlisting}[language=SwiftSheet]
+// App: after .familyActivityPicker(isPresented:selection:)
+let social = ManagedSettingsStore(named: .init("social"))
+social.shield.applications = sel.applicationTokens
+social.shield.applicationCategories = .specific(sel.categoryTokens)
+group.set(try JSONEncoder().encode(sel), forKey: "social") // App Group
+try DeviceActivityCenter().startMonitoring(.init("evening"),
+  during: DeviceActivitySchedule(intervalStart: DateComponents(hour: 17),
+          intervalEnd: DateComponents(hour: 20), repeats: true))
+// Device Activity Monitor extension (principal class)
+class Monitor: DeviceActivityMonitor {
+  override func intervalDidStart(for a: DeviceActivityName) {
+    ManagedSettingsStore(named: .init("social")).clearAllSettings() }
+  override func intervalDidEnd(for a: DeviceActivityName) {
+    // decode the selection from the App Group, re-assign the shield
+  } }
+\end{lstlisting}
+
+\hd{Entitlement, setup}
+\ct{com.apple.developer.family-controls} on the app \textbf{and each extension}. Adding the capability
+covers \textbf{development}; for \textbf{distribution} the Account Holder requests it (request form or
+the \emph{Capability Requests} tab) — once per extension type too: Monitor, Report, Shield Action,
+Shield Configuration. Apple grants it as a \textbf{managed capability}. One App Group on every target.
+
+\columnbreak
+
+\hd{New in iOS 26.x (docs)}
+\textbf{26.4}: shield \ct{secondaryButtonSubmenuItems} $\to$ \ct{.firstSecondarySubmenuItemPressed}
+\ldots\ \ct{third\ldots}. \textbf{26.4, EU only}: \ct{.approvedWithDataAccess} + \ct{FamilyActivityData}
+(real bundle ids, visited domains) with \ct{\ldots family-controls.app-and-website-usage}; \textbf{one
+app per device}; elsewhere \ct{FamilyControlsError.unavailable}. \textbf{26.5}:
+\ct{ShieldActionResponse.openParentalControlsApp}.
+
+\hd{The four extensions}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{57mm}@{}}
+\toprule
+\textbf{Monitor} & subclass \ct{DeviceActivityMonitor}. Runs when \textbf{no app does} (the child
+never opens yours). Short-lived, tight memory: read App Group, write stores, return. \\
+\textbf{Shield Config.} & \ct{ShieldConfigurationDataSource.configuration(shielding:)} per
+\ct{Application} / \ct{WebDomain} (+ \ct{in:} category) $\to$ \ct{ShieldConfiguration}. Too slow
+$\to$ default look. \\
+\textbf{Shield Action} & \ct{ShieldActionDelegate}: \ct{.primaryButtonPressed} /
+\ct{.secondaryButtonPressed} + a \textbf{token} $\to$ completion(\ct{ShieldActionResponse}). \\
+\textbf{Report} & \ct{DeviceActivityReportExtension} + scenes; \ct{makeConfiguration(representing:)
+async} gets \ct{DeviceActivityResults}; host picks scene by \ct{Context} + \ct{DeviceActivityFilter}. \\
+\bottomrule
+\end{tabular}}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Get the list of apps the user picked'' — you can't (outside 26.4 EU data access): tokens only.
+        Persist the \emph{selection}, not names.}
+  \trap{\ct{intervalDidStart} is not an alarm: it fires at the \textbf{first device use} after the
+        boundary. No use, no callback.}
+  \trap{Set in the app, cleared in the extension? The \textbf{same named store} — shared by app +
+        extensions (iOS 16).}
+  \trap{Clearing one store doesn't unblock what another store shields: \textbf{most restrictive wins}.}
+  \trap{Development builds work without Apple's approval; distribution needs it for the app
+        \emph{and} each extension type — request it early.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Pick $\to$ token $\to$ store $\to$ system enforces; extensions react; the report paints, the
+app never reads.''} FamilyControls = \emph{who may}, ManagedSettings = \emph{what is blocked},
+DeviceActivity = \emph{when}.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} app-extensions (processes, App Groups) ·
+background-execution · app-hardening-privacy · privacy-compliance · healthkit}
+
+\end{document}

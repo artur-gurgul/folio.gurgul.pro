@@ -1,0 +1,84 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>App Clips &amp; Handoff / Continuity — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/ios-platform/app-clips-handoff.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">50</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">App Clips &amp; Handoff / Continuity</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">ios-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Both ride on <strong><code>NSUserActivity</code></strong>. An <strong>App Clip</strong> is a small, separately built slice of
+your app that a <strong>URL</strong> (from a code, tag, link or map) launches <em>without installing the app</em>;
+<strong>Handoff</strong> moves <em>your own</em> current activity to <em>your own</em> nearby device (same iCloud account,
+BLE + Wi-Fi). Neither is a deep link, and neither is state restoration.</p>
+<p class="sheet-tools"><a class="sheet-download" href="app-clips-handoff.pdf" download>Download PDF</a> <a href="app-clips-handoff.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/app-clips-handoff.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="app-clips-handoff-fig1.svg" width="609" height="145" class="wide" alt="App Clips &amp; Handoff / Continuity — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>App Clips</h2>
+<ul>
+<li><strong>Target</strong>: own bundle id (parent id + suffix, e.g. <code>.Clip</code>), shipped with the full app; share code via  packages, strip the rest with your own <code>#if APPCLIP</code> compilation condition.</li>
+<li><strong>Size</strong> (uncompressed binary): <strong>10 MB</strong> (up to iOS 15), <strong>15 MB</strong> (iOS 16), <strong>100 MB</strong>  (iOS 17+ <em>only if</em> digital invocations only — no App Clip Code, NFC, QR — <em>and</em> no iOS 16 support;  an App Store Connect demo link gets 100 MB with physical codes). Third-party SDKs eat it.</li>
+<li><strong>Experiences</strong> (App Store Connect): default (one card) + <strong>advanced</strong> per URL prefix / location.  Domain proof: <code>appclips:</code> associated domain + AASA. Launch: <code>webpageURL</code> of a  <code>NSUserActivityTypeBrowsingWeb</code> activity = your routing key.</li>
+<li><strong>Ephemeral notifications</strong>: <code>NSAppClipRequestEphemeralUserNotification</code> → up to <strong>8 hours</strong>  without a prompt. <code>NSAppClipRequestLocationConfirmation</code> + <code>APActivationPayload.confirmAcquired(in:)</code>  verifies the user is really at the code.</li>
+<li><strong>Upgrade</strong>: <code>SKOverlay.AppClipConfiguration</code> (<code>.appStoreOverlay</code> in SwiftUI); the full app  inherits only the <strong>App Group</strong> container. Test: <code>_XCAppClipURL</code> scheme variable; on device,  Settings › Developer › Local Experiences.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Handoff &amp; Continuity</h2>
+<ul>
+<li><strong>Advertise</strong>: <code>activityType</code> listed in <code>NSUserActivityTypes</code>; small plist <code>userInfo</code>  (+ <code>requiredUserInfoKeys</code>), <code>title</code>, <code>webpageURL</code>; <code>isEligibleForHandoff</code> (also  <code>ForSearch</code>, <code>ForPrediction</code>). Current via <code>becomeCurrent()</code> or a responder’s  <code>userActivity</code>; refresh lazily with <code>needsSave</code> + <code>updateUserActivityState(_:)</code>.</li>
+<li><strong>Requirements</strong>: same Apple ID / iCloud, BLE + Wi-Fi, Handoff on, same <strong>Team ID</strong> and activity type  in both apps. Big data: continuation streams (<code>supportsContinuationStreams</code>) or the cloud.</li>
+<li><strong>Continue</strong> per <em>scene</em>: cold start → <code>connectionOptions.userActivities</code>; running →  <code>scene(_:continue:)</code>.</li>
+<li><strong>Web<span class="math">↔</span>native</strong>: app <span class="math">→</span> Safari via <code>webpageURL</code>; Safari <span class="math">→</span> app needs the  <code>activitycontinuation:</code> associated domain (Universal Links use <code>applinks:</code>).</li>
+<li><strong>Universal Clipboard</strong>: <code>UIPasteboard</code> items reach nearby devices; keep secrets local with  <code>setItems(_:options: [.localOnly: true, .expirationDate: …])</code>.  <strong>Continuity Camera</strong>: iPhone as Mac camera/scanner — nothing to build on iOS.</li>
+</ul>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-type">ArticleView</span>(a)
+  .userActivity(<span class="hljs-string">&quot;com.acme.article&quot;</span>) { act <span class="hljs-keyword">in</span>   <span class="hljs-comment">// advertise</span>
+    act.userInfo <span class="hljs-operator">=</span> [<span class="hljs-string">&quot;id&quot;</span>: a.id]                  <span class="hljs-comment">// what, not data</span>
+    act.webpageURL <span class="hljs-operator">=</span> a.webURL                    <span class="hljs-comment">// Safari fallback</span>
+    act.isEligibleForHandoff <span class="hljs-operator">=</span> <span class="hljs-literal">true</span> }
+  .onContinueUserActivity(<span class="hljs-string">&quot;com.acme.article&quot;</span>) { act <span class="hljs-keyword">in</span>
+    <span class="hljs-keyword">if</span> <span class="hljs-keyword">let</span> id <span class="hljs-operator">=</span> act.userInfo<span class="hljs-operator">?</span>[<span class="hljs-string">&quot;id&quot;</span>] <span class="hljs-keyword">as?</span> <span class="hljs-type">String</span> { path.append(id) } }
+<span class="hljs-comment">// clip AND full app: the same entry point</span>
+.onContinueUserActivity(<span class="hljs-type">NSUserActivityTypeBrowsingWeb</span>) { act <span class="hljs-keyword">in</span>
+  <span class="hljs-keyword">if</span> <span class="hljs-keyword">let</span> url <span class="hljs-operator">=</span> act.webpageURL { route(url) } }</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Four ways back into a screen</h2>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><strong>Handoff</strong></td><td>same user, <em>other nearby device</em>, in-progress activity</td></tr>
+<tr><td><strong>Deep link</strong></td><td>a URL anyone can send; opens the installed app (else web)</td></tr>
+<tr><td><strong>State restor.</strong></td><td><em>same device</em> after relaunch (<code>stateRestorationActivity</code>, <code>@SceneStorage</code>)</td></tr>
+<tr><td><strong>App Clip</strong></td><td>a URL when the full app is <em>not</em> installed</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>What a clip cannot do</h2>
+<p><strong>No background</strong>: no background <code>URLSession</code>, no Background Modes, no Bluetooth kept while unused.
+<strong>Silent frameworks</strong> (unavailable / empty / error): AppIntents · BackgroundTasks · CallKit · CareKit ·
+Contacts(UI) · CoreMotion · EventKit(UI) · FileProvider · HealthKit · HomeKit · MediaPlayer · Messages ·
+MessageUI · NearbyInteraction · PhotoKit · ResearchKit · SensorKit · Speech.
+<strong>Privacy</strong>: no SKAdNetwork, no ATT prompt; <code>UIDevice.name</code> / <code>identifierForVendor</code> = <code>&quot;&quot;</code>;
+location “When In Use” only, reset daily at 4:00; no Face ID; extensions only for Live Activity widgets;
+CloudKit (iOS 16+) public database read-only.</p>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">Quoting “10 MB” without the OS version, or meaning the <em>download</em> size.</li>
+<li class="trap">Full app does not handle the clip’s URLs — once installed, every code opens the <em>full</em> app.</li>
+<li class="trap">Clip and app share data freely — no: only an App Group; and the clip may vanish.</li>
+<li class="trap">Handoff activity never appears: type missing from <code>NSUserActivityTypes</code>, different Team ID, not current,  non-plist <code>userInfo</code>, BLE off / other iCloud account.</li>
+<li class="trap">Megabytes in <code>userInfo</code>; or expecting Handoff to carry your app’s login — it resumes context, not auth.</li>
+<li class="trap">Reading the pasteboard on launch — iOS 16 asks “Allow Paste”; use <code>UIPasteControl</code> / <code>detectPatterns</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<h3 class="sheet-hd">“Clip: a URL, one task, a slot in the App Group. Handoff: my activity, my other device, same iCloud.”</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> <code>deep-links-universal-links</code> (AASA) ·
+<code>app-and-vc-lifecycle</code> (scenes) · <code>corenfc-ios-android</code> · <code>swiftui-transferable-drag-drop</code> · <code>watchos-visionos</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=ios-platform" title="area">ios-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=ios" title="platform">ios</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=platform-apis" title="topic">platform-apis</a></li><li class="sheet-tag"><a href="/folios.html?tag=app-clips">app-clips</a></li><li class="sheet-tag"><a href="/folios.html?tag=app-clip-size-limit">app-clip-size-limit</a></li><li class="sheet-tag"><a href="/folios.html?tag=app-clip-experiences">app-clip-experiences</a></li><li class="sheet-tag"><a href="/folios.html?tag=skoverlay">skoverlay</a></li><li class="sheet-tag"><a href="/folios.html?tag=ephemeral-notifications">ephemeral-notifications</a></li><li class="sheet-tag"><a href="/folios.html?tag=app-groups">app-groups</a></li><li class="sheet-tag"><a href="/folios.html?tag=handoff">handoff</a></li><li class="sheet-tag"><a href="/folios.html?tag=continuity">continuity</a></li><li class="sheet-tag"><a href="/folios.html?tag=nsuseractivity">nsuseractivity</a></li><li class="sheet-tag"><a href="/folios.html?tag=universal-clipboard">universal-clipboard</a></li><li class="sheet-tag"><a href="/folios.html?tag=activitycontinuation">activitycontinuation</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=ios-platform%2Fapp-clips-handoff.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/9">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>
