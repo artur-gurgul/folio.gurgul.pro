@@ -55,6 +55,10 @@ pull request that passes the checks and is approved by the maintainer. Run
    whenever the subject has structure (flows, layers, comparisons, sequences).
 4. **Linked.** Tags (`% @tags:`) and the "Related" line connect a folio to its
    neighbours; prefer tags that other folios use too.
+   **One discussion thread per folio:** its number is the hidden label
+   `discussion=<n>` in `% @labels:` (GitHub Discussions, category *Folio
+   comments*). "Discuss this folio" opens that thread; a folio without one
+   starts it — then record the new thread's number in the folio.
 5. **A folio owns its page.** Content may start from older notes, but once it
    is here it is folio's: edit it here, adapt it freely to these rules.
 6. **No branding.** No personal names, logos, initials or "my notepad" voice —

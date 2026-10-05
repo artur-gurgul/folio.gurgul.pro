@@ -21,10 +21,14 @@ html(lang="en")
     //- fact-correction form pre-filled with the folio's file
     - const repo = "https://github.com/artur-gurgul/folio.gurgul.pro"
     - const srcFile = page.finalPath.replace(/^\//, "").replace(/\.html$/, ".tex")
-    //- discussion lives on GitHub only (owner: no backend, no third party): the
-    //- link opens a new thread in the "Folio comments" category, pre-filled
+    //- discussion lives on GitHub only (owner: no backend, no third party). Each
+    //- folio has ONE thread: its number is the folio's hidden `discussion=<n>`
+    //- label. Until a folio has one, the link starts it (pre-filled, in the
+    //- "Folio comments" category) — then record its number in the folio.
+    - const here = (context.sheets || []).find(s => s.url === page.finalPath)
+    - const thread = here && here.labels && here.labels.discussion && here.labels.discussion[0]
     - const discussBody = "About the folio: https://folio.gurgul.pro" + page.finalPath + "\n\n"
-    - const discussUrl = repo + "/discussions/new?category=folio-comments&title=" + encodeURIComponent(page.title || srcFile) + "&body=" + encodeURIComponent(discussBody)
+    - const discussUrl = thread ? repo + "/discussions/" + thread : repo + "/discussions/new?category=folio-comments&title=" + encodeURIComponent(page.title || srcFile) + "&body=" + encodeURIComponent(discussBody)
     //- printing a folio prints THE A4 folio: the PDF's page as a vector SVG,
     //- loaded but invisible on screen, the only thing shown in print (sheet.css)
     if isFolio
