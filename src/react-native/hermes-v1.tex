@@ -1,0 +1,173 @@
+% hermes-v1.tex — Hermes for React Native, deeper than rn-architecture / js-engines-performance:
+% the build-time bytecode pipeline and its source maps, what runs on the device (mmap, interpreter,
+% lazy compile in dev), the Hades GC, Hermes V1 (opt-in 0.82, default 0.84), opting in/out,
+% JSC's removal from core, debugging and profiling, the traps.
+% Sources (checked 2026-09-25):
+%   https://reactnative.dev/blog/2025/10/08/react-native-0.82  (Hermes V1 opt-in, Expensify numbers, no JIT/native yet)
+%   https://reactnative.dev/blog/2025/12/10/react-native-0.83  (V1 still experimental)
+%   https://reactnative.dev/blog/2026/02/11/react-native-0.84  (V1 default, opt-out flags)
+%   https://reactnative.dev/blog/2025/04/08/react-native-0.79 · /2025/08/12/react-native-0.81 (JSC to community, removed)
+%   https://reactnative.dev/docs/hermes
+%   https://github.com/facebook/hermes/blob/static_h/doc/blog/2025-11-02-hermes-compilation-runtime-modes.md
+%   https://github.com/facebook/hermes/blob/static_h/doc/blog/2026-06-05-new-hermes-stable-release.md
+% Not repeated: JIT tiers / hidden classes / generic GC (runtime/js-engines-performance), JSI (rn-architecture).
+% @labels: area=react-native kind=concept platform=cross-platform topic=performance,build,memory discussion=191
+% @tags: hermes, hermes-v1, static-hermes, hermesc, bytecode, hbc, hades-gc, source-maps, compose-source-maps, javascriptcore, react-native-devtools, startup
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{ShSheet}{
+  morekeywords={npx,node,hermesc,const,global},
+  sensitive=true, morecomment=[l]{\#}, morecomment=[l]{//}, morestring=[b]", morestring=[b]',
+  literate={--}{{\hbox{-}\hbox{-}}}2 {=>}{{\hbox{=}\hbox{>}}}2 {!!}{{\hbox{!}\hbox{!}}}2
+           {==}{{\hbox{=}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=8mm, text width=19mm},
+  bld/.style={sb, draw=sheetBrown, fill=sheetBrown!8},
+  art/.style={sb, draw=sheetOrange, fill=sheetOrange!10},
+  dev/.style={sb, draw=sheetGreen!70!black, fill=sheetGreen!10},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  gen/.style={draw=sheetBlue, fill=sheetBlue!6, font=\tiny, minimum height=5mm, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Hermes \& Hermes V1 — bytecode, Hades, source maps}{react-native · folio}
+
+\oneliner{Hermes is Meta's JS engine built for RN start-up: the release build \textbf{compiles JS to
+bytecode} (\ct{.hbc}) with \ct{hermesc}, so the phone \textbf{mmaps and interprets} it — no parse,
+no compile, small heap. Default since RN 0.70; the built-in JSC left core in \textbf{0.81}.
+\textbf{Hermes V1} — new compiler + VM — was opt-in in \textbf{0.82} and is the \textbf{default
+since 0.84}; it does \emph{not} yet include native (``Static Hermes'') compilation or a JIT.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---- build time ----
+  \node[font=\bfseries\small, text=sheetBrown, anchor=west] at (-0.2,3.85) {Release build (Gradle task / Xcode ``Bundle React Native code and images'')};
+  \node[bld] (src) at (0.8,2.75) {\textbf{TS/JS}\\modules};
+  \node[bld] (metro) at (3.3,2.75) {\textbf{Metro}\\Babel per module\\$\to$ one bundle};
+  \node[art] (bun) at (5.8,2.75) {\ct{index.bundle}\\+ packager map};
+  \node[bld] (hc) at (8.3,2.75) {\textbf{hermesc -O}\\\ct{-emit-binary}\\optimises AOT};
+  \node[art] (hbc) at (10.8,2.75) {\ct{.hbc} bytecode\\+ hermesc map};
+  \node[art, draw=sheetRed, fill=sheetRed!6, text width=24mm] (map) at (14.2,2.75) {\ct{compose-source-maps}\\$\to$ \textbf{final map} to the\\crash reporter};
+  \foreach \a/\b in {src/metro,metro/bun,bun/hc,hc/hbc} \draw[flow] (\a) -- (\b);
+  \draw[hot] (hbc) -- (map);
+  \draw[hot] (bun.north) -- ++(0,0.25) -| node[lbl, pos=0.25, above]{packager map} (map.north);
+  % ---- device ----
+  \draw[sheetGrey!40] (-0.2,1.95) -- (16.6,1.95);
+  \node[font=\bfseries\small, text=sheetGreen!50!black, anchor=west] at (-0.2,1.75) {On the device};
+  \node[dev] (mm) at (0.8,0.95) {\ct{.hbc} inside IPA/AAB\\\textbf{mmap}: pages\\load on demand};
+  \node[dev] (vm) at (3.3,0.95) {\textbf{interpreter}\\no JIT in RN\\(V1 too)};
+  \node[dev] (jsi) at (5.8,0.95) {\textbf{JSI} $\to$ Fabric,\\TurboModules};
+  \draw[flow] (mm) -- (vm); \draw[flow] (vm) -- (jsi);
+  % Hades GC
+  \node[font=\scriptsize\bfseries, anchor=west] at (7.3,1.62) {Hades GC};
+  \node[gen, minimum width=16mm] (yg) at (8.15,0.95) {young gen\\bump alloc};
+  \node[gen, minimum width=27mm, fill=sheetBlue!12] (og) at (11.35,0.95) {old gen: \textbf{concurrent}\\mark-sweep (bg thread)};
+  \draw[flow] (yg) -- node[lbl, above]{survivors} (og);
+  \node[lbl, anchor=west, align=left] at (7.3,0.4) {short pauses: most GC work off the JS thread};
+  % dev mode
+  \node[dev, draw=sheetGrey, fill=black!4, text width=30mm] (dm) at (14.6,0.95) {\textbf{Debug}: Metro serves JS\\\emph{source}; Hermes compiles\\lazily on device $\to$ slower,\\never benchmark it};
+  \node[lbl, anchor=west, text=sheetRed] at (-0.2,0.0) {bytecode is tied to its runtime version (the Jun 2026 stable bumped it 98 $\to$ 99): OTA bundles must be compiled by the \emph{same} hermesc};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{AOT, not JIT}: parsing, scoping and optimisation happen on the build machine;
+        the device only maps the file. Start-up (TTI) and memory win; peak CPU loses to a JIT
+        engine — which an iOS app cannot use anyway (no writable+executable memory).
+  \item The engine itself has more modes (AOT to bytecode or native, lazy compile, baseline
+        JIT, mixable in one runtime); RN ships \textbf{bytecode + interpreter}.
+  \item \textbf{Hades}: generational; the old generation is marked and swept \textbf{concurrently}
+        on a background thread, so GC pauses stay short on the JS thread.
+  \item \textbf{Is it Hermes?} \ct{global.HermesInternal} — but that also exists when running
+        \emph{source}; prove \ct{.hbc} in a release build.
+  \item \textbf{Memory}: mapped bytecode is clean, file-backed memory — the OS can drop and
+        re-read those pages; a parsed AST or JIT code would be dirty heap.
+\end{itemize}
+
+\hd{Hermes V1 — what changed}
+\begin{itemize}
+  \item ``Next evolution'': improved \textbf{compiler and VM}. Versioned like
+        \ct{250829098.0.x} (package \ct{hermes-compiler}); legacy Hermes is \ct{0.15.0}.
+  \item Measured on Expensify (0.82 post): bundle load \textbf{3.2\%} faster on low-end Android,
+        \textbf{9\%} on iOS; total TTI 7.6\% / 2.5\%; content TTI 7.2\% / 7.5\%.
+  \item \textbf{Not in V1 yet}: JS-to-native compilation (``Static Hermes'') and the JIT shown
+        at RN EU 2023.
+  \item Hermes stable \ct{260318099.0.0} (Jun 2026): Set methods, \ct{Object.groupBy},
+        iterator helpers, \ct{Promise.withResolvers}, faster \ct{JSON}; bytecode 99.
+\end{itemize}
+
+\hd{Opt in / opt out}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{58mm}@{}}
+\toprule
+\textbf{RN} & \textbf{How} \\ \midrule
+0.82--0.83 opt in & \ct{hermesV1Enabled=true} (\ct{gradle.properties}) · iOS
+  \ct{RCT\_HERMES\_V1\_ENABLED=1 bundle exec pod install} · pin \ct{hermes-compiler} in
+  \ct{resolutions}/\ct{overrides}; needs RN built from source (not prebuilt) \\
+0.84+ opt out & \ct{overrides: \{"hermes-compiler": "0.15.0"\}} · iOS
+  \ct{RCT\_HERMES\_V1\_ENABLED=0 RCT\_USE\_PREBUILT\_RNCORE=0} · Android
+  \ct{hermesV1Enabled=false} + RN from source \\
+JSC & 0.79: moved to \ct{@react-native-community/javascriptcore}; 0.81: built-in removed \\
+\bottomrule
+\end{tabular}}
+
+\columnbreak
+
+\hd{Example — what the release build does, by hand}
+\begin{lstlisting}[language=ShSheet]
+npx react-native bundle --platform android --dev false \
+  --entry-file index.js --bundle-output out/index.bundle \
+  --sourcemap-output out/index.packager.map
+hermesc -O -emit-binary -output-source-map \
+  -out out/index.hbc out/index.bundle   # + out/index.hbc.map
+node node_modules/react-native/scripts/compose-source-maps.js \
+  out/index.packager.map out/index.hbc.map -o out/index.map
+// at runtime: which engine, which version?
+const isHermes = () => !!global.HermesInternal;
+HermesInternal.getRuntimeProperties()['OSS Release Version'];
+\end{lstlisting}
+
+\hd{Debugging and profiling}
+\begin{itemize}
+  \item \textbf{React Native DevTools} speaks CDP to Hermes \emph{on the device}: breakpoints,
+        console, heap snapshots; 0.83 added \textbf{Network} and \textbf{Performance} panels
+        and a desktop app. (The old ``debug in Chrome'' ran JS in the browser — gone.)
+  \item \textbf{Production stacks} are bytecode offsets
+        (\ct{index.android.bundle:1:48213}): upload the \textbf{composed} map per build
+        \emph{and} per OTA update (iOS: \ct{SOURCEMAP\_FILE} in the bundle phase\unverified).
+  \item \textbf{Profile a release-like build}: Android \ct{debugOptimized} (0.82) keeps DevTools
+        with C++ optimised — about 60 vs 20 FPS against \ct{debug}.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Hermes V1 = Static Hermes'' — no: V1 has neither native compilation nor the JIT.}
+  \trap{Benchmarking in debug measures lazy source compilation, not \ct{.hbc}.}
+  \trap{A packager map alone does not decode Hermes stacks — compose it with hermesc's.}
+  \trap{Upgrading to 0.81+ with JSC? Add the community package or the build loses it.}
+  \trap{Hermes needs no JIT to be fast at \emph{start}; CPU-heavy loops are its weak spot — move
+        them native (TurboModule) or to a worklet.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Compile on the Mac, map on the phone, compose the maps.''} V1: opt-in 0.82,
+default 0.84.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} js-engines-performance (JIT tiers, GC) ·
+rn-architecture (JSI) · metro-bundler · rn-releases-0-82-0-85 · rn-tooling-release (OTA) · crashes-symbolication}
+
+\end{document}

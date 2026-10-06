@@ -1,0 +1,186 @@
+% rn-testing-typescript.tex — the RN test pyramid (Jest, RNTL, MSW, Detox vs Maestro),
+% flakiness, and TypeScript for RN (props, unions, generics, nav params, Codegen specs).
+% Sources (checked 2026-10-06):
+%   callstack.github.io/react-native-testing-library 14.x (GitHub callstack/react-native-testing-
+%     library): start/migration-v14 (React 19 only; render, renderHook, fireEvent, act async) ·
+%     guides/how-to-query (predicate priority, ByTestId last); npm @testing-library/react-native
+%     14.0.1
+%   reactnative.dev/blog/2026/04/07/react-native-0.85 (Jest preset → @react-native/jest-preset)
+%   reactnative.dev/docs/turbo-native-modules (spec prefixed "Native", codegenConfig)
+%   TanStack Query docs react-native / important-defaults (retry default 3 → retry:false in tests)
+% @labels: area=react-native kind=tooling platform=cross-platform topic=testing,language discussion=215
+% @tags: jest, react-native-testing-library, getbyrole, userevent, msw, detox, maestro, jest-mock, flaky-tests, discriminated-unions, satisfies, codegen-spec
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={import,from,export,default,const,let,type,interface,extends,function,
+    return,async,await,if,else,switch,case,new,true,false,null,undefined,typeof,keyof,
+    as,satisfies,never,string,number,boolean,void,declare,namespace,readonly},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.4mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, anchor=west},
+  lay/.style={draw=white, thick},
+}
+
+\begin{document}
+
+\sheettitle{RN testing + TypeScript}{react-native · folio}
+
+\oneliner{Buy \textbf{confidence per second}: TS \texttt{strict} for free, Jest for logic, the
+\textbf{bulk} in \textbf{RNTL} component tests that query \emph{like a user} against mocked
+network, and a \textbf{few} E2E journeys — \textbf{Detox} (grey-box) or \textbf{Maestro} (black-box).}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {5.35,10.9} \draw[sheetGrey!40] (\x,3.05) -- (\x,-0.35);
+  % ── pyramid / trophy ──
+  \node[pt] at (0,2.9) {\textcolor{sheetBlue}{1} what to buy};
+  \fill[sheetGrey!35] (0.2,0) -- (5.0,0) -- (4.55,0.6) -- (0.65,0.6) -- cycle;
+  \fill[sheetBlue!35] (0.65,0.6) -- (4.55,0.6) -- (4.15,1.15) -- (1.05,1.15) -- cycle;
+  \fill[sheetGreen!45] (1.05,1.15) -- (4.15,1.15) -- (3.7,1.85) -- (1.5,1.85) -- cycle;
+  \fill[sheetOrange!45] (1.5,1.85) -- (3.7,1.85) -- (2.6,2.6) -- cycle;
+  \node[font=\tiny] at (2.6,0.3) {static: TS \texttt{strict} · ESLint · Codegen};
+  \node[font=\tiny] at (2.6,0.88) {unit: Jest · reducers · \texttt{renderHook}};
+  \node[font=\tiny\bfseries] at (2.6,1.5) {component: RNTL + MSW};
+  \node[font=\tiny, align=center] at (2.6,2.12) {E2E\\Detox/Maestro};
+  \draw[hot] (0.05,0.1) -- node[lbl, left, rotate=90, anchor=south]{slower · realer} (0.05,2.6);
+  \node[lbl, text=sheetGreen!55!black] at (4.55,2.3) {``trophy'':\\most value\\in green};
+  % ── Jest run ──
+  \node[pt] at (5.45,2.9) {\textcolor{sheetBlue}{2} a Jest + RNTL run};
+  \node[sb, minimum width=22mm] (t) at (6.75,2.35) {\texttt{Foo.test.tsx}};
+  \node[sb, minimum width=22mm] (b) at (6.75,1.6) {babel-jest · preset\\\texttt{@react-native/jest-preset}};
+  \node[sb, minimum width=22mm, draw=sheetRed, fill=sheetRed!7] (n) at (6.75,0.7) {Node — \textbf{no}\\native side exists};
+  \node[sb, minimum width=21mm, draw=sheetGreen, fill=sheetGreen!10] (m) at (9.4,2.35) {setup: \texttt{jest.mock}\\native mods · nav · MSW};
+  \node[sb, minimum width=21mm] (r) at (9.4,1.5) {\texttt{await render()}\\host tree};
+  \node[sb, minimum width=21mm] (q) at (9.4,0.7) {\texttt{getByRole} $\to$\\\texttt{expect}};
+  \draw[flow] (t) -- (b); \draw[flow] (b) -- (n);
+  \draw[flow] (n.east) -- ++(0.3,0) |- (m.west);
+  \draw[flow] (m) -- (r); \draw[flow] (r) -- (q);
+  \node[lbl, text=sheetRed] at (8.1,-0.1) {untranspiled lib in \texttt{node\_modules} $\to$ ``Unexpected token'':\\whitelist it in \texttt{transformIgnorePatterns}};
+  % ── Detox vs Maestro ──
+  \node[pt] at (11.0,2.9) {\textcolor{sheetBlue}{3} E2E: who waits?};
+  \node[sb, minimum width=15mm] (dt) at (11.85,2.3) {Jest test\\(Node)};
+  \node[sb, minimum width=17mm, draw=sheetGreen, fill=sheetGreen!10] (da) at (14.9,2.3) {app + Detox\\native client};
+  \draw[flow, <->] (dt) -- node[lbl, above]{WebSocket via} node[lbl, below]{Detox server} (da);
+  \node[lbl, anchor=west, text=sheetGreen!50!black] at (11.1,1.45) {Detox: act $\to$ \textbf{wait until idle} (network in flight ·};
+  \node[lbl, anchor=west, text=sheetGreen!50!black] at (11.1,1.2) {timers · animations · JS/UI queues) $\to$ assert};
+  \node[sb, minimum width=15mm, draw=sheetOrange, fill=sheetOrange!10] (my) at (11.85,0.45) {\texttt{flow.yaml}};
+  \node[sb, minimum width=17mm] (ma) at (14.9,0.45) {any app\\(no instrumenting)};
+  \draw[flow] (my) -- node[lbl, above]{XCUITest /} node[lbl, below]{UIAutomator} (ma);
+  \node[lbl, anchor=west, text=sheetOrange] at (11.1,-0.2) {Maestro: poll the a11y tree, retry until visible or timeout};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{The tools}
+\begin{itemize}\raggedright
+  \item \textbf{Jest} runs in \textbf{Node}: the preset (\texttt{@react-native/jest-preset}
+        since 0.85) stubs core native bits; every
+        \emph{third-party} native module is \texttt{jest.mock}ed (many ship a mock, e.g.
+        \texttt{react-native-gesture-handler/jestSetup}). Fake timers:
+        \texttt{jest.useFakeTimers()} + \texttt{advanceTimersByTime}.
+  \item \textbf{RNTL} renders the React tree (no pixels, no layout), queries \emph{host}
+        elements: \texttt{ByRole('button',\{name\})} $>$ \texttt{ByLabelText} $>$
+        \texttt{ByText} $>$ \texttt{ByTestId} (last resort). Role needs an \emph{accessible}
+        element — tests force real a11y. \texttt{getBy} throws · \texttt{queryBy} $\to$ null
+        (absence) · \texttt{findBy} = async wait.
+  \item \textbf{RNTL 14} (React 19 only): \texttt{render}, \texttt{renderHook},
+        \texttt{fireEvent}, \texttt{act} are \textbf{async} — \texttt{await} them (codemod
+        \texttt{rntl-v14-async-functions}). \textbf{\texttt{fireEvent.press}} just calls the
+        nearest \texttt{onPress}; \textbf{\texttt{userEvent}} replays pressIn/Out, focus, per-key
+        \texttt{changeText}, blur, and respects disabled / \texttt{editable=\{false\}}.
+  \item \textbf{Hooks}: \texttt{await renderHook(fn, \{wrapper\})} $\to$ \texttt{result.current};
+        or test \emph{through} the component.
+  \item \textbf{Network}: MSW \texttt{setupServer} (\texttt{msw/node}) — real client + parsing,
+        per-test \texttt{server.use()} for errors. Cheaper seam: mock the API module.
+        TanStack Query: \textbf{new \texttt{QueryClient} per test}, \texttt{retry:false}.
+  \item \textbf{Navigation}: real \texttt{NavigationContainer} + navigator (integration), or
+        mock \texttt{useNavigation} and assert \texttt{navigate} (unit). TurboModule: mock
+        its \texttt{Native<X>.ts} spec file.
+  \item \textbf{Detox} (Wix): instrumented build, \texttt{by.id(testID)}, no sleeps; costs
+        native builds + upgrade breakage; a never-idle app (looping animation, polling) hangs it.
+  \item \textbf{Maestro}: YAML (\texttt{tapOn}, \texttt{assertVisible}), no app changes,
+        also native/Flutter; slower, fuzzier waits.
+\end{itemize}
+
+\section{Example — a user-level test}
+\begin{lstlisting}[language=TSSheet]
+it('shows the error, then retries', async () => {
+  server.use(http.get('/me', () => HttpResponse.error()));
+  const user = userEvent.setup();
+  await render(<Profile />, { wrapper: Providers }); // RNTL 14
+  expect(await screen.findByText(/could not load/i))
+    .toBeOnTheScreen();
+  server.resetHandlers();               // next call succeeds
+  await user.press(screen.getByRole('button', { name: 'Retry' }));
+  expect(await screen.findByText('Ada')).toBeOnTheScreen();
+});
+\end{lstlisting}
+
+\section{TypeScript for RN}
+\begin{lstlisting}[language=TSSheet]
+type Load<T> = { status: 'idle' } | { status: 'loading' }
+  | { status: 'ok'; data: T } | { status: 'err'; error: Error };
+type Props = PressableProps & { title: string;
+  style?: StyleProp<ViewStyle>; children?: React.ReactNode };
+function List<T>(p: { items: readonly T[];
+  key: (t: T) => string; row: (t: T) => React.ReactElement }) {}
+type Root = { Home: undefined; Profile: { userId: string } };
+type P = NativeStackScreenProps<Root, 'Profile'>;
+const gap = { s: 4, m: 8 } satisfies Record<string, number>;
+\end{lstlisting}
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=TSSheet]
+// NativeCrypto.ts -- Codegen reads this spec
+export interface Spec extends TurboModule {
+  hash(input: string): Promise<string>; }
+export default
+  TurboModuleRegistry.getEnforcing<Spec>('NativeCrypto');
+\end{lstlisting}
+\end{minipage}
+\begin{itemize}\raggedright
+  \item \textbf{Unions}: no loading + error at once; \texttt{const x: never = s} in the
+        \texttt{default} = exhaustive.
+  \item Skip \texttt{React.FC} (implicit \texttt{children} dropped in React 18 types); extend
+        host props via \texttt{ComponentProps<typeof X>}.
+  \item \texttt{satisfies} (TS 4.9) checks \emph{without widening} — literals and keys stay
+        precise; \texttt{as} just silences the checker.
+  \item Nav: global \texttt{ReactNavigation.RootParamList} types
+        \texttt{useNavigation()}; deep-link params arrive as \emph{strings} — validate.
+  \item Flags: \texttt{strict}, \texttt{noUncheckedIndexedAccess} (\texttt{arr[i]}:
+        \texttt{T|undefined}), \texttt{exactOptionalPropertyTypes}.
+  \item \textbf{Codegen}: \texttt{Native<Name>.ts} + \texttt{codegenConfig} (package.json)
+        $\to$ C++/ObjC++/Java glue: the TS \emph{is} the ABI, in a subset (number,
+        \texttt{Int32}, string, boolean, objects, arrays, Promise, callbacks).
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{Types vanish at runtime: \texttt{res.json() as User} is a lie — validate at the
+        boundary (zod/valibot) or type it \texttt{unknown}.}
+  \trap{Flakes: un-awaited \texttt{findBy}/\texttt{userEvent}; real timers; leaked state
+        (singletons, shared QueryClient); live network; E2E permission dialogs.}
+  \trap{``not wrapped in act(...)'' = an update you didn't wait for: \texttt{findBy}, not
+        more \texttt{act}.}
+  \trap{Whole-screen snapshots = change detectors; asserting state or child internals
+        tests the implementation.}
+  \trap{Jest green $\neq$ works: no native code, layout or threads ran.}
+\end{itemize}
+
+\section{Remember}
+\emph{Query like a user · mock at the edge · wait, don't sleep · type the boundary.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} testing-fundamentals · test-doubles ·
+async-and-network-testing · flaky-tests-ci-tdd · testing-viewmodels-ui-snapshot}
+
+\end{document}

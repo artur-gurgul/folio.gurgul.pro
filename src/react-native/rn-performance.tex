@@ -1,0 +1,186 @@
+% rn-performance.tex — React Native performance: the two frame budgets, list
+% virtualisation, re-renders, startup, images, leaks, profiling.
+% Sources (checked 2026-10-06):
+%   reactnative.dev/docs/optimizing-flatlist-configuration (removeClippedSubviews true on
+%     Android; maxToRenderPerBatch 10; initialNumToRender 10; windowSize 21; getItemLayout,
+%     keyExtractor, memo rows)
+%   github.com/Shopify/flash-list README (v2: New Architecture only, JS-only, no estimates;
+%     getItemType recycling pools)
+%   react.dev/reference/react/useContext (consumers re-render; memo does not stop it)
+%   reactnative.dev/blog 2024-10-23 0.76 (React Native DevTools)
+% @labels: area=react-native kind=concept platform=cross-platform topic=performance,debugging discussion=210
+% @tags: flatlist, flashlist, virtualizedlist, windowsize, getitemlayout, cell-recycling, js-fps, react-profiler, hermes-bytecode, inline-requires, expo-image, dropped-frames
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={const,let,function,return,import,from,export,default,type,
+    interface,if,else,new,true,false,null,undefined,async,await,memo,
+    useCallback,useMemo,React},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`}
+
+\tikzset{
+  lane/.style={font=\scriptsize\bfseries, anchor=east},
+  ok/.style={draw=sheetGreen!70!black, fill=sheetGreen!18, minimum height=3.5mm, inner sep=0pt},
+  late/.style={draw=sheetRed, fill=sheetRed!18, minimum height=3.5mm, inner sep=0pt, font=\tiny},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  lc/.style={draw=sheetGrey, minimum width=16mm, minimum height=2.6mm, inner sep=0pt, font=\tiny},
+}
+
+\begin{document}
+
+\sheettitle{RN performance — two budgets, lists, re-renders, startup}{react-native · folio}
+
+\oneliner{An RN app drops frames on \textbf{two} independent threads: the \textbf{JS thread}
+(React render, business logic, JS-driven animation) and the \textbf{UI/main thread} (native
+layout commit, drawing, native animation). Each gets \textbf{16.7\,ms per frame at 60\,Hz}
+(8.3\,ms at 120\,Hz ProMotion). Find \emph{which} thread is late, \emph{prove} it with
+a profiler on a \textbf{release} build, then apply the cheapest fix.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── the two budgets ──
+  \foreach \i in {0,...,8} \draw[sheetGrey!50] (0.8+\i*0.85,3.2) -- (0.8+\i*0.85,0.75);
+  \foreach \i in {0,...,7} \node[lbl] at (1.225+\i*0.85,3.35) {\i};
+  \node[font=\scriptsize\bfseries, anchor=west] at (-0.1,3.55) {frames (16.7 ms each)};
+  \node[lane] at (0.75,2.55) {JS};
+  \node[ok, minimum width=5mm, anchor=west] at (0.85,2.55) {};
+  \node[ok, minimum width=4mm, anchor=west] at (1.7,2.55) {};
+  \node[late, minimum width=24mm, anchor=west] at (2.55,2.55) {setState $\to$ big re-render 45 ms};
+  \node[ok, minimum width=5mm, anchor=west] at (5.1,2.55) {};
+  \node[ok, minimum width=4mm, anchor=west] at (5.95,2.55) {};
+  \node[ok, minimum width=4mm, anchor=west] at (6.8,2.55) {};
+  \node[lbl, text=sheetRed, anchor=west] at (2.55,2.1) {JS FPS drops: taps, JS animations, onScroll handlers stall};
+  \node[lane] at (0.75,1.4) {UI};
+  \foreach \i in {0,1,2,3} \node[ok, minimum width=3mm, anchor=west] at (0.85+\i*0.85,1.4) {};
+  \node[late, minimum width=14mm, anchor=west] at (4.25,1.4) {decode 4K img};
+  \node[ok, minimum width=3mm, anchor=west] at (5.95,1.4) {};
+  \node[ok, minimum width=3mm, anchor=west] at (6.8,1.4) {};
+  \node[lbl, text=sheetRed, anchor=west] at (2.4,0.95) {UI FPS drop = scroll hitch; frame 4 shown twice};
+  \node[lbl, anchor=west] at (-0.1,0.45) {Perf Monitor shows \textbf{both} FPS counters; a 60/60 in dev mode proves nothing.};
+  % ── FlatList window ──
+  \node[font=\scriptsize\bfseries] at (8.9,3.55) {FlatList: a window};
+  \draw[sheetGrey, dashed] (8.2,3.3) rectangle (9.6,0.1);
+  \fill[sheetBlue!12] (8.2,2.95) rectangle (9.6,0.45);
+  \draw[sheetOrange, very thick] (8.2,2.05) rectangle (9.6,1.35);
+  \node[lbl] at (8.9,1.7) {viewport};
+  \node[lbl] at (8.9,2.5) {rendered\\ahead};
+  \node[lbl] at (8.9,0.9) {rendered\\behind};
+  \node[lbl] at (8.9,3.12) {blank};
+  \node[lbl] at (8.9,0.27) {blank};
+  \draw[decorate, decoration={brace, amplitude=3pt}] (9.7,2.95) -- (9.7,0.45)
+     node[midway, right=2pt, lbl, align=left] {\texttt{windowSize} 21\\= 10 screens up\\+ 10 down + visible;\\outside = unmounted;\\fast scroll $\to$ blank};
+  % ── FlashList recycling ──
+  \node[font=\scriptsize\bfseries] at (14.95,3.7) {FlashList: recycle cells};
+  \draw[sheetOrange, very thick] (14.1,3.05) rectangle (15.8,0.75);
+  \foreach \j/\t in {0/item 40,1/item 41,2/item 42,3/item 43,4/item 44}
+     \node[lc, fill=sheetGreen!12] at (14.95,2.8-\j*0.45) {\t};
+  \node[lc, draw=sheetRed, dashed] (gone) at (14.95,3.35) {item 39 (off)};
+  \node[lc, fill=sheetOrange!15] (new) at (14.95,0.45) {item 45 (reused)};
+  \draw[hot] (gone.east) .. controls (16.6,3.3) and (16.6,0.5) .. (new.east);
+  \node[lbl, align=left, anchor=west] at (12.2,1.9) {same native view,\\new props — like\\\texttt{dequeueReusable}\\\texttt{Cell}: no mount/\\unmount on scroll};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{What drops frames on each thread}
+\begin{itemize}
+  \item \textbf{JS}: re-rendering big subtrees, heavy parse/sort/filter in render,
+        Context/store fan-out, \texttt{console.log} in loops, JS-driven animations.
+  \item \textbf{UI}: deep/overdrawn trees, huge image decodes, many views mounting at
+        once, sync native-module work on main — diagnose as in UIKit: \emph{Instruments}.
+  \item New Arch (Fabric + JSI) removes the async JSON bridge, \textbf{not} the
+        budgets: a 45\,ms render is still 3 dropped JS frames.
+\end{itemize}
+
+\section{Lists — FlatList knobs (VirtualizedList)}
+\begin{itemize}
+  \item \texttt{initialNumToRender} (10) — first paint: just fill one screen.
+        \texttt{maxToRenderPerBatch} (10) — fill rate vs responsiveness.
+  \item \texttt{windowSize} (21, in viewports) — lower = less memory, more blank.
+        \texttt{removeClippedSubviews} — detach off-screen views (Android default).
+  \item \texttt{getItemLayout} — fixed height $\to$ no measuring, instant
+        \texttt{scrollToIndex}. \texttt{keyExtractor} — stable ids, never the index.
+  \item \textbf{Stable \texttt{renderItem}} (\texttt{useCallback}) + \texttt{memo} row +
+        primitive props, or every row re-renders on every parent render.
+  \item \textbf{FlashList} (Shopify) recycles cells; \textbf{v2}: New Architecture only,
+        JS-only, \textbf{no size estimates} (v1 needed \texttt{estimatedItemSize});
+        \texttt{getItemType} = separate pools per row kind. Trap: \texttt{useState}
+        in a recycled cell leaks into the next item.
+\end{itemize}
+
+\section{Example — a list row that does not re-render}
+\begin{lstlisting}[language=TSSheet]
+const Row = memo(({ id, title, onPress }: P) => (
+  <Pressable onPress={() => onPress(id)}>
+    <Text>{title}</Text></Pressable>));
+function Feed({ items }: { items: Item[] }) {
+  const onPress = useCallback((id: string) => open(id), []);
+  const renderItem = useCallback(({ item }) => (  // stable
+    <Row id={item.id} title={item.title}
+         onPress={onPress} />), [onPress]);
+  return <FlatList data={items} renderItem={renderItem}
+    keyExtractor={(i) => i.id}                    // not index
+    getItemLayout={(_, i) =>
+      ({ length: 64, offset: 64 * i, index: i })}
+    windowSize={7} />;
+}
+\end{lstlisting}
+
+\section{Profiling toolbox}
+React Native DevTools (Profiler, Memory/heap snapshots; default since 0.76) · Hermes
+\textbf{sampling profiler} · Perf Monitor · Xcode \emph{Time Profiler},
+\emph{Animation Hitches}, \emph{Allocations/Leaks} · Android Studio profilers, Perfetto.
+Test on a low-end Android.
+
+\columnbreak
+
+\section{Re-renders, memoisation, heavy work}
+\begin{itemize}
+  \item Find: React DevTools \textbf{Profiler} (flame chart, ``why did this render?'',
+        highlight updates), \texttt{why-did-you-render}.
+  \item Memoise at \textbf{boundaries} (rows, heavy subtrees): \texttt{memo} is useless
+        if the parent passes a new object/closure each render. React Compiler automates it.
+  \item \textbf{Context}: every consumer re-renders on a new value — split by change
+        rate, \texttt{useMemo} the value, or use a selector store.
+  \item Off JS: native/JSI (C++), worklets, the server; \texttt{startTransition};
+        chunk long loops; defer until after the navigation transition.
+\end{itemize}
+
+\section{Images · startup · bundle · leaks}
+\begin{itemize}
+  \item \textbf{Images}: decoded size = $w \times h \times 4$ bytes — ask the CDN for
+        display size. \texttt{expo-image} (SDWebImage/Glide, memory+disk cache,
+        \texttt{cachePolicy}) or FastImage.
+  \item \textbf{Startup}: Hermes ships \textbf{bytecode} (no parse at launch, mmap'd);
+        Metro \texttt{inlineRequires} + lazy \texttt{require()} defer module init;
+        TurboModules load on first use (legacy modules init eagerly).
+  \item \textbf{Bundle}: source-map visualiser; drop giant deps, whole-lodash imports.
+  \item \textbf{Leaks}: listeners without \texttt{sub.remove()} in effect cleanup,
+        uncleared \texttt{setInterval}, closures pinning big data, mounted screen stacks.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{Measuring in dev mode}: \texttt{\_\_DEV\_\_} checks, no minify, debugger
+        attached — often several $\times$ slower. Profile a \textbf{release} build.}
+  \trap{``\texttt{useMemo} everywhere'' — memo costs; fix the unstable prop.
+        \texttt{key=\{index\}} — reorders reuse the wrong row state.}
+  \trap{Native driver/Reanimated keep animation smooth while JS is busy, but the
+        tap handler is \emph{still} late — the JS problem remains.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Which thread? Release build? Measure, then fix the cause}: fewer renders ·
+fewer views · smaller images · less JS at startup.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rn-animations-gestures ·
+rn-state-and-data · New Architecture (JSI, Fabric, TurboModules) · UITableView reuse ·
+Instruments}
+
+\end{document}

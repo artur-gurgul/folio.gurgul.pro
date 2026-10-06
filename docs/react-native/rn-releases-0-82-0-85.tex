@@ -1,0 +1,188 @@
+% rn-releases-0-82-0-85.tex — what changed in React Native 0.82 → 0.87 (with 0.80/0.81 as the
+% baseline): New Architecture only, interop layers, Hermes V1, prebuilt iOS binaries, React version
+% per release, Node minimums, DevTools additions, breaking changes, upgrade path.
+% ONLY facts stated in the official release posts; 0.88 not released by 2026-10-06.
+% Sources (checked 2026-10-06) — re-read for this page: 0.85 (Node floor 20.19.4,
+%   absoluteFillObject, Jest preset) and 0.86 (react GitHub org, React Foundation):
+%   https://reactnative.dev/blog (index)
+%   https://reactnative.dev/blog/2025/08/12/react-native-0.81
+%   https://reactnative.dev/blog/2025/10/08/react-native-0.82
+%   https://reactnative.dev/blog/2025/12/10/react-native-0.83
+%   https://reactnative.dev/blog/2026/02/11/react-native-0.84
+%   https://reactnative.dev/blog/2026/04/07/react-native-0.85
+%   https://reactnative.dev/blog/2026/06/11/react-native-0.86
+%   https://reactnative.dev/blog/2026/08/11/react-native-0.87
+% Not repeated: what the New Architecture is (rn-architecture), Hermes internals (hermes-v1).
+% @labels: area=react-native kind=process platform=cross-platform topic=build,architecture,tooling discussion=211
+% @tags: react-native-releases, new-architecture, legacy-architecture, interop-layer, hermes-v1, prebuilt-ios-binaries, react-native-devtools, strict-typescript-api, swiftpm, upgrade-helper, breaking-changes
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usepackage{tabularx}
+
+\lstdefinelanguage{CfgSheet}{
+  morekeywords={npx,bundle,exec,pod,install,cd,preset},
+  sensitive=true, morecomment=[l]{\#}, morecomment=[l]{//}, morestring=[b]", morestring=[b]',
+  literate={--}{{\hbox{-}\hbox{-}}}2 {=>}{{\hbox{=}\hbox{>}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\tikzset{
+  rel/.style={circle, draw=sheetBlue, fill=white, thick, inner sep=0pt, minimum size=2.2mm},
+  bar/.style={rounded corners=1.5pt, minimum height=3.6mm, font=\tiny, inner sep=1pt, anchor=west},
+  lane/.style={font=\scriptsize\bfseries, anchor=east, text=black!70},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{React Native 0.82 → 0.87 — what changed, release by release}{react-native · folio}
+
+\oneliner{A minor about every \textbf{two months}; the current and the two previous minors are
+supported. \textbf{0.82} (Oct 2025) runs \textbf{only the New Architecture}; later releases remove
+the legacy code, make \textbf{Hermes V1} and \textbf{prebuilt iOS binaries} the default (0.84),
+share one \textbf{animation backend} (0.85), and generate a \textbf{strict TypeScript API} from
+source (0.87). 0.83 and 0.86 shipped \textbf{no} user-facing breaking changes.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet, x=1.6cm]
+  % axis
+  \draw[sheetGrey, thick] (0,3.05) -- (8.25,3.05);
+  \foreach \x/\v/\d in {0/0.80/Jun 25,1/0.81/Aug 25,2/0.82/Oct 25,3/0.83/Dec 25,4/0.84/Feb 26,5/0.85/Apr 26,6/0.86/Jun 26,7/0.87/Aug 26}
+    { \node[rel] at (\x+0.5,3.05) {}; \node[font=\scriptsize\bfseries, anchor=south] at (\x+0.5,3.15) {\v};
+      \node[lbl, anchor=north, text=sheetGrey] at (\x+0.5,2.95) {\d}; }
+  % lanes
+  \node[lane] at (0,2.35) {Legacy arch};
+  \node[bar, draw=sheetOrange, fill=sheetOrange!12, minimum width=1.6cm] at (0,2.35) {frozen};
+  \node[bar, draw=sheetOrange, fill=sheetOrange!20, minimum width=1.6cm] at (1,2.35) {last with it};
+  \node[bar, draw=sheetRed, fill=sheetRed!8, minimum width=3.2cm] at (2,2.35) {flag ignored · interop layers kept};
+  \node[bar, draw=sheetRed, fill=sheetRed!18, minimum width=6.4cm] at (4,2.35) {compiled out on iOS by default · Android legacy classes removed};
+  \node[lane] at (0,1.85) {Hermes};
+  \node[bar, draw=sheetGrey, fill=black!4, minimum width=3.2cm] at (0,1.85) {Hermes (JSC to community pkg)};
+  \node[bar, draw=sheetBlue, fill=sheetBlue!8, minimum width=3.2cm] at (2,1.85) {V1 opt-in (build from source)};
+  \node[bar, draw=sheetBlue, fill=sheetBlue!20, minimum width=6.4cm] at (4,1.85) {\textbf{Hermes V1 default} — opt out via \ct{hermes-compiler} 0.15.0};
+  \node[lane] at (0,1.35) {iOS build};
+  \node[bar, draw=sheetGrey, fill=black!4, minimum width=1.6cm] at (0,1.35) {from source};
+  \node[bar, draw=sheetGreen!70!black, fill=sheetGreen!8, minimum width=4.8cm] at (1,1.35) {prebuilt RN core: experimental opt-in};
+  \node[bar, draw=sheetGreen!70!black, fill=sheetGreen!20, minimum width=4.8cm] at (4,1.35) {\textbf{prebuilt \ct{.xcframework} default}};
+  \node[bar, draw=sheetGreen!70!black, fill=sheetGreen!30, minimum width=1.6cm] at (7,1.35) {+ SwiftPM (exp.)};
+  \node[lane] at (0,0.85) {React};
+  \foreach \x/\w/\t in {0/2/{19.1 (0.80)},2/1/19.1.1,3/1/19.2,4/4/{19.2.3 (0.84) — 0.85--0.87 posts name no React version}}
+    \node[bar, draw=sheetBrown, fill=sheetBrown!8, minimum width=\w*1.6cm] at (\x,0.85) {\t};
+  \node[lane] at (0,0.35) {DevTools};
+  \node[bar, draw=sheetGrey, fill=black!4, minimum width=4.8cm] at (0,0.35) {RN DevTools (default since 0.76)};
+  \node[bar, draw=sheetBlue, fill=sheetBlue!10, minimum width=3.2cm] at (3,0.35) {Network/Perf panels · desktop app};
+  \node[bar, draw=sheetBlue, fill=sheetBlue!6, minimum width=1.6cm] at (5,0.35) {multi-CDP};
+  \node[bar, draw=sheetBlue, fill=sheetBlue!6, minimum width=1.6cm] at (6,0.35) {light/dark emu.};
+  \node[bar, draw=sheetRed, fill=sheetRed!6, minimum width=1.6cm] at (7,0.35) {no standalone r-dt};
+\end{tikzpicture}
+
+\vspace{2pt}
+{\scriptsize\setstretch{1.0}
+\noindent\begin{tabularx}{\linewidth}{@{}L{6mm}YL{56mm}L{17mm}@{}}
+\toprule
+\textbf{RN} & \textbf{Headline} & \textbf{Breaking / removed / deprecated} & \textbf{Toolchain} \\ \midrule
+0.81 & last Legacy-arch release (= Expo SDK 54); targets Android 16 (API 36), edge-to-edge mandatory;
+  prebuilt iOS opt-in (\ct{RCT\_USE\_PREBUILT\_RNCORE=1}) & built-in JSC removed $\to$
+  \ct{@react-native-community/javascriptcore}; \ct{<SafeAreaView>} deprecated & Node 20.19.4, Xcode 16.1 \\
+0.82 & \textbf{New Arch only}: \ct{newArchEnabled=false} / \ct{RCT\_NEW\_ARCH\_ENABLED=0} ignored; React 19.1.1;
+  DOM-like node APIs on refs (\ct{parentNode}, \ct{getBoundingClientRect}); Android \ct{debugOptimized};
+  web \ct{performance} APIs (canary) & uncaught promise rejections now \ct{console.error};
+  \ct{Appearance.setColorScheme(null)} $\to$ \ct{'unspecified'}; Gradle 9.0 & — \\
+0.83 & React 19.2 (\ct{<Activity>}, \ct{useEffectEvent}); DevTools Network + Performance panels, desktop app;
+  web perf APIs stable; \ct{IntersectionObserver} canary; \ct{RCT\_REMOVE\_LEGACY\_ARCH=1} (exp.)
+  & \textbf{none} — first release without user-facing breaking changes & Expo SDK 55 \\
+0.84 & \textbf{Hermes V1 default}; \textbf{prebuilt iOS binaries default}; legacy arch compiled out (iOS);
+  React 19.2.3; HEIC; Android \ct{onKeyDown}/\ct{onKeyUp}; pressable \ct{<Text>} gets role \ct{link}
+  & Android \ct{BridgeDevSupportManager}, \ct{LazyReactPackage}, \ct{CxxModuleWrapper} removed;
+  ESLint 9 flat config supported & Node 22.11 \\
+0.85 & \textbf{Shared Animation Backend} (with Software Mansion) under Animated + Reanimated: layout props
+  with \ct{useNativeDriver} (exp., 0.85.1+); Metro 0.84 with HTTPS/WSS & Jest preset $\to$
+  \ct{@react-native/jest-preset}; \ct{StyleSheet.absoluteFillObject} removed;
+  \ct{setAccessibilityFocus} deprecated & Node $\geq$ 20.19.4 (EOL dropped) \\
+0.86 & Android edge-to-edge fixes (\ct{measureInWindow}, \ct{KeyboardAvoidingView}); DevTools light/dark
+  emulation; repo moved to the \ct{react} GitHub org (React Foundation) & \textbf{none} & — \\
+0.87 & \textbf{Strict TypeScript API} generated from source (root exports only); Metro 0.87 (source maps
+  2$\times$ faster, $-$50\% memory); \textbf{SwiftPM} opt-in beside CocoaPods; AGP 9
+  & deep imports (\ct{Libraries/}, \ct{src/private/}) blocked; \ct{InteractionManager}, \ct{StatusBar}
+  \ct{backgroundColor}/\ct{translucent} removed; \ct{useColorScheme()} may return \ct{null} & Node 22.13; compileSdk 37 \\
+\bottomrule
+\end{tabularx}}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Upgrade path}
+\begin{itemize}
+  \item \textbf{Still on the Legacy Architecture?} Official route: go to \textbf{0.81} (or Expo SDK 54),
+        turn the New Architecture on, fix libraries there, \emph{then} 0.82. Libraries not yet
+        migrated run through the \textbf{interop layers}, kept ``for the foreseeable future''.
+  \item \textbf{Upgrade Helper} (react-native-community upgrade-helper) = the template diff between
+        two versions: \ct{AppDelegate}, Podfile, Gradle, \ct{package.json}. Apply it by hand, one
+        release at a time; read that release's breaking-changes list.
+  \item \textbf{Expo}: bump the SDK (it pins RN), then \ct{npx expo install \dd{}fix} and
+        \ct{npx expo-doctor}. SDK 54 = RN 0.81; SDK 55 = RN 0.83.
+  \item Bump native deps with RN (Reanimated, Screens, SVG\ldots): they track the C++ APIs that
+        each release removes.
+\end{itemize}
+
+\hd{In detail}
+\begin{itemize}
+  \item \textbf{DOM-like refs} (0.82): a host-component ref is a node with \ct{parentNode},
+        \ct{children}, \ct{getBoundingClientRect()}, \ct{ownerDocument.getElementById()};
+        \ct{measure}/\ct{setNativeProps} still work.
+  \item \textbf{Web performance APIs} (stable 0.83): \ct{performance.mark}/\ct{measure},
+        \ct{PerformanceObserver}, Event Timing, Long Tasks — measure real users, not just the lab.
+  \item \textbf{Shared Animation Backend} (0.85): animation updates move into RN core, so
+        Animated \emph{and} Reanimated drive layout props (\ct{width}\ldots) natively.
+  \item \textbf{SwiftPM} (0.87): only Xcode needed (no Ruby/CocoaPods); after a fresh clone and
+        in CI run \ct{npx react-native spm} once — the \ct{pod install} analogue.
+\end{itemize}
+
+\hd{Example — the config lines these releases touch}
+\begin{lstlisting}[language=CfgSheet]
+# 0.84+: build RN core from source again (debug a C++ crash)
+RCT_USE_PREBUILT_RNCORE=0 bundle exec pod install
+# 0.82+: Android debug build with C++ optimised (~60 FPS)
+npx react-native run-android --mode debugOptimized
+// 0.85+: jest.config.js
+preset: '@react-native/jest-preset',
+// 0.87: tsconfig escape hatch (bridge through 0.88)
+"customConditions": ["react-native",
+                     "react-native-legacy-deep-imports"]
+# 0.87: SwiftPM instead of CocoaPods (experimental, once)
+cd ios && npx react-native spm --deintegrate
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``0.82 deleted the legacy code'' — it \emph{ignores the flag}; class removal started
+        after, and legacy libraries still load through the interop layer.}
+  \trap{Jumping 0.79 $\to$ 0.84 in one go: legacy arch, JSC, prebuilt binaries, Hermes V1 and
+        Node 22 all at once — impossible to bisect.}
+  \trap{New crash reports after 0.82 may be old bugs: unhandled rejections stopped being silent.}
+  \trap{Hermes V1 on 0.82/0.83 needs RN built from source — not with prebuilt core.}
+  \trap{0.87 breaks \ct{from 'react-native/Libraries/\ldots'} at type-check time.}
+  \trap{0.87: \ct{useColorScheme()} returns \ct{null}, no longer \ct{'unspecified'} — a
+        \ct{\hbox{=}\hbox{=}\hbox{=} 'unspecified'} check silently stops matching.}
+  \trap{0.85 tests fail to start until the Jest preset is renamed — not an app bug.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``82 new-arch only · 83 React 19.2 + DevTools · 84 Hermes V1 + prebuilt · 85 animation
+backend · 86 edge-to-edge · 87 strict TS + SwiftPM.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rn-architecture · hermes-v1 ·
+react-19-and-compiler · metro-bundler · rn-tooling-release · rn-animations-gestures}
+
+\end{document}

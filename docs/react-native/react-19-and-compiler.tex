@@ -1,0 +1,213 @@
+% react-19-and-compiler.tex — React 19 / 19.2 / 19.3 and React Compiler 1.0, for React Native:
+% Actions, useActionState, useOptimistic, use(), ref as a prop, <Context> provider, ref cleanup,
+% <Activity>, useEffectEvent, what the compiler memoises, the rules it assumes, the lint rules,
+% whether useMemo/useCallback are still needed, RN/Expo support. Before/after compiler example.
+% Sources (checked 2026-09-25):
+%   https://react.dev/blog/2024/12/05/react-19
+%   https://react.dev/blog/2025/10/01/react-19-2
+%   https://react.dev/blog/2026/09/09/react-19-3
+%   https://react.dev/blog/2025/10/07/react-compiler-1
+%   https://react.dev/learn/react-compiler/introduction · /learn/react-compiler/debugging
+%   https://react.dev/reference/react-compiler/configuration · /reference/react-compiler/compilationMode
+%   https://reactnative.dev/blog (0.78, 0.80, 0.82, 0.83, 0.84 release posts: React version per release)
+% Not repeated: hook mechanics, stale closures, memo judgement (react-hooks-deep);
+% fibers, transitions, Suspense basics (rn-rendering-reconciliation).
+% @labels: area=react-native kind=api platform=cross-platform topic=ui,performance,language discussion=194
+% @tags: react-19, actions, useactionstate, useoptimistic, use-hook, ref-as-prop, activity, useeffectevent, react-compiler, auto-memoization, eslint-plugin-react-hooks, rules-of-react
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={const,let,var,function,return,if,else,import,export,from,type,
+    interface,async,await,new,class,extends,default,true,false,null,undefined,
+    void,string,number,boolean,throw},
+  morekeywords=[2]{useActionState,useOptimistic,use,useMemo,useCallback,memo,
+    startTransition,useEffectEvent,useEffect,Activity},
+  keywordstyle=[2]{\color{sheetOrange}\bfseries},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`,
+  literate={===}{{\hbox{=}\hbox{=}\hbox{=}}}3 {!==}{{\hbox{!}\hbox{=}\hbox{=}}}3
+           {=>}{{\hbox{=}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {</}{{\hbox{<}\hbox{/}}}2 {/>}{{\hbox{/}\hbox{>}}}2 {->}{{\hbox{-}\hbox{>}}}2
+           {...}{{\hbox{.}\hbox{.}\hbox{.}}}3 {??}{{\hbox{?}\hbox{?}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcommand\neqq{\hbox{!}\hbox{=}\hbox{=}}
+\newcommand\fat{\hbox{=}\hbox{>}}
+
+\tikzset{
+  lane/.style={font=\scriptsize\bfseries, anchor=east, text=black!70},
+  seg/.style={draw, rounded corners=1.5pt, minimum height=4.6mm, font=\tiny, inner sep=1pt, anchor=west},
+  ev/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5mm},
+  slot/.style={draw=sheetBlue, fill=sheetBlue!6, font=\tiny\ttfamily, minimum height=4mm,
+               minimum width=8mm, inner sep=1pt},
+}
+
+\begin{document}
+
+\sheettitle{React 19 · 19.2 · React Compiler — Actions, \texttt{use}, Activity, auto-memo}{react-native · folio}
+
+\oneliner{React 19 (Dec 2024) makes async updates first-class: an \textbf{Action} is a function run
+in a \textbf{transition}, and React tracks its \textbf{pending}, \textbf{optimistic} and \textbf{error}
+state (\ct{useActionState}, \ct{useOptimistic}). 19.2 (Oct 2025) adds \ct{<Activity>} and
+\ct{useEffectEvent}; \textbf{React Compiler 1.0} (Oct 2025) memoises components and hooks
+\textbf{at build time}. RN: React 19.0 in \textbf{0.78}, 19.1 in 0.80, 19.2 in \textbf{0.83}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- Action timeline ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-1.6,3.35) {An Action with an optimistic update — ``Like'' tapped};
+  \draw[sheetGrey, ->] (0,1.0) -- (8.9,1.0) node[ev, right]{time};
+  \foreach \x/\t in {0.3/{tap: \ct{startTransition}\\(async () \ldots)},2.2/{\ct{addOptimistic}\\(+1)},4.5/{\ct{await api.like()}\\(network)},7.2/{final \ct{setState}\\commits}}
+    { \draw[sheetGrey] (\x,0.92) -- (\x,1.08); \node[ev, anchor=north] at (\x,0.9) {\t}; }
+  \node[lane] at (0,2.75) {shown};
+  \node[seg, draw=sheetGrey, fill=black!5, minimum width=1.9cm] at (0.3,2.75) {41 likes};
+  \node[seg, draw=sheetOrange, fill=sheetOrange!12, minimum width=5.0cm] at (2.2,2.75) {\textbf{42} (optimistic, instant)};
+  \node[seg, draw=sheetGreen!70!black, fill=sheetGreen!12, minimum width=1.4cm] at (7.2,2.75) {\textbf{42} real};
+  \node[lane] at (0,2.2) {isPending};
+  \node[seg, draw=sheetGrey, fill=white, minimum width=1.9cm] at (0.3,2.2) {false};
+  \node[seg, draw=sheetBlue, fill=sheetBlue!10, minimum width=5.0cm] at (2.2,2.2) {\textbf{true} — whole Action, until the last update commits};
+  \node[seg, draw=sheetGrey, fill=white, minimum width=1.4cm] at (7.2,2.2) {false};
+  \node[lane, text=sheetRed] at (0,1.55) {on error};
+  \node[seg, draw=sheetRed, fill=sheetRed!7, minimum width=8.3cm] at (0.3,1.55) {optimistic value \textbf{dropped} $\to$ back to \ct{41}; thrown error $\to$ nearest Error Boundary (or return it as state)};
+  % ---------- compiler ----------
+  \draw[sheetGrey!40] (9.55,3.5) -- (9.55,0.3);
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (9.7,3.35) {React Compiler: what the Babel plugin emits};
+  \node[sb, draw=sheetOrange, fill=sheetOrange!10, text width=26mm, align=left] (src) at (11.2,2.55)
+    {\ct{function List(\{items\}) \{}\\\ \ \ct{const s = sort(items);}\\\ \ \ct{return <Rows data=\{s\}/>;}\ct{\}}};
+  \node[sb, draw=sheetBlue, fill=sheetBlue!8, text width=36mm, align=left] (out) at (14.95,2.55)
+    {\ct{const \$ = \_c(4);}\ \ {\tiny // cache slots}\\\ct{if (\$[0] \neqq{} items) \{}\\\ \ \ct{s = sort(items); \$[0]=items; \$[1]=s;}\\\ct{\} else s = \$[1];}\ \ {\tiny // same for JSX}};
+  \draw[hot] (src) -- node[lbl, above]{build} (out);
+  \node[ev, anchor=west, text width=26mm, align=left] at (9.7,1.45)
+    {HIR (control-flow graph) + data-flow and \textbf{mutability} analysis decide each value's inputs};
+  \foreach \i/\t in {0/items,1/s,2/{s'},3/JSX} \node[slot] at (13.2+\i*0.95,1.65) {\$[\i]};
+  \node[ev, anchor=west, text=sheetGreen!50!black, text width=40mm, align=left] at (12.8,1.1)
+    {one cache per component instance (\ct{useMemoCache}); memoises values, callbacks and JSX — also \emph{after} an early return};
+  \node[ev, anchor=west, text=sheetRed, text width=70mm, align=left] at (9.7,0.45)
+    {breaks a \textbf{Rule of React} (mutates props, reads a ref in render\ldots)? $\to$ that function is \textbf{skipped silently}, still runs uncompiled};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{React 19 — Actions and friends}
+\begin{itemize}
+  \item \textbf{Action} = function run in a transition (\ct{startTransition(async () \fat{} \{…\})} or
+        \ct{useTransition}). \ct{isPending} stays true until the \emph{final} update commits.
+        State set \emph{after} an \ct{await} is not in the transition — wrap it in
+        \ct{startTransition} again.
+  \item \ct{useActionState(action, initial)} $\to$ \ct{[state, dispatch, isPending]};
+        \ct{action(prevState, payload)} returns the next state. Dispatches are \textbf{queued}
+        and run in order. Renamed from canary \ct{useFormState}.
+  \item \ct{useOptimistic(value, reducer?)} $\to$ \ct{[shown, addOptimistic]}. Call
+        \ct{addOptimistic} \emph{inside} an Action; when it settles React falls back to
+        \ct{value} — no manual rollback.
+  \item \ct{use(promise | context)}: \textbf{suspends} until resolved (Suspense + Error
+        Boundary); the one API allowed in \ct{if}/loops. The promise must be \emph{stable}
+        (from a parent, cache or library) — not created in render.
+  \item \textbf{\ct{ref} is a plain prop} of function components: \ct{forwardRef} no longer
+        needed, to be deprecated. Ref callbacks may \textbf{return a cleanup}.
+        \ct{<Ctx value=\{v\}>} replaces \ct{<Ctx.Provider>}.
+  \item Web-only (\ct{react-dom}): \ct{<form action>}, \ct{useFormStatus}. RN: \ct{dispatch} from \ct{onPress}.
+\end{itemize}
+
+\hd{React 19.2 (RN 0.83) and 19.3}
+\begin{itemize}
+  \item \ct{<Activity mode="visible"|"hidden">}: hidden $=$ children hidden, \textbf{effects
+        unmounted} (cleanups run), updates deferred to idle, \textbf{state kept}. Pre-render the
+        next tab; keep a back screen's state without its subscriptions.
+  \item \ct{useEffectEvent(fn)}: an ``event'' called from an Effect that reads the
+        \emph{latest} props/state but is \textbf{not reactive} — never in deps, only called from
+        Effects of the same component. Needs \ct{eslint-plugin-react-hooks@latest}.
+  \item 19.2 also: \textbf{Performance Tracks} (Scheduler, Components) in the profiler.
+        19.3 (9 Sep 2026): \ct{<ViewTransition>}, \ct{addTransitionType}, \textbf{Fragment refs}.
+\end{itemize}
+
+\hd{Example — an Action in RN (19.x)}
+\begin{lstlisting}[language=TSSheet]
+function LikeButton({ post }) {
+  const [shown, addOptimistic] = useOptimistic(post.likes);
+  const [error, like, isPending] = useActionState(
+    async (_prev, id) => {
+      addOptimistic(n => n + 1);       // instant UI
+      try { await api.like(id); return null; }
+      catch (e) { return 'Could not like'; } // UI reverts
+    }, null);
+  return (
+    <Pressable disabled={isPending}
+      onPress={() => startTransition(() => like(post.id))}>
+      <Text>{shown} likes {error ?? ''}</Text>
+    </Pressable>);
+}
+\end{lstlisting}
+
+\hd{Does the compiler end \ct{useMemo}/\ct{useCallback}?}
+For \textbf{new} code: mostly — write plain code. Keep them as \textbf{escape hatches} where
+identity is a \emph{contract} (an effect dep that must not change). Old ones: leave, or remove
+with tests — removing changes the compiled output. Memo is \textbf{per component}: an expensive
+function called in 3 components still runs 3 times.
+
+\columnbreak
+
+\hd{React Compiler 1.0}
+\begin{itemize}
+  \item \ct{babel-plugin-react-compiler} (first Babel plugin) lowers each component/hook to an
+        \textbf{HIR}, infers each value's inputs, emits a per-instance cache (\ct{\_c(n)}).
+        Granular — even \textbf{after conditional returns}, which manual hooks cannot do.
+  \item \ct{compilationMode}: \ct{'infer'} (default: PascalCase + JSX/hooks, or \ct{use*} +
+        hooks) · \ct{'annotation'} (only \ct{"use memo"}) · \ct{'syntax'} (Flow) · \ct{'all'}.
+        \ct{"use no memo"} opts one function out (debugging).
+  \item \textbf{Assumes the Rules of React}: render is pure and idempotent, props/state/hook
+        results immutable, hooks at top level, no \ct{ref.current} in render. Unsure $\to$
+        \textbf{skip} that function (\ct{panicThreshold: 'none'}) — never a build break.
+  \item \textbf{Lint}: \ct{eslint-plugin-react-hooks} (v6+, flat config) \ct{recommended}
+        carries the compiler rules (\ct{set-state-in-render}, \ct{set-state-in-effect},
+        \ct{refs}, \ldots). Fix lint first: a flagged component is a skipped one.
+  \item React 17/18: \ct{target} + \ct{react-compiler-runtime}. Verify: a \textbf{sparkle
+        ``Memo'' badge} in React DevTools. \textbf{RN}: supported; \textbf{Expo SDK 54+} on by
+        default; bare RN adds the Babel plugin. Meta Quest Store: loads up to 12\% faster.
+\end{itemize}
+
+\hd{Example — before / after the compiler}
+\begin{lstlisting}[language=TSSheet]
+// BEFORE: manual, and still broken
+const Row = memo(({ item, onPick }) => ...);
+function List({ items, onPick }) {
+  const sorted = useMemo(() => sort(items), [items]);
+  const pick = useCallback(id => onPick(id), [onPick]);
+  return sorted.map(i =>
+    <Row key={i.id} item={i} onPick={() => pick(i.id)} />);
+}   // inline arrow = new prop each render: memo defeated
+// AFTER: plain code; compiler caches sorted, the arrows
+function List({ items, onPick }) {
+  const sorted = sort(items);
+  return sorted.map(i =>
+    <Row key={i.id} item={i} onPick={() => onPick(i.id)} />);
+}
+\end{lstlisting}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{\ct{use(fetchUser())} in render: new promise each render $\to$ suspends forever.}
+  \trap{\ct{addOptimistic} outside an Action: warning, never shown.}
+  \trap{Code that \emph{relied} on memo identity (effect deps) can change behaviour —
+        bisect with \ct{"use no memo"}.}
+  \trap{\ct{Activity} hidden $\neq$ unmounted: state stays, effects \emph{stop}.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Action = transition + pending + optimistic + error. Compiler = memo by data-flow, if you
+obey the rules.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} react-hooks-deep · rn-rendering-reconciliation
+(transitions, Suspense) · rn-performance · rn-releases-0-82-0-85 · rn-state-and-data}
+
+\end{document}

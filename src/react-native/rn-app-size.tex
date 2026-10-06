@@ -1,0 +1,172 @@
+% rn-app-size.tex — shrinking a React Native app: what one device actually downloads (AAB split
+% APKs vs a universal APK), ABI splits + version codes, R8 + resource shrinking, Hermes vs JSC,
+% native libraries (libreactnative.so merge), assets, unused native deps, measuring (bundletool,
+% APK Analyzer, Play Console, App Thinning Size Report). Diagram: universal APK vs the split
+% APKs Play serves one phone. iOS thinning/ODR detail lives in app-size-and-energy (not repeated).
+% Sources (checked 2026-09-25):
+%   https://developer.android.com/guide/app-bundle              (split APKs by ABI/density/language; AAB required for new apps since Aug 2021; bundletool)
+%   https://developer.android.com/topic/performance/reduce-apk-size (shrinkResources, resourceConfigurations, WebP, vectors, useLegacyPackaging)
+%   https://developer.android.com/build/shrink-code              (R8 phases, full mode default AGP 8.0, keep rules)
+%   https://developer.android.com/guide/practices/page-sizes     (uncompressed .so alignment, APK Analyzer)
+%   https://reactnative.dev/docs/signed-apk-android              (per-CPU APK splits, distinct version codes, enableProguardInReleaseBuilds)
+%   https://reactnative.dev/docs/hermes                          (Hermes: "smaller app size"; JSC = community package)
+%   https://reactnative.dev/blog/2024/10/23/release-0.76-new-architecture (libreactnative.so: ~3.8 MB, ~20%)
+%   https://reactnative.dev/blog/2026/02/11/react-native-0.84   (legacy arch removed from iOS builds: build time + size)
+%   template: https://github.com/react-native-community/template (reactNativeArchitectures default: 4 ABIs)
+% @labels: area=react-native kind=concept platform=cross-platform topic=build,performance discussion=199
+% @tags: app-size, android-app-bundle, split-apks, abi-splits, version-codes, r8, shrinkresources, hermes, libreactnative, bundletool, apk-analyzer, app-thinning
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{GrSheet}{
+  morekeywords={android,defaultConfig,buildTypes,release,splits,abi,def,true,false,include,
+    reset,enable,dependencies,platforms,null},
+  sensitive=true, morecomment=[l]{//}, morecomment=[l]{\#}, morestring=[b]", morestring=[b]',
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {+=}{{\hbox{+}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\dd{\hbox{-}\hbox{-}}
+
+\tikzset{
+  seg/.style={draw=white, minimum height=5mm, inner sep=0pt, font=\tiny, align=center},
+  so/.style={seg, fill=sheetBlue!35},
+  so2/.style={seg, fill=sheetBlue!15, text=black!60},
+  dx/.style={seg, fill=sheetOrange!35},
+  rs/.style={seg, fill=sheetGreen!35},
+  rs2/.style={seg, fill=sheetGreen!13, text=black!60},
+  js/.style={seg, fill=sheetBrown!35},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{RN app size — what one device downloads, and the levers}{react-native · folio}
+
+\oneliner{Users download a \textbf{per-device slice}: from an \textbf{AAB}, Play builds
+\textbf{split APKs} (base + one \textbf{ABI} + one \textbf{density} + the device's
+\textbf{languages}); the App Store thins iOS uploads. In RN the heavy part is \textbf{native
+libraries $\times$ ABIs} (Hermes, \texttt{libreactnative.so}, every native dependency), then
+assets. Measure \emph{download} size.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet, x=1cm, y=1cm]
+  \node[font=\bfseries\small, anchor=west] at (-0.1,3.3) {universal APK — every device gets all of it};
+  \node[so, minimum width=26mm] at (1.3,2.8) {\texttt{lib/arm64-v8a}};
+  \node[so2, minimum width=24mm] at (3.9,2.8) {\texttt{lib/armeabi-v7a}};
+  \node[so2, minimum width=26mm] at (6.4,2.8) {\texttt{lib/x86\_64}};
+  \node[so2, minimum width=24mm] at (8.9,2.8) {\texttt{lib/x86}};
+  \node[dx, minimum width=12mm] at (10.7,2.8) {dex};
+  \node[rs, minimum width=10mm] at (11.8,2.8) {res\\xxhdpi};
+  \node[rs2, minimum width=22mm] at (13.4,2.8) {res other densities};
+  \node[js, minimum width=12mm] at (15.1,2.8) {JS \texttt{.hbc}};
+  \node[rs2, minimum width=8mm] at (16.1,2.8) {lang};
+  \node[lbl, anchor=west] at (0,2.35) {each \texttt{lib/<abi>} = Hermes + \texttt{libreactnative.so} + \emph{every} native dependency's \texttt{.so}, again per ABI · segment widths illustrative};
+  \draw[hot] (8.2,2.2) -- node[lbl, right, text=sheetOrange]{upload an \textbf{AAB}: Play generates, signs and serves only what this phone needs} (8.2,1.55);
+  \node[font=\bfseries\small, anchor=west] at (-0.1,1.3) {what a Pixel (arm64, xxhdpi, English) downloads};
+  \node[dx, minimum width=12mm] at (0.6,0.8) {dex};
+  \node[js, minimum width=12mm] at (1.8,0.8) {JS \texttt{.hbc}};
+  \node[rs, minimum width=10mm] at (2.9,0.8) {res base};
+  \draw[sheetGrey, thick] (0,0.52) rectangle (3.4,1.08); \node[lbl] at (1.7,0.35) {\texttt{base.apk}};
+  \node[so, minimum width=26mm] at (4.9,0.8) {\texttt{lib/arm64-v8a}};
+  \draw[sheetGrey, thick] (3.6,0.52) rectangle (6.2,1.08); \node[lbl] at (4.9,0.35) {\texttt{config.arm64\_v8a.apk}};
+  \node[rs, minimum width=10mm] at (6.9,0.8) {xxhdpi};
+  \draw[sheetGrey, thick] (6.4,0.52) rectangle (7.4,1.08); \node[lbl] at (6.9,0.35) {\texttt{config.xxhdpi}};
+  \node[rs2, minimum width=8mm] at (8.0,0.8) {en};
+  \draw[sheetGrey, thick] (7.6,0.52) rectangle (8.4,1.08); \node[lbl] at (8.0,0.35) {\texttt{config.en}};
+  \node[lbl, anchor=west, align=left, text=sheetGreen!45!black] at (8.8,0.85)
+     {dropped for this phone: 3 other ABIs' \texttt{.so}, 5 other densities, other languages.\\
+      RN images from \texttt{require('./a.png')} land in \texttt{res/drawable-*dpi} by \texttt{@2x/@3x}\\
+      suffix, so they split by density too. Feature/asset delivery = more splits on demand.};
+\end{tikzpicture}
+
+\section{The levers — only wins a primary source states are quantified}
+\renewcommand\arraystretch{1.05}
+\noindent\begin{tabular}{@{}>{\raggedright\arraybackslash}p{50mm}>{\raggedright\arraybackslash}p{80mm}>{\raggedright\arraybackslash}p{32mm}@{}}
+\toprule
+\textbf{lever} & \textbf{what it removes / how} & \textbf{stated win} \\
+\midrule
+AAB (required for new apps, Aug 2021) & other ABIs, densities, languages — from the \emph{download} & per device \\
+R8 minify + \texttt{shrinkResources} & unreachable bytecode + unused resources; short names & — \\
+Hermes (default engine) & Android: no JSC library to ship (RN docs: ``smaller app size'') & — \\
+RN 0.76 merged \texttt{libreactnative.so} & code duplicated across many \texttt{.so} files & $\sim$3.8\,MB ($\sim$20\%) \\
+RN 0.84 on iOS & legacy-architecture code no longer compiled in & ``reduces app size'' \\
+remove unused native dependencies & their \texttt{.so}/pods — autolinking links \emph{every} native package & — \\
+WebP images, vector drawables & image bytes; one XML instead of a PNG per density & — \\
+\texttt{resourceConfigurations} & translations bundled by libraries that you do not ship & — \\
+\bottomrule
+\end{tabular}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}\raggedright
+  \item \textbf{ABIs}: the template builds \texttt{armeabi-v7a, arm64-v8a, x86, x86\_64}
+        (\texttt{reactNativeArchitectures}). With an AAB that costs \emph{upload} size only.
+        Outside Play (per-CPU APKs, \texttt{splits \{ abi \}}) each APK needs its own
+        \textbf{versionCode} — e.g. \texttt{versionCode * 1000 + abiCode}, arm64 higher so
+        64-bit devices prefer it.
+  \item \textbf{R8} (\texttt{enableProguardInReleaseBuilds} in the RN template, off by
+        default): tree-shakes, inlines, merges classes, obfuscates; full mode is default
+        since AGP 8.0. \texttt{shrinkResources} only works with minify on.
+  \item \textbf{Native libs packaging}: uncompressed, page-aligned \texttt{.so}
+        (\texttt{useLegacyPackaging = false}) are mmap'd in place — no extraction, smaller
+        install/updates; compressed libs are extracted at install (bigger on disk).
+  \item \textbf{JS}: mostly dependencies — prune with a bundle visualizer.
+  \item \textbf{iOS}: slicing + asset catalogs + ODR (see app-size-and-energy). JSC is a
+        system framework there, so Hermes \emph{adds} its engine to an iOS app. RN's
+        \texttt{require()}d images are copied as loose files, not an asset catalog, so they
+        are not sliced\unverified.
+\end{itemize}
+
+\section{Example — Android release config}
+\begin{lstlisting}[language=GrSheet]
+// android/app/build.gradle
+def enableProguardInReleaseBuilds = true
+android {
+  defaultConfig { resourceConfigurations += ["en", "de"] }
+  buildTypes { release {
+    minifyEnabled enableProguardInReleaseBuilds
+    shrinkResources true       // needs minify
+    proguardFiles getDefaultProguardFile(
+      "proguard-android-optimize.txt"), "proguard-rules.pro"
+  } }
+}
+// react-native.config.js: stop autolinking a lib on Android
+// dependencies: { 'some-lib': { platforms: { android: null } } }
+\end{lstlisting}
+
+\section{Measure — the number users see}
+\begin{itemize}\raggedright
+  \item \texttt{bundletool build-apks \dd{}bundle=app.aab \dd{}output=app.apks}, then
+        \texttt{bundletool get-size total \dd{}apks=app.apks} (per-config download sizes;
+        \texttt{\dd{}device-spec} for one phone).
+  \item Android Studio \textbf{APK Analyzer} (Build $\to$ Analyze APK): per-folder raw vs
+        download size, dex references, \texttt{.so} alignment.
+  \item \textbf{Play Console} app bundle explorer: size per device configuration.
+  \item \textbf{iOS}: \emph{App Thinning Size Report}. CI: fail past a size budget.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{Dropping \texttt{x86}/\texttt{x86\_64} ``to shrink'' an AAB — Play already serves
+        one ABI; you only broke emulators and x86 devices.}
+  \trap{Quoting the universal APK or the upload size — users get the split.}
+  \trap{R8 full mode removes classes reached only by reflection/JNI $\to$
+        release-only \texttt{ClassNotFoundException}; add keep rules, test release.}
+  \trap{Stripping native symbols with nowhere to keep them — upload them
+        (\texttt{debugSymbolLevel}) or crashes become unreadable.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Ship an AAB, minify + shrink, prune native deps, right-size assets — measure the
+download, not the upload.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} app-size-and-energy (iOS thinning,
+ODR) · rn-startup-performance · android-for-rn-developers · rn-tooling-release ·
+linking-and-launch-time}
+
+\end{document}

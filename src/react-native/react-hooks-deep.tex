@@ -1,0 +1,194 @@
+% react-hooks-deep.tex — every core React hook by MECHANISM: state, reducer,
+% effects (timing, deps, cleanup, races, StrictMode), layout effect, refs,
+% memoisation (when it helps / when it is waste), context, external stores,
+% custom hooks, the Rules of Hooks, stale closures, React 19 additions.
+% Sources (checked 2026-10-06):
+%   react.dev/reference/react/useState (initialState ignored after the first render; initializer
+%     function; set has a stable identity; Object.is bail-out) · /useEffect (generally after paint
+%     unless caused by an interaction; Strict Mode adds one dev-only setup+cleanup cycle) ·
+%     /useContext (consumers re-render from the provider down; memo does not stop it) ·
+%     /useSyncExternalStore (getSnapshot must return the same/cached value) · /use (callable in
+%     conditions and loops) · /forwardRef (React 19: ref is a prop)
+%   reactnative.dev/blog/2025/02/19/react-native-0.78 (React 19 in React Native)
+%   Not in those sources, marked \unverified: child effects before the parent's.
+% @labels: area=react-native kind=api platform=cross-platform topic=ui,language discussion=195
+% @tags: usestate, useeffect, uselayouteffect, useref, usememo, usecallback, usecontext, usesyncexternalstore, stale-closure, rules-of-hooks, exhaustive-deps, abortcontroller
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={const,let,var,function,return,if,else,import,export,from,type,
+    interface,async,await,new,class,extends,default,true,false,null,undefined,
+    void,string,number,boolean},
+  morekeywords=[2]{useState,useEffect,useRef,useMemo,useCallback,useReducer,
+    useContext,useLayoutEffect,AbortController,setInterval,clearInterval,fetch},
+  keywordstyle=[2]{\color{sheetOrange}\bfseries},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.5mm},
+  js/.style={sb, draw=sheetOrange, fill=sheetOrange!10},
+  clo/.style={sb, draw=sheetBlue, fill=sheetBlue!8, font=\tiny\ttfamily},
+  dead/.style={sb, draw=sheetGrey, dashed, fill=white, font=\tiny\ttfamily, text=sheetGrey},
+  bad/.style={sb, draw=sheetRed, fill=sheetRed!7},
+  good/.style={sb, draw=sheetGreen, fill=sheetGreen!10, align=left, font=\tiny},
+  tick/.style={circle, draw=sheetRed, fill=sheetRed!10, inner sep=0.5pt, minimum size=3.2mm, font=\tiny},
+  slot/.style={draw=sheetBlue, fill=sheetBlue!6, font=\tiny\ttfamily, minimum height=4mm,
+               minimum width=15mm, inner sep=1pt},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{React hooks — the mechanisms}{react-native · folio}
+
+\oneliner{Hooks are \textbf{slots on the fiber}, matched by \textbf{call order}. Each render is
+a \textbf{snapshot} its closures capture. Effects sync with the outside world \emph{after}
+commit; memo hooks keep \textbf{identity}. Most bugs: an old snapshot, or a dep with a new
+identity every render.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \draw[sheetGrey!40] (11.1,3.35) -- (11.1,-0.1);
+  \node[pt] at (0,3.2) {\textcolor{sheetRed}{Stale closure} — \texttt{setInterval(() => setCount(count + 1))} in \texttt{useEffect(…, [])}};
+  \foreach \i/\x/\c in {1/1.3/0,2/4.4/1,3/7.5/1} {
+    \node[js, minimum width=24mm] (r\i) at (\x,2.55) {\textbf{Render \i}: \texttt{count = \c}};
+  }
+  \draw[flow] (r1) -- (r2); \draw[flow] (r2) -- (r3);
+  \node[clo, minimum width=24mm] (c1) at (1.3,1.75) {closure 1: count=0};
+  \node[dead, minimum width=24mm] (c2) at (4.4,1.75) {closure 2: count=1};
+  \node[dead, minimum width=24mm] (c3) at (7.5,1.75) {closure 3: count=1};
+  \foreach \i in {1,2,3} \draw[flow] (r\i) -- (c\i);
+  \node[lbl, text=sheetGrey] at (5.95,1.3) {made, never used: deps \texttt{[]} $\to$ effect never re-runs};
+  \node[bad, minimum width=24mm] (iv) at (1.3,0.65) {\texttt{setInterval} (once)};
+  \draw[hot] (c1) -- node[lbl, right]{captured} (iv);
+  \foreach \k/\x in {1/4.4,2/6.6,3/8.8} {
+    \node[tick] (t\k) at (\x,0.65) {\k};
+    \node[lbl, text=sheetRed] at (\x,0.3) {\texttt{setCount(0+1)}};
+  }
+  \draw[->, sheetRed] (iv) -- (t1); \draw[->, sheetRed] (t1) -- (t2); \draw[->, sheetRed] (t2) -- (t3);
+  \node[lbl, text=sheetRed, anchor=west] at (9.1,0.65) {stuck at \textbf{1}};
+  \node[lbl, anchor=west] at (-0.1,0.05) {lint \texttt{react-hooks/exhaustive-deps} flags it. Swift analogue: a closure with a
+       capture list \texttt{[count]} — a copy frozen at creation.};
+  % fixes
+  \node[pt] at (11.2,3.2) {\textcolor{sheetGreen!60!black}{Fixes}};
+  \node[good, text width=50mm] at (13.85,2.55) {\textbf{1} \texttt{setCount(c => c + 1)} — the updater receives the \emph{latest} state; deps stay \texttt{[]}};
+  \node[good, text width=50mm] at (13.85,1.7) {\textbf{2} deps \texttt{[count]} — effect re-runs with the new closure (timer restarts each change)};
+  \node[good, text width=50mm] at (13.85,0.85) {\textbf{3} \texttt{latest.current = count} each render; the callback reads the ref (a box, not a snapshot)};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{State}
+\begin{itemize}
+  \item \texttt{useState(init)}: \texttt{init} used on mount only — pass a function for
+        costly work. Setter is \textbf{stable}; \texttt{Object.is(new, old)} $\to$ no render.
+        Updates queue: \texttt{set(c => c+1)} twice = +2, \texttt{set(c+1)} twice = +1.
+  \item \texttt{useReducer}: next = pure \texttt{(state, action)}; stable \texttt{dispatch}
+        to pass down. Pick it when fields change together. Never mutate:
+        \texttt{arr.push(x); set(arr)} = same reference = no render.
+\end{itemize}
+
+\section{Effects — timing, deps, cleanup}
+\begin{itemize}
+  \item \texttt{useEffect}: \textbf{after commit, normally after paint}. Deps by
+        \texttt{Object.is}; none = every render; \texttt{[]} = mount only.
+  \item \textbf{Cleanup} runs before the next run (old closure) and on unmount. Child
+        effects run before the parent's\unverified.
+  \item \texttt{useLayoutEffect}: \textbf{before paint}, sync — measure and fix without
+        flicker (Fabric: layout readable). Blocks the frame.
+  \item \textbf{Races}: fast id changes $\to$ out-of-order responses. Cleanup cancels
+        (\texttt{AbortController}) or ignores (\texttt{let stale = true}).
+  \item \textbf{StrictMode} (dev): mount $\to$ cleanup $\to$ mount; double subscriptions =
+        missing cleanup. Derived values belong in render, event work in handlers — not effects.
+\end{itemize}
+
+\section{Refs}
+\texttt{useRef} = the same \texttt{\{current\}} box every render; writing it does
+\textbf{not} re-render (timers, latest value). On a host component: the native instance
+(\texttt{focus()}, \texttt{measure()}) — an \texttt{IBOutlet}. Not read during render.
+
+\section{Example — fetch without races}
+\begin{lstlisting}[language=TSSheet]
+function useUser(id: string) {
+  const [user, setUser] = useState<User | null>(null);
+  useEffect(() => {
+    const ac = new AbortController();
+    fetch(`${API}/users/${id}`, { signal: ac.signal })
+      .then(r => r.json()).then(setUser)
+      .catch(e => { if (e.name !== 'AbortError') setErr(e); });
+    return () => ac.abort();  // before next id + on unmount
+  }, [id]);                   // omit id -> wrong user forever
+  return user;
+}
+\end{lstlisting}
+
+\section{React 19 (RN 0.78+)}
+\texttt{use(promise | context)} — suspends on a promise; the one hook allowed in
+conditions. \texttt{useActionState}, \texttt{useOptimistic}: async \emph{Actions} with
+pending/optimistic state. \texttt{ref} is a plain prop (no \texttt{forwardRef}).
+
+\columnbreak
+
+\section{Memoisation — identity, not speed}
+\begin{itemize}
+  \item \texttt{useMemo(fn, deps)} caches a value; \texttt{useCallback(fn, deps)} =
+        \texttt{useMemo(() => fn, deps)}; \texttt{React.memo(C)} skips a render on
+        shallow-equal props.
+  \item \textbf{Helps} only when identity is \emph{consumed}: prop of a \texttt{memo}'d child
+        (heavy \texttt{FlatList} row), dep of another hook, context \texttt{value} — or a
+        truly expensive computation. Otherwise \textbf{waste}; one inline
+        object/arrow/\texttt{children} defeats \texttt{memo}.
+  \item \textbf{React Compiler} memoises at build time; manual memo gets rare.
+\end{itemize}
+
+\section{Context \& external stores}
+\begin{itemize}
+  \item \texttt{useContext}: \textbf{every consumer re-renders} when \texttt{value} changes
+        (\texttt{Object.is}); \texttt{memo} cannot block it. Memoise \texttt{value}, split
+        contexts (state / dispatch), or use a store with selectors.
+  \item \texttt{useSyncExternalStore(subscribe, getSnapshot)}: tear-free reads of a
+        non-React store (Zustand, Redux). \texttt{getSnapshot} must return a cached value
+        — a new object per call loops forever.
+\end{itemize}
+
+\section{Rules of Hooks — why}
+\noindent\begin{tikzpicture}[sheet]
+  \node[lbl, anchor=west] at (-0.2,0.95) {\textbf{fiber hook list}};
+  \node[slot] (a) at (2.6,0.95) {1 useState};
+  \node[slot] (b) at (4.3,0.95) {2 useEffect};
+  \node[slot] (c) at (6.0,0.95) {3 useRef};
+  \draw[flow] (a) -- (b); \draw[flow] (b) -- (c);
+  \node[lbl, anchor=west] at (-0.2,0.35) {\texttt{if (x) useState()}};
+  \node[slot, draw=sheetRed, fill=sheetRed!7] (b2) at (2.6,0.35) {1 useEffect?};
+  \node[slot, draw=sheetRed, fill=sheetRed!7] (c2) at (4.3,0.35) {2 useRef?};
+  \draw[flow] (b2) -- (c2);
+  \node[lbl, text=sheetRed, anchor=west] at (5.15,0.35) {slots shift $\to$ wrong state};
+\end{tikzpicture}
+\begin{itemize}
+  \item Top level only — no conditions, loops, or hooks after an early \texttt{return}.
+        No names or keys: \emph{order} is identity.
+  \item \textbf{Custom hook} (\texttt{useX}) shares \emph{logic}, not state.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{useCallback} with no \texttt{memo}'d consumer only adds cost.}
+  \trap{Object/array deps built in render $\to$ effect every render (or a loop).}
+  \trap{\texttt{useEffect(async () => …)} returns a promise, not a cleanup.}
+  \trap{Silencing \texttt{exhaustive-deps} hides stale closures — restructure.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Order = identity. Render = snapshot. Effects sync; refs remember.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rn-rendering-reconciliation ·
+rn-architecture · Zustand/Redux selectors · React Compiler · Swift capture lists}
+
+\end{document}
