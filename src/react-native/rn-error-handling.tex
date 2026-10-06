@@ -1,0 +1,193 @@
+% rn-error-handling.tex — error handling in React Native: where each kind of failure goes (render
+% error, event handler, async/promise, native exception, hang, OOM), error boundaries and their
+% limits, ErrorUtils global handler + isFatal, Hermes unhandled-rejection tracking, LogBox vs
+% release, reporting (Sentry / Crashlytics, source maps + dSYM + mapping), fallback UI and retry.
+% Crash-report anatomy/dSYM/MetricKit is in security-build/crashes-symbolication, not repeated.
+% Sources (checked 2026-09-25):
+%   https://react.dev/reference/react/Component (error boundaries: what they do not catch,
+%     getDerivedStateFromError, componentDidCatch info.componentStack, no hook equivalent)
+%   https://github.com/bvaughn/react-error-boundary
+%   https://github.com/react/react-native/issues/49525 and
+%   https://github.com/react-native-community/discussions-and-proposals/discussions/718
+%     (Hermes promise rejection tracking: HermesInternal.enablePromiseRejectionTracker)
+%   https://reactnative.dev/docs/debugging (LogBox) · https://docs.sentry.io/platforms/react-native/
+%   RN source: React/CoreModules/RCTExceptionsManager.mm (release: RCTFatal) and
+%     ReactAndroid/.../modules/core/ExceptionsManagerModule.kt (fatal: throw JavascriptException)
+%   https://reactnative.dev/blog/2020/07/06/version-0.63 (LogBox) · .../docs/debugging-release-builds
+%   https://docs.sentry.io/platforms/react-native/ (init, wrap, ErrorBoundary, beforeSend,
+%     ReactNativeErrorHandlers: ErrorUtils + onunhandledrejection)
+%   https://rnfirebase.io/crashlytics/usage · https://developer.android.com/topic/performance/vitals/anr
+%   https://developer.apple.com/documentation/xcode/addressing-watchdog-terminations
+%   https://tanstack.com/query/latest/docs/framework/react/guides/query-retries
+% @labels: area=react-native kind=pattern platform=cross-platform topic=debugging,architecture discussion=206
+% @tags: error-boundary, react-error-boundary, errorutils, global-error-handler, unhandled-promise-rejection, hermes, logbox, anr, native-crash, sentry, crashlytics, source-maps
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={const,let,function,return,import,from,export,default,type,class,extends,
+    if,else,new,true,false,null,undefined,async,await,throw,try,catch,static,render},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`,
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {===}{{\hbox{=}\hbox{=}\hbox{=}}}3
+           {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2
+           {??}{{\hbox{?}\hbox{?}}}2 {||}{{\hbox{|}\hbox{|}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2
+           {?.}{{\hbox{?}\hbox{.}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  fl/.style={box, font=\tiny, text width=38mm, align=left, inner sep=1.3pt, minimum height=4.4mm,
+             draw=sheetGrey, fill=black!4},
+  ca/.style={box, font=\tiny, text width=46mm, align=left, inner sep=1.3pt, minimum height=4.4mm},
+  dv/.style={box, font=\tiny, text width=23mm, align=left, inner sep=1.3pt, minimum height=4.4mm,
+             draw=sheetOrange, fill=sheetOrange!7},
+  rl/.style={box, font=\tiny, text width=29mm, align=left, inner sep=1.3pt, minimum height=4.4mm,
+             draw=sheetRed, fill=sheetRed!7},
+  ok/.style={rl, draw=sheetGreen!70!black, fill=sheetGreen!10},
+  col/.style={font=\bfseries\scriptsize, anchor=south},
+  ln/.style={->, draw=sheetGrey, thin},
+}
+% \row{id}{y}{failure}{catcher}{dev}{release-style}{release}
+\newcommand\row[7]{%
+  \node[fl] (f#1) at (2.0,#2) {#3}; \node[ca] (c#1) at (7.0,#2) {#4};
+  \node[dv] (d#1) at (11.15,#2) {#5}; \node[#6] (r#1) at (14.55,#2) {#7};
+  \draw[ln] (f#1) -- (c#1); \draw[ln] (c#1) -- (d#1); \draw[ln] (d#1) -- (r#1);}
+
+\begin{document}
+
+\sheettitle{Error handling in React Native}{react-native · folio}
+
+\oneliner{Every failure has \textbf{one catcher}: a \textbf{render} error goes to the nearest
+\textbf{error boundary}; an uncaught \textbf{JS exception} to \ct{ErrorUtils}' \textbf{global handler}
+(fatal in release = crash); an \textbf{unhandled rejection} to nobody unless you install a tracker; a
+\textbf{native} crash, an \textbf{ANR} or \textbf{OOM} kills the process and is reported \emph{next
+launch}. Design which errors the user sees, which retry, and which crash on purpose.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[col] at (2.0,3.05) {failure};
+  \node[col] at (7.0,3.05) {what catches it};
+  \node[col, text=sheetOrange] at (11.15,3.05) {dev build};
+  \node[col, text=sheetRed] at (14.55,3.05) {release build};
+  \row{a}{2.8}{throw in \textbf{render} / effect of a component}
+      {nearest \textbf{ErrorBoundary}: \ct{getDerivedStateFromError} $\to$ fallback, \ct{componentDidCatch} $\to$ report}
+      {LogBox + fallback}{ok}{subtree shows fallback, app lives}
+  \row{b}{2.25}{throw in \ct{onPress} / \ct{setTimeout} callback}
+      {\textbf{not} a boundary $\to$ \ct{ErrorUtils} global handler, \ct{isFatal = true}\unverified}
+      {red LogBox screen}{rl}{default handler $\to$ \ct{RCTFatal} (iOS) / \ct{JavascriptException} (Android) $\to$ \textbf{crash}}
+  \row{c}{1.6}{\textbf{rejected promise} nobody awaits / \ct{async} handler throws}
+      {nothing by default; Hermes: \ct{HermesInternal.enablePromiseRejectionTracker} (Sentry installs one)}
+      {LogBox warning ``Possible unhandled promise rejection''\unverified}{rl}{\textbf{silent}: button does nothing, no report}
+  \row{d}{0.95}{\textbf{native} exception: Swift trap, \ct{NSException}, Kotlin throw on a module thread}
+      {OS signal / uncaught-exception handler of the crash SDK (in-process)}
+      {Xcode / Logcat stop}{rl}{process dies; report \textbf{sent on next launch}; needs dSYM / mapping}
+  \row{e}{0.3}{\textbf{hang}: main thread blocked; \textbf{OOM} (jetsam / LMK)}
+      {Android \textbf{ANR} (input $>$ 5 s); iOS watchdog \ct{0x8badf00d}; OOM: no in-process handler}
+      {ANR dialog / debugger}{rl}{Android vitals ANR, MetricKit; OOM only inferred\unverified}
+  \node[font=\tiny, anchor=west, text=sheetBrown] at (-0.05,-0.12)
+     {A busy \textbf{JS thread} is not an ANR: the main thread still answers the OS — the UI just stops reacting. Detect it yourself (JS FPS, a heartbeat), or users see a ``frozen'' app no tool reports.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Error boundaries — what they catch}
+\begin{itemize}
+  \item A \textbf{class} component with \ct{static getDerivedStateFromError(e)} (render the
+        fallback) and \ct{componentDidCatch(e, info)} (\ct{info.componentStack} — minified in
+        prod). \textbf{No hook equivalent} — use \ct{react-error-boundary}.
+  \item Catches errors thrown while React \emph{renders, runs lifecycles/effects} of its
+        children — and inside a \ct{startTransition} function. \textbf{Not}: event handlers,
+        \ct{setTimeout}/async code, errors in the boundary itself.
+  \item Route async errors in: \ct{const \{ showBoundary \} = useErrorBoundary()}, then
+        \ct{catch(e) \{ showBoundary(e) \}}. Reset with \ct{resetKeys} or a new \ct{key}.
+  \item \textbf{Placement}: one at the root (last resort), one per \textbf{screen/route}, one
+        around risky widgets (a chart, a 3rd-party view) — the rest of the screen keeps working.
+\end{itemize}
+
+\hd{Example — global handler + rejection tracker (entry file)}
+\begin{lstlisting}[language=TSSheet]
+const prev = ErrorUtils.getGlobalHandler();
+ErrorUtils.setGlobalHandler((error, isFatal) => {
+  report(error, { isFatal });          // persist first, send later
+  if (__DEV__ || !isFatal) return prev(error, isFatal); // LogBox
+  showFatalScreen(error);  // or prev(): the deliberate native crash
+});
+const H = (globalThis as any).HermesInternal;
+if (H?.hasPromise?.()) H.enablePromiseRejectionTracker?.({
+  allRejections: true,                 // one tracker: chain others
+  onUnhandled: (id: number, e: unknown) => report(e, { rejection: true }),
+  onHandled: () => {},
+});
+\end{lstlisting}
+\begin{itemize}
+  \item Chain, don't replace: crash SDKs (Sentry hooks \ct{ErrorUtils}) and LogBox each rely on
+        the handler — keep \ct{prev} and call it, or one of them goes blind.
+  \item A network send from a \emph{fatal} handler may never leave before the process dies —
+        persist, send next launch\unverified.
+  \item Swallowing a fatal keeps a corrupted app alive; prefer a restart screen
+        (\ct{Updates.reloadAsync()} in Expo).
+\end{itemize}
+
+\hd{Dev vs release}
+\textbf{LogBox} (default since 0.63; replaced RedBox/YellowBox): uncaught errors open full
+screen, logs show as notifications; \ct{LogBox.ignoreLogs([...])} silences matches. None of it exists in
+release: a fatal is a crash, a rejection is silence. Test error paths in a \textbf{release build}.
+
+\columnbreak
+
+\hd{JS exception vs native crash vs ANR}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{29mm}>{\raggedright\arraybackslash}p{30mm}@{}}
+\toprule
+& \textbf{stack you get} & \textbf{to read it} \\ \midrule
+JS & bundle offsets (Hermes: bytecode offsets) & JS \textbf{source map} — Hermes: packager map composed with the \ct{hermesc} map \\
+native iOS & addresses + \ct{RCTFatal} frames & \textbf{dSYM} matching the build UUID \\
+native Android & R8-obfuscated Java/Kotlin; NDK tombstone & \ct{mapping.txt}; native symbols \\
+ANR & main-thread trace at the stall & Play Console (Android vitals) \\
+\bottomrule
+\end{tabular}}\par
+Upload per \textbf{build} and per \textbf{OTA update}; \ct{release} + \ct{dist} must name the exact
+bundle, or stacks point at wrong lines.
+
+\hd{Reporting — Sentry vs Crashlytics}
+\begin{itemize}
+  \item \textbf{@sentry/react-native}: \ct{Sentry.init(\{ dsn \})}, \ct{Sentry.wrap(App)},
+        \ct{Sentry.ErrorBoundary}; JS errors (via \ct{ErrorUtils}), rejections, native crashes,
+        tracing; Metro/Xcode/Gradle steps upload maps (auth token in \ct{sentry.properties}).
+  \item \textbf{@react-native-firebase/crashlytics}: native crashes automatic; JS via
+        \ct{crashlytics().recordError(e)} (non-fatal), \ct{log()}, \ct{setUserId()}. Either:
+        scrub PII/tokens (\ct{beforeSend}); tag user, update id, flags.
+\end{itemize}
+
+\hd{What the user sees — expected vs unexpected}
+\begin{itemize}
+  \item \textbf{Expected} (validation 4xx, offline, 404): errors as \emph{values} — inline
+        message, offline banner, disabled action. Never a crash screen.
+  \item \textbf{Transient} (5xx, timeout): backoff + jitter (TanStack Query retries queries
+        3$\times$); idempotent calls or an idempotency key; then ``Try again'', not an endless spinner.
+  \item \textbf{Unexpected} (bug): boundary fallback with \emph{retry} (reset) + report; fatal:
+        report + restart.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Boundaries catch everything'' — not \ct{onPress}, async or native.}
+  \trap{\ct{async} \ct{onPress} throws: no boundary, no crash, no report.}
+  \trap{One boundary around \ct{<App/>}: a widget bug blanks the app.}
+  \trap{Great crash-free rate — JS freezes and OOMs never report.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Render $\to$ boundary · throw $\to$ global handler · promise $\to$ tracker · native $\to$ next launch.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} crashes-symbolication (dSYM, MetricKit) ·
+rn-tooling-release (maps per OTA) · js-async (rejections) · swift/error-handling}
+
+\end{document}

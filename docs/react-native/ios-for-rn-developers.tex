@@ -1,0 +1,194 @@
+% ios-for-rn-developers.tex — the iOS side of a React Native app, deeper than rn-native-modules:
+% the ios/ folder, Podfile + pod install (use_frameworks!, prebuilt core, SwiftPM), workspace vs
+% project, the build phases and the errors each one throws, Info.plist usage keys, entitlements vs
+% capabilities, the Swift AppDelegate + RCTReactNativeFactory (and the UIScene move), privacy
+% manifest, signing basics, the reset recipe.
+% Sources (checked 2026-09-25):
+%   https://reactnative.dev/blog/2025/01/21/version-0.77 (Swift AppDelegate template)
+%   https://github.com/react-native-community/template (0.85-stable: AppDelegate.swift, Podfile,
+%     project.pbxproj build phases, IPHONEOS_DEPLOYMENT_TARGET 15.1, PrivacyInfo.xcprivacy;
+%     main: SceneDelegate.swift, "feat: adopt SceneDelegate (#246)", 2026-09-17)
+%   https://reactnative.dev/blog/2025/08/12/react-native-0.81 · .../2026/02/11/react-native-0.84
+%     (precompiled iOS core default, RCT_USE_PREBUILT_RNCORE=0) · .../2026/08/11/react-native-0.87
+%     (experimental SwiftPM: npx react-native spm)
+%   https://blog.cocoapods.org/CocoaPods-Specs-Repo/ (trunk read-only 2026-12-02)
+%   https://developer.apple.com/documentation/technotes/tn3187-migrating-to-the-uikit-scene-based-life-cycle
+%   https://developer.apple.com/videos/play/wwdc2026/278/ (UIScene required with the iOS 27 SDK)
+%   https://github.com/react/react-native/issues/58555 (Xcode 27 deployment-target error on pods)
+%   RN source: packages/react-native/scripts/xcode/with-environment.sh (.xcode.env, NODE_BINARY)
+%   https://guides.cocoapods.org/syntax/podfile.html · https://rnfirebase.io/ (static frameworks, SPM)
+%   https://developer.apple.com/documentation/bundleresources/describing-use-of-required-reason-api
+%   https://developer.apple.com/documentation/avfoundation/requesting-authorization-to-capture-and-save-media
+% @labels: area=react-native kind=tooling platform=ios topic=build,platform-apis,tooling discussion=192
+% @tags: cocoapods, podfile, use-frameworks, xcworkspace, build-phases, info-plist, usage-descriptions, entitlements, appdelegate-swift, rctreactnativefactory, privacy-manifest, xcode-build-errors
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{RubySheet}{
+  morekeywords={target,do,end,if,platform,use_frameworks!,use_native_modules!,use_react_native!,
+    post_install,prepare_react_native_project!,true,false,nil},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]", morestring=[b]',
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {->}{{\hbox{-}\hbox{>}}}2 {<=}{{\hbox{<}\hbox{=}}}2 {>=}{{\hbox{>}\hbox{=}}}2
+           {||}{{\hbox{|}\hbox{|}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}          % "--" without the mono ligature
+\newcommand\fat{\hbox{=}\hbox{>}}         % "=>" without the mono ligature
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  ph/.style={box, font=\tiny, text width=14mm, align=center, inner sep=1.2pt, minimum height=7mm},
+  er/.style={font=\tiny, text=sheetRed, text width=16mm, align=left, inner sep=0.5pt, anchor=north},
+  tr/.style={font=\tiny\ttfamily, anchor=west, inner sep=0.5pt},
+  tn/.style={font=\tiny, anchor=west, inner sep=0.5pt, text=sheetBrown},
+}
+
+\begin{document}
+
+\sheettitle{iOS for React Native developers — the native half}{react-native · folio}
+
+\oneliner{The iOS app is an ordinary \textbf{Xcode project} whose dependencies come from
+\textbf{CocoaPods} (\ct{pod install} turns \ct{node\_modules} podspecs into \ct{Pods.xcodeproj}), whose
+\textbf{build phases} bundle your JS, and whose \textbf{Info.plist, entitlements, privacy manifest and
+signing} are yours to get right — most ``RN build errors'' are one of those phases failing.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---- ios/ tree ----
+  \node[font=\bfseries\scriptsize, anchor=west] at (-0.05,3.6) {\ct{ios/}};
+  \foreach \y/\t/\n in {
+      3.3/{Podfile · Podfile.lock}/{commit both},
+      3.02/{Pods/}/{generated},
+      2.74/{App.xcworkspace}/{\textbf{open this}},
+      2.46/{App.xcodeproj}/{app target, phases},
+      2.18/{.xcode.env(.local)}/{\ct{NODE\_BINARY}},
+      1.9/{App/AppDelegate.swift}/{(+ SceneDelegate)},
+      1.62/{App/Info.plist}/{usage keys},
+      1.34/{App/App.entitlements}/{capabilities},
+      1.06/{App/PrivacyInfo.xcprivacy}/{required reasons},
+      0.78/{App/Images.xcassets}/{icons, launch}}
+    { \node[tr] at (0.1,\y) {\t}; \node[tn] at (2.8,\y) {\n}; }
+  \draw[sheetGrey!40] (4.45,3.7) -- (4.45,0.6);
+  % ---- pipeline ----
+  \node[font=\bfseries\scriptsize, anchor=west] at (4.55,3.6) {what runs, in order — and how each step fails};
+  \node[font=\tiny, text=sheetOrange!80!black, align=left, anchor=west, text width=120mm] at (4.55,3.2)
+     {Bundle phase: \ct{with-environment.sh} sources \ct{.xcode.env} $\to$ \ct{react-native-xcode.sh}: Metro bundle $\to$
+      \ct{hermesc} $\to$ \ct{main.jsbundle}. Debug skips it and loads from Metro :8081 — \textbf{``No bundle URL present''} = Metro unreachable.};
+  \foreach \i/\n/\t/\c in {
+      0/p/{\textbf{pod install}}/sheetBrown,
+      1/k/{Check Pods\\Manifest.lock}/sheetGrey,
+      2/c/{\textbf{Compile\\+ link}}/sheetBlue,
+      3/b/{\textbf{Bundle RN\\code + images}}/sheetOrange,
+      4/e/{Embed Pods\\Frameworks}/sheetGrey,
+      5/r/{Copy\\resources}/sheetGrey,
+      6/s/{\textbf{Code sign}}/sheetGreen!70!black}
+    { \node[ph, draw=\c, fill=\c!8] (\n) at (5.3+\i*1.75,2.5) {\t}; }
+  \foreach \a/\b in {p/k,k/c,c/b,b/e,e/r,r/s} \draw[flow] (\a) -- (\b);
+  \node[er] at (5.3,2.0) {spec missing $\to$ \ct{\dd{}repo-update}; pin with \ct{bundle exec}};
+  \node[er] at (7.05,2.0) {``sandbox is not in sync with the Podfile.lock'' $\to$ pod install};
+  \node[er] at (8.8,2.0) {``React/\ldots.h not found'' $\to$ opened the .xcodeproj; ``Undefined symbol'' $\to$ not linked};
+  \node[er] at (10.55,2.0) {node not found $\to$ set \ct{NODE\_BINARY} in \ct{.xcode.env} / \ct{.local}};
+  \node[er] at (12.3,2.0) {``dyld: Library not loaded'' $\to$ framework not embedded\unverified};
+  \node[er] at (14.05,2.0) {ITMS-91053 (missing API declaration) $\to$ privacy manifest};
+  \node[er] at (15.8,2.0) {profile lacks the entitlement $\to$ enable on App ID, regenerate};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Podfile and \ct{pod install}}
+\begin{lstlisting}[language=RubySheet]
+platform :ios, min_ios_version_supported   # 15.1 in 0.85
+prepare_react_native_project!
+linkage = ENV['USE_FRAMEWORKS']              # static | dynamic
+use_frameworks! :linkage => linkage.to_sym if linkage
+target 'App' do
+  config = use_native_modules!               # autolinking
+  use_react_native!(:path => config[:reactNativePath],
+    :app_path => "#{Pod::Config.instance.installation_root}/..")
+  post_install do |installer|
+    react_native_post_install(installer, config[:reactNativePath])
+  end
+end
+\end{lstlisting}
+\begin{itemize}
+  \item \ct{pod install} resolves every native dep's podspec, runs \textbf{Codegen}, writes
+        \ct{Pods.xcodeproj} + the \textbf{workspace}. Any native dep change, RN upgrade or
+        \ct{Podfile} edit $\Rightarrow$ \ct{cd ios \&\& bundle exec pod install} (the Gemfile pins
+        CocoaPods).
+  \item \ct{use\_frameworks!} (CocoaPods default linkage: dynamic) builds pods as frameworks; RN
+        Firebase on CocoaPods needs \ct{:linkage \fat{} :static} (it now defaults to SwiftPM).
+        Unset, pods are static libraries.
+  \item Since \textbf{0.84} the RN core is \textbf{precompiled} (\ct{RCT\_USE\_PREBUILT\_RNCORE=0}
+        builds from source); you can't step into RN internals.
+  \item CocoaPods trunk goes \textbf{read-only on 2 Dec 2026}; RN \textbf{0.87} adds
+        experimental, opt-in \textbf{SwiftPM} (\ct{npx react-native spm}) — CocoaPods stays default.
+\end{itemize}
+
+\hd{AppDelegate — Swift since 0.77}
+One \ct{AppDelegate.swift} replaced \ct{main.m} + \ct{AppDelegate.h/.mm}. It builds a
+\ct{RCTReactNativeFactory(delegate:)} whose \ct{ReactNativeDelegate}
+(\ct{RCTDefaultReactNativeFactoryDelegate}) returns \ct{bundleURL()} — Metro in \ct{DEBUG},
+\ct{main.jsbundle} otherwise — sets \ct{dependencyProvider = RCTAppDependencyProvider()} (0.77+:
+forget it and third-party modules misbehave), then \ct{startReactNative(withModuleName:in:)}. C++
+TurboModules still need an ObjC++ AppDelegate. \textbf{iOS 27 SDK requires the UIScene life
+cycle} (WWDC26, TN3187: built with Xcode 27 without it, the app won't launch); the template adopted
+a \ct{SceneDelegate} in Sep 2026 — deep links move to \ct{scene(\_:openURLContexts:)} $\to$
+\ct{RCTLinkingManager}.
+
+\hd{Privacy manifest}
+\ct{PrivacyInfo.xcprivacy}: required-reason APIs (template: \ct{FileTimestamp C617.1},
+\ct{UserDefaults CA92.1}, \ct{SystemBootTime 35F9.1}), collected data types, tracking domains.
+SDKs on Apple's list ship their own \textbf{signed} manifest; Xcode's privacy report aggregates
+them. Since 1 May 2024 App Store Connect refuses uploads missing a reason (ITMS-91053).
+
+\columnbreak
+
+\hd{Info.plist — the keys you will be asked about}
+\begin{itemize}
+  \item \textbf{Usage descriptions}: \ct{NSCameraUsageDescription}, \ct{NSMicrophoneUsage…},
+        \ct{NSPhotoLibraryUsage…} (+ \ct{…AddUsage…}), \ct{NSLocationWhenInUseUsage…},
+        \ct{NSLocationAlwaysAndWhenInUseUsage…}, \ct{NSFaceIDUsage…},
+        \ct{NSBluetoothAlwaysUsage…}, \ct{NSContactsUsage…}, \ct{NSUserTrackingUsage…} (ATT).
+        Missing $\to$ ``the system \textbf{terminates your app}'' (Apple) at first access; vague
+        text $\to$ review rejection\unverified. A JS permission library does not add them — you (or a config plugin) do.
+  \item Also: \ct{CFBundleURLTypes} (schemes), \ct{LSApplicationQueriesSchemes}
+        (\ct{canOpenURL} list), \ct{UIBackgroundModes}, \ct{UIAppFonts},
+        \ct{ITSAppUsesNonExemptEncryption}, ATS.
+\end{itemize}
+
+\hd{Capabilities = entitlement + App ID + profile}
+A capability (Signing \& Capabilities tab) is three things that must agree: a key in
+\ct{App.entitlements} · the feature enabled on the \textbf{App ID} · a \textbf{provisioning profile}
+that contains it. Keys: \ct{aps-environment} (push), \ct{com.apple.developer.associated-domains}
+(\ct{applinks:example.com}), \ct{com.apple.security.application-groups},
+\ct{keychain-access-groups}. \textbf{Signing}: automatic (team id, Xcode manages profiles) or
+manual (\ct{fastlane match} in CI); dev vs distribution cert; bundle id $=$ App ID.
+
+\hd{Reset recipe (in this order)}
+Clean Build Folder (Shift-Cmd-K) $\to$ delete \ct{ios/build} + DerivedData $\to$ \ct{rm -rf ios/Pods}
+$\to$ \ct{bundle exec pod install} $\to$ \ct{npx react-native start \dd{}reset-cache}. Script
+phase fails with ``Sandbox: rsync deny'' $\to$ \ct{ENABLE\_USER\_SCRIPT\_SANDBOXING = NO}\unverified. Xcode 27
+fails pods whose deployment target is $<$ 15.0 — raise it in \ct{post\_install}\unverified.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Opening \ct{App.xcodeproj}: no Pods $\to$ ``file not found''.}
+  \trap{Metro reload after adding a native lib: needs pods + rebuild.}
+  \trap{Hand-editing \ct{ios/} in Expo CNG: \ct{prebuild} overwrites it.}
+  \trap{Permission asked from JS, no Info.plist key $\to$ crash.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Workspace, not project · pod install after native change · plist, entitlements, manifest, signing.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rn-native-modules (TurboModules, Codegen) ·
+rn-env-config-secrets (schemes, xcconfig) · signing-and-cicd · app-hardening-privacy (privacy
+manifest) · app-and-vc-lifecycle (scenes) · linking-and-launch-time}
+
+\end{document}

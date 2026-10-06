@@ -1,0 +1,211 @@
+% rn-debugging-toolchain.tex — the React Native debugging toolchain in 2026: React Native
+% DevTools (panels, Network + Performance since 0.83, desktop app), Flipper's end, Radon IDE,
+% LogBox, JS vs native logs, release-build debugging + profiling, symbolicating JS (Hermes
+% source maps) and native crashes. A tool x layer matrix is the diagram.
+% Extends rn-tooling-release (which only names DevTools/Flipper) and rn-performance (profiling list).
+% Sources (checked 2026-09-25):
+%   https://reactnative.dev/docs/react-native-devtools   (panels; Network/Performance "since 0.83")
+%   https://reactnative.dev/docs/debugging                (Dev Menu keys, j, LogBox, Perf Monitor)
+%   https://reactnative.dev/docs/debugging-release-builds (hermesFlags, SOURCEMAP_FILE, metro-symbolicate)
+%   https://reactnative.dev/docs/profiling                (Android Studio system trace, mqt_js, dev=false)
+%   https://reactnative.dev/blog/2024/04/22/release-0.74  (Flipper removed from new projects)
+%   https://reactnative.dev/blog/2024/10/23/release-0.76-new-architecture (DevTools default)
+%   https://reactnative.dev/blog/2025/10/08/react-native-0.82 (debugOptimized, promise rejections)
+%   https://reactnative.dev/blog/2025/12/10/react-native-0.83 (Network, Performance, desktop app)
+%   https://reactnative.dev/blog/2026/02/11/react-native-0.84 (in-app Perf/Network tabs removed)
+%   https://reactnative.dev/blog/2026/06/11/react-native-0.86 (light/dark emulation)
+%   https://radon.swmansion.com/  ·  https://github.com/margelo/react-native-release-profiler
+% @labels: area=react-native kind=tooling platform=cross-platform topic=debugging,tooling discussion=204
+% @tags: react-native-devtools, radon-ide, logbox, flipper, hermes, source-maps, metro-symbolicate, release-profiling, debugoptimized, logcat, performance-panel, network-panel
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{ShSheet}{
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {=>}{{\hbox{=}\hbox{>}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+% 0xProto ligatures: -- and // in inline \texttt, one \hbox per character
+\newcommand\dd{\hbox{-}\hbox{-}}
+\newcommand\dsl{\hbox{/}\hbox{/}}
+
+\tikzset{
+  mx/.style={draw=sheetGrey!60, minimum width=16mm, minimum height=5.2mm, text width=15.4mm,
+             inner sep=0.5pt, align=center, font=\tiny},
+  js/.style={mx, fill=sheetOrange!14},
+  nat/.style={mx, fill=sheetBlue!12},
+  lg/.style={mx, fill=black!6},
+  cr/.style={mx, fill=sheetRed!10},
+  no/.style={mx, fill=white, text=black!35},
+  lay/.style={draw=sheetGrey, minimum width=29mm, minimum height=5.2mm, text width=28mm,
+              inner sep=1pt, font=\tiny, align=left},
+  hd/.style={font=\tiny\bfseries, text width=16mm, align=center},
+}
+
+\begin{document}
+
+\sheettitle{RN debugging toolchain — which tool sees which layer}{react-native · folio}
+
+\oneliner{\textbf{React Native DevTools} (Chrome DevTools frontend, default since
+\textbf{0.76}) debugs the \textbf{JS + React} layer of a \textbf{debug} build; everything below
+JSI — C++, Kotlin/Swift, the OS — is \textbf{Xcode / Android Studio} territory, and release
+builds are debugged with \textbf{profilers, logs and symbolicated crash reports}. Name the layer
+first, then the tool.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet, x=1cm, y=1.2cm]
+  \def\cw{1.67}
+  \foreach \t [count=\i from 0] in {RN DevTools, Radon IDE, LogBox,
+      release-profiler, {Xcode / Android Studio debugger}, {Instruments · AS Profiler · Perfetto},
+      logcat · Xcode console, crash reporter}
+    \node[hd, anchor=south] at (3.8+\i*\cw, 3.35) {\t};
+  % layer labels
+  \foreach \y/\t in {3.1/{\textbf{JS} — your code, Metro bundle},
+      2.64/{\textbf{React} — component tree},
+      2.18/{\textbf{Hermes} — runtime, JS heap},
+      1.72/{\textbf{JSI C++} — Fabric, TurboModules},
+      1.26/{\textbf{Native} — Kotlin/Swift, views},
+      0.8/{\textbf{OS} — process, threads, memory}}
+    \node[lay, fill=black!3] at (1.45,\y) {\t};
+  % column 0: DevTools
+  \node[js] at (3.8,3.1) {Sources, Console,\\Network, Perf};
+  \node[js] at (3.8,2.64) {Components\\React Profiler};
+  \node[js] at (3.8,2.18) {Memory: heap\\snapshots};
+  \node[no] at (3.8,1.72) {—}; \node[no] at (3.8,1.26) {—}; \node[no] at (3.8,0.8) {—};
+  % column 1: Radon
+  \node[js] at (3.8+\cw,3.1) {breakpoints in\\the editor};
+  \node[js] at (3.8+\cw,2.64) {inspector $\to$\\source line};
+  \node[no] at (3.8+\cw,2.18) {—};
+  \node[lg] at (3.8+\cw,1.72) {sim/emulator\\in VS Code};
+  \node[no] at (3.8+\cw,1.26) {—}; \node[no] at (3.8+\cw,0.8) {—};
+  % column 2: LogBox
+  \node[js] at (3.8+2*\cw,3.1) {errors, warns,\\red screen};
+  \node[js] at (3.8+2*\cw,2.64) {component\\stack};
+  \foreach \y in {2.18,1.72,1.26,0.8} \node[no] at (3.8+2*\cw,\y) {—};
+  % column 3: release profiler
+  \node[js] at (3.8+3*\cw,3.1) {JS functions\\(source-mapped)};
+  \node[no] at (3.8+3*\cw,2.64) {—};
+  \node[js] at (3.8+3*\cw,2.18) {Hermes\\sampling};
+  \foreach \y in {1.72,1.26,0.8} \node[no] at (3.8+3*\cw,\y) {—};
+  % column 4: native debugger
+  \node[no] at (3.8+4*\cw,3.1) {—}; \node[no] at (3.8+4*\cw,2.64) {—};
+  \node[nat] at (3.8+4*\cw,2.18) {libhermes\\C++ frames};
+  \node[nat] at (3.8+4*\cw,1.72) {LLDB C++\\breakpoints};
+  \node[nat] at (3.8+4*\cw,1.26) {module code,\\view hierarchy};
+  \node[no] at (3.8+4*\cw,0.8) {—};
+  % column 5: profilers
+  \node[lg, text=black!60] at (3.8+5*\cw,3.1) {JS thread as\\one busy lane};
+  \node[no] at (3.8+5*\cw,2.64) {—};
+  \node[nat] at (3.8+5*\cw,2.18) {footprint\\(not objects)};
+  \node[nat] at (3.8+5*\cw,1.72) {Time Profiler\\CPU samples};
+  \node[nat] at (3.8+5*\cw,1.26) {Allocations,\\Leaks, Hitches};
+  \node[nat] at (3.8+5*\cw,0.8) {System Trace\\threads, I/O};
+  % column 6: logs
+  \node[lg] at (3.8+6*\cw,3.1) {console.* $\to$\\\texttt{ReactNativeJS}};
+  \node[no] at (3.8+6*\cw,2.64) {—}; \node[no] at (3.8+6*\cw,2.18) {—};
+  \node[lg] at (3.8+6*\cw,1.72) {native aborts,\\\texttt{DEBUG} dump};
+  \node[lg] at (3.8+6*\cw,1.26) {\texttt{Log.d} ·\\\texttt{os\_log}/\texttt{Logger}};
+  \node[lg] at (3.8+6*\cw,0.8) {ANR, LMK,\\ActivityManager};
+  % column 7: crash reporter
+  \node[cr] at (3.8+7*\cw,3.1) {JS stack +\\source map};
+  \node[cr] at (3.8+7*\cw,2.64) {breadcrumbs,\\error boundary};
+  \node[no] at (3.8+7*\cw,2.18) {—};
+  \node[cr] at (3.8+7*\cw,1.72) {NDK symbols,\\tombstone};
+  \node[cr] at (3.8+7*\cw,1.26) {dSYM ·\\\texttt{mapping.txt}};
+  \node[cr] at (3.8+7*\cw,0.8) {exit reasons,\\MetricKit};
+  % release row
+  \node[lay, draw=none, font=\tiny\bfseries] at (1.45,0.38) {works on a RELEASE build?};
+  \foreach \t [count=\i from 0] in {{no — debug /\\debugOptimized}, no (dev only), no (dev only),
+      {\textbf{yes}}, {debug build or\\attach}, {\textbf{yes} — Profile /\\profileable build},
+      {\textbf{yes}}, {\textbf{yes} — its job}}
+    \node[font=\tiny, align=center, text width=16mm] at (3.8+\i*\cw,0.37) {\t};
+  \draw[sheetGrey!50] (0.0,0.58) -- (16.1,0.58);
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{React Native DevTools — what is in it}
+\begin{itemize}\raggedright
+  \item Open: \textbf{\texttt{j}} in the Metro terminal, or Dev Menu $\to$ \emph{Open DevTools}
+        (\texttt{Cmd/Ctrl+M} Android emulator, \texttt{Ctrl+Cmd+Z} iOS Simulator, shake).
+  \item \textbf{Console} · \textbf{Sources} (breakpoints, conditional, logpoints,
+        \texttt{debugger;}) · \textbf{Memory} (heap snapshots, allocation timeline) ·
+        \textbf{React Components} (edit props/state; ``Memo'' badge = React Compiler) ·
+        \textbf{React Profiler} (commit flame graph).
+  \item \textbf{0.83}: \textbf{Network} (\texttt{fetch}, XHR, \texttt{<Image>}; headers,
+        timings, previews, \textbf{Initiator} = JS call stack; \emph{no} WebSockets, mocking,
+        throttling yet) · \textbf{Performance} (JS, React tracks, network, User Timings on one
+        timeline) · a \textbf{desktop app}. 0.84 dropped the in-app Perf/Network tabs;
+        0.86 added light/dark emulation.
+  \item Docs' own scope: React app concerns, \emph{not} a replacement for native tools.
+\end{itemize}
+
+\section{History · Radon · LogBox · logs}
+\begin{itemize}\raggedright
+  \item \textbf{Remote JS debugging} ran your JS in Chrome's V8 — another engine,
+        impossible with JSI. \textbf{Flipper}: removed from new projects in \textbf{0.74},
+        ``unsupported''. 0.76 announced the end of log forwarding to the Metro terminal.
+  \item \textbf{Radon IDE} (Software Mansion): VS Code/Cursor extension running the
+        Simulator/emulator \emph{inside} the editor — editor breakpoints, inspector $\to$
+        source, network inspector, router integration, previews, replays. Free + paid.
+  \item \textbf{LogBox}: fatal = red screen; \texttt{console.error}/\texttt{warn} = badges,
+        hidden while DevTools is attached; \texttt{LogBox.ignoreLogs([...])}; \textbf{off in release}.
+  \item \textbf{Native logs}: \texttt{adb logcat} (JS console = tag \texttt{ReactNativeJS});
+        Xcode console / Console.app. A module's \texttt{Log.d}/\texttt{os\_log} never reaches
+        DevTools. Since 0.82 an \textbf{unhandled promise rejection} is a \texttt{console.error}.
+\end{itemize}
+
+\section{Debugging a release build}
+\begin{itemize}\raggedright
+  \item No DevTools, no LogBox in release. Dev builds are slow (\texttt{\_\_DEV\_\_} checks,
+        no minify) — never judge performance there.
+  \item \textbf{\texttt{debugOptimized}} (Android, 0.82): C++ optimised + JS debuggable;
+        $\sim$20 $\to$ $\sim$60 FPS vs \texttt{debug}. \texttt{npx react-native run-android
+        \dd{}mode debugOptimized}.
+  \item \textbf{JS CPU in release}: \texttt{react-native-release-profiler} —
+        \texttt{startProfiling()} / \texttt{stopProfiling(true)}, pull with
+        \texttt{npx react-native-release-profiler \dd{}fromDownload \dd{}appId <id>}; open in
+        Perfetto / SpeedScope / \texttt{chrome:\dsl{}tracing}.
+  \item \textbf{System}: Android Studio \emph{Capture System Activities} (profileable) —
+        watch threads \texttt{mqt\_js} (JS) and the UI/RenderThread crossing 16\,ms;
+        Perfetto for exported traces. iOS: Instruments on the \emph{Profile} config.
+  \item \textbf{Field data}: \texttt{PerformanceObserver} (stable 0.83) works in production —
+        marks, measures, \texttt{longtask}, \texttt{event} timings to your analytics.
+\end{itemize}
+
+\section{Example — symbolicate a Hermes JS crash}
+\begin{lstlisting}[language=ShSheet]
+# android/app/build.gradle: emit the Hermes map
+react { hermesFlags = ["-O", "-output-source-map"] }
+# iOS "Bundle React Native code and images" phase:
+export SOURCEMAP_FILE="$(pwd)/../main.jsbundle.map"
+# prod stack says  p@1:132161  (bytecode offset)
+MAP=android/app/build/generated/sourcemaps/react/\
+release/index.android.bundle.map
+npx metro-symbolicate $MAP < stack.txt
+adb logcat -d | npx metro-symbolicate $MAP
+\end{lstlisting}
+Native: iOS \textbf{dSYM}, Android R8 \texttt{mapping.txt} + NDK symbols — upload all to the
+crash reporter \textbf{per build}; the JS map also \textbf{per OTA update}.
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{``The map from yesterday's build will do'' — maps are per exact build/commit;
+        a mismatched map gives confident, \emph{wrong} lines.}
+  \trap{A heap snapshot shows the \textbf{JS heap} only — decoded bitmaps and native
+        module memory are invisible there (use Xcode/AS memory tools).}
+  \trap{``DevTools shows nothing, the network call never happened'' — WebSocket traffic
+        and native-module HTTP (OkHttp/URLSession in a SDK) are not in the Network panel.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Layer $\to$ tool:} JS/React = DevTools · C++/native = Xcode/Android Studio ·
+release = profiler + logs + symbolicated crashes.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rn-tooling-release ·
+rn-performance · rn-memory-leaks · android-anr-native-crashes · crashes-symbolication}
+
+\end{document}

@@ -1,0 +1,165 @@
+% rn-state-and-data.tex — React Native state taxonomy and the right tool for each:
+% Context, Redux Toolkit, Zustand/Jotai, TanStack Query, forms, persistence, offline.
+% Sources (checked 2026-10-06):
+%   tanstack.com/query docs (GitHub TanStack/query): guides/important-defaults (stale by default,
+%     gcTime 5 min, retry 3 with exponential backoff) · react-native (onlineManager + NetInfo,
+%     focusManager + AppState)
+%   github.com/pmndrs/zustand README (no provider; useShallow; persist middleware)
+%   github.com/mrousavy/react-native-mmkv README (JSI, fully synchronous, encryption)
+%   react.dev/reference/react/useContext (every consumer re-renders on a new value)
+%   Not in those sources, marked \unverified: AsyncStorage's Android size cap.
+% @labels: area=react-native kind=architecture platform=cross-platform topic=data,architecture discussion=214
+% @tags: tanstack-query, redux-toolkit, zustand, jotai, react-context, staletime, optimistic-update, mmkv, asyncstorage, react-hook-form, offline-first, normalisation
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={const,let,function,return,import,from,export,default,type,
+    interface,if,else,new,true,false,null,undefined,async,await,
+    useQuery,useMutation,useQueryClient},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`}
+
+\tikzset{
+  q/.style={box, draw=sheetOrange, fill=sheetOrange!8, font=\scriptsize, inner sep=1.5pt,
+            minimum height=8mm, text width=21mm},
+  tool/.style={box, draw=sheetGreen!70!black, fill=sheetGreen!12, font=\scriptsize,
+            inner sep=1.5pt, text width=22mm, minimum height=10mm},
+  per/.style={box, font=\scriptsize, inner sep=1.5pt, text width=31mm, minimum height=9mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{RN state \& data — the taxonomy, and the tool for each kind}{react-native · folio}
+
+\oneliner{``Which state library?'' is the wrong question. Classify first — \textbf{server},
+\textbf{navigation}, \textbf{local UI}, \textbf{shared client}, \textbf{form}, \textbf{persisted}
+(\emph{secret}?) — each has a best-fit tool; most bugs are one kind kept in another's tool.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet, node distance=3mm]
+  \node[font=\scriptsize\bfseries, anchor=west] at (-0.3,3.55) {Decide per piece of state — first ``yes'' wins:};
+  \node[q] (q1) at (1.0,2.75) {Fetched from a server?};
+  \node[q, right=5mm of q1] (q2) {Identifies the screen? (id, tab, filter)};
+  \node[q, right=5mm of q2] (q3) {Form input + validation?};
+  \node[q, right=5mm of q3] (q4) {Used by one component / subtree?};
+  \node[q, right=5mm of q4] (q5) {App-wide, changes rarely? (theme, locale, user)};
+  \node[tool, below=4mm of q1] (t1) {\textbf{TanStack Query} / RTK Query — cache, not state};
+  \node[tool, below=4mm of q2] (t2) {\textbf{route params} (React Navigation / Expo Router) — ids, not objects};
+  \node[tool, below=4mm of q3] (t3) {\textbf{react-hook-form} + schema (zod)};
+  \node[tool, below=4mm of q4] (t4) {\textbf{useState / useReducer}; lift up, or compose};
+  \node[tool, below=4mm of q5] (t5) {\textbf{Context} — split it, memo the value};
+  \node[tool, right=5mm of q5, yshift=-5mm, text width=24mm, minimum height=20mm,
+        draw=sheetBlue, fill=sheetBlue!8] (t6) {\textbf{client store}\\[1pt]
+        \textbf{Zustand} / \textbf{Jotai}: selectors, tiny API\\[1pt]
+        \textbf{Redux Toolkit}: big team, devtools, middleware, strict flow};
+  \foreach \a/\b in {q1/q2,q2/q3,q3/q4,q4/q5} \draw[flow] (\a) -- node[lbl, above]{no} (\b);
+  \draw[flow] (q5.east) -- node[lbl, above]{no} (q5.east -| t6.west);
+  \foreach \a/\b in {q1/t1,q2/t2,q3/t3,q4/t4,q5/t5} \draw[hot] (\a) -- node[lbl, right]{yes} (\b);
+  % persistence strip
+  \node[font=\scriptsize\bfseries, anchor=west] at (-0.3,0.65) {Must it survive a restart?};
+  \node[per, draw=sheetRed, fill=sheetRed!7] at (1.55,-0.05) {\textbf{secret} (token, key)\\Keychain / Keystore:\\\texttt{expo-secure-store}, \texttt{react-native-keychain}};
+  \node[per] at (5.75,-0.05) {\textbf{small, hot, read at launch}\\\textbf{MMKV} — sync via JSI, mmap'd, fast; optional encryption};
+  \node[per] at (9.95,-0.05) {\textbf{large / queryable / relational}\\SQLite (\texttt{expo-sqlite}, \texttt{op-sqlite}), WatermelonDB};
+  \node[per, draw=sheetGrey, fill=black!4] at (14.15,-0.05) {\textbf{simple, legacy}\\AsyncStorage — async, strings, \textbf{unencrypted}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Server state — TanStack Query (v5)}
+\begin{itemize}
+  \item Cache keyed by \texttt{queryKey} (\texttt{['todo', id]}); dedupes requests;
+        \textbf{stale-while-revalidate}: show cached, refetch behind.
+  \item \texttt{staleTime} (default \textbf{0}) — how long data is fresh (no refetch on
+        mount/focus). \texttt{gcTime} (default \textbf{5\,min}; v4 \texttt{cacheTime}) —
+        how long an \emph{unused} entry stays in memory.
+  \item \texttt{invalidateQueries} after a mutation: mark stale, refetch active.
+        \texttt{retry}: 3, exponential backoff.
+  \item RN wiring: \texttt{focusManager} ← \texttt{AppState}, \texttt{onlineManager} ←
+        NetInfo. Offline, queries pause; persist the cache with
+        \texttt{PersistQueryClientProvider}.
+  \item RTK Query: the same inside Redux — \texttt{createApi}, \texttt{providesTags} /
+        \texttt{invalidatesTags}.
+\end{itemize}
+
+\section{Example — optimistic update with rollback}
+\begin{lstlisting}[language=TSSheet]
+const qc = useQueryClient();
+const save = useMutation({
+  mutationFn: (t: Todo) => api.update(t),
+  onMutate: async (t) => {
+    await qc.cancelQueries({ queryKey: ['todos'] }); // no race
+    const prev = qc.getQueryData<Todo[]>(['todos']);
+    qc.setQueryData<Todo[]>(['todos'], (old = []) =>
+      old.map((x) => (x.id === t.id ? t : x)));
+    return { prev };                                  // -> ctx
+  },
+  onError: (_e, _t, ctx) => qc.setQueryData(['todos'], ctx?.prev),
+  onSettled: () => qc.invalidateQueries({ queryKey: ['todos'] }),
+});
+\end{lstlisting}
+
+\section{Context vs stores — re-render mechanics}
+\begin{itemize}
+  \item \textbf{Context} re-renders \emph{every} consumer when the value identity
+        changes — no selectors. Low-frequency values only; split state from dispatch,
+        \texttt{useMemo} the value.
+  \item \textbf{Redux Toolkit}: \texttt{createSlice} (reducers ``mutate'' a draft,
+        \textbf{Immer} makes the immutable copy), \texttt{configureStore},
+        \texttt{createAsyncThunk}. \texttt{useSelector} re-renders when its result
+        changes by reference; derive with memoised \texttt{createSelector}.
+  \item \textbf{Zustand}: \texttt{create(fn)}, no provider; \texttt{useStore(selector)}
+        subscribes to one slice; object selectors need \texttt{useShallow};
+        \texttt{persist} middleware.
+  \item \textbf{Jotai}: atoms, bottom-up; derived atoms re-run only for their readers.
+\end{itemize}
+
+\section{Forms}
+\textbf{react-hook-form}: values live outside React state — a keystroke does not re-render
+the form; RN inputs go through \texttt{Controller}; validate with a zod resolver.
+
+\columnbreak
+
+\section{Persistence — beyond the picture}
+\begin{itemize}
+  \item AsyncStorage on Android is SQLite with a default size cap\unverified; MMKV's sync reads
+        let settings load at launch without a spinner — its encryption key belongs in
+        the Keychain. Secure stores hold \emph{small} values (tokens), not data.
+  \item Persist client state selectively and \textbf{version + migrate} its shape.
+\end{itemize}
+
+\section{Offline-first \& normalisation}
+\begin{itemize}
+  \item Local DB is the source of truth; the UI reads it; sync is background.
+  \item Writes go to an \textbf{outbox}, replayed on reconnect with
+        \textbf{idempotency keys} (a retried POST must not double-charge).
+  \item Conflict rule per entity: last-write-wins, server-wins, or field merge.
+  \item \textbf{Normalise} shared entities (\texttt{\{ids, entities\}}, RTK
+        \texttt{createEntityAdapter}): one update reaches every screen. Query caches
+        are per key, \emph{not} normalised — \texttt{setQueryData} or invalidate.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Copying fetched data into Redux/\texttt{useState}: two sources of truth, stale
+        forever. Server state belongs in the query cache.}
+  \trap{Tokens in AsyncStorage (plain file/SQLite) — use Keychain/Keystore.}
+  \trap{\texttt{staleTime: 0} + many mounts = refetch storms; \texttt{gcTime} is
+        \emph{not} freshness.}
+  \trap{\texttt{useStore()} without a selector re-renders on every change.}
+  \trap{Whole objects as route params — stale copies, broken deep links.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Server $\to$ query cache · screen $\to$ route · local $\to$ useState · rare
+global $\to$ Context · hot shared $\to$ store · secret $\to$ Keychain.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rn-performance · React Navigation
+/ Expo Router · Keychain Services · Core Data / SwiftData (offline) · Combine / Observation}
+
+\end{document}

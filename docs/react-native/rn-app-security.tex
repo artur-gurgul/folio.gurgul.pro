@@ -1,0 +1,189 @@
+% rn-app-security.tex — React Native app security in depth: the bundle is public (Hermes
+% bytecode is not obfuscation), where a secret may live and who can read it, storage choices
+% (Keychain/Keystore libs vs AsyncStorage vs MMKV + key), pinning options, root/jailbreak
+% detection limits, R8, OTA update code signing, "assume the client is compromised".
+% Sources (checked 2026-09-25):
+%   https://reactnative.dev/docs/security
+%   https://docs.expo.dev/eas-update/code-signing/
+%   https://docs.expo.dev/versions/latest/sdk/securestore/
+%   https://docs.expo.dev/guides/environment-variables/ · https://docs.expo.dev/eas/environment-variables/
+%   https://github.com/mrousavy/react-native-mmkv (V4) · https://oblador.github.io/react-native-keychain/
+%   https://github.com/frw/react-native-ssl-public-key-pinning
+%   https://developer.android.com/privacy-and-security/security-config
+%   https://developer.android.com/privacy-and-security/cryptography (security-crypto deprecated)
+%   https://github.com/react-native-community/template (0.85-stable: build.gradle, AndroidManifest.xml)
+%   https://github.com/P1sec/hermes-dec · https://github.com/bongtrop/hbctool
+%   https://github.com/GantMan/jail-monkey · https://github.com/talsec/Free-RASP-ReactNative
+%   https://docs.expo.dev/versions/latest/sdk/device/ (isRootedExperimentalAsync)
+% @labels: area=react-native kind=concept platform=cross-platform topic=security,build,data discussion=198
+% @tags: rn-security, hermes-bytecode, secrets-in-bundle, react-native-keychain, expo-secure-store, mmkv-encryption, asyncstorage, ssl-pinning, jailbreak-detection, r8-proguard, expo-updates-code-signing, threat-model
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={const,let,function,return,import,from,export,default,type,
+    if,else,new,true,false,null,undefined,async,await},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`,
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {===}{{\hbox{=}\hbox{=}\hbox{=}}}3
+           {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2
+           {??}{{\hbox{?}\hbox{?}}}2 {||}{{\hbox{|}\hbox{|}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}          % "--" without the mono ligature
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  rl/.style={font=\scriptsize, anchor=west, align=left, inner sep=1pt, text width=45mm},
+  ch/.style={font=\tiny\bfseries, align=center, text width=20mm, inner sep=1pt},
+  yes/.style={draw=white, fill=sheetRed!30, minimum width=20mm, minimum height=4.1mm,
+              font=\tiny, inner sep=0pt},
+  no/.style={yes, fill=sheetGreen!22},
+  mid/.style={yes, fill=sheetOrange!30},
+  use/.style={font=\tiny, anchor=west, align=left, inner sep=1pt, text width=55mm},
+}
+% \row{y}{label}{styleA}{textA}{styleB}{textB}{styleC}{textC}{use}
+\newcommand\row[9]{%
+  \node[rl] at (0,#1) {#2};
+  \node[#3] at (5.75,#1) {#4}; \node[#5] at (7.85,#1) {#6}; \node[#7] at (9.95,#1) {#8};
+  \node[use] at (11.0,#1) {#9};}
+
+\begin{document}
+
+\sheettitle{React Native app security — the binary is public}{react-native · folio}
+
+\oneliner{Everything you ship — JS bundle, Hermes bytecode, Info.plist, \ct{BuildConfig} — is
+\textbf{readable by anyone who downloads the app}, and on a rooted/jailbroken phone the attacker also
+\textbf{controls your process at runtime}. So: no secrets in the client, tokens only in
+\textbf{Keychain/Keystore}, raise the cost (pinning, R8, RASP), and let the \textbf{server} decide.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west, align=left] at (-0.05,3.3) {Where can a value live —\\and who can read it?};
+  \node[ch] at (5.75,3.3) {store download:\\unzip IPA / APK};
+  \node[ch] at (7.85,3.3) {device in hand /\\backup / adb};
+  \node[ch] at (9.95,3.3) {root / jailbreak +\\Frida at runtime};
+  \node[ch, anchor=west, text width=40mm, align=left] at (11.0,3.3) {so use it for};
+  \row{2.75}{\textbf{JS bundle / \ct{.hbc}}: literals, \ct{EXPO\_PUBLIC\_*}, RN-config}
+      {yes}{reads}{yes}{reads}{yes}{reads}
+      {public config: API URL, publishable keys (app-restricted)}
+  \row{2.33}{\textbf{native}: Info.plist, \ct{BuildConfig}, \ct{strings.xml}}
+      {yes}{reads}{yes}{reads}{yes}{reads}
+      {identifiers only — ``hidden in native'' is still in the package}
+  \row{1.91}{\textbf{AsyncStorage}, plain MMKV, files}
+      {no}{—}{yes}{reads (backup)}{yes}{reads}
+      {non-secret prefs, caches, feature flags}
+  \row{1.49}{\textbf{MMKV encrypted}, key held in the Keychain}
+      {no}{—}{mid}{ciphertext only}{yes}{hooks the key}
+      {larger sensitive data (cached profile, drafts)}
+  \row{1.07}{\textbf{Keychain / Keystore}, \ct{\ldots ThisDeviceOnly}}
+      {no}{—}{no}{—}{mid}{\emph{uses}; can't export}
+      {refresh token, the MMKV key, private keys}
+  \row{0.65}{\textbf{JS memory} (a variable)}
+      {no}{—}{no}{—}{yes}{reads}
+      {short-lived access token}
+  \row{0.23}{\textbf{your server / KMS}}
+      {no}{—}{no}{—}{no}{—}
+      {client secrets, 3rd-party API keys, signing keys, the \emph{rules}}
+  \node[font=\tiny, anchor=west, text=sheetRed, align=left] at (-0.05,-0.2)
+     {EAS ``secret'' / CI secret = readable only by the build job — expose it to JS (\ct{EXPO\_PUBLIC\_} prefix, \ct{extra} in app.config) and it is in the bundle: row 1.
+      \textcolor{sheetGrey}{Each column can also do everything to its left.}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How the bundle leaks}
+\begin{itemize}
+  \item Release iOS embeds \ct{main.jsbundle} in the \ct{.app}; Android ships
+        \ct{assets/index.android.bundle}. With Hermes it is \textbf{bytecode} — compiled for
+        start-up speed, not secrecy: \ct{strings} lists every literal, and decompilers
+        (\ct{hermes-dec}, \ct{hbctool}) rebuild readable functions.
+  \item Minification renames \emph{locals}; string literals, object keys, URLs and
+        GraphQL documents survive. JS obfuscators only raise the cost.
+  \item \textbf{R8} (\ct{def enableProguardInReleaseBuilds = false} in the template — flip it)
+        shrinks + obfuscates Java/Kotlin only, never JS; reflection-using libs need keep rules;
+        upload \ct{mapping.txt}.
+  \item Template manifest: \ct{android:allowBackup="false"}; cleartext only via a build-time
+        \ct{usesCleartextTraffic} placeholder.
+\end{itemize}
+
+\hd{Storage — pick by what it protects}
+\begin{itemize}
+  \item \textbf{react-native-keychain}: \ct{set/get/resetGenericPassword};
+        \ct{ACCESS\_CONTROL.BIOMETRY\_CURRENT\_SET}; Android \ct{STORAGE\_TYPE}
+        \ct{AES\_GCM\_NO\_AUTH} · \ct{AES\_GCM} (biometric) · \ct{AES\_CBC} deprecated.
+  \item \textbf{expo-secure-store}: iOS Keychain \ct{kSecClassGenericPassword} (default
+        \ct{WHEN\_UNLOCKED}); Android SharedPreferences encrypted by a Keystore key;
+        \ct{requireAuthentication}; small values (iOS historically \textasciitilde2\,KB).
+  \item \textbf{react-native-mmkv} v4: \ct{createMMKV(\{ id, encryptionKey \})}, AES-128
+        (AES-256 opt.), sync JSI, RN $\geq$ 0.76. A key hard-coded in JS $=$ no encryption.
+  \item \textbf{AsyncStorage}: plain text — per the RN docs, never tokens or secrets. Jetpack
+        \ct{EncryptedSharedPreferences} is \textbf{deprecated} (security-crypto 1.1.0).
+\end{itemize}
+
+\hd{Example — encrypted MMKV, key in the Keychain}
+\begin{lstlisting}[language=TSSheet]
+import * as Keychain from 'react-native-keychain';
+import { createMMKV } from 'react-native-mmkv';
+export async function openVault() {
+  const svc = { service: 'vault-key' };
+  const hit = await Keychain.getGenericPassword(svc);  // false if none
+  const k = hit ? hit.password : randomKey();  // CSPRNG (expo-crypto)
+  if (!hit) await Keychain.setGenericPassword('vault', k, { ...svc,
+    accessible: Keychain.ACCESSIBLE.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY });
+  return createMMKV({ id: 'vault', encryptionKey: k }); // key never in JS source
+}
+\end{lstlisting}
+
+\hd{Root / jailbreak detection — cost, not a wall}
+\ct{jail-monkey} (\ct{isJailBroken()}), \ct{expo-device} \ct{isRootedExperimentalAsync()},
+\textbf{freeRASP} (Talsec; root, hooks, tampering, untrusted installs). All are heuristics (e.g.
+\ct{su} paths) that hiding and hooking tools (Magisk + Shamiko, Frida) defeat, and the result is a
+\textbf{JS boolean} — one hook flips it. Use them to \emph{signal} risk; the server decides with
+\textbf{App Attest / Play Integrity} verdicts.
+
+\columnbreak
+
+\hd{Pinning — three ways in RN}
+\begin{itemize}
+  \item \ct{react-native-ssl-public-key-pinning}: TrustKit (iOS) + OkHttp
+        \ct{CertificatePinner} (Android); covers \ct{fetch}/XHR, so axios too;
+        \ct{initializeSslPinning(\{ 'api.example.com': \{ publicKeyHashes: [...] \}\})} — base64
+        SHA-256 of the SPKI, \textbf{$\geq$ 2 pins} (TrustKit enforces it). Pins set from JS
+        $\Rightarrow$ an OTA update can rotate them.
+  \item Android only, no code: \ct{network\_security\_config.xml}
+        \ct{<pin-set expiration="yyyy-MM-dd">} + backup \ct{<pin digest="SHA-256">}; after
+        \ct{expiration} pinning switches off (fail-open by design).
+  \item Android $\geq$ 7 (targetSdk 24+) ignores \textbf{user-installed CAs} — that is why
+        Charles/Proxyman needs \ct{<debug-overrides>}; don't ship \ct{src="user"}.
+\end{itemize}
+
+\hd{OTA update integrity — expo-updates code signing}
+HTTPS alone trusts the CDN/host that serves the JS. \ct{npx expo-updates codesigning:generate};
+\ct{updates.codeSigningCertificate} + \ct{codeSigningMetadata \{ keyid, alg:
+"rsa-v1\_5-sha256" \}}; \ct{eas update \dd private-key-path}. The client checks the signature
+against the \textbf{embedded cert} and \textbf{rejects} anything else (EAS Production/Enterprise
+plans). New cert $=$ store build; the private key stays off the repo.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Hermes compiles it, so the key is safe'' — \ct{strings app.hbc | grep sk\_}.}
+  \trap{``It's an EAS \emph{secret}'' — secret from people, not from the bundle it's inlined in.}
+  \trap{Token persisted by redux-persist to AsyncStorage, or sent in a Sentry breadcrumb.}
+  \trap{Root check or pinning as the only control: the attacker owns the process — authZ,
+        rate limits, prices, entitlements live on the server.}
+  \trap{iOS Keychain survives uninstall: a reinstall inherits the old refresh token.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{The binary is public · the device may be hostile · the server decides.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rn-env-config-secrets · rn-auth-session · rn-tooling-release (OTA) · tls-pki (what to pin) ·
+keychain-secure-enclave · app-hardening-privacy (App Attest)}
+
+\end{document}

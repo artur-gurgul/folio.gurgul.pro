@@ -1,0 +1,182 @@
+% rn-animations-gestures.tex — Animated, LayoutAnimation, Reanimated, Gesture Handler;
+% why UI-thread animation survives a busy JS thread.
+% Sources (checked 2026-10-06):
+%   reactnative.dev/docs/animations (native driver: non-layout properties only — transform,
+%     opacity; not Flexbox/position) · /docs/layoutanimation (New Architecture: enabled
+%     automatically, setLayoutAnimationEnabledExperimental is a no-op)
+%   github.com/software-mansion/react-native-reanimated README + docs guides/migration-from-3.x
+%     (4.x New Architecture only; worklet functions moved to react-native-worklets; runOnJS →
+%     scheduleOnRN, runOnUI → scheduleOnUI, old names deprecated re-exports)
+%   github.com/software-mansion/react-native-gesture-handler docs guides/upgrading-to-3,
+%     fundamentals/reanimated-interactions + getting-started (hook API; renamed callbacks and
+%     relations; UI-thread callbacks by default, runOnJS property); GitHub releases (3.0.0
+%     2026-05-28, 3.3.0 latest 3.x; 2.33.0 on 2026-09-14)
+% @labels: area=react-native kind=api platform=cross-platform topic=ui,performance discussion=197
+% @tags: reanimated, worklets, usesharedvalue, useanimatedstyle, usenativedriver, animated-api, layoutanimation, gesture-handler, runonjs, withspring, ui-thread
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={const,let,function,return,import,from,export,default,type,
+    interface,if,else,new,true,false,null,undefined,async,await,
+    useSharedValue,useAnimatedStyle,withSpring,withTiming,scheduleOnRN},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`}
+
+\tikzset{
+  lane/.style={font=\scriptsize\bfseries, anchor=east, align=right},
+  ok/.style={draw=sheetGreen!70!black, fill=sheetGreen!20, minimum height=3.2mm,
+             minimum width=4.2mm, inner sep=0pt},
+  miss/.style={draw=sheetRed, dashed, minimum height=3.2mm, minimum width=4.2mm, inner sep=0pt},
+  busy/.style={draw=sheetRed, fill=sheetRed!18, minimum height=3.2mm, inner sep=0pt, font=\tiny},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5mm},
+}
+
+\begin{document}
+
+\sheettitle{RN animations \& gestures — Animated, Reanimated, RNGH}{react-native · folio}
+
+\oneliner{Smooth animation means computing each frame \textbf{on the UI thread}, so a busy JS
+thread cannot drop it. Animated's \texttt{useNativeDriver} does this for a pre-declared
+animation of \emph{transform/opacity}; \textbf{Reanimated} runs your own \emph{worklets} on the
+UI thread; \textbf{Gesture Handler} recognises touches natively and feeds them. iOS analogue:
+Core Animation keeps running while your code blocks.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── timeline: JS thread busy ──
+  \node[font=\scriptsize\bfseries, anchor=west] at (-0.2,3.6) {JS thread busy for 100 ms — what the user sees (one box = one 16.7 ms frame)};
+  \foreach \i in {0,...,11} \draw[sheetGrey!40] (1.3+\i*0.62,3.3) -- (1.3+\i*0.62,0.55);
+  \node[lane] at (1.2,2.95) {JS thread};
+  \node[ok, minimum width=10mm, anchor=west] at (1.32,2.95) {};
+  \node[busy, minimum width=37mm, anchor=west] at (2.56,2.95) {JSON.parse + re-render 100 ms};
+  \node[ok, minimum width=6mm, anchor=west] at (6.3,2.95) {};
+  \node[lane] at (1.2,2.15) {JS-driven\\(Animated, no\\native driver)};
+  \foreach \i in {0,1} \node[ok, anchor=west] at (1.34+\i*0.62,2.15) {};
+  \foreach \i in {2,...,7} \node[miss, anchor=west] at (1.34+\i*0.62,2.15) {};
+  \foreach \i in {8,...,11} \node[ok, anchor=west] at (1.34+\i*0.62,2.15) {};
+  \node[lbl, text=sheetRed] at (4.4,1.75) {6 frames frozen, then a jump};
+  \node[lane] at (1.2,1.1) {UI-thread\\(native driver /\\Reanimated)};
+  \foreach \i in {0,...,11} \node[ok, anchor=west] at (1.34+\i*0.62,1.1) {};
+  \node[lbl, text=sheetGreen!55!black] at (4.4,0.7) {every frame on time — but a tap \texttt{onPress} still waits for JS};
+  % ── Reanimated + RNGH data flow ──
+  \node[font=\scriptsize\bfseries, anchor=west] at (9.3,3.6) {Gesture $\to$ worklet $\to$ style, never touching JS};
+  \draw[sheetBlue!60, dashed, rounded corners] (9.3,3.3) rectangle (16.5,1.65);
+  \node[lbl, anchor=north west, text=sheetBlue] at (9.35,3.25) {UI thread (main)};
+  \node[lbl, anchor=north east, text=sheetGreen!55!black] at (16.45,3.25) {view props set directly — no React render, no JS};
+  \node[sb] (g) at (10.4,2.3) {native pan\\recogniser};
+  \node[sb] (w) at (12.45,2.3) {\texttt{onUpdate}\\worklet};
+  \node[sb, fill=sheetGreen!15, draw=sheetGreen!70!black] (sv) at (14.2,2.3) {shared\\value};
+  \node[sb] (st) at (15.75,2.3) {animated\\style};
+  \draw[flow] (g) -- (w); \draw[flow] (w) -- node[lbl, above]{\texttt{.value=}} (sv);
+  \draw[flow] (sv) -- (st);
+  \node[sb, draw=sheetOrange, fill=sheetOrange!10, minimum width=34mm] (js) at (13.3,0.75) {JS thread: React state, navigation};
+  \draw[hot, dashed] (w.south) -- node[lbl, left]{\texttt{scheduleOnRN}} (w.south |- js.north);
+  \draw[hot, dashed] (sv.south |- js.north) -- node[lbl, right]{\texttt{scheduleOnUI} · write \texttt{.value}} (sv.south);
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Animated (core)}
+\begin{itemize}
+  \item \texttt{Animated.Value} (held in \texttt{useRef}) · \texttt{ValueXY}; drivers
+        \texttt{timing} (duration + easing), \texttt{spring} (physical, interruptible),
+        \texttt{decay} (velocity); compose \texttt{sequence}/\texttt{parallel}/\texttt{stagger}/\texttt{loop}.
+  \item \texttt{interpolate(\{inputRange, outputRange,} \texttt{extrapolate:'clamp'\})} —
+        one value drives many props (rotation, colour, opacity).
+  \item \textbf{\texttt{useNativeDriver: true}} serialises the animation graph to native
+        \emph{once}; frames then run on UI. Only \textbf{non-layout} props:
+        \texttt{transform}, \texttt{opacity}. \textbf{Not} \texttt{width}, \texttt{height},
+        \texttt{top}, \texttt{margin}, \texttt{flex} — they need Yoga layout every frame.
+  \item \texttt{Animated.event(..., \{useNativeDriver:true\})} binds scroll offset
+        natively — the classic collapsing header.
+  \item \textbf{LayoutAnimation}: \texttt{configureNext(Presets.easeInEaseOut)} before
+        a state change animates the \emph{next layout} — cheap, global, no gestures, not
+        interruptible. Old-arch Android: \texttt{UIManager.setLayoutAnimation}\allowbreak\texttt{EnabledExperimental(true)}.
+\end{itemize}
+
+\section{Reanimated — how it wins}
+\begin{itemize}
+  \item A \textbf{worklet} (\texttt{'worklet'} directive, added by the Babel plugin
+        for hook callbacks) is copied into a \textbf{second JS runtime on the UI
+        thread}; captured variables are copied, not shared.
+  \item \texttt{useSharedValue} — readable/writable from both runtimes via
+        \texttt{.value}; writing it does \textbf{not} re-render React.
+  \item \texttt{useAnimatedStyle(fn)} re-runs on UI when a shared value it reads
+        changes and patches the native view — \textbf{any} prop, layout included.
+  \item \texttt{withTiming}, \texttt{withSpring}, \texttt{withDecay}, \texttt{withSequence},
+        \texttt{withRepeat}, \texttt{withDelay}; \texttt{useDerivedValue};
+        \texttt{useAnimated}\allowbreak\texttt{ScrollHandler}; \texttt{cancelAnimation}.
+  \item \texttt{scheduleOnRN(fn, ...args)} UI $\to$ JS; \texttt{scheduleOnUI(fn, ...args)} JS
+        $\to$ UI (\texttt{react-native-worklets}; 3.x \texttt{runOnJS(fn)(args)} /
+        \texttt{runOnUI} are deprecated re-exports in 4). Async hops — at the end of a
+        gesture, never per frame.
+  \item \textbf{Layout animations}: \texttt{entering=\{FadeIn\}}, \texttt{exiting=\{FadeOut\}},
+        \texttt{layout=\{LinearTransition\}} on \texttt{Animated.View}.
+  \item Reanimated 4 requires the New Architecture; worklets moved to
+        \texttt{react-native-worklets}.
+\end{itemize}
+
+\columnbreak
+
+\section{Example — swipe card, springs back}
+\begin{lstlisting}[language=TSSheet]
+const x = useSharedValue(0);
+const pan = usePanGesture({                  // RNGH 3
+  onUpdate: (e) => { x.value = e.translationX; }, // UI
+  onDeactivate: (e) => {
+    if (Math.abs(e.translationX) > 120) scheduleOnRN(dismiss);
+    else x.value = withSpring(0, { velocity: e.velocityX });
+  },
+});
+const style = useAnimatedStyle(() => ({
+  transform: [{ translateX: x.value }],
+  opacity: interpolate(Math.abs(x.value), [0, 200], [1, 0.3],
+                       Extrapolation.CLAMP),
+}));
+return <GestureDetector gesture={pan}>
+  <Animated.View style={[styles.card, style]} /></GestureDetector>;
+\end{lstlisting}
+
+\section{Gesture Handler 3 (hooks; 2.x still maintained)}
+\begin{itemize}
+  \item \textbf{Native recognisers} (UIGestureRecognizer on iOS), replacing the JS responder
+        system — they work while JS is busy. Root: \texttt{GestureHandlerRootView}.
+  \item A config object per hook: \texttt{usePanGesture(\{…\})}, \texttt{useTapGesture},
+        \texttt{useLongPressGesture}, \texttt{usePinchGesture}, \texttt{useRotationGesture},
+        \texttt{useFlingGesture} $\to$ \texttt{<GestureDetector gesture=\{g\}>}. Callbacks
+        \texttt{onBegin} · \texttt{onActivate} · \texttt{onUpdate} · \texttt{onDeactivate}
+        (v2 \texttt{Gesture.Pan().onStart/.onEnd}; \texttt{onChange} folded into \texttt{onUpdate}).
+  \item \texttt{useSimultaneousGestures(pinch, rotate)} — both active ·
+        \texttt{useExclusiveGestures(doubleTap, tap)} — first that succeeds, in order ·
+        \texttt{useCompetingGestures} (v2 \texttt{Race}). Across components:
+        \texttt{requireToFail} (UIKit \texttt{require(toFail:)}), \texttt{simultaneousWith},
+        \texttt{block}.
+  \item Hook-API callbacks run on the \textbf{UI thread} by default (Reanimated
+        integration); \texttt{runOnJS: true} moves them to JS.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``Native driver makes everything smooth'' — not layout props, and a JS
+        \texttt{onPress}/\texttt{setState} is still late.}
+  \trap{Calling a plain JS function from a worklet without \texttt{scheduleOnRN} crashes;
+        reading \texttt{sv.value} in render gives a stale value.
+        \texttt{scheduleOnRN(setState, v)} per frame rebuilds the JS bottleneck.}
+  \trap{Animating \texttt{width}/\texttt{height} costs a layout pass per frame even on UI —
+        prefer \texttt{transform: scale} where the look allows.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Frames on UI, decisions on JS}: gesture $\to$ worklet $\to$ shared value $\to$
+style; cross to JS only at the end.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rn-performance · Core Animation
+(render server) · UIGestureRecognizer · New Architecture (JSI, Fabric) · Skia}
+
+\end{document}

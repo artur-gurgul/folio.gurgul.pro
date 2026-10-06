@@ -1,0 +1,79 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Error handling in React Native — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/react-native/rn-error-handling.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">173</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Error handling in React Native</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">react-native · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Every failure has <strong>one catcher</strong>: a <strong>render</strong> error goes to the nearest
+<strong>error boundary</strong>; an uncaught <strong>JS exception</strong> to <code>ErrorUtils</code>’ <strong>global handler</strong>
+(fatal in release = crash); an <strong>unhandled rejection</strong> to nobody unless you install a tracker; a
+<strong>native</strong> crash, an <strong>ANR</strong> or <strong>OOM</strong> kills the process and is reported <em>next
+launch</em>. Design which errors the user sees, which retry, and which crash on purpose.</p>
+<p class="sheet-tools"><a class="sheet-download" href="rn-error-handling.pdf" download>Download PDF</a> <a href="rn-error-handling.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/react-native/rn-error-handling.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="rn-error-handling-fig1.svg" width="614" height="144" class="wide" alt="Error handling in React Native — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">Error boundaries — what they catch</span></h3>
+<ul>
+<li>A <strong>class</strong> component with <code>static getDerivedStateFromError(e)</code> (render the  fallback) and <code>componentDidCatch(e, info)</code> (<code>info.componentStack</code> — minified in  prod). <strong>No hook equivalent</strong> — use <code>react-error-boundary</code>.</li>
+<li>Catches errors thrown while React <em>renders, runs lifecycles/effects</em> of its  children — and inside a <code>startTransition</code> function. <strong>Not</strong>: event handlers,  <code>setTimeout</code>/async code, errors in the boundary itself.</li>
+<li>Route async errors in: <code>const { showBoundary } = useErrorBoundary()</code>, then  <code>catch(e) { showBoundary(e) }</code>. Reset with <code>resetKeys</code> or a new <code>key</code>.</li>
+<li><strong>Placement</strong>: one at the root (last resort), one per <strong>screen/route</strong>, one  around risky widgets (a chart, a 3rd-party view) — the rest of the screen keeps working.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — global handler + rejection tracker (entry file)</span></h3>
+<pre class="sheet-code"><code class="hljs language-typescript"><span class="hljs-keyword">const</span> prev = <span class="hljs-title class_">ErrorUtils</span>.<span class="hljs-title function_">getGlobalHandler</span>();
+<span class="hljs-title class_">ErrorUtils</span>.<span class="hljs-title function_">setGlobalHandler</span>(<span class="hljs-function">(<span class="hljs-params">error, isFatal</span>) =&gt;</span> {
+  <span class="hljs-title function_">report</span>(error, { isFatal });          <span class="hljs-comment">// persist first, send later</span>
+  <span class="hljs-keyword">if</span> (__DEV__ || !isFatal) <span class="hljs-keyword">return</span> <span class="hljs-title function_">prev</span>(error, isFatal); <span class="hljs-comment">// LogBox</span>
+  <span class="hljs-title function_">showFatalScreen</span>(error);  <span class="hljs-comment">// or prev(): the deliberate native crash</span>
+});
+<span class="hljs-keyword">const</span> H = (globalThis <span class="hljs-keyword">as</span> <span class="hljs-built_in">any</span>).<span class="hljs-property">HermesInternal</span>;
+<span class="hljs-keyword">if</span> (H?.<span class="hljs-property">hasPromise</span>?.()) H.<span class="hljs-property">enablePromiseRejectionTracker</span>?.({
+  <span class="hljs-attr">allRejections</span>: <span class="hljs-literal">true</span>,                 <span class="hljs-comment">// one tracker: chain others</span>
+  <span class="hljs-attr">onUnhandled</span>: <span class="hljs-function">(<span class="hljs-params"><span class="hljs-attr">id</span>: <span class="hljs-built_in">number</span>, <span class="hljs-attr">e</span>: <span class="hljs-built_in">unknown</span></span>) =&gt;</span> <span class="hljs-title function_">report</span>(e, { <span class="hljs-attr">rejection</span>: <span class="hljs-literal">true</span> }),
+  <span class="hljs-attr">onHandled</span>: <span class="hljs-function">() =&gt;</span> {},
+});</code></pre>
+<ul>
+<li>Chain, don’t replace: crash SDKs (Sentry hooks <code>ErrorUtils</code>) and LogBox each rely on  the handler — keep <code>prev</code> and call it, or one of them goes blind.</li>
+<li>A network send from a <em>fatal</em> handler may never leave before the process dies —  persist, send next launch<span class="unverified">(unverified)</span>.</li>
+<li>Swallowing a fatal keeps a corrupted app alive; prefer a restart screen  (<code>Updates.reloadAsync()</code> in Expo).</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Dev vs release</span></h3>
+<p><strong>LogBox</strong> (default since 0.63; replaced RedBox/YellowBox): uncaught errors open full screen, logs show as notifications; <code>LogBox.ignoreLogs([...])</code> silences matches. None of it exists in release: a fatal is a crash, a rejection is silence. Test error paths in a <strong>release build</strong>.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">JS exception vs native crash vs ANR</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th><strong>stack you get</strong></th><th><strong>to read it</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>JS</td><td>bundle offsets (Hermes: bytecode offsets)</td><td>JS <strong>source map</strong> — Hermes: packager map composed with the <code>hermesc</code> map</td></tr>
+<tr><td>native iOS</td><td>addresses + <code>RCTFatal</code> frames</td><td><strong>dSYM</strong> matching the build UUID</td></tr>
+<tr><td>native Android</td><td>R8-obfuscated Java/Kotlin; NDK tombstone</td><td><code>mapping.txt</code>; native symbols</td></tr>
+<tr><td>ANR</td><td>main-thread trace at the stall</td><td>Play Console (Android vitals)</td></tr>
+</tbody>
+</table></p>
+<p>Upload per <strong>build</strong> and per <strong>OTA update</strong>; <code>release</code> + <code>dist</code> must name the exact bundle, or stacks point at wrong lines.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Reporting — Sentry vs Crashlytics</span></h3>
+<ul>
+<li><strong>@sentry/react-native</strong>: <code>Sentry.init({ dsn })</code>, <code>Sentry.wrap(App)</code>,  <code>Sentry.ErrorBoundary</code>; JS errors (via <code>ErrorUtils</code>), rejections, native crashes,  tracing; Metro/Xcode/Gradle steps upload maps (auth token in <code>sentry.properties</code>).</li>
+<li><strong>@react-native-firebase/crashlytics</strong>: native crashes automatic; JS via  <code>crashlytics().recordError(e)</code> (non-fatal), <code>log()</code>, <code>setUserId()</code>. Either:  scrub PII/tokens (<code>beforeSend</code>); tag user, update id, flags.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">What the user sees — expected vs unexpected</span></h3>
+<ul>
+<li><strong>Expected</strong> (validation 4xx, offline, 404): errors as <em>values</em> — inline  message, offline banner, disabled action. Never a crash screen.</li>
+<li><strong>Transient</strong> (5xx, timeout): backoff + jitter (TanStack Query retries queries  3<span class="math">×</span>); idempotent calls or an idempotency key; then “Try again”, not an endless spinner.</li>
+<li><strong>Unexpected</strong> (bug): boundary fallback with <em>retry</em> (reset) + report; fatal:  report + restart.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">“Boundaries catch everything” — not <code>onPress</code>, async or native.</li>
+<li class="trap"><code>async</code> <code>onPress</code> throws: no boundary, no crash, no report.</li>
+<li class="trap">One boundary around <code>&lt;App/&gt;</code>: a widget bug blanks the app.</li>
+<li class="trap">Great crash-free rate — JS freezes and OOMs never report.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<p><strong>Render <span class="math">→</span> boundary · throw <span class="math">→</span> global handler · promise <span class="math">→</span> tracker · native <span class="math">→</span> next launch.</strong></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> crashes-symbolication (dSYM, MetricKit) ·
+rn-tooling-release (maps per OTA) · js-async (rejections) · swift/error-handling</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=react-native" title="area">react-native</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=pattern" title="kind">pattern</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=cross-platform" title="platform">cross-platform</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=debugging" title="topic">debugging</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=architecture" title="topic">architecture</a></li><li class="sheet-tag"><a href="/folios.html?tag=error-boundary">error-boundary</a></li><li class="sheet-tag"><a href="/folios.html?tag=react-error-boundary">react-error-boundary</a></li><li class="sheet-tag"><a href="/folios.html?tag=errorutils">errorutils</a></li><li class="sheet-tag"><a href="/folios.html?tag=global-error-handler">global-error-handler</a></li><li class="sheet-tag"><a href="/folios.html?tag=unhandled-promise-rejection">unhandled-promise-rejection</a></li><li class="sheet-tag"><a href="/folios.html?tag=hermes">hermes</a></li><li class="sheet-tag"><a href="/folios.html?tag=logbox">logbox</a></li><li class="sheet-tag"><a href="/folios.html?tag=anr">anr</a></li><li class="sheet-tag"><a href="/folios.html?tag=native-crash">native-crash</a></li><li class="sheet-tag"><a href="/folios.html?tag=sentry">sentry</a></li><li class="sheet-tag"><a href="/folios.html?tag=crashlytics">crashlytics</a></li><li class="sheet-tag"><a href="/folios.html?tag=source-maps">source-maps</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=react-native%2Frn-error-handling.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/206">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

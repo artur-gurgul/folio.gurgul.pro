@@ -1,0 +1,180 @@
+% rn-memory-leaks.tex — finding and fixing memory leaks in React Native: two heaps (Hermes JS
+% heap vs native), the usual causes, the 3-snapshot comparison + retainers workflow, native
+% tools (Xcode Memory Graph, Android Studio heap dump, dumpsys meminfo), image memory maths,
+% fixes. Diagram: sawtooth vs staircase + a retainer chain and where cleanup cuts it.
+% Extends rn-performance (one "Leaks" bullet) and js-engines-performance (GC + heap snapshot
+% basics) — those are NOT repeated here.
+% Sources (checked 2026-09-25):
+%   https://reactnative.dev/docs/react-native-devtools  (Memory panel: heap snapshots, allocation timeline)
+%   https://reactnative.dev/docs/image                   (resizeMethod 'resize' downsamples before decode; prefetch = disk cache)
+%   https://developer.android.com/studio/profile/memory-profiler (heap dump: shallow/retained/native size, depth, activity/fragment leaks, LeakCanary task)
+%   https://developer.android.com/topic/performance/vitals  (memory + bitmap memory are Android vitals)
+% @labels: area=react-native kind=concept platform=cross-platform topic=memory,debugging,performance discussion=207
+% @tags: memory-leak, heap-snapshot, retainers, useeffect-cleanup, abortcontroller, event-listeners, image-memory, memory-graph, dumpsys-meminfo, leakcanary, flashlist, hermes
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={const,let,function,return,import,from,export,new,if,else,true,false,null,
+    undefined,useEffect,useState,type,string,number},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]", morestring=[b]',
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {!==}{{\hbox{!}\hbox{=}\hbox{=}}}3
+           {===}{{\hbox{=}\hbox{=}\hbox{=}}}3 {->}{{\hbox{-}\hbox{>}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\tikzset{
+  rb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5mm},
+  root/.style={rb, draw=sheetRed, fill=sheetRed!8},
+  jsn/.style={rb, draw=sheetOrange, fill=sheetOrange!10},
+  natn/.style={rb, draw=sheetBlue, fill=sheetBlue!10},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  strong/.style={->, thick, draw=sheetGrey},
+}
+
+\begin{document}
+
+\sheettitle{RN memory leaks — two heaps, retainers, images}{react-native · folio}
+
+\oneliner{A leak is \textbf{unwanted reachability} from a \textbf{GC root} after the screen that
+needed it is gone. RN has \textbf{two memories}: the \textbf{Hermes JS heap} (DevTools heap
+snapshots) and \textbf{native memory} (views, bitmaps, modules — Xcode / Android Studio only).
+Proof is a \textbf{staircase}: the same growth on every repeat of an action.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── left: sawtooth vs staircase ──
+  \node[font=\bfseries\small, anchor=west] at (-0.1,3.45) {open + close a screen $\times$6};
+  \draw[->, sheetGrey] (0,0.2) -- (6.6,0.2) node[lbl, anchor=north east] {time};
+  \draw[->, sheetGrey] (0,0.2) -- (0,3.2);
+  \node[lbl, rotate=90] at (-0.15,1.7) {memory};
+  \draw[sheetGreen!70!black, thick] (0,0.6)
+    \foreach \i in {0,...,5} { -- ++(0.5,0.75) -- ++(0.5,-0.75) };
+  \node[lbl, text=sheetGreen!50!black, anchor=west] at (0.1,0.38) {healthy sawtooth: GC returns to baseline};
+  \draw[sheetRed, thick] (0,1.0)
+    \foreach \i in {0,...,5} { -- ++(0.5,0.6) -- ++(0.5,-0.35) };
+  \draw[sheetRed, dashed] (0,1.0) -- (6,2.5);
+  \node[lbl, text=sheetRed, anchor=west] at (3.2,3.05) {leak: +$\Delta$ per cycle, never returns};
+  \node[lbl, anchor=west] at (0.1,-0.05) {first visit may rise (caches, fonts) — judge the \emph{repeats}, not visit 1};
+  \draw[sheetGrey!40] (7.0,3.55) -- (7.0,-0.2);
+  % ── right: retainer chain ──
+  \node[font=\bfseries\small, anchor=west] at (7.15,3.45) {why the unmounted screen is still alive — read the retainers};
+  \node[root] (r) at (8.1,2.6) {GC root:\\module-level emitter};
+  \node[jsn] (l) at (10.2,2.6) {\texttt{listeners[]}};
+  \node[jsn] (c) at (12.55,2.6) {closure\\\texttt{onChange}};
+  \node[jsn] (x) at (14.95,2.6) {scope context:\\\texttt{setPx}, 20 MB \texttt{rows}};
+  \draw[strong] (r) -- (l); \draw[strong] (l) -- (c);
+  \draw[strong] (c) -- (x);
+  \draw[sheetRed, very thick] (11.2,2.47) -- (11.46,2.73); \draw[sheetRed, very thick] (11.2,2.73) -- (11.46,2.47);
+  \node[lbl, text=sheetRed] at (11.33,3.02) {\textbf{cleanup cuts here:} \texttt{sub.remove()}};
+  \node[jsn, dashed] (f) at (14.95,1.75) {unmounted screen's\\fiber + state};
+  \draw[strong] (x) -- (f);
+  \node[lbl, anchor=east, text=sheetGrey] at (13.85,1.75) {DevTools $\to$ Retainers shows this chain, root last};
+  % native side
+  \node[natn] (nm) at (8.1,1.05) {native module\\(Swift / Kotlin)};
+  \node[natn] (jf) at (10.5,1.05) {stored JS callback\\(\texttt{jsi::Function})};
+  \node[jsn] (cb) at (12.7,1.05) {JS closure};
+  \draw[strong] (nm) -- (jf); \draw[strong] (jf) -- (cb);
+  \draw[strong, dashed] (cb.south) -- ++(0,-0.3) -| node[lbl, pos=0.25, below]{JS holds the module object} (nm.south);
+  \node[lbl, text=sheetRed, anchor=west] at (13.5,0.95) {cross-heap cycle: neither\\collector sees both edges};
+  \node[natn] (bm) at (8.1,-0.2) {Bitmap 4032$\times$3024};
+  \node[lbl, anchor=west] at (9.2,-0.2) {$\times$ 4 B = \textbf{48.8 MB} decoded (the JPEG: a few MB) · a 100\,pt thumbnail @3x needs 0.36 MB};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}\raggedright
+  \item \textbf{JS heap}: Hermes' tracing GC frees anything unreachable — cycles included. A
+        JS leak is always a \emph{path from a root}: module-level variables, globals, native
+        event registries, timers, pending promises.
+  \item \textbf{Native memory}: views, \textbf{decoded bitmaps} (Fresco / SDWebImage /
+        Glide caches), WebViews, module state — ARC on iOS, ART GC + native heap on
+        Android. Invisible to a JS heap snapshot.
+  \item \textbf{Across the boundary}: native holding a JS callback or JS holding a
+        HostObject keeps the other side alive; a cycle through both heaps is not collected.
+  \item \textbf{Mounted $\ne$ leaked, but costs}: stack screens under the top and visited
+        tabs stay mounted — \texttt{replace}/\texttt{reset} finished flows.
+\end{itemize}
+
+\section{Usual causes}
+\begin{itemize}\raggedright
+  \item Listeners/subscriptions never removed (\texttt{AppState}, \texttt{Keyboard},
+        \texttt{Linking}, \texttt{NativeEventEmitter}, store/WebSocket subscriptions).
+  \item \texttt{setInterval}/\texttt{setTimeout}/\texttt{requestAnimationFrame} not cleared;
+        fetches resolving into unmounted components.
+  \item Closures capturing big objects (one scope = one shared context); module-level
+        caches with no bound (\texttt{Map} of responses, images, blobs).
+  \item Native: a module keeping callbacks/promises, a strong delegate/block cycle, an
+        Android \texttt{Activity}/\texttt{ReactContext} stored in a static field.
+\end{itemize}
+
+\section{Example — leaking effect, fixed}
+\begin{lstlisting}[language=TSSheet]
+function Ticker({ symbol }: { symbol: string }) {
+  const [px, setPx] = useState<number>();
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', onChange);
+    const id = setInterval(poll, 1000);
+    const ctrl = new AbortController();
+    fetch(urlFor(symbol), { signal: ctrl.signal })
+      .then(r => r.json()).then(setPx)
+      .catch(e => { if (e.name !== 'AbortError') report(e); });
+    return () => {            // FIX: undo everything above
+      sub.remove(); clearInterval(id); ctrl.abort();
+    };
+  }, [symbol]);   // re-runs: cleanup of the OLD symbol first
+}
+const cache = new Map<string, Row[]>(); // grows forever -> LRU(50)
+\end{lstlisting}
+
+\section{Hunting a JS leak — 3 snapshots}
+\begin{enumerate}\raggedright
+  \item DevTools \textbf{Memory}. Do the action once (warm caches), return: snapshot \textbf{A}.
+  \item Repeat \textbf{N} times (e.g. 5): snapshot \textbf{B}; once more: \textbf{C}.
+  \item \textbf{Comparison} view B vs A, sort by \# Delta / Size Delta: suspects grow by a
+        multiple of N and are still there in C.
+  \item Select one instance $\to$ \textbf{Retainers}, read to the root; the first edge
+        \emph{your} code owns is the bug. \textbf{Retained size} = what freeing it gives back.
+\end{enumerate}
+
+\section{Native side + real footprint}
+\begin{itemize}\raggedright
+  \item \textbf{iOS}: Xcode \emph{Debug Memory Graph} (purple ``!'' = leaked cycles; Malloc
+        Stack Logging adds backtraces); Instruments \emph{Allocations} (Mark Generation per
+        repeat) + \emph{Leaks}.
+  \item \textbf{Android}: Studio \emph{Heap Dump} — shallow / retained / native size, depth,
+        \emph{Show activity/fragment leaks}; \emph{Track Memory Consumption} (Java/Kotlin or
+        native); LeakCanary (a Profiler task since Studio Panda). Totals:
+        \texttt{adb shell dumpsys meminfo <pkg>} (Java/Native heap, Graphics, TOTAL PSS).
+        Memory + bitmap memory are Play vitals.
+  \item Heap flat but RSS climbing $\Rightarrow$ it is native: images first.
+\end{itemize}
+
+\section{Images — the maths and the fixes}
+\begin{itemize}\raggedright
+  \item Decoded = \textbf{width $\times$ height $\times$ 4 bytes} (RGBA8), whatever the file size.
+        Request \emph{display size $\times$ scale} from the CDN.
+  \item Android \texttt{<Image resizeMethod="resize">} downsamples \emph{before} decode (for
+        images much larger than the view). \texttt{Image.prefetch} fills the \emph{disk} cache.
+  \item \textbf{FlashList} recycles a fixed cell pool $\to$ live bitmaps stay bounded.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{``No warning, so no leak'' — React 18 \emph{removed} the ``state update on an
+        unmounted component'' warning; cleanup is still your job.}
+  \trap{\texttt{freezeOnBlur}/lazy tabs reduce \emph{renders}, not memory held.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Repeat · snapshot · compare · retainers.} JS heap flat $\Rightarrow$ bitmaps.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rn-performance ·
+js-engines-performance (GC, weak refs) · react-hooks-deep · rn-debugging-toolchain ·
+arc-ownership (iOS)}
+
+\end{document}

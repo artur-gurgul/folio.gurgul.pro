@@ -1,0 +1,199 @@
+% rn-background-tasks.tex — what a React Native app can do in the background: the JS runtime lives
+% only while the native process does; every option is a native scheduler that wakes (or boots) JS —
+% expo-background-task (WorkManager / BGTaskScheduler), react-native-background-fetch, Headless JS
+% (Android), bridging your own Worker / BGTask, push-triggered work, continuous modes, testing.
+% Native iOS details (beginBackgroundTask, background URLSession, jetsam) live in
+% ios-platform/background-execution — not repeated.
+% Sources (checked 2026-09-25):
+%   https://docs.expo.dev/versions/latest/sdk/background-task/ (WorkManager / BGTaskScheduler,
+%     minimumInterval in minutes, default 12 h, min 15 min, processing mode + identifier,
+%     triggerTaskWorkerForTestingAsync, not on iOS simulators, stopped if the user kills the app)
+%   https://expo.dev/blog/goodbye-background-fetch-hello-expo-background-task (SDK 53, deprecation)
+%   https://expo.dev/changelog/sdk-53
+%   https://reactnative.dev/docs/headless-js-android (HeadlessJsTaskConfig, timeout, foreground
+%     crash, LinearCountingRetryPolicy, acquireWakeLockNow)
+%   https://github.com/transistorsoft/react-native-background-fetch
+%   https://developer.apple.com/documentation/backgroundtasks/bgtaskscheduler (register before
+%     the end of applicationDidFinishLaunching, permitted identifiers, double registration kills)
+%   https://developer.apple.com/documentation/backgroundtasks/starting-and-terminating-tasks-during-development
+%   https://developer.apple.com/documentation/backgroundtasks/bgcontinuedprocessingtask (iOS 26)
+%   https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work
+%   https://rnfirebase.io/messaging/usage (setBackgroundMessageHandler, force-quit)
+%   https://developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app
+%   https://docs.expo.dev/versions/latest/sdk/location/ · https://developer.android.com/about/versions/oreo/background
+%   https://developer.android.com/training/monitoring-device-state/doze-standby
+%   https://developer.android.com/develop/background-work/background-tasks/testing/persistent/debug
+% @labels: area=react-native kind=api platform=cross-platform topic=platform-apis,performance discussion=202
+% @tags: background-tasks, expo-background-task, expo-task-manager, headless-js, react-native-background-fetch, workmanager, bgtaskscheduler, silent-push, background-location, doze
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={const,let,function,return,import,from,export,default,type,
+    if,else,new,true,false,null,undefined,async,await,throw,try,catch},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`,
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {===}{{\hbox{=}\hbox{=}\hbox{=}}}3
+           {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2
+           {??}{{\hbox{?}\hbox{?}}}2 {||}{{\hbox{|}\hbox{|}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}          % "--" without the mono ligature
+\newcommand\fat{\hbox{=}\hbox{>}}         % "=>" without the mono ligature
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  sg/.style={draw=white, line width=0.5pt, minimum height=5.2mm, inner sep=0.5pt,
+             font=\tiny, anchor=west, align=center},
+  rl/.style={font=\scriptsize\bfseries, anchor=east, align=right},
+  ev/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+% \seg{x}{width}{colour}{y}{label}
+\newcommand\seg[5]{\node[sg, minimum width=#2cm, text width=#2cm-1mm, fill=#3] at (#1,#4) {#5};}
+
+\begin{document}
+
+\sheettitle{Background work in React Native}{react-native · folio}
+
+\oneliner{RN has \textbf{no background scheduler of its own}: JS runs only while the native process
+is alive and not suspended. Every background feature is a \textbf{native scheduler} —
+\ct{BGTaskScheduler}, \ct{WorkManager}, a push, a background mode — that wakes the app and
+\textbf{boots or resumes the JS runtime} for a short, OS-chosen window. The OS picks \emph{when};
+your code only picks \emph{what}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[rl] at (1.35,0.95) {iOS};
+  \node[rl] at (1.35,0.0) {Android};
+  % iOS lane
+  \seg{1.5}{2.2}{sheetGreen!45}{0.95}{foreground\\JS alive}
+  \seg{3.7}{1.3}{sheetOrange!45}{0.95}{\textasciitilde seconds\\(bg grant)}
+  \seg{5.0}{2.6}{black!18}{0.95}{\textbf{suspended}: JS frozen,\\timers don't fire}
+  \seg{7.6}{3.2}{sheetBlue!25}{0.95}{\textbf{BGTask launch}: process resumed\\or cold-launched $\to$ JS boots $\to$ task}
+  \seg{10.8}{1.2}{sheetRed!30}{0.95}{expiration\\handler}
+  \seg{12.0}{1.4}{black!18}{0.95}{suspended}
+  \seg{13.4}{3.2}{sheetRed!18}{0.95}{\textbf{user swiped it away}:\\no BGTask until next manual open}
+  % Android lane
+  \seg{1.5}{2.2}{sheetGreen!45}{0.0}{foreground\\JS alive}
+  \seg{3.7}{2.4}{sheetOrange!35}{0.0}{cached process: JS may run;\\Doze / standby throttle}
+  \seg{6.1}{1.5}{sheetRed!30}{0.0}{process\\killed (LMK)}
+  \seg{7.6}{3.2}{sheetBlue!25}{0.0}{\textbf{WorkManager / JobScheduler}: new\\process, no Activity $\to$ headless JS}
+  \seg{10.8}{1.2}{sheetRed!30}{0.0}{timeout /\\stopped}
+  \seg{12.0}{4.6}{black!18}{0.0}{killed again — periodic work reruns ($\geq$ 15 min), survives reboot}
+  % events
+  \draw[hot] (7.6,1.62) node[ev, above]{OS decides: battery, network, usage, $\geq$ 15 min} -- (7.6,1.25);
+  \draw[hot] (7.6,-0.67) node[ev, below]{constraints met (network, charging, not low battery)} -- (7.6,-0.3);
+  \draw[flow] (3.7,1.62) node[ev, above]{Home} -- (3.7,1.25);
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}, sheetBlue, thick] (7.62,-0.35) -- (10.78,-0.35)
+     node[midway, below=2pt, ev, text=sheetBlue]{};
+  \node[ev, anchor=west, text=sheetBrown, align=left] at (10.9,-0.62)
+     {the blue window is all you get: no visible UI; Android headless mounts\\no component, iOS may boot the whole app — write a self-contained task};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{The options}
+\begin{itemize}
+  \item \textbf{expo-background-task} (SDK 53; \ct{expo-background-fetch} is deprecated): Android
+        \textbf{WorkManager}, iOS \textbf{BGTaskScheduler} (\ct{UIBackgroundModes: processing},
+        id \ct{com.expo.modules.backgroundtask.processing}). \ct{minimumInterval} in
+        \textbf{minutes}, default 12 h, floor 15. Needs battery + network; stops if the user kills
+        the app; iOS: physical device only.
+  \item \textbf{react-native-background-fetch} (Transistorsoft): iOS \ct{BGAppRefreshTask}
+        (\ct{com.transistorsoft.fetch}), $\geq$ 15 min, frequency learnt from usage; Android
+        \ct{stopOnTerminate: false} + \ct{enableHeadless} + \ct{startOnBoot}; \ct{scheduleTask}
+        for one-off/periodic custom tasks.
+  \item \textbf{Headless JS} (Android only): \ct{AppRegistry.registerHeadlessTask('Sync',
+        () \fat{} task)}; a \ct{HeadlessJsTaskService} returns \ct{HeadlessJsTaskConfig(name, data,
+        5000 /* ms timeout */, false)} — the last flag: by default the app \textbf{crashes} if the
+        task runs while in foreground. Retries: \ct{LinearCountingRetryPolicy(3, 1000)} + throw
+        \ct{HeadlessJsTaskError}. From a \ct{BroadcastReceiver}: \ct{acquireWakeLockNow()}.
+  \item \textbf{Your own native job}: a Kotlin \ct{Worker} / a \ct{BGTaskScheduler} handler that
+        does the work \textbf{natively} (upload, DB write) without booting JS — cheapest, most
+        reliable; emit an event if JS happens to be alive. iOS: register every id \textbf{before
+        the end of} \ct{didFinishLaunching}, list it in \ct{BGTaskSchedulerPermittedIdentifiers};
+        a second registration of the same id kills the app.
+  \item \textbf{Push-triggered}: FCM data message $\to$
+        \ct{messaging().setBackgroundMessageHandler(fn)} registered in \ct{index.js} (outside
+        components; on iOS it may mount the root); iOS silent push (\ct{content-available: 1}) is
+        low priority, throttled, and discarded for a force-quit app.
+  \item \textbf{Continuous modes}: location (\ct{expo-location}
+        \ct{startLocationUpdatesAsync} + TaskManager; Android foreground service +
+        notification), audio (\ct{UIBackgroundModes: audio}), BLE — held only while really in use.
+        Big transfers: background \ct{URLSession} / WorkManager, native side. iOS 26
+        \ct{BGContinuedProcessingTask}: user-started work that continues with a system progress UI.
+\end{itemize}
+
+\hd{Testing}
+\begin{itemize}
+  \item iOS device, paused in LLDB after \ct{submit}: \ct{e -l objc \dd{} (void)[[BGTaskScheduler
+        sharedScheduler] \_simulateLaunchForTaskWithIdentifier:@"id"]} (and
+        \ct{\_simulateExpiration\ldots}) — private, never ship it.
+  \item Expo: \ct{triggerTaskWorkerForTestingAsync()} (dev). Android: \ct{adb shell dumpsys
+        jobscheduler} (constraints met?); Doze: \ct{adb shell dumpsys deviceidle force-idle}.
+\end{itemize}
+
+\columnbreak
+
+\hd{Example — expo-background-task}
+\begin{lstlisting}[language=TSSheet]
+import * as TaskManager from 'expo-task-manager';
+import * as BackgroundTask from 'expo-background-task';
+const SYNC = 'outbox-sync';
+// top-level scope: a headless launch mounts no component
+TaskManager.defineTask(SYNC, async () => {
+  try { await flushOutbox();            // read storage, POST, write
+        return BackgroundTask.BackgroundTaskResult.Success; }
+  catch { return BackgroundTask.BackgroundTaskResult.Failed; }
+});
+export async function enableSync() {
+  const s = await BackgroundTask.getStatusAsync();
+  if (s === BackgroundTask.BackgroundTaskStatus.Available)
+    await BackgroundTask.registerTaskAsync(SYNC, { minimumInterval: 15 });
+}
+\end{lstlisting}
+
+\hd{Writing a JS background task}
+\begin{itemize}
+  \item \textbf{Self-contained}: re-create what it needs (API client, tokens from Keychain, DB);
+        do not assume the store, navigation or a logged-in React tree exists.
+  \item \textbf{Short and idempotent}: an outbox flush, a delta sync, a prefetch. It can be
+        cut off at any moment and run twice.
+  \item Cold boot costs: the JS runtime + bundle load eats part of the window — keep the
+        task's imports small; heavy work belongs in native.
+  \item Keychain reads while locked need \ct{AFTER\_FIRST\_UNLOCK} accessibility.
+\end{itemize}
+
+\hd{Platform limits}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{62mm}@{}}
+\toprule
+iOS & no guaranteed schedule; system learns usage; refresh tasks are brief, processing tasks
+      longer (often when charging/idle)\unverified; nothing after a user force-quit; no BGTask
+      in the simulator; silent push $\leq$ 2--3/hour, 30\,s \\
+Android & WorkManager periodic $\geq$ 15 min (flex $\geq$ 5 min); Doze + App Standby buckets
+      defer work; constraints must all hold; OEM task killers\unverified; since 8.0 a background
+      app can't \ct{startService()} (\ct{IllegalStateException}) \\
+\bottomrule
+\end{tabular}}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Every 15 minutes'' — a \emph{minimum}; iOS may run it hours later, or never.}
+  \trap{\ct{setInterval} in JS as a background timer: frozen on suspend.}
+  \trap{Task defined inside a component — never registered in a headless launch.}
+  \trap{Headless JS on iOS — it doesn't exist.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{The OS schedules, native wakes, JS gets a short window — design for ``maybe, later''.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} background-execution (iOS internals, jetsam)
+· push-notifications (silent push) · rn-state-and-data (outbox) · rn-architecture (JS thread)}
+
+\end{document}
