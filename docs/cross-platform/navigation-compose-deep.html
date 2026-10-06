@@ -1,0 +1,87 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Navigation Compose — back stack, routes, scoping, Nav 3 — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/cross-platform/navigation-compose-deep.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">114</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area current" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Navigation Compose — back stack, routes, scoping, Nav 3</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">cross-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A <code>NavController</code> owns a <strong>back stack of <code>NavBackStackEntry</code></strong> — each entry
+is its own <strong>Lifecycle</strong>, <strong>ViewModelStore</strong> and <strong>SavedState</strong> owner — and
+<code>NavHost</code> shows the top one. Routes are <code>@Serializable</code> classes (2.8+); every
+<code>navigate()</code> is a push plus <strong>NavOptions</strong> that pop, dedupe, save and restore.
+<strong>Navigation 3</strong> drops the controller: <em>you</em> own the back stack as a state list.</p>
+<p class="sheet-tools"><a class="sheet-download" href="navigation-compose-deep.pdf" download>Download PDF</a> <a href="navigation-compose-deep.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/cross-platform/navigation-compose-deep.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="navigation-compose-deep-fig1.svg" width="585" height="125" class="wide" alt="Navigation Compose — back stack, routes, scoping, Nav 3 — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>The model</h2>
+<ul>
+<li><code>rememberNavController()</code> + <code>NavHost(nav, startDestination = Home) {…}</code>  builds a <code>NavGraph</code>; <code>currentBackStackEntryAsState()</code> drives the bottom  bar. Screens get <strong>lambdas</strong>, not the <code>NavController</code> (testable, previewable).</li>
+<li><strong>Type-safe routes</strong> (2.8.0, Sep 2024): <code>@Serializable object</code>/<code>data
+ class</code>, fields = arguments (Bundle-encoded: pass <strong>ids</strong>; custom types need a  <code>typeMap</code>). Read: <code>entry.toRoute&lt;Profile&gt;()</code>, in the VM  <code>savedStateHandle.toRoute&lt;Profile&gt;()</code>. 2.9: <code>KClass</code> overloads, value  classes; <strong>2.10</strong> (Aug 2026): KMP targets, predictive-pop transitions.</li>
+<li><code>navigation&lt;Checkout&gt;(startDestination = Cart) {…}</code> = nested graph: a flow  with its own start, poppable as a unit (<code>popUpTo&lt;Checkout&gt; { inclusive = true }</code>).</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example</h2>
+<pre class="sheet-code"><code class="hljs language-kotlin"><span class="hljs-meta">@Serializable</span> <span class="hljs-keyword">object</span> Home
+<span class="hljs-meta">@Serializable</span> <span class="hljs-keyword">data</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">Profile</span>(<span class="hljs-keyword">val</span> id: String)
+<span class="hljs-meta">@Serializable</span> <span class="hljs-keyword">object</span> Checkout; <span class="hljs-meta">@Serializable</span> <span class="hljs-keyword">object</span> Cart
+NavHost(nav, startDestination = Home) {
+  composable&lt;Home&gt; { HomeScreen(onUser = { nav.navigate(Profile(it)) }) }
+  composable&lt;Profile&gt;(deepLinks = listOf(navDeepLink&lt;Profile&gt;(
+      basePath = <span class="hljs-string">&quot;https://example.com/u&quot;</span>))) { ProfileScreen() }
+  navigation&lt;Checkout&gt;(startDestination = Cart) {
+    composable&lt;Cart&gt; { entry -&gt;
+      <span class="hljs-keyword">val</span> flow = remember(entry) { nav.getBackStackEntry&lt;Checkout&gt;() }
+      <span class="hljs-keyword">val</span> vm: CheckoutVM = hiltViewModel(flow)  <span class="hljs-comment">// shared by the flow</span>
+      CartScreen(vm, onDone = { nav.navigate(Home) {
+        popUpTo&lt;Checkout&gt; { inclusive = <span class="hljs-literal">true</span> } } }) } } }</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Back-stack operations</h2>
+<ul>
+<li><code>popUpTo(X)</code> pops all above X; <code>inclusive = true</code> pops X too (after  login). <code>launchSingleTop</code>: no second copy on top.</li>
+<li><code>saveState</code>/<code>restoreState</code> = <strong>multiple back stacks</strong> (2.4+): popped  entries keep state + VMs, keyed by the tab.</li>
+<li><code>popBackStack()</code> returns <code>false</code> if nothing popped (empty host = blank  screen); <code>navigateUp()</code> goes to the parent inside your own task.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><code>navigate()</code> in the composable body runs on every recomposition — call it from  an event or a <code>LaunchedEffect</code>.</li>
+<li class="trap">Double tap = two pushes: wrap in <code>dropUnlessResumed { … }</code>.</li>
+<li class="trap">A whole object in a route: Bundle size, stale copy — pass the id.</li>
+</ul>
+<p><strong>Remember:</strong> <em>entry = lifecycle + VM store + saved state · pop, single-top, save,
+restore · Nav 3: the stack is your list.</em></p>
+</section>
+<section class="sheet-section">
+<h2>ViewModel scope &amp; results</h2>
+<ul>
+<li>Default <code>hiltViewModel()</code> = the <strong>entry</strong>: survives rotation, cleared when  popped. Graph-scoped (Example) lives while any of the graph is on the stack.</li>
+<li><strong>Result back</strong>: <code>previousBackStackEntry<code>?.</code>savedStateHandle<code>?.</code>
+ set(&quot;k&quot;, id)</code>; the caller collects its own <code>savedStateHandle.getStateFlow(&quot;k&quot;,
+ null)</code>. Or a shared graph VM — never a callback into a popped screen.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Deep links &amp; App Links</h2>
+<ul>
+<li><code>&lt;intent-filter&gt;</code> <code>VIEW</code> + <code>DEFAULT</code> + <code>BROWSABLE</code> +  <code>&lt;data&gt;</code>; <code>navDeepLink</code> matches. The controller builds a  <strong>synthetic back stack</strong> (start of each parent graph) so Back works; with  <code>FLAG_ACTIVITY_NEW_TASK</code> the task is cleared and rebuilt.</li>
+<li><strong>App Links</strong>: <code>autoVerify=&quot;true&quot;</code> + <code>/.well-known/assetlinks.json</code>  (package + SHA-256 cert). Android 12+: unverified links open the <strong>browser</strong>.  <code>adb shell pm get-app-links &lt;pkg&gt;</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Predictive back</h2>
+<p>13: opt-in <code>enableOnBackInvokedCallback=&quot;true&quot;</code>; 15: system back-to-home / cross-activity animations for opted-in apps; <strong>16 + targetSdk 36</strong>: on by default — <code>onBackPressed()</code> / <code>KEYCODE_BACK</code> no longer delivered. Use <code>OnBackPressedCallback</code>, <code>BackHandler</code>, <code>PredictiveBackHandler</code> (a <code>Flow&lt;BackEventCompat&gt;</code> of progress); <code>NavHost</code> animates the pop (2.8+).</p>
+</section>
+<section class="sheet-section">
+<h2>Navigation 3 — you own the stack</h2>
+<p><strong>1.0.0 stable 19 Nov 2025</strong> (1.2.0 Sep 2026), runtime KMP. <code>rememberNavBackStack(Home)</code> — keys <code>@Serializable : NavKey</code>, survives process death; push <code>backStack.add(Profile(id))</code>, pop <code>removeLastOrNull()</code>. <code>NavDisplay(backStack, onBack, entryDecorators, entryProvider { entry&lt;Home&gt; {…} })</code>; per-entry VMs need <code>rememberViewModelStoreNavEntryDecorator()</code> (<code>lifecycle-viewmodel-navigation3</code>). <code>SceneStrategy</code>: several entries at once (list-detail, dialog). Tabs = lists you keep; <span class="math">≈</span> SwiftUI <code>NavigationStack(path:)</code>.</p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> android-jetpack-stack ·
+android-compose-lifecycle · hilt-dagger-deep · compose-layout-modifiers · universal links (iOS) ·
+swiftui navigation</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=cross-platform" title="area">cross-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=android" title="platform">android</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=ui" title="topic">ui</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=architecture" title="topic">architecture</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=platform-apis" title="topic">platform-apis</a></li><li class="sheet-tag"><a href="/folios.html?tag=navigation-compose">navigation-compose</a></li><li class="sheet-tag"><a href="/folios.html?tag=navcontroller">navcontroller</a></li><li class="sheet-tag"><a href="/folios.html?tag=type-safe-navigation">type-safe-navigation</a></li><li class="sheet-tag"><a href="/folios.html?tag=back-stack">back-stack</a></li><li class="sheet-tag"><a href="/folios.html?tag=popupto">popupto</a></li><li class="sheet-tag"><a href="/folios.html?tag=savestate">savestate</a></li><li class="sheet-tag"><a href="/folios.html?tag=viewmodel-scoping">viewmodel-scoping</a></li><li class="sheet-tag"><a href="/folios.html?tag=deep-links">deep-links</a></li><li class="sheet-tag"><a href="/folios.html?tag=app-links">app-links</a></li><li class="sheet-tag"><a href="/folios.html?tag=predictive-back">predictive-back</a></li><li class="sheet-tag"><a href="/folios.html?tag=navigation-3">navigation-3</a></li><li class="sheet-tag"><a href="/folios.html?tag=navdisplay">navdisplay</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=cross-platform%2Fnavigation-compose-deep.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/123">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

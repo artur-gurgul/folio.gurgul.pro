@@ -1,0 +1,204 @@
+% compose-recomposition-stability.tex — Jetpack Compose recomposition in depth: composition and
+% the snapshot state system, recompose scopes (inline layouts are not scopes), stability
+% inference, @Stable/@Immutable contracts, strong skipping (default since Kotlin 2.0.20), lambda
+% memoization, remember/rememberSaveable/derivedStateOf/key, deferring reads to layout/draw,
+% side-effect APIs beyond the basics, lazy-list keys/contentType, compiler reports and Layout
+% Inspector. Diagram: the three phases and which phase a state read re-runs + one write's scopes.
+% Extends android-compose-lifecycle (basics + Compose<->SwiftUI effect table) — does not repeat it.
+% Sources (checked 2026-09-26):
+%   https://developer.android.com/develop/ui/compose/phases
+%   https://developer.android.com/develop/ui/compose/lifecycle           (stability contract, key)
+%   https://developer.android.com/develop/ui/compose/performance/stability/strongskipping (2.0.20, ===)
+%   https://developer.android.com/develop/ui/compose/performance/stability/fix      (config file)
+%   https://developer.android.com/develop/ui/compose/performance/stability/diagnose (reports)
+%   https://developer.android.com/develop/ui/compose/performance/bestpractices      (defer reads)
+%   https://developer.android.com/develop/ui/compose/side-effects
+% @labels: area=cross-platform kind=concept platform=android topic=ui,performance discussion=113
+% @tags: jetpack-compose, recomposition, snapshot-state, compose-stability, strong-skipping, derivedstateof, deferred-reads, side-effects, remember-updated-state, lazy-column-keys, compose-compiler-reports, layout-inspector
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usepackage{tabularx}
+
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,when,is,in,out,as,by,
+    override,private,return,if,else,remember,null,this,it},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {?.}{{\hbox{?}\hbox{.}}}2 {?:}{{\hbox{?}\hbox{:}}}2
+           {!!}{{\hbox{!}\hbox{!}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {::}{{\hbox{:}\hbox{:}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2 {>=}{{\hbox{>}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\eqeqeq{\texttt{\hbox{=}\hbox{=}\hbox{=}}}
+\newcommand\neqeq{\texttt{\hbox{!}\hbox{=}\hbox{=}}}
+
+\tikzset{
+  ph/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=8mm, text width=24mm},
+  rd/.style={font=\tiny\ttfamily, inner sep=0.8pt, align=center, text=black!80},
+  bar/.style={draw=none, minimum height=3mm, inner sep=0pt, font=\tiny, text=white, anchor=west},
+  sc/.style={box, font=\tiny, inner sep=1pt, minimum height=4.2mm, text width=#1},
+  sc/.default=17mm,
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+
+\begin{document}
+
+\sheettitle{Compose recomposition \& stability — in depth}{cross-platform · folio}
+
+\oneliner{Compose re-runs a composable only if it \textbf{read} snapshot \texttt{State} that
+was \textbf{written}; the \textbf{phase} of the read decides how much work follows
+(composition $\to$ layout $\to$ draw), and a re-run parent \textbf{skips} a child whose
+parameters are \textbf{stable and equal} (strong skipping: unstable ones compared by
+\eqeqeq). Performance work = \textbf{read later, read lower, keep inputs stable}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- phases ----------
+  \node[hd] at (-0.3,3.2) {Where a state read happens $\to$ what a write re-runs};
+  \node[ph, draw=sheetRed, fill=sheetRed!8] (c) at (1.0,2.45) {\textbf{1 Composition}\\what: run
+    \texttt{@Composable}s};
+  \node[ph, draw=sheetOrange, fill=sheetOrange!10] (l) at (4.1,2.45) {\textbf{2 Layout}\\where:
+    measure $\to$ place};
+  \node[ph, draw=sheetGreen, fill=sheetGreen!10] (d) at (7.2,2.45) {\textbf{3 Drawing}\\how:
+    draw into a canvas};
+  \draw[flow] (c) -- (l); \draw[flow] (l) -- (d);
+  \node[rd] at (1.0,1.65) {Text("\$count")\\Modifier.padding(p)\\if (open) \{…\}};
+  \node[rd] at (4.1,1.65) {Modifier.offset \{ IntOffset \}\\Modifier.layout \{ \}\\Layout(measurePolicy)};
+  \node[rd] at (7.2,1.65) {Modifier.drawBehind \{ \}\\Canvas \{ \}\\graphicsLayer \{ alpha = a \}};
+  \node[bar, fill=sheetRed, minimum width=87mm] at (-0.3,0.95) {write to a state read in composition: recompose + relayout + redraw};
+  \node[bar, fill=sheetOrange, minimum width=56mm] at (2.8,0.55) {read in layout: relayout + redraw};
+  \node[bar, fill=sheetGreen, minimum width=25mm] at (5.9,0.15) {read in draw: redraw};
+  \node[lbl, text=sheetBrown, align=left, anchor=west] at (-0.3,0.2) {scroll offset, animation\\value: read it as late as possible};
+  \draw[sheetGrey!40] (8.75,3.3) -- (8.75,-0.1);
+  % ---------- one write, which scopes ----------
+  \node[hd] at (8.9,3.2) {One write — which scopes re-run?};
+  \node[sc=31mm, draw=sheetOrange, fill=sheetOrange!10] (w) at (10.9,2.7) {\texttt{count++} in \texttt{onClick}
+    $\to$ snapshot applied};
+  \node[sc=25mm] (rc) at (14.8,2.7) {Recomposer: invalidate readers, re-run on next frame};
+  \draw[hot] (w) -- (rc);
+  \node[sc=34mm, draw=sheetRed, fill=sheetRed!8] (s) at (11.0,1.95) {\texttt{Screen()} reads \texttt{count} $\to$ \textbf{re-runs}};
+  \node[sc=48mm, draw=sheetGrey, dashed, fill=white, minimum height=10mm] (col) at (12.4,0.95) {};
+  \node[lbl, anchor=west, text=sheetGrey] at (11.15,1.58) {\texttt{Column \{\}} is \texttt{inline}: no scope of its own};
+  \node[sc=14mm, draw=sheetGreen, fill=sheetGreen!10] at (10.9,0.72) {\texttt{Header(title)}\\skipped};
+  \node[sc=14mm, draw=sheetRed, fill=sheetRed!8] at (12.45,0.72) {\texttt{Counter(n)}\\n changed};
+  \node[sc=15mm, draw=sheetGreen, fill=sheetGreen!10] at (14.05,0.72) {\texttt{Button(onClick)}\\memoized $\lambda$};
+  \draw[flow] (s) -- (col.north -| s);
+  \draw[flow, draw=sheetOrange] (rc.south) |- (s.east);
+  \node[lbl, text=sheetBrown, align=left, anchor=west] at (8.9,-0.05) {read \texttt{count} \emph{inside} \texttt{Counter}
+    (pass \texttt{\{ count \}}) $\to$ only \texttt{Counter} re-runs};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Composition \& the snapshot system}
+\begin{itemize}\raggedright
+  \item The compiler adds \texttt{\$composer} + \texttt{\$changed} bitmask params; results live
+        in the \textbf{slot table}. Identity = \textbf{call site} + call order;
+        \texttt{key(id)\{\}} gives it explicitly (loops, reordering).
+  \item \texttt{mutableStateOf} is a \textbf{snapshot} object (MVCC). Each phase runs under a
+        \textbf{read observer} recording which scope read which state; an \textbf{applied}
+        write invalidates exactly those scopes; many writes per frame = one recomposition.
+  \item \textbf{Recompose scope} = a restartable (non-inline, \texttt{Unit}-returning)
+        composable. \texttt{Column}/\texttt{Row}/\texttt{Box} are \texttt{inline}: their
+        content re-runs with the caller. A content lambda is its own scope
+        (``donut-hole skipping'').
+  \item \textbf{Backwards write} (write after reading in the same composition) $\to$
+        endless recomposition.
+\end{itemize}
+
+\section{Stability \& skipping}
+\begin{itemize}\raggedright
+  \item \textbf{Stable} = \texttt{equals} forever consistent, public changes notify
+        composition, all public props stable: primitives, \texttt{String}, function types,
+        \texttt{val}-only classes of those. \textbf{Unstable}: any \texttt{var},
+        \texttt{List/Set/Map}, classes from a module \textbf{without} the Compose compiler.
+  \item \texttt{@Immutable} = never changes after construction; \texttt{@Stable} = may change
+        but only through \texttt{State}. \textbf{Promises, not checks} — lie and the UI goes stale.
+  \item \textbf{Strong skipping} (default since \textbf{Kotlin 2.0.20}): every restartable
+        composable is skippable; \textbf{unstable} params compared by \eqeqeq{} (instance),
+        stable by \texttt{equals}; \textbf{every lambda is auto-\texttt{remember}ed}, keyed
+        on its captures. Opt out: \texttt{@NonSkippableComposable}, \texttt{@DontMemoize}.
+  \item Today's bug: a \textbf{new instance each pass} (\texttt{list.filter\{\}} in the body)
+        $\to$ \neqeq{} $\to$ re-run. Fix: \texttt{remember}, \texttt{ImmutableList}
+        (kotlinx), \texttt{@Immutable}, or a \texttt{stabilityConfigurationFile}.
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=KotlinSheet]
+@Immutable data class Item(val id: Long, val kind: Kind,
+                           val tags: ImmutableList<String>)
+@Composable fun Feed(items: ImmutableList<Item>) {
+  val list = rememberLazyListState()
+  val showTop by remember {         // recompose only on the flip
+    derivedStateOf { list.firstVisibleItemIndex > 0 } }
+  Header(Modifier.offset {          // read in LAYOUT, not composition
+    IntOffset(0, -list.firstVisibleItemScrollOffset / 2) })
+  LazyColumn(state = list) {
+    items(items, key = { it.id }, contentType = { it.kind }) {
+      ItemRow(it) }                 // key: state follows the item
+  }
+  if (showTop) ScrollTopButton()
+}
+\end{lstlisting}
+
+\textbf{vs SwiftUI:} both track \emph{reads} (\texttt{@Observable} in \texttt{body} $\approx$
+snapshot reads); SwiftUI diffs view \emph{values} by structural identity + \texttt{.id()},
+Compose re-runs \emph{functions} and skips by parameter equality.
+
+\columnbreak
+
+\section{remember family — when which}
+\begin{itemize}\raggedright
+  \item \texttt{remember(k1, k2) \{\}}: recompute when a key changes (like React's \texttt{useMemo} with deps).
+        \texttt{rememberSaveable}: + rotation and process death (Bundle or \texttt{Saver}).
+  \item \texttt{derivedStateOf} (inside \texttt{remember}): only when the \textbf{input changes
+        more often than the output} (scroll index $\to$ Boolean); else \texttt{remember(x)}.
+  \item \textbf{Lazy lists}: \texttt{key} (default = index) keeps item state across inserts
+        and moves; \texttt{contentType} reuses compositions between same-type items.
+\end{itemize}
+
+\section{Side effects — beyond the basics}
+\begin{itemize}\raggedright
+  \item \texttt{LaunchedEffect(k)}: new key $\Rightarrow$ \textbf{cancel + relaunch}; to call
+        the \emph{latest} lambda without restarting, \texttt{rememberUpdatedState}.
+  \item \texttt{DisposableEffect(k)} must end in \texttt{onDispose\{\}};
+        \texttt{SideEffect\{\}} runs after every \emph{successful} composition.
+  \item \texttt{produceState}: source $\to$ \texttt{State}; \texttt{snapshotFlow\{\}}:
+        \texttt{State} $\to$ cold \texttt{Flow} of distinct values (analytics, debounce).
+\end{itemize}
+\begin{lstlisting}[language=KotlinSheet]
+@Composable fun Splash(onTimeout: () -> Unit) {
+  val latest by rememberUpdatedState(onTimeout)
+  LaunchedEffect(Unit) { delay(3_000); latest() } // no restart
+}
+\end{lstlisting}
+
+\section{Measure, don't guess}
+\begin{itemize}\raggedright
+  \item \textbf{Compiler reports} (\texttt{composeCompiler \{ reportsDestination \}}, release
+        build): \texttt{-composables.txt} = \texttt{restartable skippable} + per-param
+        \texttt{stable}/\texttt{unstable}; \texttt{-classes.txt} = inferred stability.
+  \item \textbf{Layout Inspector}: recomposition + skip counts per node. Judge jank on
+        release only.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{Scroll offset read in composition $\to$ recompose every frame.}
+  \trap{Strong skipping + a fresh \texttt{List} per pass $\to$ still re-runs.}
+  \trap{\texttt{LaunchedEffect(Unit)} + captured callback $\to$ stale.}
+\end{itemize}
+
+\textbf{Remember:} \emph{read later (draw > layout > composition), read lower (small
+scopes), same instance or stable type.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} android-compose-lifecycle ·
+kotlin-language · android-build-performance (baseline profiles) · swiftui-performance-identity
+· rendering-pipeline (SwiftUI)}
+
+\end{document}

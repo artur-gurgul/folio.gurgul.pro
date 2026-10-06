@@ -1,0 +1,84 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Hilt &amp; Dagger in depth — graph, components, scopes, tests — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/cross-platform/hilt-dagger-deep.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">114</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area current" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Hilt &amp; Dagger in depth — graph, components, scopes, tests</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">cross-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Dagger turns <code>@Inject</code>/<code>@Provides</code>/<code>@Binds</code> into a <strong>dependency graph checked
+at compile time</strong> and emits plain factory code — no reflection. Hilt fixes the <strong>component tree</strong>
+to Android lifetimes: a binding lives in one component, is visible to that component’s
+<strong>children</strong>, and a <strong>scope</strong> annotation means “one instance per component instance”.</p>
+<p class="sheet-tools"><a class="sheet-download" href="hilt-dagger-deep.pdf" download>Download PDF</a> <a href="hilt-dagger-deep.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/cross-platform/hilt-dagger-deep.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="hilt-dagger-deep-fig1.svg" width="636" height="169" class="wide" alt="Hilt &amp; Dagger in depth — graph, components, scopes, tests — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Binding sources</h2>
+<ul>
+<li><code>@Inject constructor</code> — your own classes; prefer it. <code>@Provides</code> — code  for types you don’t own (Retrofit, Room builder). <code>@Binds</code> — abstract,  <strong>no body</strong>, interface <span class="math">→</span> impl, cheapest (no module instance).</li>
+<li><code>@Module @InstallIn(X::class)</code> decides the component (and so who can see it and how  long a scoped instance lives). A scope on a binding must match its component.</li>
+<li><strong>Qualifiers</strong> for two bindings of one type: <code>@Named(&quot;auth&quot;)</code> or a custom  <code>@Qualifier annotation class</code>; built-ins <code>@ApplicationContext</code>,  <code>@ActivityContext</code>.</li>
+<li><strong>Multibindings</strong>: <code>@IntoSet</code>/<code>@ElementsIntoSet</code> <span class="math">→</span>  <code>Set&lt;T&gt;</code>; <code>@IntoMap</code> + <code>@StringKey</code>/<code>@ClassKey</code>/custom  <code>@MapKey</code> <span class="math">→</span> <code>Map&lt;K, V&gt;</code> or <code>Map&lt;K, Provider&lt;V&gt;&gt;</code>;  <code>@Multibinds</code> declares a possibly empty one. Plug-ins, interceptors, initialisers.</li>
+<li><code>Provider&lt;T&gt;</code>: <code>get()</code> each call (new if unscoped). <code>Lazy&lt;T&gt;</code>  (<code>dagger.Lazy</code>): built on first <code>get()</code>, then cached <em>per Lazy</em>. Both  defer work and break a cycle.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example</h2>
+<pre class="sheet-code"><code class="hljs language-kotlin"><span class="hljs-meta">@Qualifier</span> <span class="hljs-keyword">annotation</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">Auth</span>
+<span class="hljs-meta">@Module</span> <span class="hljs-meta">@InstallIn(SingletonComponent::class)</span>
+<span class="hljs-keyword">abstract</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">DataModule</span> {
+  <span class="hljs-meta">@Binds</span> <span class="hljs-keyword">abstract</span> <span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-title">repo</span><span class="hljs-params">(impl: <span class="hljs-type">NoteRepoImpl</span>)</span></span>: NoteRepo
+  <span class="hljs-meta">@Binds</span> <span class="hljs-meta">@IntoSet</span> <span class="hljs-keyword">abstract</span> <span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-title">log</span><span class="hljs-params">(i: <span class="hljs-type">LogInterceptor</span>)</span></span>: Interceptor
+  <span class="hljs-keyword">companion</span> <span class="hljs-keyword">object</span> {
+    <span class="hljs-meta">@Provides</span> <span class="hljs-meta">@Singleton</span> <span class="hljs-meta">@Auth</span>
+    <span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-title">ok</span><span class="hljs-params">(<span class="hljs-keyword">set</span>: <span class="hljs-type">Set</span>&lt;@<span class="hljs-type">JvmSuppressWildcards</span> <span class="hljs-type">Interceptor</span>&gt;)</span></span> =
+      OkHttpClient.Builder().apply { <span class="hljs-keyword">set</span>.forEach(::addInterceptor) }.build() } }
+<span class="hljs-meta">@HiltViewModel(assistedFactory = NoteVM.Factory::class)</span>
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">NoteVM</span> <span class="hljs-meta">@AssistedInject</span> <span class="hljs-keyword">constructor</span>(<span class="hljs-meta">@Assisted</span> <span class="hljs-keyword">val</span> id: <span class="hljs-built_in">Long</span>,
+    repo: NoteRepo, heavy: Lazy&lt;Parser&gt;) : ViewModel() {
+  <span class="hljs-meta">@AssistedFactory</span> <span class="hljs-keyword">interface</span> <span class="hljs-title class_">Factory</span> { <span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-title">create</span><span class="hljs-params">(id: <span class="hljs-type">Long</span>)</span></span>: NoteVM } }
+<span class="hljs-comment">// Compose: hiltViewModel&lt;NoteVM, NoteVM.Factory&gt; { it.create(id) }</span></code></pre>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">Scoping “for performance” — a scope is a lifetime + a lock, not a speed-up.</li>
+<li class="trap"><code>Set&lt;Interceptor&gt;</code> in Kotlin needs <code>@JvmSuppressWildcards</code>, or MissingBinding.</li>
+<li class="trap">Plain unit tests need no Hilt — call the <code>@Inject</code> constructor with fakes.</li>
+</ul>
+<p><strong>Remember:</strong> <em>Inject constructors, Bind interfaces, Provide the rest · install decides
+visibility · scope = one per component.</em></p>
+</section>
+<section class="sheet-section">
+<h2>Assisted injection &amp; entry points</h2>
+<ul>
+<li><code>@AssistedInject</code> mixes runtime values (<code>@Assisted id</code>) with graph deps  via a generated <code>@AssistedFactory</code>; VMs: <code>@HiltViewModel(assistedFactory =
+ …)</code> (Dagger <strong>2.49</strong>). Assisted values are <strong>not saved</strong> on process death —  nav args go in <code>SavedStateHandle</code>.</li>
+<li><code>@EntryPoint</code> = a door <em>into</em> the graph for what Hilt can’t construct  (<code>ContentProvider</code>, library callbacks): <code>interface E { fun repo(): Repo }</code>  + <code>EntryPointAccessors.fromApplication(ctx, E::class.java).repo()</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Testing</h2>
+<ul>
+<li><code>@HiltAndroidTest</code> + <code>@get:Rule val hilt = HiltAndroidRule(this)</code> (first  rule) + <code>hilt.inject()</code>, <code>HiltTestApplication</code>; a <strong>fresh</strong>  SingletonComponent per test.</li>
+<li>Per class: <code>@UninstallModules(NetModule::class)</code> + a nested test module. Whole  source set: <code>@TestInstallIn(replaces = [NetModule::class], …)</code>. One field:  <code>@BindValue @JvmField val api: Api = FakeApi()</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Koin vs Hilt</h2>
+<p>Koin: <code>module { single { Repo(get()) }; viewModel { VM(get()) } }</code>, resolved at <strong>runtime</strong>: fast builds, KMP-ready, a missing binding crashes on first use (<code>verify()</code> test; Koin Annotations add KSP checks). Hilt: compile-time, Android/JVM only.</p>
+</section>
+<section class="sheet-section">
+<h2>Errors you will read</h2>
+<ul>
+<li><code>[Dagger/MissingBinding] X cannot be provided without an @Inject constructor or an
+ @Provides-annotated method</code> — wrong component/qualifier, no <code>@Binds</code>.</li>
+<li><code>[Dagger/IncompatiblyScopedBindings]</code> (<code>@Singleton</code> <span class="math">→</span>  <code>@ActivityScoped</code>); <code>[Dagger/DependencyCycle]</code> <span class="math">→</span> <code>Provider</code>/<code>Lazy</code>.</li>
+<li>“Hilt Activity must be attached to an @HiltAndroidApp Application” — no  <code>android:name</code>.</li>
+</ul>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> android-jetpack-stack ·
+navigation-compose-deep · room-deep · android-background-work · coordinator-repository-di-clean ·
+swift DI (iOS)</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=cross-platform" title="area">cross-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=pattern" title="kind">pattern</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=android" title="platform">android</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=architecture" title="topic">architecture</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=patterns" title="topic">patterns</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=testing" title="topic">testing</a></li><li class="sheet-tag"><a href="/folios.html?tag=hilt">hilt</a></li><li class="sheet-tag"><a href="/folios.html?tag=dagger">dagger</a></li><li class="sheet-tag"><a href="/folios.html?tag=dependency-injection">dependency-injection</a></li><li class="sheet-tag"><a href="/folios.html?tag=hilt-components">hilt-components</a></li><li class="sheet-tag"><a href="/folios.html?tag=scopes">scopes</a></li><li class="sheet-tag"><a href="/folios.html?tag=qualifiers">qualifiers</a></li><li class="sheet-tag"><a href="/folios.html?tag=multibindings">multibindings</a></li><li class="sheet-tag"><a href="/folios.html?tag=assisted-injection">assisted-injection</a></li><li class="sheet-tag"><a href="/folios.html?tag=entrypoint">entrypoint</a></li><li class="sheet-tag"><a href="/folios.html?tag=hilt-testing">hilt-testing</a></li><li class="sheet-tag"><a href="/folios.html?tag=koin">koin</a></li><li class="sheet-tag"><a href="/folios.html?tag=ksp">ksp</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=cross-platform%2Fhilt-dagger-deep.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/114">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

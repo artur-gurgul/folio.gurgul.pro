@@ -1,0 +1,176 @@
+% room-deep.tex — Room in depth: KSP code generation + compile-time SQL checks, @Entity/@Dao/@Database,
+% relations (@Embedded, @Relation, Junction) and why they need @Transaction, observable queries and
+% the trigger-based InvalidationTracker, threading (suspend DAOs, main-thread check, withTransaction),
+% WAL, TypeConverters, migrations (manual, AutoMigration + spec, exported schema, MigrationTestHelper,
+% destructive fallback), FTS, Paging, Room KMP (2.7+) with BundledSQLiteDriver, and Room 3.0.
+% Diagram: one write -> TEMP trigger -> modification log -> tracker -> re-query -> Flow emission.
+% Extends android-jetpack-stack (Room bullets: Flow re-emits per table, migrations one-liner, KMP) —
+% does not repeat it.
+% Sources (checked 2026-09-26):
+%   https://developer.android.com/jetpack/androidx/releases/room    (2.7.0 9 Apr 2025 KMP; 2.8.0 Sep 2025; 2.8.5)
+%   https://developer.android.com/jetpack/androidx/releases/room3   (3.0.0 1 Jul 2026, androidx.room3, 3.0.3)
+%   https://developer.android.com/kotlin/multiplatform/room          (setDriver, @ConstructedBy, suspend-only)
+%   https://developer.android.com/training/data-storage/room/migrating-db-versions
+%   https://developer.android.com/training/data-storage/room/relationships
+%   Room InvalidationTracker source (room_table_modification_log, TEMP triggers on INSERT/UPDATE/DELETE)
+% @labels: area=cross-platform kind=api platform=android topic=data,platform-apis discussion=124
+% @tags: room, sqlite, ksp, invalidation-tracker, room-relations, room-transaction, room-migrations, automigration, wal, typeconverter, room-kmp, bundledsqlitedriver
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,when,is,in,out,as,by,
+    override,private,return,if,else,null,this,it,suspend,abstract},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {?.}{{\hbox{?}\hbox{.}}}2 {?:}{{\hbox{?}\hbox{:}}}2
+           {!!}{{\hbox{!}\hbox{!}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {::}{{\hbox{:}\hbox{:}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2 {>=}{{\hbox{>}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\arr{\hbox{-}\hbox{>}}
+
+\tikzset{
+  st/.style={box, font=\tiny, inner sep=1.2pt, minimum height=11mm, text width=#1, align=center},
+  st/.default=25mm,
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+  tc/.style={draw=sheetGrey, font=\tiny\ttfamily, minimum height=3.3mm, inner sep=0.5pt},
+}
+
+\begin{document}
+
+\sheettitle{Room in depth — codegen, invalidation, migrations, KMP}{cross-platform · folio}
+
+\oneliner{Room is a \textbf{compile-time} layer over SQLite: KSP reads \texttt{@Entity}/\texttt{@Dao}/\texttt{@Database},
+\textbf{checks every SQL string against the schema} and generates the implementation. Observable
+queries work by \textbf{SQLite triggers} that mark a \emph{table} dirty; after each transaction the
+\textbf{InvalidationTracker} re-runs every query that reads that table. The schema version is a
+contract: every change needs a \textbf{migration} or data is lost.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[hd] at (-0.3,2.95) {One write, one emission — table-level, after commit};
+  \node[st=24mm, draw=sheetOrange, fill=sheetOrange!10] (w) at (1.0,2.05) {\textbf{1 write}\\\texttt{@Upsert suspend fun}\\\texttt{upsert(n: Note)}\\writer connection};
+  \node[st=30mm] (t) at (4.3,2.05) {\textbf{2 TEMP trigger} (per observed table,\\per INSERT/UPDATE/DELETE):\\\texttt{UPDATE room\_table\_modification\_log}\\\texttt{SET invalidated = 1 WHERE table\_id = 3}};
+  \node[st=26mm] (e) at (7.75,2.05) {\textbf{3 end of transaction}\\tracker: \texttt{SELECT … WHERE}\\\texttt{invalidated = 1}, reset\\$\to$ dirty = \{Note\}};
+  \node[st=24mm, draw=sheetBlue] (o) at (10.75,2.05) {\textbf{4 observers of Note}\\every Flow / LiveData /\\PagingSource reading\\\texttt{Note} — any row};
+  \node[st=26mm, draw=sheetGreen, fill=sheetGreen!10] (f) at (14.1,2.05) {\textbf{5 re-query}\\on the query context;\\emit the \textbf{whole} new list\\$\to$ \texttt{distinctUntilChanged()}};
+  \draw[hot] (w) -- (t); \draw[hot] (t) -- (e); \draw[hot] (e) -- (o); \draw[hot] (o) -- (f);
+  % modification log table
+  \node[lbl, anchor=west] at (-0.3,0.95) {TEMP table, created on Room's connection:};
+  \node[tc, minimum width=12mm, fill=sheetGrey!10] at (0.4,0.55) {table\_id};
+  \node[tc, minimum width=14mm, fill=sheetGrey!10] at (1.7,0.55) {invalidated};
+  \node[tc, minimum width=12mm] at (0.4,0.22) {1 Folder};
+  \node[tc, minimum width=14mm] at (1.7,0.22) {0};
+  \node[tc, minimum width=12mm] at (0.4,-0.11) {3 Note};
+  \node[tc, minimum width=14mm, fill=sheetOrange!25] at (1.7,-0.11) {1};
+  \node[lbl, anchor=west, align=left, text=sheetBrown] at (2.75,0.35) {\textbf{Consequences}\\
+    · 1\,000 inserts in one \texttt{withTransaction\{\}} = \textbf{one} re-query; outside it = 1\,000\\
+    · a query \texttt{JOIN}ing Note + Folder observes \textbf{both} tables\\
+    · a write to an unrelated Note row still re-queries (table, not row)};
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (10.2,0.35) {\textbf{Not seen:} writes from another process or a\\
+    second SQLite handle — TEMP triggers live on Room's\\
+    connection only. Same app, two processes:\\
+    \texttt{enableMultiInstanceInvalidation()}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Codegen \& schema}
+\begin{itemize}\raggedright
+  \item \texttt{ksp(room-compiler)} generates \texttt{AppDatabase\_Impl}, \texttt{NoteDao\_Impl}; a
+        typo'd column is a \textbf{build error}. Kotlin codegen is the default on KSP (2.7+);
+        kapt/Java still work in Room 2, \textbf{not in Room 3}.
+  \item \texttt{@Entity(indices = [Index("folderId")], foreignKeys = [ForeignKey(Folder::class,
+        ["id"], ["folderId"], onDelete = CASCADE)])} — Room warns if an FK column is not
+        indexed (every parent delete would scan). \texttt{@Upsert} (2.5+): insert-or-update.
+  \item \texttt{@Embedded} flattens a class into columns (\texttt{prefix}); entities may not hold
+        \emph{references} to other entities — relations are queried, not lazy-loaded.
+  \item \texttt{@TypeConverter} pairs (\texttt{Instant} $\leftrightarrow$ \texttt{Long}) registered
+        with \texttt{@TypeConverters} on the DB, DAO or field.
+\end{itemize}
+
+\section{Example — many-to-many}
+\begin{lstlisting}[language=KotlinSheet]
+@Entity data class Playlist(@PrimaryKey val id: Long, val name: String)
+@Entity data class Song(@PrimaryKey val id: Long, val title: String)
+@Entity(primaryKeys = ["playlistId", "songId"], indices = [Index("songId")])
+data class PlaylistSong(val playlistId: Long, val songId: Long)
+data class PlaylistWithSongs(
+  @Embedded val playlist: Playlist,
+  @Relation(parentColumn = "id", entityColumn = "id",
+    associateBy = Junction(PlaylistSong::class,
+      parentColumn = "playlistId", entityColumn = "songId"))
+  val songs: List<Song>)
+@Dao interface PlaylistDao {
+  @Transaction @Query("SELECT * FROM Playlist WHERE id = :id")
+  fun observe(id: Long): Flow<PlaylistWithSongs?>   // 2 queries
+  @Upsert suspend fun upsert(song: Song) }
+\end{lstlisting}
+\raggedright \texttt{@Relation} = a \textbf{second query} per parent batch — without
+\texttt{@Transaction} a write between the two gives a torn read.
+
+\section{Threading \& transactions}
+\begin{itemize}\raggedright
+  \item A blocking DAO call on the main thread throws \texttt{IllegalStateException} (unless
+        \texttt{allowMainThreadQueries()}). \texttt{suspend} DAOs hop to Room's executors /
+        query context themselves — no \texttt{withContext(IO)} needed.
+  \item Multi-DAO write: \texttt{db.withTransaction \{ … \}} (one writer at a time; readers go on
+        under \textbf{WAL}, the default journal mode except on low-RAM devices).
+\end{itemize}
+
+\section{FTS, Paging}
+\raggedright \texttt{@Fts4(contentEntity = Note::class) @Entity class NoteFts(val title: String)}
++ \texttt{WHERE NoteFts MATCH :q} (join on \texttt{rowid}); Room 3 adds \texttt{@Fts5}. A DAO
+returning \texttt{PagingSource<Int, Note>} (\texttt{room-paging}) is invalidated by the same
+tracker; \texttt{RemoteMediator} writes pages into the table.
+
+\columnbreak
+
+\section{Migrations — the version is a contract}
+\begin{itemize}\raggedright
+  \item Room stores the schema's \textbf{identity hash}; a DB at another version with no path
+        $\to$ \texttt{IllegalStateException} at open.
+  \item Manual: \texttt{val M1\_2 = Migration(1, 2) \{ db \arr{} db.execSQL("ALTER TABLE Song ADD COLUMN
+        len INTEGER NOT NULL DEFAULT 0") \}}. Paths chain 1$\to$2$\to$3 or jump 1$\to$3.
+  \item \texttt{autoMigrations = [AutoMigration(2, 3, spec = S::class)]} diffs two
+        \textbf{exported schema JSONs}; rename vs drop+add needs a spec (\texttt{@RenameColumn},
+        \texttt{@RenameTable}, \texttt{@DeleteColumn}, \texttt{@DeleteTable}). So
+        \texttt{exportSchema = true} + \texttt{room \{ schemaDirectory(…) \}}, \textbf{JSONs in git}.
+  \item Test: \texttt{MigrationTestHelper.createDatabase(1)}, insert rows,
+        \texttt{runMigrationsAndValidate(2, M1\_2)} = result must equal the v2 schema.
+  \item SQLite \texttt{ALTER TABLE} can't change a type/constraint: new table $\to$ copy $\to$
+        drop $\to$ rename.
+\end{itemize}
+
+\section{KMP (2.7+) \& Room 3}
+\begin{itemize}\raggedright
+  \item \textbf{2.7.0} (Apr 2025): KMP — Android, iOS, JVM. Builder
+        \texttt{.setDriver(BundledSQLiteDriver())} (SQLite compiled from source, same version
+        everywhere) \texttt{.setQueryCoroutineContext(Dispatchers.IO)};
+        \texttt{@ConstructedBy} + \texttt{expect object … : RoomDatabaseConstructor<AppDb>}.
+        Common DAOs: \texttt{suspend}/\texttt{Flow} only; \texttt{useWriterConnection\{\}}.
+  \item \textbf{Room 3.0} (stable 1 Jul 2026, \texttt{androidx.room3}): KSP + Kotlin only,
+        \texttt{SQLiteDriver} only (no \texttt{SupportSQLite}/\texttt{Cursor}), coroutines-first,
+        \texttt{InvalidationTracker.createFlow()}, web targets.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{\texttt{fallbackToDestructiveMigration()} in release = a silent \textbf{wipe} on any
+        missed path; at most \texttt{…OnDowngrade()}.}
+  \trap{``Flow emits the changed row'' — it re-runs the query, emits \emph{everything}.}
+  \trap{New \texttt{version}, schema JSON not committed — no AutoMigration later.}
+\end{itemize}
+
+\textbf{Remember:} \emph{KSP checks SQL · triggers mark tables · commit $\to$ re-query · every
+version needs a tested path.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} android-jetpack-stack ·
+kmp-stack-concurrency · kotlin-flow-deep · hilt-dagger-deep · coredata-migrations-swiftdata (iOS) ·
+sqlite-grdb-internals}
+
+\end{document}

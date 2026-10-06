@@ -1,0 +1,220 @@
+% android-coroutines-platform.tex — Kotlin coroutines (suspend, scopes, Job vs SupervisorJob,
+% dispatchers, structured concurrency, cooperative cancellation), Flow (cold) vs
+% StateFlow/SharedFlow (hot), repeatOnLifecycle, the coroutines <-> Swift concurrency map,
+% and the Android vs iOS platform-differences table.
+% Sources (checked 2026-10-06):
+%   kotlinlang.org/docs/coroutines-basics.html · /cancellation-and-timeouts.html ·
+%     /exception-handling.html (CoroutineExceptionHandler on the root; async rethrows at await)
+%   kotlinlang.org/api/kotlinx.coroutines/…/-dispatchers/-i-o.html ("64 threads or the number of
+%     cores (whichever is larger)") · kotlinlang.org/docs/flow.html (cold flows, flowOn, catch)
+%   developer.android.com/kotlin/flow/stateflow-and-sharedflow (stateIn, WhileSubscribed) ·
+%     /topic/libraries/architecture/coroutines (viewModelScope, lifecycleScope,
+%     repeatOnLifecycle; launchWhenX deprecated)
+%   developer.android.com/training/permissions/requesting ("taps Deny … more than once … no
+%     longer see the system permissions dialog"; POST_NOTIFICATIONS API 33) ·
+%     /topic/libraries/architecture/workmanager (periodic minimum 15 min) ·
+%     /develop/ui/views/notifications/channels (API 26)
+% @labels: area=cross-platform kind=concept platform=android topic=concurrency,platform-apis discussion=110
+% @tags: kotlin-coroutines, structured-concurrency, supervisorjob, dispatchers, viewmodelscope, kotlin-flow, stateflow, sharedflow, repeatonlifecycle, cooperative-cancellation, workmanager, fcm
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usepackage{tabularx}
+
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,suspend,when,is,in,out,
+    override,private,return,if,else,import,package,companion,by,lazy,launch,flow,emit,collect},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  jb/.style={box, font=\tiny, inner sep=1.2pt, minimum height=4mm, minimum width=13mm},
+  ok/.style={jb, draw=sheetGreen, fill=sheetGreen!12},
+  ko/.style={jb, draw=sheetRed, fill=sheetRed!10},
+  gone/.style={jb, draw=sheetGrey, fill=sheetGrey!10, dashed},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+  bar/.style={draw=none, minimum height=2.6mm, inner sep=0pt, font=\tiny, text=white},
+}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+
+\begin{document}
+
+\sheettitle{Kotlin coroutines \& Flow · Android vs iOS platform}{android · folio}
+
+\oneliner{A coroutine is a \textbf{suspendable computation} launched in a \textbf{scope}
+whose \texttt{Job} tree gives \textbf{structured concurrency} (a parent waits for and
+cancels its children); \textbf{cancellation is cooperative}. \texttt{Flow} is a
+\textbf{cold} stream, \texttt{StateFlow}/\texttt{SharedFlow} are \textbf{hot} — the Kotlin
+twins of \texttt{async}/\texttt{await}, \texttt{Task}, \texttt{AsyncSequence} and Combine
+subjects.}
+
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- A: Job tree ----------
+  \node[hd] at (-0.2,2.75) {Job tree — a child fails};
+  \node[jb, draw=sheetBlue, minimum width=26mm] (root) at (2.6,2.25) {viewModelScope (\textbf{SupervisorJob})};
+  \node[ko] (a) at (1.2,1.45) {launch A (Job)};
+  \node[ok] (b) at (4.1,1.45) {launch B};
+  \node[ko] (a1) at (0.45,0.65) {async a1 \textbf{throws}};
+  \node[gone] (a2) at (1.95,0.65) {async a2};
+  \draw[flow] (root) -- (a); \draw[flow] (root) -- (b);
+  \draw[flow] (a) -- (a1); \draw[flow] (a) -- (a2);
+  \draw[hot, draw=sheetRed] (a1.north) to[bend left=40] node[lbl, left, text=sheetRed]{1 fails} (a.west);
+  \draw[hot, draw=sheetRed] (a.south east) -- node[lbl, right, text=sheetRed]{2 cancels} (a2.north east);
+  \node[lbl, text=sheetGreen!60!black] at (4.1,0.8) {3 supervisor: B\\keeps running};
+  \node[lbl, text=sheetBrown] at (2.3,0.05) {plain \texttt{Job} root: A's failure would cancel B too\\\texttt{root.cancel()} cancels all; parent waits for children};
+  % ---------- B: cold vs hot ----------
+  \node[hd] at (5.9,2.75) {Cold vs hot};
+  \node[jb, draw=sheetBlue] (cf) at (6.75,2.05) {\texttt{flow \{ fetch() \}}};
+  \node[jb, minimum width=9mm] (c1) at (8.9,2.35) {coll. 1};
+  \node[jb, minimum width=9mm] (c2) at (8.9,1.75) {coll. 2};
+  \draw[flow] (cf) -- node[lbl, above, sloped]{run \#1} (c1);
+  \draw[flow] (cf) -- node[lbl, below, sloped]{run \#2} (c2);
+  \node[jb, draw=sheetOrange, fill=sheetOrange!10] (sf) at (6.75,0.75) {\texttt{StateFlow} value=3};
+  \node[jb, minimum width=9mm] (c3) at (8.9,1.05) {coll. 1};
+  \node[jb, minimum width=9mm] (c4) at (8.9,0.45) {coll. 2};
+  \draw[flow, draw=sheetOrange] (sf) -- (c3); \draw[flow, draw=sheetOrange] (sf) -- (c4);
+  \node[lbl, text=sheetBrown] at (7.5,0.05) {writes 1,2,3 $\to$ slow collector sees 1,3\\(conflated; equal value = no emit)};
+  % ---------- C: repeatOnLifecycle ----------
+  \node[hd] at (9.9,2.75) {Collecting on a lifecycle};
+  \foreach \x/\t in {11.0/CREATED, 12.2/STARTED, 13.5/STOPPED (bg), 14.9/STARTED, 16.1/DESTROY}
+    \node[lbl] at (\x,2.35) {\t};
+  \draw[sheetGrey] (10.4,2.2) -- (16.6,2.2);
+  \node[lbl, anchor=east] at (11.55,1.8) {\texttt{repeatOnLifecycle}};
+  \node[bar, fill=sheetGreen, minimum width=12mm] at (12.2,1.8) {collect};
+  \node[bar, fill=sheetGreen, minimum width=12mm] at (14.9,1.8) {collect (new)};
+  \node[lbl, text=sheetGreen!60!black] at (13.5,1.8) {cancelled};
+  \node[lbl, anchor=east] at (11.55,1.3) {\texttt{launchWhenStarted}};
+  \node[bar, fill=sheetOrange, minimum width=12mm] at (12.2,1.3) {collect};
+  \node[bar, fill=sheetOrange!45, minimum width=13mm] at (13.5,1.3) {paused*};
+  \node[bar, fill=sheetOrange, minimum width=12mm] at (14.9,1.3) {collect};
+  \node[lbl, anchor=east] at (11.55,0.8) {\texttt{launch \{ collect \}}};
+  \node[bar, fill=sheetRed, minimum width=45mm] at (13.9,0.8) {collects in background until DESTROYED};
+  \node[lbl, text=sheetBrown] at (13.4,0.2) {Compose: \texttt{collectAsStateWithLifecycle()} = the green row\\
+    * paused, but the upstream stays alive — \texttt{launchWhenX} is deprecated};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Coroutines — the mechanism}
+\begin{itemize}\raggedright
+  \item \texttt{suspend fun} compiles to a \textbf{state machine} + a hidden
+        \texttt{Continuation} param; suspending frees the thread (like \texttt{await}).
+  \item \texttt{launch} $\to$ \texttt{Job} (fire-and-forget) · \texttt{async} $\to$
+        \texttt{Deferred<T>}, \texttt{await()}; \texttt{coroutineScope\{\}} waits for all
+        children, rethrows the first failure; \texttt{supervisorScope\{\}} isolates them.
+  \item \textbf{Scopes}: \texttt{viewModelScope} (\texttt{onCleared}),
+        \texttt{lifecycleScope} (\texttt{onDestroy}), \texttt{rememberCoroutineScope}
+        (leaves composition). \texttt{GlobalScope} = unstructured, leaks.
+  \item \textbf{Dispatchers}: \texttt{Main} (UI; \texttt{Main.immediate} skips the re-post
+        if already there) · \texttt{IO} (blocking, 64 threads or \#cores if more) ·
+        \texttt{Default} (CPU, \#cores). \texttt{withContext(IO) \{\}} hops and returns.
+  \item \textbf{Cancellation is cooperative}: \texttt{CancellationException} at the next
+        suspension point; CPU loops call \texttt{ensureActive()}/\texttt{yield()}.
+        Blocking I/O is not interrupted.
+  \item Errors: \texttt{launch} propagates up the Job tree to a
+        \texttt{CoroutineExceptionHandler} on the \textbf{root} (ignored on children);
+        \texttt{async} rethrows at \texttt{await()}.
+\end{itemize}
+
+\section{Flow}
+\begin{itemize}\raggedright
+  \item \textbf{Cold} \texttt{flow\{\}}: producer re-runs \emph{per collector}; Room/Retrofit
+        streams. \texttt{flowOn(IO)} moves \emph{upstream} only; \texttt{.catch} sees
+        \emph{upstream} errors only.
+  \item \textbf{StateFlow}: always a value, conflated, replays latest — screen state.
+        \textbf{SharedFlow}: \texttt{replay}/buffer configurable — broadcasts.
+  \item \texttt{stateIn(scope, WhileSubscribed(5\_000), init)}: upstream survives the
+        rotation gap, stops 5 s after the last collector. \texttt{Eagerly}/\texttt{Lazily}
+        never stop.
+  \item \texttt{flatMapLatest} cancels the previous inner flow (search);
+        \texttt{combine} = latest of each (state), \texttt{zip} pairs by index.
+\end{itemize}
+
+\section{Example — VM + safe collection}
+\begin{lstlisting}[language=KotlinSheet]
+val ui: StateFlow<Ui> = repo.devices()        // cold (Room)
+  .map { Ui.Loaded(it) }
+  .catch { emit(Ui.Error(it)) }              // upstream only
+  .stateIn(viewModelScope, WhileSubscribed(5_000), Ui.Loading)
+private val _ev = Channel<Event>(Channel.BUFFERED)
+val events = _ev.receiveAsFlow()             // one-shot
+fun refresh() = viewModelScope.launch {
+  try { withContext(Dispatchers.IO) { repo.sync() } }
+  catch (e: IOException) { _ev.send(Event.Offline) }
+}                                   // never catch(Exception)
+// Activity / Fragment (viewLifecycleOwner):
+lifecycleScope.launch { repeatOnLifecycle(STARTED) {
+  vm.ui.collect { render(it) } } }
+\end{lstlisting}
+
+\columnbreak
+
+\section{Coroutines ↔ Swift concurrency}
+{\scriptsize
+\noindent\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{34mm}L@{}}
+\toprule
+\textbf{Kotlin} & \textbf{Swift} \\
+\midrule
+\texttt{suspend fun} & \texttt{async func} \\
+\texttt{launch \{\}} in a scope & \texttt{Task \{\}} (but \emph{unstructured}) \\
+\texttt{async}/\texttt{await}, \texttt{coroutineScope} & \texttt{async let}, \texttt{TaskGroup} \\
+\texttt{Job.cancel()} · \texttt{ensureActive()} & \texttt{task.cancel()} ·
+  \texttt{Task.checkCancellation()} \\
+\texttt{CancellationException} & \texttt{CancellationError} \\
+\texttt{Dispatchers.Main} (runtime) & \texttt{@MainActor} (compile-time checked) \\
+\texttt{withContext(IO)} & a \texttt{nonisolated async} func / \texttt{Task.detached} \\
+\texttt{Mutex} · confined state & \texttt{actor} \\
+\texttt{Flow} (cold) · \texttt{callbackFlow} & \texttt{AsyncSequence} ·
+  \texttt{AsyncStream(continuation)} \\
+\texttt{StateFlow} · \texttt{SharedFlow} & \texttt{CurrentValueSubject}/\texttt{@Published} ·
+  \texttt{PassthroughSubject} \\
+\texttt{flatMapLatest} · \texttt{combine} & \texttt{switchToLatest} · \texttt{combineLatest} \\
+\texttt{viewModelScope} & \texttt{Task} cancelled in \texttt{deinit} \\
+\texttt{repeatOnLifecycle} & \texttt{.task \{ for await … \}} \\
+\bottomrule
+\end{tabularx}}
+
+\section{Android vs iOS — platform}
+{\scriptsize
+\noindent\begin{tabularx}{\linewidth}{@{}>{\bfseries\raggedright\arraybackslash}p{12mm}LL@{}}
+\toprule
+ & \textbf{Android} & \textbf{iOS} \\
+\midrule
+Entry & Activity, Service, Receiver, Provider; \textbf{Intents} route between apps &
+  \texttt{App} + \texttt{UIScene}s; URL schemes \\
+Links & App Links (\texttt{assetlinks.json}) & Universal Links (AASA) \\
+Permiss. & runtime (API 23+); 2 denials = auto-deny; notifications from API 33 &
+  \texttt{Info.plist} string; one prompt, then Settings \\
+Backgr. & \textbf{WorkManager} (persisted, constraints, periodic $\geq$ 15 min); fg service
+  + notification; Doze & \textbf{BGTaskScheduler} (OS-timed), bg URLSession \\
+Push & \textbf{FCM}; data vs notification; channels (26+) & \textbf{APNs}; alert vs
+  \texttt{content-available} \\
+Devices & OEM skins, \texttt{minSdk}/\texttt{targetSdk} spread & few models, fast updates \\
+Build & \textbf{Gradle}: build types × flavors, R8 & Xcode configs, \textbf{SPM} \\
+DI · DB & \textbf{Hilt} (Dagger, compile-time) · \textbf{Room} (checked SQL, \texttt{Flow})
+  & init injection · Core Data / SwiftData \\
+\bottomrule
+\end{tabularx}}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{\texttt{catch (e: Exception)} swallows \texttt{CancellationException} — rethrow it or
+        catch specific types.}
+  \trap{\texttt{StateFlow} for one-shot events re-fires after rotation; a
+        \texttt{SharedFlow(replay=0)} drops events with no collector $\to$ \texttt{Channel}.}
+  \trap{Swift \texttt{Task\{\}} is \emph{not} a child: nobody cancels it — store and cancel.}
+\end{itemize}
+
+\section{Remember}
+\emph{Scope owns Job owns children · cancel = cooperative · cold per collector, hot shared ·
+collect from STARTED.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} android-compose-lifecycle ·
+kmp-stack-concurrency · concurrency · swift6-strict-concurrency · observation-and-combine ·
+background-execution · push-notifications}
+
+\end{document}

@@ -1,0 +1,203 @@
+% kmp-fundamentals-interop.tex — Kotlin Multiplatform: share logic not (necessarily) UI,
+% source-set hierarchy, expect/actual, targets, how the iOS framework is produced
+% (Kotlin/Native -> ObjC header -> Swift), the interop traps, SKIE / KMP-NativeCoroutines,
+% Compose Multiplatform in brief.
+% Sources (checked 2026-10-06):
+%   kotlinlang.org/docs/multiplatform-hierarchy.html (default hierarchy template, 1.9.20) ·
+%     /multiplatform-expect-actual.html · blog.jetbrains.com/kotlin/2023/11/kotlin-multiplatform-stable
+%   kotlinlang.org/docs/native-objc-interop.html (ObjC header mapping: top-level -> <File>Kt,
+%     object .shared, Int -> Int32, boxed KotlinInt, generics, @Throws, default args, enums)
+%   kotlinlang.org/docs/native-swift-export.html ("currently in Alpha"; Flow -> AsyncSequence)
+%     + /whatsnew24.html ("Starting with Kotlin 2.4.0 … Swift export is officially in Alpha")
+%   blog.jetbrains.com/kotlin/2025/05/compose-multiplatform-1-8-0-released-… (iOS stable, 1.8.0)
+%   skie.touchlab.co (sealed -> onEnum(of:), Flow -> AsyncSequence, suspend cancellation) ·
+%     github.com/rickclephas/KMP-NativeCoroutines (@NativeCoroutines, asyncFunction(for:))
+% @labels: area=cross-platform kind=concept platform=cross-platform topic=language,build discussion=115
+% @tags: kotlin-multiplatform, source-sets, expect-actual, kotlin-native, objc-header, xcframework, swift-interop, skie, kmp-nativecoroutines, compose-multiplatform, sealed-classes
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usepackage{tabularx}
+
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,suspend,when,is,in,out,
+    override,private,return,if,else,import,package,companion,by,lazy,launch,flow,emit,collect},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,case,switch,default,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,as,import,break},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  ss/.style={box, font=\tiny\ttfamily, inner sep=1.2pt, minimum height=4mm},
+  pb/.style={box, font=\tiny, inner sep=1.5pt, minimum height=6mm, text width=19mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcommand\eqeq{\texttt{\hbox{=}\hbox{=}}}  % one hbox per char: defeats the mono ligature
+
+\begin{document}
+
+\sheettitle{Kotlin Multiplatform — fundamentals \& the Swift boundary}{kmp · folio}
+
+\oneliner{KMP compiles \textbf{one Kotlin codebase} to each platform's native artifact —
+JVM bytecode for Android, a \textbf{Kotlin/Native} (LLVM) binary shipped as an
+\textbf{Objective-C framework} for iOS — so you share \textbf{logic} (models, networking,
+persistence, state) and keep \textbf{native UI} unless you opt into Compose Multiplatform.
+Swift sees Kotlin \textbf{through an ObjC header}: that header is where every interop trap
+lives.}
+
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- source sets ----------
+  \node[hd] at (-0.2,2.95) {Source sets (default hierarchy, Kotlin 1.9.20+)};
+  \node[ss, draw=sheetGreen, fill=sheetGreen!12] (cm) at (2.6,2.5) {commonMain};
+  \node[ss] (am) at (0.8,1.8) {androidMain};
+  \node[ss] (ap) at (4.2,1.8) {nativeMain $\to$ appleMain};
+  \node[ss] (im) at (4.2,1.1) {iosMain};
+  \node[ss, draw=sheetGrey, fill=sheetGrey!8] (l1) at (2.85,0.4) {iosArm64};
+  \node[ss, draw=sheetGrey, fill=sheetGrey!8] (l2) at (4.35,0.4) {iosSimulatorArm64};
+  \node[ss, draw=sheetGrey, fill=sheetGrey!8] (l3) at (5.85,0.4) {iosX64};
+  \draw[flow] (am) -- (cm); \draw[flow] (ap) -- (cm); \draw[flow] (im) -- (ap);
+  \draw[flow] (l1) -- (im); \draw[flow] (l2) -- (im); \draw[flow] (l3) -- (im);
+  \node[lbl, text=sheetGreen!60!black] at (0.75,2.55) {\texttt{expect} here\\stdlib + KMP libs only};
+  \node[lbl, text=sheetBlue] at (0.8,1.25) {\texttt{actual}: Android SDK,\\\texttt{java.*}, OkHttp};
+  \node[lbl, text=sheetBlue] at (6.0,1.15) {\texttt{actual}:\\\texttt{platform.UIKit}\\\texttt{platform.Foundation}};
+  \node[lbl, text=sheetBrown] at (2.9,-0.05) {arrow = ``depends on'': a set sees its parents; \texttt{commonTest} runs per target};
+  % ---------- the iOS pipeline ----------
+  \node[hd] at (6.9,2.95) {How Swift gets it};
+  \node[pb] (k) at (7.9,2.3) {Kotlin\\commonMain + iosMain};
+  \node[pb] (kn) at (10.15,2.3) {Kotlin/Native\\(LLVM, own GC)};
+  \node[pb] (fw) at (12.4,2.3) {\texttt{Shared.framework} ×3\\+ ObjC header};
+  \node[pb, draw=sheetOrange, fill=sheetOrange!10] (xc) at (14.65,2.3) {\textbf{XCFramework}\\one slice per target};
+  \node[pb, text width=25mm] (xi) at (14.9,1.2) {Xcode: SPM binaryTarget\\· CocoaPods · embedAndSign};
+  \node[pb, draw=sheetGreen, fill=sheetGreen!10, text width=26mm] (sw) at (11.6,1.2) {Swift: \texttt{import Shared}\\sees the \emph{ObjC} API, not Kotlin};
+  \node[pb, draw=sheetBrown, fill=sheetBrown!8, text width=24mm] (sk) at (8.3,1.2) {SKIE / NativeCoroutines\\rewrite the Swift surface};
+  \draw[flow] (k) -- (kn); \draw[flow] (kn) -- (fw); \draw[flow] (fw) -- (xc); \draw[flow] (xc) -- (xi);
+  \draw[flow] (xi) -- (sw); \draw[flow, dashed, draw=sheetBrown] (sk.north east) -- (fw.south west);
+  \node[lbl, text=sheetRed, align=left, anchor=west] at (7.0,0.25) {lost on the way: default args · exhaustive \texttt{switch} (sealed, enum) · generics on interfaces ·\\
+    \texttt{Flow} iteration · cancellation of \texttt{suspend} · Kotlin \texttt{Int} is \textbf{Int32} · unchecked exceptions (crash)};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{What KMP is — and is not}
+\begin{itemize}\raggedright
+  \item Targets: \texttt{androidTarget()}, \texttt{iosArm64()} (device),
+        \texttt{iosSimulatorArm64()}, \texttt{iosX64()} (Intel sim), \texttt{jvm()}, JS,
+        Wasm. \textbf{Stable} since Kotlin 1.9.20 (Nov 2023); Google backs it for shared
+        logic.
+  \item Share bottom-up: models, DTOs, networking, validation, repositories, state
+        machines, DB. Keep platform: UI, permissions, push token, Keychain, pickers.
+  \item \texttt{commonMain} cannot touch \texttt{java.*} (use kotlinx-datetime etc.). A
+        library must \textbf{publish klibs for every target} — Maven Central $\neq$ KMP.
+  \item \texttt{expect}/\texttt{actual}: functions, classes, objects, properties,
+        \texttt{typealias}. Prefer a common \texttt{interface} + injected impl (testable,
+        can be written in Swift); \texttt{expect} for thin platform primitives.
+  \item vs Flutter/RN: no own renderer, no JS bridge — compiled logic under native UI.
+\end{itemize}
+
+\section{Example — shared API, Swift call site}
+\begin{lstlisting}[language=KotlinSheet]
+// commonMain
+expect fun platformName(): String
+sealed interface Ui
+data class Loaded(val items: List<Device>) : Ui
+class DevicesSdk(private val api: Api) {
+  @Throws(ApiError::class, CancellationException::class)
+  suspend fun refresh(): List<Device> = api.devices()
+  val state: StateFlow<Ui> = /* ... */
+}
+// iosMain
+actual fun platformName() = UIDevice.currentDevice.systemName()
+\end{lstlisting}
+\vspace{-3pt}
+\begin{lstlisting}[language=SwiftSheet]
+let list = try await sdk.refresh()  // cancel won't reach Kotlin
+switch sdk.state.value {            // Any? (generic erased)
+case let s as Loaded: show(s.items) // a cast, not an enum case
+default: break }                    // no exhaustiveness
+\end{lstlisting}
+
+\section{Compose Multiplatform (briefly)}
+\begin{itemize}\raggedright
+  \item Shares the \emph{UI} too: \texttt{@Composable} in \texttt{commonMain}, wrapped on
+        iOS by \texttt{ComposeUIViewController \{ App() \}} and hosted from SwiftUI via
+        \texttt{UIViewControllerRepresentable}. Skia draws the pixels — no UIKit controls.
+        iOS stable since CMP 1.8 (2025).
+  \item Worth it for form/data-heavy UI, a Kotlin-heavy team, parity over idiom; otherwise
+        keep SwiftUI and share logic only.
+\end{itemize}
+
+\columnbreak
+
+\section{What Swift sees}
+{\scriptsize
+\noindent\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{27mm}L@{}}
+\toprule
+\textbf{Kotlin} & \textbf{Swift (via the ObjC header)} \\
+\midrule
+\texttt{class Greeting} & \texttt{Greeting} (ObjC: \texttt{SharedGreeting}); a clash
+  gets a \texttt{\_} suffix \\
+top-level \texttt{fun f()} in \texttt{Util.kt} & \texttt{UtilKt.f()} \\
+\texttt{object X} · companion & \texttt{X.shared} · \texttt{X.companion} \\
+\texttt{suspend fun} & completion handler $\to$ \texttt{async throws}; no cancellation
+  inward \\
+\texttt{Flow} / \texttt{StateFlow} & opaque protocol: implement a \texttt{FlowCollector};
+  \texttt{.value} is \texttt{Any?} \\
+\texttt{sealed} class/interface & base class + subclasses; cast with \texttt{as}, need
+  \texttt{default} \\
+\texttt{enum class} & class with static instances, not a Swift \texttt{enum} \\
+generic \texttt{class Box<T>} & ObjC lightweight generic, \texttt{T: AnyObject} \\
+generic \texttt{interface}, generic fun & \textbf{erased} to \texttt{Any?} \\
+\texttt{Int} · \texttt{Long} · \texttt{Int?} & \texttt{Int32} · \texttt{Int64} ·
+  \texttt{KotlinInt?} (boxed) \\
+\texttt{List<T>} · \texttt{Map} & \texttt{[T]} · \texttt{[K: V]} (\texttt{NSArray} /
+  \texttt{NSDictionary}) \\
+\texttt{Unit} callback & \texttt{KotlinUnit} \\
+\texttt{data class} & NSObject subclass: \eqeq{} via \texttt{isEqual},
+  \texttt{copy} $\to$ \texttt{doCopy(...)} (all args); no value semantics / \texttt{Codable} \\
+default arguments & \textbf{dropped} — Swift passes every argument \\
+exception, no \texttt{@Throws} & \textbf{crashes} the app \\
+\texttt{@ObjCName} · \texttt{@HiddenFromObjC} & rename · hide from the header \\
+\bottomrule
+\end{tabularx}}
+
+\section{Tools that fix the surface}
+\begin{itemize}\raggedright
+  \item \textbf{SKIE} (Touchlab, Gradle plugin): sealed $\to$ Swift enum via
+        \texttt{onEnum(of:)}, Kotlin enums $\to$ Swift enums, \texttt{Flow} $\to$
+        \texttt{AsyncSequence}, \texttt{suspend} $\to$ \texttt{async} \emph{with}
+        cancellation.
+  \item \textbf{KMP-NativeCoroutines}: \texttt{@NativeCoroutines} $\to$ Swift
+        \texttt{asyncFunction(for:)}, \texttt{asyncSequence(for:)}, Combine publishers.
+  \item Still design a \textbf{Swift-shaped facade}: concrete types, \texttt{@Throws},
+        no defaults, map to Swift structs at the edge. \textbf{Swift export} (no ObjC
+        header; \texttt{Flow} $\to$ \texttt{AsyncSequence}) is \textbf{Alpha} since Kotlin
+        2.4.0 — breaking changes expected.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{``KMP shares the UI'' — core KMP shares logic; UI is Compose Multiplatform.}
+  \trap{\texttt{.framework} = one slice: device-only fails in the simulator — ship an
+        \textbf{XCFramework}.}
+  \trap{Kotlin \texttt{Int} arrives as \texttt{Int32}; nullable primitives as
+        \texttt{KotlinInt?}.}
+  \trap{Kotlin cannot \texttt{import} Swift: Swift implements a Kotlin
+        \texttt{interface} and passes it in.}
+\end{itemize}
+
+\section{Remember}
+\emph{Share logic, keep UI · common sees nothing platform · Swift sees ObjC · wrap
+suspend, Flow, sealed.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} kmp-stack-concurrency ·
+android-coroutines-platform ·
+modularization-spm · linking-and-launch-time · protocols-generics}
+
+\end{document}

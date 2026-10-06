@@ -1,0 +1,185 @@
+% android-background-work.tex — Android background execution in depth: choosing between a coroutine,
+% WorkManager, a foreground service, AlarmManager and JobScheduler (UIDT); WorkManager internals
+% (persistence, schedulers, constraints, backoff numbers, unique work, chaining, expedited quota,
+% CoroutineWorker, setForeground); foreground-service types (14+), background-start ban (12+) and the
+% 15+ timeouts; Doze and App Standby Buckets with the per-bucket quotas; exact-alarm permissions
+% (12/13/14); broadcast limits; Android 16 job-quota changes.
+% Diagram: decision tree "I need to run work that..." -> the right API.
+% Extends android-jetpack-stack (WorkManager bullets) — does not repeat it.
+% Sources (checked 2026-09-26):
+%   https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work
+%   https://developer.android.com/develop/background-work/services/fgs/service-types      (14+ types, shortService)
+%   https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start (12+, exemptions, 15 SAW)
+%   https://developer.android.com/develop/background-work/services/fgs/timeout           (15+: 6 h / 24 h, onTimeout)
+%   https://developer.android.com/develop/background-work/services/alarms/schedule        (exact alarms 12/13/14)
+%   https://developer.android.com/training/monitoring-device-state/doze-standby           (Doze, 9 min)
+%   https://developer.android.com/topic/performance/power/power-details                   (bucket quotas)
+%   https://developer.android.com/develop/background-work/background-tasks/uidt           (UIDT jobs, 14+)
+%   https://developer.android.com/develop/background-work/background-tasks/broadcasts     (8.0, 10 s, goAsync)
+%   https://developer.android.com/about/versions/16/behavior-changes-all                  (job quota changes)
+% @labels: area=cross-platform kind=api platform=android topic=platform-apis,performance discussion=107
+% @tags: workmanager, foreground-service, alarmmanager, exact-alarms, jobscheduler, uidt, doze, app-standby-buckets, expedited-work, coroutineworker, broadcastreceiver, background-restrictions
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usepackage{tabularx}
+
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,when,is,in,out,as,by,
+    override,private,return,if,else,null,this,it,suspend,try,catch},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {?.}{{\hbox{?}\hbox{.}}}2 {?:}{{\hbox{?}\hbox{:}}}2
+           {!!}{{\hbox{!}\hbox{!}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {::}{{\hbox{:}\hbox{:}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2 {>=}{{\hbox{>}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\tikzset{
+  q/.style={box, font=\tiny, inner sep=1.2pt, minimum height=5.4mm, text width=38mm, align=center,
+    draw=sheetGrey, fill=sheetGrey!8},
+  a/.style={box, font=\tiny, inner sep=1.2pt, minimum height=5.4mm, text width=112mm, align=left},
+  lbl/.style={font=\tiny, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+
+\begin{document}
+
+\sheettitle{Android background work — which API, and what the OS allows}{cross-platform · folio}
+
+\oneliner{Android runs your code in the background only on its terms: a \textbf{coroutine} dies with
+its owner, \textbf{WorkManager} guarantees deferrable work (persisted, survives reboot, runs when
+quota and constraints allow), a \textbf{foreground service} is visible work the user started, and
+\textbf{AlarmManager} is for a wall-clock moment. Every release since 6.0 (Doze) has narrowed the
+rest: standby-bucket quotas, background-start bans, typed and time-limited services.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet, y=0.95cm]
+  \node[hd] at (-0.3,3.15) {``I need to run work that …'' — ask in this order};
+  \node[q] (q1) at (1.65,2.6) {… may die with the screen / process?};
+  \node[q] (q2) at (1.65,1.85) {… must fire at an exact clock time?};
+  \node[q] (q3) at (1.65,1.1) {… the user started and must go on \emph{now}?};
+  \node[q] (q4) at (1.65,0.35) {… is deferrable but must \emph{eventually} finish?};
+  \foreach \a/\b in {q1/q2,q2/q3,q3/q4} \draw[flow] (\a) -- node[lbl, left, text=sheetGrey]{no} (\b);
+  \node[a, draw=sheetBlue] (a1) at (10.45,2.6) {\textbf{Coroutine} in \texttt{viewModelScope}/\texttt{lifecycleScope}: cancelled with its owner,
+    gone on process death. Not ``background work'' — the app is on screen.};
+  \node[a, draw=sheetBrown, fill=sheetBrown!6] (a2) at (10.45,1.85) {\textbf{AlarmManager} \texttt{setExactAndAllowWhileIdle} / \texttt{setAlarmClock} — needs
+    \texttt{SCHEDULE\_EXACT\_ALARM} (user-granted) or \texttt{USE\_EXACT\_ALARM} (alarm/calendar apps).
+    Alarms are wiped by reboot: re-arm in a \texttt{BOOT\_COMPLETED} receiver. Approximate is fine? \texttt{set()} / \texttt{setWindow()}.};
+  \node[a, draw=sheetOrange, fill=sheetOrange!8] (a3) at (10.45,1.1) {\textbf{Foreground service} with a declared \textbf{type} + ongoing notification, started while visible
+    (media, navigation, call, workout, device link). Big user-initiated transfer on 14+: a \textbf{UIDT job}
+    (\texttt{JobInfo.setUserInitiated(true)}, no bucket quota).};
+  \node[a, draw=sheetGreen, fill=sheetGreen!8] (a4) at (10.45,0.35) {\textbf{WorkManager}: persisted, constraints, backoff, survives reboot; soon + short =
+    \textbf{expedited}; long = \texttt{setForeground()}. Triggered by the server? High-priority \textbf{FCM} $\to$ enqueue work.};
+  \foreach \x in {1,2,3,4} \draw[->, thick, draw=sheetGreen] (q\x) -- node[lbl, above, text=sheetGreen!70!black]{yes} (a\x);
+  \node[lbl, anchor=west, text=sheetRed] at (-0.3,-0.2) {None of these? Reconsider: iOS-style ``keep running in the background'' does not exist. WorkManager sits on
+    \texttt{JobScheduler} — call JobScheduler directly only for UIDT jobs.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{WorkManager internals}
+\begin{itemize}\raggedright
+  \item \texttt{enqueue} writes a \texttt{WorkSpec} row to WorkManager's own \textbf{Room} DB, then
+        schedules it with \texttt{JobScheduler} (and runs it in-process at once if constraints
+        already hold). Reboot, update, force-stop: rows re-registered (boot receiver, next launch).
+  \item One run of a worker $\approx$ one job: the system stops it after \textbf{10 min}
+        (\texttt{CoroutineWorker} is cancelled, work is retried). Longer: \texttt{setForeground()}
+        $\to$ \texttt{SystemForegroundService} — declare it in the manifest with your FGS type.
+  \item Numbers: backoff default \textbf{EXPONENTIAL 30\,s}, min 10\,s, max 5\,h; periodic
+        $\geq$ \textbf{15 min}, flex $\geq$ 5 min; \texttt{Data} $\leq$ 10\,KB — pass URIs/ids.
+  \item \texttt{enqueueUniqueWork(name, KEEP|REPLACE|APPEND|APPEND\_OR\_REPLACE, r)} (periodic:
+        \texttt{KEEP/UPDATE}). \texttt{beginWith(listOf(a, b)).then(c)}: outputs merged by an
+        \texttt{InputMerger}; a failed parent fails the chain.
+  \item \textbf{Expedited}: \texttt{setExpedited(RUN\_AS\_NON\_EXPEDITED\_WORK\_REQUEST |
+        DROP\_WORK\_REQUEST)}; quota by standby bucket, none while in foreground; below Android
+        12 it runs as an FGS via \texttt{getForegroundInfo()} — missing it = crash.
+\end{itemize}
+
+\section{Example — a resilient upload}
+\begin{lstlisting}[language=KotlinSheet]
+@HiltWorker class UploadWorker @AssistedInject constructor(
+  @Assisted ctx: Context, @Assisted p: WorkerParameters, val api: Api
+) : CoroutineWorker(ctx, p) {
+  override suspend fun doWork(): Result = try {
+    setForeground(info())                  // may outlive 10 min
+    api.upload(inputData.getString("uri")!!); Result.success()
+  } catch (e: IOException) {
+    if (runAttemptCount < 5) Result.retry() else Result.failure() }
+  override suspend fun getForegroundInfo() = info() // expedited < 12
+  private fun info() = ForegroundInfo(42, notification(),
+      ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC) }
+WorkManager.getInstance(ctx).enqueueUniqueWork("upload",
+  ExistingWorkPolicy.KEEP, OneTimeWorkRequestBuilder<UploadWorker>()
+    .setConstraints(Constraints.Builder()
+      .setRequiredNetworkType(NetworkType.UNMETERED).build())
+    .setInputData(workDataOf("uri" to uri)).build())
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{``WorkManager for a 30-min download the user tapped'' — FGS or UIDT job.}
+  \trap{Tested on a plugged-in phone — force Doze and a \texttt{rare} bucket.}
+  \trap{\texttt{Thread}/coroutine in a \texttt{BroadcastReceiver} or \texttt{Application} — the
+        process can be killed the moment no component is active.}
+\end{itemize}
+
+\textbf{Remember:} \emph{dies with screen $\to$ coroutine · clock $\to$ alarm · visible now $\to$
+typed FGS · must finish $\to$ WorkManager.}
+
+\columnbreak
+
+\section{Foreground services — the rules by version}
+\begin{itemize}\raggedright
+  \item \textbf{12+}: no FGS start from the background $\to$
+        \texttt{ForegroundServiceStartNotAllowedException}. Exemptions: high-priority FCM,
+        exact alarm, notification/widget tap, some \texttt{BOOT\_COMPLETED} starts,
+        \texttt{SYSTEM\_ALERT\_WINDOW} (15+: only with a visible overlay).
+  \item \textbf{14+}: \texttt{android:foregroundServiceType} + \texttt{FOREGROUND\_SERVICE\_<TYPE>}
+        permission, else \texttt{MissingForegroundServiceTypeException}; declared in Play Console.
+        Camera/mic/location types can't start in background even when exempt.
+        \texttt{shortService}: $\sim$\textbf{3 min}.
+  \item \textbf{15+}: \texttt{dataSync} and \texttt{mediaProcessing} get \textbf{6 h per 24 h}
+        (each), then \texttt{Service.onTimeout(int, int)} — not stopped = crash; foreground resets
+        it. \texttt{BOOT\_COMPLETED} may not start \texttt{dataSync}, \texttt{mediaPlayback},
+        \texttt{mediaProjection}, \texttt{phoneCall}.
+\end{itemize}
+
+\section{Doze \& App Standby Buckets}
+\raggedright \textbf{Doze} (unplugged, still, screen off): no network, wakelocks ignored,
+jobs/syncs/alarms wait for \textbf{maintenance windows}; \texttt{…AllowWhileIdle} alarms $\leq$
+once per \textbf{9 min} per app; high-priority FCM gets brief network. \textbf{Buckets} (usage,
+ML-predicted) cap work:
+
+{\scriptsize\noindent\begin{tabularx}{\linewidth}{@{}lLLl@{}}
+\toprule
+\textbf{Bucket} & \textbf{Regular jobs} & \textbf{Expedited} & \textbf{Alarms} \\
+\midrule
+Active & 20 min / 60 min & 30 min / 24 h & no limit \\
+Working set & 10 min / 4 h & 15 min / 24 h & 10 / h \\
+Frequent & 10 min / 12 h & 10 min / 24 h & 2 / h \\
+Rare (no network) & 10 min / 24 h & 10 min / 24 h & 1 / h \\
+Restricted (12+) & 1 run / day, 10 min & 5 min / 24 h & 1 / day \\
+\bottomrule
+\end{tabularx}}
+\textbf{16}: jobs started while visible or running beside an FGS now count against the quota.
+Test: \texttt{am set-standby-bucket <pkg> rare} · \texttt{dumpsys deviceidle force-idle}.
+
+\section{Exact alarms \& broadcasts}
+\begin{itemize}\raggedright
+  \item \textbf{12}: exact needs \texttt{SCHEDULE\_EXACT\_ALARM}; \textbf{13}: or
+        \texttt{USE\_EXACT\_ALARM} (auto-granted, not revocable, policy-limited); \textbf{14}: the
+        former is \textbf{denied by default} on new installs — \texttt{canScheduleExactAlarms()}.
+        Inexact \texttt{set()}: within 1 h.
+  \item Manifest receivers get no implicit broadcasts (8.0+) bar a short list
+        (\texttt{BOOT\_COMPLETED}, …). \texttt{onReceive} runs on main, $<$\textbf{10\,s};
+        \texttt{goAsync()} buys time, not a lifetime — hand off to WorkManager.
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} android-jetpack-stack · hilt-dagger-deep ·
+android-coroutines-platform · background-execution (iOS) · rn-background-tasks}
+
+\end{document}

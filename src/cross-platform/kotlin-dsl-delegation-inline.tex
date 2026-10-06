@@ -1,0 +1,212 @@
+% kotlin-dsl-delegation-inline.tex — the Kotlin features that make APIs read like syntax:
+% lambdas with receiver + type-safe builders + @DslMarker, inline / noinline / crossinline,
+% non-local and labeled returns, @PublishedApi, operator conventions, infix, extensions resolved
+% statically (shadowing), property delegation (lazy modes, observable/vetoable, by map, custom
+% getValue/setValue, provideDelegate), class delegation, context parameters (preview 2.2,
+% stable 2.4). Diagram: an inline call site vs a non-inline lambda allocation + the nested DSL
+% receiver scopes with the @DslMarker wall.
+% Goes deeper than kotlin-language (one bullet each on these) — no repeats.
+% Sources (checked 2026-09-26):
+%   https://kotlinlang.org/docs/inline-functions.html · https://kotlinlang.org/docs/lambdas.html
+%   https://kotlinlang.org/docs/type-safe-builders.html · https://kotlinlang.org/docs/operator-overloading.html
+%   https://kotlinlang.org/docs/extensions.html · https://kotlinlang.org/docs/delegated-properties.html
+%   https://kotlinlang.org/docs/delegation.html · https://kotlinlang.org/docs/context-parameters.html
+%   https://kotlinlang.org/docs/whatsnew22.html (context parameters preview, -Xcontext-parameters;
+%     non-local break/continue stable) · https://kotlinlang.org/docs/whatsnew24.html (context
+%     parameters stable in 2.4.0, 14 Jul 2026; explicit context arguments still experimental)
+% @labels: area=cross-platform kind=concept platform=android topic=language,patterns discussion=118
+% @tags: kotlin-dsl, lambda-with-receiver, dslmarker, inline-functions, non-local-return, operator-overloading, extension-functions, property-delegation, lazy, class-delegation, context-parameters
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usepackage{tabularx}
+
+% Kotlin listings language; literate = one \hbox per char so 0xProto ligatures never form
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,suspend,when,is,in,out,
+    override,private,return,if,else,throw,null,this,it,inline,reified,value,by,operator,
+    infix,annotation,abstract,context,for,crossinline,noinline},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {?.}{{\hbox{?}\hbox{.}}}2 {?:}{{\hbox{?}\hbox{:}}}2
+           {!!}{{\hbox{!}\hbox{!}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {::}{{\hbox{:}\hbox{:}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2 {+=}{{\hbox{+}\hbox{=}}}2
+           {..}{{\hbox{.}\hbox{.}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ar{\texttt{\hbox{-}\hbox{>}}}
+\newcommand\pleq{\texttt{\hbox{+}\hbox{=}}}
+\newcommand\eqeq{\texttt{\hbox{=}\hbox{=}}}
+\newcommand\dd{\texttt{\hbox{.}\hbox{.}}}
+\newcommand\ddl{\texttt{\hbox{.}\hbox{.}\hbox{<}}}
+\newcommand\sq{\texttt{\hbox{?}\hbox{.}}}
+\newcommand\cc{\texttt{\hbox{:}\hbox{:}}}
+\newcommand\elv{\texttt{\hbox{?}\hbox{:}}}
+\newcommand\eqeqeq{\texttt{\hbox{=}\hbox{=}\hbox{=}}}
+
+\tikzset{
+  cb/.style={box, font=\tiny\ttfamily, inner sep=1.5pt, align=left, text width=#1},
+  cb/.default=40mm,
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+  sc/.style={draw=#1, thick, rounded corners=2pt, fill=#1!6},
+}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+
+\begin{document}
+
+\sheettitle{Kotlin DSLs, inline functions \& delegation}{cross-platform · folio}
+
+\oneliner{Kotlin's ``syntax'' is mostly \textbf{conventions the compiler rewrites}: a lambda
+typed \texttt{T.() \ar{} R} runs with \texttt{this: T} (builders, Gradle, Compose);
+\texttt{inline} pastes a function \emph{and its lambdas} into the caller (no allocation,
+\texttt{return} leaves the caller, \texttt{reified} works); \texttt{operator}/\texttt{infix}
+map symbols to named functions; \texttt{by} forwards a property or a whole interface to
+another object. None of it is dynamic — all resolved at compile time.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- A: inline vs non-inline ----------
+  \node[hd] at (-0.3,3.4) {One call, two compilations};
+  \node[cb=38mm, draw=sheetGrey, fill=sheetGrey!6] (src) at (1.9,2.85)
+    {var sum = 0\\xs.forEach \{ if (it < 0) return; sum \pleq{} it \}};
+  \node[cb=40mm, draw=sheetGreen, fill=sheetGreen!8] (inl) at (1.9,1.35)
+    {\textbf{inline forEach} $\Rightarrow$ caller now holds:\\for (e in xs) \{\\
+     \ \ if (e < 0) return \ \ // leaves the CALLER\\\ \ sum \pleq{} e \ \ \ \ \ // plain local, no box\\\}};
+  \node[cb=41mm, draw=sheetRed, fill=sheetRed!6] (non) at (6.55,1.35)
+    {\textbf{non-inline} \texttt{fun each(f: (T)\ar{}Unit)}:\\val ref = IntRef() \ \ // captured var boxed\\
+     val f = Function1 \{ … \} // object (or indy)\\each(xs, f) \ \ \ \ \ \ // invoke() per item\\
+     bare \textbf{return}: \textcolor{sheetRed}{compile error}};
+  \draw[flow, draw=sheetGreen] (src) -- node[lbl, left]{paste body + lambda} (inl);
+  \draw[flow, draw=sheetRed] (src.east) -| node[lbl, above, pos=0.25]{pass a Function object} (non.north);
+  \node[lbl, text=sheetBrown, align=left, anchor=west] at (-0.3,0.3) {\texttt{noinline f}: keep this lambda an
+    object (store / pass on) · \texttt{crossinline f}: inlined but called from another\\context (\texttt{Runnable},
+    \texttt{object}) $\Rightarrow$ non-local \texttt{return} banned · \texttt{return@forEach} = skip one item};
+  \draw[sheetGrey!40] (9.3,3.45) -- (9.3,0.05);
+  % ---------- B: DSL scopes ----------
+  \node[hd] at (9.45,3.4) {Receiver scopes in a DSL};
+  \draw[sc=sheetBlue] (9.5,0.55) rectangle (16.55,3.1);
+  \node[font=\tiny\ttfamily, anchor=north west, text=sheetBlue] at (9.55,3.08) {html \{ \ \ this: Html — head\{\}, body\{\}};
+  \draw[sc=sheetGreen] (9.85,0.75) rectangle (16.35,2.7);
+  \node[font=\tiny\ttfamily, anchor=north west, text=sheetGreen!60!black] at (9.9,2.68) {body \{ \ \ this: Body — p(), ul\{\}};
+  \draw[sc=sheetOrange] (10.2,0.95) rectangle (16.15,2.3);
+  \node[font=\tiny\ttfamily, anchor=north west, text=sheetOrange] at (10.25,2.28) {ul \{ \ \ this: Ul — li()};
+  \node[font=\tiny\ttfamily, anchor=west] at (10.35,1.8) {li("ok") \ \ \ \ \ \ \ \ \ // Ul member ✓};
+  \node[font=\tiny\ttfamily, anchor=west, text=sheetRed] at (10.35,1.45) {body \{ \} \ \ \ \ \ \ \ \ // Html member: \textbf{error} with @DslMarker};
+  \node[font=\tiny\ttfamily, anchor=west] at (10.35,1.12) {this@html.body \{ \} // explicit: allowed};
+  \draw[very thick, sheetRed, dashed] (10.2,1.65) -- (16.15,1.65);
+  \node[lbl, text=sheetBrown, align=left, anchor=west] at (9.45,0.25) {\texttt{@DslMarker} on a common annotation: only the
+    \textbf{innermost} marked receiver\\is implicit — outer ones need \texttt{this@label}. Without it, \texttt{body\{\}} inside
+    \texttt{ul\{\}} compiles.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Inline — mechanism \& rules}
+\begin{itemize}\raggedright
+  \item Wins: no \texttt{Function} object per call, no \texttt{Ref} boxes for captured
+        \texttt{var}s, non-local \texttt{return}, \texttt{reified T}; \texttt{break}/
+        \texttt{continue} inside inline lambdas stable since \textbf{2.2}. Cost: bytecode grows
+        per call site; no lambda param $\Rightarrow$ IDE warns ``insignificant''.
+  \item A \texttt{public inline} body is copied into \emph{other} modules, so it may only touch
+        public API — or \texttt{@PublishedApi internal}. Changing it needs callers recompiled.
+  \item Without inline, a lambda compiles to \texttt{invokedynamic} (2.0 default) or a class;
+        \texttt{return@label} is the only return allowed in it.
+\end{itemize}
+
+\section{Operator conventions \& infix}
+{\scriptsize
+\noindent\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{17mm}L>{\raggedright\arraybackslash}p{15mm}L@{}}
+\toprule
+\textbf{you write} & \textbf{compiler calls} & \textbf{you write} & \textbf{compiler calls} \\
+\midrule
+\texttt{a + b} & \texttt{a.plus(b)} & \texttt{a[i] = v} & \texttt{a.set(i, v)} \\
+\texttt{a \pleq{} b} & \texttt{plusAssign}, else \texttt{a = a + b} & \texttt{f(x)} & \texttt{f.invoke(x)} \\
+\texttt{x in c} & \texttt{c.contains(x)} & \texttt{a\dd{}b}, \texttt{a\ddl{}b} & \texttt{rangeTo}, \texttt{rangeUntil} \\
+\texttt{a < b} & \texttt{a.compareTo(b) < 0} & \texttt{val (x, y) = p} & \texttt{component1()}, \texttt{2()} \\
+\texttt{a \eqeq{} b} & \texttt{a}\sq\texttt{equals(b) }\elv\texttt{ (b }\eqeqeq\texttt{ null)} & \texttt{+"txt"}, \texttt{-a} & \texttt{unaryPlus}, \texttt{unaryMinus} \\
+\bottomrule
+\end{tabularx}}
+{\raggedright Each needs the \texttt{operator} modifier (member or extension).
+\texttt{infix fun A.to(b: B)} $\Rightarrow$ \texttt{a to b} (one param, no default). \eqeq{}
+can only be customised via \texttt{equals}; \eqeqeq{} is identity.\par}
+
+\section{Extensions are static}
+\begin{itemize}\raggedright
+  \item Compiled to \texttt{static f(Receiver r, …)}: chosen by the \textbf{declared} type.
+        \texttt{val s: Shape = Rect(); s.name()} calls \texttt{Shape.name()}.
+  \item A \textbf{member always wins} over an extension with the same signature (warning:
+        ``shadowed''); extensions can't reach \texttt{private} members.
+  \item Nullable receivers (\texttt{fun String?.orEmpty()}), companion extensions
+        (\texttt{fun Foo.Companion.of()}); extension \emph{properties} have no backing field —
+        computed only. Declared inside a class = scoped to it (two receivers).
+\end{itemize}
+
+\section{Example — a type-safe builder}
+\begin{lstlisting}[language=KotlinSheet]
+@DslMarker annotation class HtmlDsl
+@HtmlDsl abstract class Tag { val kids = mutableListOf<Tag>()
+  protected fun <T : Tag> add(t: T, init: T.() -> Unit) =
+    t.apply(init).also { kids += it } }
+class Html : Tag() { fun body(init: Body.() -> Unit) = add(Body(), init) }
+class Body : Tag() { fun ul(init: Ul.() -> Unit) = add(Ul(), init) }
+class Ul : Tag() { fun li(s: String) = add(Li(s)) {} }
+fun html(init: Html.() -> Unit) = Html().apply(init)   // entry point
+val page = html { body { ul { li("a"); li("b") } } }
+\end{lstlisting}
+
+\columnbreak
+
+\section{Property delegation}
+\begin{itemize}\raggedright
+  \item \texttt{val x by d} compiles to a hidden \texttt{x\$delegate} field;
+        \texttt{get()} = \texttt{d.getValue(this, }\cc\texttt{x)}, \texttt{set(v)} =
+        \texttt{d.setValue(this, }\cc\texttt{x, v)} — \texttt{operator} functions taking
+        \texttt{(thisRef, property: KProperty<\hbox{*}>)}. Interfaces:
+        \texttt{ReadOnlyProperty}/\texttt{ReadWriteProperty}.
+  \item \texttt{by lazy} modes: \texttt{SYNCHRONIZED} (default, one lock, one init),
+        \texttt{PUBLICATION} (may init twice, first wins), \texttt{NONE} (no sync — UI
+        thread only). An exception in the initializer is rethrown; next access retries.
+  \item \texttt{Delegates.observable(init) \{ p, old, new \ar\ \}} runs \emph{after} the set;
+        \texttt{vetoable} runs \emph{before} and returns \texttt{Boolean};
+        \texttt{Delegates.notNull()} = \texttt{lateinit} for primitives.
+        \texttt{by map} reads \texttt{map[property.name]}; \texttt{by this}\cc\texttt{other} aliases.
+  \item \texttt{provideDelegate(thisRef, prop)}: runs once at \emph{declaration} — validate or
+        register the name before the first access.
+\end{itemize}
+
+\section{Class delegation \& context parameters}
+\begin{itemize}\raggedright
+  \item \texttt{class Cached(r: Repo) : Repo by r} — generated forwarding methods; your
+        overrides win, but \texttt{r}'s own internal calls never see them (forwarding, not
+        inheritance).
+  \item \textbf{Context parameters}: preview \textbf{2.2} (\texttt{-Xcontext-parameters}),
+        \textbf{stable 2.4.0} (Jul 2026), replacing context \emph{receivers}. Used by name,
+        passed \emph{implicitly by type}; not on constructors.
+\end{itemize}
+\begin{lstlisting}[language=KotlinSheet]
+context(log: Logger) fun sync(id: Int) { log.info("sync $id") }
+context(_: Logger) fun syncAll() = ids.forEach { sync(it) } // passed on
+fun main() = context(ConsoleLogger()) { syncAll() }   // provide it
+val token: String? by prefs.string("token")           // custom delegate
+val cfg by lazy(LazyThreadSafetyMode.NONE) { parse() } // main-thread only
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{\texttt{return} in \texttt{forEach \{\}} ends the \emph{function} — use \texttt{return@forEach}.}
+  \trap{``Override'' an extension — impossible, declared type decides.}
+  \trap{\texttt{by lazy} holding a Context in a long-lived object = leak.}
+\end{itemize}
+
+\textbf{Remember:} \emph{receiver lambdas build DSLs · inline pastes (return escapes) ·
+operators are named functions · \texttt{by} forwards.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} kotlin-language ·
+kotlin-type-system-generics · kotlin-under-the-hood · macros-and-result-builders (Swift
+twin: \texttt{@resultBuilder}) · property-wrappers (Swift twin of \texttt{by})}
+
+\end{document}

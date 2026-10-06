@@ -1,0 +1,188 @@
+% android-jetpack-stack.tex — the modern Jetpack app stack for an iOS engineer: ViewModel scoping
+% + SavedStateHandle, Hilt (components, scopes, @Binds/@Provides, assisted/worker injection,
+% testing), Room (DAO + Flow, @Transaction, migrations, KMP), DataStore (Preferences vs typed, vs
+% SharedPreferences), WorkManager (constraints, unique work, expedited, chaining, guarantees),
+% Navigation (type-safe Compose routes, Navigation 3), Paging 3. Diagram: layered architecture
+% with the iOS twin per layer + the Hilt component/scope tree.
+% Extends android-compose-lifecycle (ViewModel, process death) and android-coroutines-platform
+% (one-line Hilt/Room/WorkManager rows) — does not repeat them.
+% Sources (checked 2026-09-26):
+%   https://developer.android.com/training/dependency-injection/hilt-android  (components, scopes, KSP)
+%   https://developer.android.com/jetpack/androidx/releases/room               (2.8.5 Sep 2026; KMP since 2.7)
+%   https://developer.android.com/topic/libraries/architecture/datastore       (types, one instance per file)
+%   https://developer.android.com/develop/background-work/background-tasks/persistent (+ define-work)
+%   https://developer.android.com/guide/navigation/design/type-safety          (Navigation 2.8.0+)
+%   https://developer.android.com/jetpack/androidx/releases/navigation3        (1.0.0 Nov 2025, 1.2.0 Sep 2026)
+%   https://developer.android.com/topic/libraries/architecture/paging/v3-overview
+% @labels: area=cross-platform kind=architecture platform=android topic=architecture,data,platform-apis discussion=111
+% @tags: jetpack, viewmodel, savedstatehandle, hilt, dagger, room, datastore, workmanager, navigation-compose, navigation-3, paging-3, offline-first
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,when,is,in,out,as,by,
+    override,private,return,if,else,abstract,suspend,constructor,null,this,it},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {?.}{{\hbox{?}\hbox{.}}}2 {?:}{{\hbox{?}\hbox{:}}}2
+           {!!}{{\hbox{!}\hbox{!}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {::}{{\hbox{:}\hbox{:}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\tikzset{
+  ly/.style={box, font=\tiny, inner sep=1.2pt, minimum height=5.6mm, text width=#1, align=center},
+  ly/.default=62mm,
+  hc/.style={box, font=\tiny, inner sep=1pt, minimum height=5mm, text width=#1, align=center},
+  hc/.default=19mm,
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+}
+\newcommand\ios[1]{\textit{\textcolor{sheetGreen!60!black}{#1}}}
+
+\begin{document}
+
+\sheettitle{The modern Jetpack app stack}{cross-platform · folio}
+
+\oneliner{Google's recommended app: \textbf{UI} (Compose) observes \texttt{StateFlow} from a
+\textbf{ViewModel}, which calls a \textbf{repository} whose \textbf{single source of truth is
+the local DB} (Room) — the network only \emph{writes} into it. \textbf{Hilt} builds the graph
+at \textbf{compile time}; \textbf{WorkManager} runs deferrable work that must survive process
+death and reboot. Every piece has an iOS twin (green).}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet, y=0.93cm]
+  % ---------- layers ----------
+  \node[hd] at (-0.3,3.45) {Layers (arrow = depends on) · \ios{iOS twin}};
+  \node[ly, draw=sheetBlue] (ui) at (3.1,2.95) {\textbf{UI}: \texttt{@AndroidEntryPoint} Activity $\to$ Compose ·
+    \texttt{NavHost}/\texttt{NavDisplay}\\\ios{SwiftUI + NavigationStack}};
+  \node[ly, draw=sheetOrange, fill=sheetOrange!10] (vm) at (3.1,2.1) {\textbf{ViewModel}: \texttt{@HiltViewModel},
+    \texttt{SavedStateHandle}, \texttt{StateFlow<Ui>}\\\ios{@Observable model + state restoration}};
+  \node[ly] (rp) at (3.1,1.25) {\textbf{Repository} (\texttt{@Singleton}): \texttt{Flow} from the DB;
+    \texttt{refresh()} = network $\to$ DB\\\ios{repository / service}};
+  \node[ly=19mm, draw=sheetGreen, fill=sheetGreen!10] (db) at (0.95,0.3) {\textbf{Room} DAO\\\texttt{Flow<List<E>{}>}\\\ios{SwiftData}};
+  \node[ly=19mm] (api) at (3.1,0.3) {Retrofit / Ktor\\API\\\ios{URLSession}};
+  \node[ly=19mm] (ds) at (5.25,0.3) {\textbf{DataStore}\\settings\\\ios{UserDefaults}};
+  \node[ly=20mm, draw=sheetBrown, fill=sheetBrown!8] (pg) at (8.0,2.1) {\textbf{Paging 3}\\\texttt{Pager.flow.cachedIn}\\\ios{no twin: manual}};
+  \node[ly=20mm, draw=sheetBrown, fill=sheetBrown!8] (wm) at (8.0,1.1) {\textbf{WorkManager}\\\texttt{@HiltWorker} sync\\\ios{BGTaskScheduler}};
+  \draw[flow] (ui.south -| 1.0,0) -- node[lbl, left]{events} (vm.north -| 1.0,0);
+  \draw[flow, draw=sheetBlue] (vm.north -| 5.2,0) -- node[lbl, right, text=sheetBlue]{state} (ui.south -| 5.2,0);
+  \draw[flow] (vm) -- (rp);
+  \draw[flow] (rp) -- (db); \draw[flow] (rp) -- (api); \draw[flow] (rp) -- (ds);
+  \draw[flow, dashed, draw=sheetOrange] (api.west) -- (db.east);
+  \draw[flow] (vm) -- (pg);
+  \draw[flow] (wm) -- (rp);
+  \node[lbl, text=sheetBrown, align=left, anchor=west] at (6.55,0.2) {offline-first: the UI never waits\\on the network — it reads the DB;\\dashed = network writes the DB};
+  \draw[sheetGrey!40] (9.3,3.5) -- (9.3,-0.3);
+  % ---------- Hilt components ----------
+  \node[hd] at (9.4,3.45) {Hilt components (parent $\to$ child) · scope};
+  \node[hc=24mm, draw=sheetBlue] (sg) at (12.9,2.95) {\textbf{SingletonComponent}\\\texttt{@Singleton} · Application};
+  \node[hc=26mm, draw=sheetOrange, fill=sheetOrange!10] (ar) at (11.25,2.1) {\textbf{ActivityRetained}\\\texttt{@ActivityRetainedScoped}\\survives rotation};
+  \node[hc=19mm] (sv) at (15.4,2.1) {\textbf{Service}\\\texttt{@ServiceScoped}};
+  \node[hc=19mm, draw=sheetOrange, fill=sheetOrange!10] (vc) at (10.45,1.15) {\textbf{ViewModel}\\\texttt{@ViewModelScoped}};
+  \node[hc=19mm] (ac) at (12.55,1.15) {\textbf{Activity}\\\texttt{@ActivityScoped}};
+  \node[hc=17mm] (fc) at (11.85,0.3) {\textbf{Fragment}\\\texttt{@FragmentScoped}};
+  \node[hc=17mm] (vw) at (13.75,0.3) {\textbf{View}\\\texttt{@ViewScoped}};
+  \draw[flow] (sg) -- (ar); \draw[flow] (sg) -- (sv);
+  \draw[flow] (ar) -- (vc); \draw[flow] (ar) -- (ac);
+  \draw[flow] (ac) -- (fc); \draw[flow] (ac) -- (vw);
+  \node[lbl, text=sheetBrown, align=left, anchor=west] at (14.4,1.15) {child sees parent's\\bindings, not vice versa};
+  \node[lbl, text=sheetRed, align=left, anchor=west] at (14.7,0.3) {unscoped = new\\instance per inject};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Hilt (Dagger underneath)}
+\begin{itemize}\raggedright
+  \item \texttt{@HiltAndroidApp} Application $\to$ \texttt{@AndroidEntryPoint} Activity/Service
+        $\to$ \texttt{@HiltViewModel} + \texttt{@Inject constructor}. A missing binding
+        \textbf{fails the build} (Koin fails at runtime). Use \textbf{KSP}, not kapt.
+  \item \texttt{@Module @InstallIn(X::class)}: \texttt{@Binds} = interface $\to$ impl, no code;
+        \texttt{@Provides} = factory for types you don't own (Retrofit, Room). Two of one
+        type: \texttt{@Qualifier}. Runtime args: \texttt{@AssistedInject}; tests:
+        \texttt{@TestInstallIn} swaps a module.
+\end{itemize}
+
+\section{ViewModel scope + SavedStateHandle}
+\raggedright Each \textbf{nav back-stack entry} is a \texttt{ViewModelStore}: one VM per destination,
+cleared when popped; share one across a flow by scoping it to the graph's entry.
+\texttt{SavedStateHandle} = Bundle-backed map that survives \textbf{process death}
+(\texttt{getStateFlow(k, d)}, \texttt{toRoute<T>()}) — ids, not data.
+
+\section{Room}
+\begin{itemize}\raggedright
+  \item SQL \textbf{verified at compile time}. A \texttt{Flow} query re-emits on \emph{any}
+        write to its \textbf{table} — \texttt{distinctUntilChanged()}. \texttt{@Transaction}
+        for multi-query reads (\texttt{@Relation}); \texttt{withTransaction\{\}} for writes.
+  \item Migrations: \texttt{Migration(1, 2) \{ execSQL(…) \}} or \texttt{@AutoMigration}
+        (needs the exported schema JSON in git) + \texttt{MigrationTestHelper};
+        \texttt{fallbackToDestructiveMigration()} = data loss. KMP since \textbf{2.7}.
+\end{itemize}
+
+\section{Example — the stack in 13 lines}
+\begin{lstlisting}[language=KotlinSheet]
+@Dao interface NoteDao {
+  @Query("SELECT * FROM Note") fun all(): Flow<List<Note>>
+  @Upsert suspend fun upsert(n: List<Note>) }
+@Singleton class NoteRepo @Inject constructor(
+    private val dao: NoteDao, private val api: NoteApi) {
+  val notes = dao.all()                           // UI reads the DB
+  suspend fun refresh() = dao.upsert(api.fetch()) // network -> DB
+}
+@HiltViewModel class NotesVM @Inject constructor(
+    saved: SavedStateHandle, repo: NoteRepo) : ViewModel() {
+  val folder = saved.toRoute<Notes>().folder      // typed nav arg
+  val ui = repo.notes.stateIn(viewModelScope,
+      SharingStarted.WhileSubscribed(5_000), emptyList()) }
+\end{lstlisting}
+
+\columnbreak
+
+\section{WorkManager — guaranteed, not punctual}
+\begin{itemize}\raggedright
+  \item Persisted in its own SQLite DB: survives death and \textbf{reboot}, honours Doze.
+        \texttt{CoroutineWorker} $\to$ \texttt{Result.success/failure/retry} (backoff
+        exponential, 30\,s).
+  \item Constraints (network, charging, battery/storage not low, idle); periodic
+        $\geq$ \textbf{15 min}. \texttt{enqueueUniqueWork(name, KEEP/REPLACE/APPEND, r)}
+        stops duplicate syncs; \texttt{beginWith(a).then(b)} chains.
+  \item \textbf{Expedited} (\texttt{setExpedited(OutOfQuotaPolicy.…)}): quota by standby
+        bucket; below Android 12 runs as a foreground service (\texttt{getForegroundInfo}).
+        $>$10 min: \texttt{setForeground()}. Not for exact alarms or ``now, visibly''.
+\end{itemize}
+
+\section{DataStore (replaces SharedPreferences)}
+\raggedright\textbf{Preferences} (keys) or \textbf{typed} (Proto / JSON + \texttt{Serializer<T>}); reads
+\texttt{Flow<T>}, writes \texttt{edit\{\}}/\texttt{updateData\{\}} — suspend,
+\textbf{transactional}. SharedPreferences: sync reads on main, \texttt{apply()} blocks in
+\texttt{fsync}. \textbf{One instance per file per process} or \texttt{IllegalStateException}.
+
+\section{Navigation \& Paging}
+\begin{itemize}\raggedright
+  \item \textbf{Nav Compose 2.8+}: \texttt{@Serializable} routes, \texttt{composable<Profile>},
+        \texttt{navigate(Profile(id))}, \texttt{toRoute()} — no string routes.
+        \textbf{Navigation 3} (1.0 Nov 2025): \textbf{you own the back stack}
+        (\texttt{SnapshotStateList<NavKey>}), \texttt{NavDisplay} + \texttt{entryProvider}
+        — like \texttt{NavigationStack(path:)}.
+  \item \textbf{Paging 3}: \texttt{PagingSource.load()} $\to$ \texttt{LoadResult.Page(data,
+        prevKey, nextKey)}; \texttt{Pager.flow.cachedIn(scope)}; \texttt{RemoteMediator}
+        fills Room from the network.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{\texttt{@Singleton} everywhere — state leaks across logins.}
+  \trap{``WorkManager runs it now'' — \emph{eventually}, once constraints hold.}
+  \trap{A DataStore created in a composable — two instances, crash.}
+\end{itemize}
+
+\textbf{Remember:} \emph{UI $\leftarrow$ VM $\leftarrow$ repo $\leftarrow$ DB; the network
+writes the DB · Hilt at compile time · WorkManager survives reboot.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} android-compose-lifecycle ·
+android-coroutines-platform · kmp-stack-concurrency · android-build-performance ·
+background-execution · ios-client-system-design}
+
+\end{document}
