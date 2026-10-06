@@ -1,0 +1,182 @@
+% swiftui-gestures-canvas.tex — gesture types, @GestureState vs @State (reset on cancel),
+% composition (simultaneously/sequenced/exclusively), priority (.highPriorityGesture/.simultaneousGesture),
+% ScrollView-vs-drag; drawing: Shape/Path, Canvas + GraphicsContext, TimelineView, drawingGroup.
+% Sources (checked 2026-10-06):
+%   developer.apple.com/documentation/swiftui/gesturestate (resets when the gesture becomes
+%     inactive) · /spatialtapgesture (iOS 16) · /magnifygesture · /rotategesture (iOS 17) ·
+%     /draggesture/init(minimumdistance:coordinatespace:) (default 10) ·
+%     /uigesturerecognizerrepresentable (iOS 18) · /view/scrolldisabled(_:) (iOS 16)
+%   developer.apple.com/documentation/swiftui/canvas (iOS 15; no interactivity or accessibility
+%     per element, symbols included) · /timelineview (iOS 15; schedules; the system may use a
+%     slower cadence) · /view/drawinggroup(opaque:colormode:) (offscreen image; Core
+%     Animation-composited views render as a placeholder)
+% @labels: area=swiftui kind=api platform=apple topic=ui,performance discussion=180
+% @tags: gesturestate, draggesture, simultaneousgesture, highprioritygesture, sequenced-gestures, contentshape, shape, path, canvas, graphicscontext, timelineview, drawinggroup
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,protocol,extension,return,if,else,
+    guard,case,switch,self,some,any,where,init,in,private,static,for,nil,
+    @State,@GestureState,@Binding,@Observable,@MainActor},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\begin{document}
+
+\sheettitle{SwiftUI Gestures \& Canvas drawing}{swiftui · folio}
+
+\oneliner{Gestures are \textbf{value types} composed with combinators (replacing recognizer-delegate
+arbitration); \textbf{\texttt{@GestureState}} \textbf{resets on end \emph{and} cancel}. \textbf{\texttt{Shape}} = one
+vector view, \textbf{\texttt{Canvas}} = one immediate-mode view for thousands of primitives,
+\textbf{\texttt{drawingGroup()}} = flatten a subtree into one offscreen image before display.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \tikzset{lb/.style={font=\tiny, inner sep=1pt, align=center},
+           bar/.style={draw=sheetBlue, fill=sheetBlue!15, rounded corners=1pt, minimum height=3.2mm, inner sep=0pt, font=\tiny},
+           barB/.style={bar, draw=sheetGreen, fill=sheetGreen!15},
+           hd/.style={font=\scriptsize\bfseries, anchor=west}}
+  % ---- panel A: one drag, two endings ----
+  \node[hd] at (-0.1,3.25) {A. One drag, two endings};
+  \draw[flow] (0,2.75) -- (5.6,2.75);
+  \foreach \x/\t in {0.2/down, 1.2/{moved 10\,pt}, 2.6/changed\ldots, 4.3/{ended}}
+    { \fill[sheetGrey] (\x,2.75) circle (1pt); \node[lb, above] at (\x,2.78) {\t}; }
+  \node[lb, text=sheetRed, above] at (5.35,2.78) {or cancelled};
+  \node[lb, anchor=east] at (-0.05,2.25) {\texttt{@GestureState}};
+  \draw[sheetGreen, thick] (0,2.1) -- (1.2,2.1) -- (1.4,2.45) -- (4.3,2.45) -- (4.3,2.1) -- (5.6,2.1);
+  \node[lb, text=sheetGreen!60!black] at (4.95,2.3) {reset on both};
+  \node[lb, anchor=east] at (-0.05,1.5) {\texttt{@State} +\\\texttt{onChanged}};
+  \draw[sheetOrange, thick] (0,1.35) -- (1.2,1.35) -- (1.4,1.7) -- (4.3,1.7);
+  \draw[sheetOrange, thick, dashed] (4.3,1.7) -- (4.3,1.35);
+  \node[lb, text=sheetOrange, anchor=west] at (4.35,1.4) {\texttt{onEnded} resets};
+  \draw[sheetRed, very thick] (4.3,1.7) -- (5.6,1.7);
+  \node[lb, text=sheetRed, anchor=west] at (4.35,1.87) {cancel: STUCK};
+  \node[lb, text width=56mm, align=left, anchor=north west] at (-1.2,1.05)
+    {\texttt{onEnded} is \textbf{not} called on cancel (scroll view took over, alert, app backgrounded).
+     \texttt{@GestureState} is written only in \texttt{.updating(\$s) \{ value, state, transaction in \}}.};
+  % ---- panel B: composition ----
+  \begin{scope}[xshift=6.3cm]
+    \node[hd] at (-0.1,3.25) {B. Composition (time $\to$)};
+    \node[lb, anchor=west] at (0,2.8) {\texttt{A.simultaneously(with: B)}};
+    \node[bar, minimum width=22mm] at (1.3,2.45) {A};
+    \node[barB, minimum width=20mm] at (1.7,2.1) {B};
+    \node[lb, anchor=west, text width=19mm, align=left] at (2.9,2.3) {both run; value has optional \texttt{.first}/\texttt{.second}};
+    \node[lb, anchor=west] at (0,1.65) {\texttt{A.sequenced(before: B)}};
+    \node[bar, minimum width=10mm] (sa) at (0.7,1.3) {A \checkmark};
+    \node[barB, minimum width=14mm] at (2.0,1.3) {B};
+    \node[lb, anchor=west, text width=19mm, align=left] at (2.9,1.3) {B starts only after A \textbf{succeeds} (long-press $\to$ drag)};
+    \node[lb, anchor=west] at (0,0.85) {\texttt{A.exclusively(before: B)}};
+    \node[bar, minimum width=10mm] at (0.7,0.5) {A?};
+    \node[barB, minimum width=14mm, dashed] at (2.0,0.5) {B if A fails};
+    \node[lb, anchor=west, text width=19mm, align=left] at (2.9,0.5) {one wins; A has priority};
+  \end{scope}
+  % ---- panel C: priority parent vs child ----
+  \begin{scope}[xshift=11.7cm]
+    \node[hd] at (-0.1,3.25) {C. Who wins: parent vs child};
+    \draw[sheetBlue, thick, rounded corners=2pt, fill=sheetBlue!5] (0,0.35) rectangle (4.4,2.95);
+    \node[lb, anchor=north west] at (0.05,2.93) {parent \texttt{VStack} + gesture P};
+    \node[box, font=\tiny, inner sep=2pt] (ch) at (1.0,1.95) {child\\\texttt{onTapGesture}};
+    \node[lb, anchor=west, text width=26mm, align=left] at (1.9,2.3) {\texttt{.gesture(P)}: \textbf{child wins}};
+    \node[lb, anchor=west, text width=26mm, align=left] at (1.9,1.8) {\texttt{.highPriorityGesture(P)}: \textbf{parent wins}};
+    \node[lb, anchor=west, text width=26mm, align=left] at (1.9,1.3) {\texttt{.simultaneousGesture(P)}: \textbf{both}};
+    \node[lb, anchor=west, text width=42mm, align=left] at (0.1,0.7) {\texttt{including: GestureMask} (\texttt{.all}, \texttt{.gesture},
+      \texttt{.subviews}, \texttt{.none}) switches either side off.};
+  \end{scope}
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Gestures}
+\begin{itemize}
+  \item \textbf{Types} (\texttt{…Gesture}): \texttt{Tap(count:)}, \texttt{SpatialTap} (16, has location),
+        \texttt{LongPress(minimumDuration:)}, \texttt{Drag(minimumDistance:)} (default 10\,pt),
+        \texttt{Magnify} / \texttt{Rotate} (17; were \texttt{Magnification} / \texttt{Rotation}).
+  \item \textbf{Callbacks}: \texttt{.updating} (→ \texttt{@GestureState}, auto-reset), \texttt{.onChanged}
+        (→ \texttt{@State}, you reset), \texttt{.onEnded} (commit; success only). Animated snap-back:
+        \texttt{@GestureState(resetTransaction:)}.
+  \item \textbf{Drag values}: \texttt{translation} is a delta from \texttt{startLocation}; \texttt{location} is absolute in
+        the chosen space (\texttt{.local}, \texttt{.global}, \texttt{.named(...)}).
+  \item \textbf{Hit testing}: transparent areas (\texttt{Spacer}, \texttt{Color.clear}) don't receive touches →
+        \texttt{.contentShape(Rectangle())}; \texttt{.allowsHitTesting(false)} lets touches pass through.
+  \item \textbf{ScrollView vs drag}: scroll pan and your drag compete — a plain \texttt{.gesture(DragGesture())}
+        blocks scrolling or is swallowed. Fixes: bigger \texttt{minimumDistance}; \texttt{.simultaneousGesture};
+        long-press \texttt{.sequenced(before:)} drag (the reorder pattern); \texttt{.scrollDisabled(isDragging)} (16);
+        \texttt{UIGestureRecognizerRepresentable} (18) for delegate arbitration / direction checks.
+\end{itemize}
+
+\section{Example — drag that snaps back on cancel}
+\begin{lstlisting}[language=SwiftSheet]
+@GestureState private var drag: CGSize = .zero // transient
+@State private var pos: CGSize = .zero          // committed
+RoundedRectangle(cornerRadius: 12)
+  .offset(x: pos.width + drag.width, y: pos.height + drag.height)
+  .gesture(DragGesture(minimumDistance: 20)
+    .updating($drag) { v, state, _ in state = v.translation }
+    .onEnded { v in                        // success only
+      pos.width += v.translation.width
+      pos.height += v.translation.height })
+\end{lstlisting}
+
+\section{Drawing}
+\begin{itemize}
+  \item \textbf{\texttt{Shape}}: \texttt{path(in rect: CGRect)} returns a \texttt{Path}; rect from layout.
+        \texttt{Path}: \texttt{move(to:)}, \texttt{addLine}, \texttt{addQuadCurve}, \texttt{addCurve}, \texttt{addArc},
+        \texttt{closeSubpath}. Without \texttt{animatableData} (\texttt{AnimatablePair} for two) it snaps, not morphs.
+        \texttt{stroke} straddles the path (half is clipped at the edge); \texttt{strokeBorder}
+        (\texttt{InsettableShape}) stays inside.
+  \item \textbf{\texttt{Canvas \{ ctx, size in \}}} (15): immediate mode — no view per element, no diffing.
+        \texttt{GraphicsContext} is a \textbf{value}: copy it to scope a transform/opacity; \texttt{fill}, \texttt{stroke},
+        \texttt{draw}, \texttt{clip(to:)}, \texttt{addFilter}, \texttt{blendMode}, \texttt{drawLayer}.
+        \texttt{ctx.resolve(Text(...))}; views passed as \texttt{symbols:} + \texttt{.tag(id)} → \texttt{resolveSymbol(id:)}.
+  \item \textbf{\texttt{TimelineView(schedule)}} (15) re-runs its content on \texttt{.animation(minimumInterval:paused:)},
+        \texttt{.periodic(from:by:)}, \texttt{.everyMinute}, \texttt{.explicit}; read \texttt{context.date}. The system
+        throttles it when not visible — cap the rate for battery.
+  \item \textbf{\texttt{drawingGroup()}}: composites the subtree into one offscreen bitmap. Wins for many
+        overlapping / blended / shadowed views; costs an offscreen texture (memory), is rasterised (blurs if scaled),
+        and Core Animation–composited views inside (controls, web/media, most UIKit) show a placeholder.
+\end{itemize}
+
+\section{Canvas vs views vs drawingGroup}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{55mm}@{}}
+\toprule
+\textbf{Views} & tens of elements; each tappable, accessible, transitions \\
+\textbf{drawingGroup} & must stay views but compositing is the cost \\
+\textbf{Canvas} & hundreds–thousands of visual-only primitives: charts, particles, waveforms \\
+\bottomrule
+\end{tabular}}
+
+\begin{lstlisting}[language=SwiftSheet]
+TimelineView(.animation(minimumInterval: 1/30)) { tl in
+  Canvas { ctx, size in                  // ONE view, 5 000 dots
+    let t = tl.date.timeIntervalSinceReferenceDate
+    for p in points { ctx.fill(Path(ellipseIn: CGRect(
+      x: p.x, y: p.y + 4 * sin(t + p.x), width: 3, height: 3)),
+      with: .color(.green)) }
+    if let s = ctx.resolveSymbol(id: 0) { ctx.draw(s, at: .zero) }
+  } symbols: { Image(systemName: "star.fill").tag(0) }
+}
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{@State} in \texttt{onChanged} without handling cancel — the view stays mid-drag.}
+  \trap{Tap + long-press on one view fight — state the relation with \texttt{.exclusively(before:)}.}
+  \trap{Mixing \texttt{translation} (delta) with \texttt{location} (absolute) or the wrong coordinate space.}
+  \trap{\textbf{Canvas is opaque}: no per-element hit testing, no VoiceOver — add \texttt{.accessibilityLabel} /
+        \texttt{.accessibilityChildren \{ \}}, do hit tests yourself from the gesture location.}
+  \trap{\texttt{drawingGroup()} everywhere — memory + blur for nothing; measure first.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``GestureState forgets, State remembers; Canvas draws, views are things.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{animations} (animatableData) ·
+\texttt{rendering-pipeline} (offscreen passes) · \texttt{swiftui-performance-identity} · \texttt{swiftui-uikit-interop} · Swift Charts}
+
+\end{document}

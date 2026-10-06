@@ -1,0 +1,145 @@
+% swiftui-navigation.tex — NavigationStack + NavigationPath, navigationDestination(for:), value links,
+% programmatic push/pop, NavigationSplitView, sheet/fullScreenCover/popover, dismiss, deep links, router.
+% Sources (checked 2026-10-06):
+%   developer.apple.com/documentation/swiftui/navigationpath (removeLast(_:) only — no removeAll)
+%     · /navigationpath/codable (iOS 16; nil unless every element is Codable) ·
+%     /view/navigationdestination(item:destination:) (iOS 17) · (ispresented:destination:) (16)
+%     · /navigationsplitview/init(preferredcompactcolumn:sidebar:detail:) (17) ·
+%     /view/presentationdetents(_:) (16) · /view/presentationcompactadaptation(_:) (16.4) ·
+%     /view/interactivedismissdisabled(_:) (15) · /swiftui/dismissaction (15)
+%   NavigationLink init(destination:isActive:label:) · init(tag:selection:destination:label:)
+%     (deprecated iOS 16: "Use init(value:label:)") · /swiftui/navigationview (deprecated: "Use
+%     NavigationStack and NavigationSplitView")
+% @labels: area=swiftui kind=api platform=apple topic=ui,architecture discussion=183
+% @tags: navigationstack, navigationpath, navigationdestination, navigationlink, navigationsplitview, sheet, fullscreencover, presentationdetents, dismiss, onopenurl, router, deep-links
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,protocol,extension,return,if,else,
+    guard,case,switch,self,some,any,where,init,in,private,static,
+    @State,@Binding,@Observable,@Environment,@Bindable,@MainActor},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\begin{document}
+
+\sheettitle{SwiftUI navigation}{swiftui · folio}
+
+\oneliner{Since iOS 16 navigation is \textbf{data}: a \texttt{NavigationStack} renders a \textbf{path} (an
+array of \texttt{Hashable} values) that \emph{you} own; \texttt{navigationDestination(for:)} maps each value
+\emph{type} to a screen. Push = append, pop = remove, deep link = assign a whole path.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{\texttt{NavigationStack(path:\,root:)}} (16) — the path is \texttt{[Route]} (one type) or
+        \textbf{\texttt{NavigationPath}}: a \emph{type-erased} list of \texttt{Hashable} values, so one stack
+        can hold \texttt{Item}, \texttt{User}, \texttt{Int}\ldots, each routed by its own destination.
+  \item \textbf{\texttt{NavigationLink(\_:value:)}} pushes a \emph{value}, not a view — lazy, decoupled,
+        programmatic. \texttt{NavigationLink \{ Dest() \} label: \{\}} (view-based) still works but cannot be
+        driven from the path.
+  \item \textbf{\texttt{.navigationDestination(for: T.self) \{ v in … \}}} — \textbf{one} per type per stack,
+        inside the stack, on a view that is always there (not in a lazy row).
+        iOS 17 adds \texttt{navigationDestination(item:)}; \texttt{(isPresented:)} is 16.
+  \item \textbf{Programmatic}: push \texttt{path.append(x)}; pop \texttt{path.removeLast()};
+        pop-to-root \texttt{path = []} / \texttt{path.removeAll()} for an array, or
+        \texttt{path.removeLast(path.count)} / \texttt{path = NavigationPath()} — \texttt{NavigationPath}
+        has \emph{no} \texttt{removeAll}.
+  \item \textbf{Restoration}: if every element is \texttt{Codable}, \texttt{path.codable} gives a
+        \texttt{NavigationPath.CodableRepresentation} (else \texttt{nil}); encode to \texttt{@SceneStorage}
+        / disk, rebuild with \texttt{NavigationPath(rep)}.
+  \item \textbf{\texttt{NavigationSplitView}} (16) — 2 columns (\texttt{sidebar}, \texttt{detail}) or 3
+        (+\texttt{content}); selection drives the next column; \texttt{columnVisibility} binding;
+        on compact width it \textbf{collapses into a stack} (\texttt{preferredCompactColumn}, 17).
+  \item \textbf{Modals}: \texttt{.sheet} (card, swipe-dismiss, \texttt{.presentationDetents([.medium,
+        .large])} 16); \texttt{.fullScreenCover} (no swipe-dismiss); \texttt{.popover} (bubble on iPad/Mac,
+        a sheet on compact unless \texttt{.presentationCompactAdaptation}, 16.4). Each takes
+        \texttt{isPresented:} (\texttt{Bool}) or \texttt{item:} (\texttt{Identifiable?} — preferred when
+        content depends on data). Block swipe: \texttt{.interactiveDismissDisabled()}.
+  \item \textbf{\texttt{@Environment(\textbackslash.dismiss)}} (15) — pops the pushed view \emph{or} closes the
+        sheet/cover that presented this view: the \emph{nearest} context.
+  \item \textbf{Tabs}: one \texttt{NavigationStack} \emph{per tab}, each with its own path.
+  \item \textbf{Router}: an \texttt{@Observable} object owning \texttt{path} (+ sheet state), put in the
+        environment, so any view calls \texttt{router.show(.x)} and \texttt{.onOpenURL} maps a URL to routes.
+\end{itemize}
+
+\section{Example — router + deep link}
+\begin{lstlisting}[language=SwiftSheet]
+enum Route: Hashable, Codable { case item(Int), user(String) }
+@Observable final class Router {
+  var path: [Route] = []
+  func open(_ url: URL) { path = Route.parse(url) } // all at once
+}
+struct Root: View {
+  @State private var router = Router()
+  var body: some View {
+    NavigationStack(path: $router.path) {
+      List(1..<50, id: \.self) { n in
+        NavigationLink("Item \(n)", value: Route.item(n)) }
+      .navigationDestination(for: Route.self) { Screen(route: $0) }
+    }
+    .environment(router).onOpenURL { router.open($0) }
+  } }
+\end{lstlisting}
+
+\columnbreak
+
+\section{The stack \emph{is} the path}
+\begin{tikzpicture}[sheet]
+  \tikzset{pv/.style={cell, minimum width=15mm, minimum height=6mm, fill=sheetBlue!8, draw=sheetBlue},
+           sc/.style={box, minimum width=15mm, minimum height=9mm, font=\footnotesize, draw=sheetGreen, fill=sheetGreen!8}}
+  \node[font=\bfseries\small, anchor=west] at (-0.75,0.6) {\texttt{path} = the data you own};
+  \node[pv, fill=black!5, draw=sheetGrey] (r)  at (0,0)   {(root)};
+  \node[pv] (p0) at (1.7,0)  {\texttt{.item(3)}};
+  \node[pv] (p1) at (3.4,0)  {\texttt{.user("a")}};
+  \node[pv] (p2) at (5.1,0)  {\texttt{.item(7)}};
+  \node[cell, dashed, draw=sheetOrange, minimum width=9mm, minimum height=6mm, text=sheetOrange] (slot) at (6.6,0) {+};
+  \draw[hot] (p2.north) to[bend left=40] node[above, note, text=sheetOrange]{\texttt{append} = push} (slot.north);
+  \node[sc, fill=black!5, draw=sheetGrey] (s)  at (0,-1.7)   {List};
+  \node[sc] (s0) at (1.7,-1.7) {Detail 3};
+  \node[sc] (s1) at (3.4,-1.7) {Profile a};
+  \node[sc, very thick] (s2) at (5.1,-1.7) {Detail 7\\[-2pt]\scriptsize\itshape on top};
+  \foreach \a/\b in {r/s,p0/s0,p1/s1,p2/s2} \draw[flow] (\a) -- (\b);
+  \node[note, align=left, anchor=west] at (5.95,-1.7) {\scriptsize screens\\[-2pt]\scriptsize SwiftUI\\[-2pt]\scriptsize renders};
+  \node[note, align=left, anchor=west] at (5.95,-0.82) {\scriptsize one\\[-2pt]\scriptsize \texttt{destination}\\[-2pt]\scriptsize per type};
+  % operations
+  \draw[->, thick, sheetRed] (4.85,-2.15) -- (4.85,-2.45) -- node[below, note, text=sheetRed]{\texttt{removeLast()} = pop} (3.4,-2.45) -- (3.4,-2.15);
+  \draw[->, thick, sheetRed, dashed] (5.35,-2.15) -- (5.35,-3.05) -- node[below, note, text=sheetRed, pos=0.55]{\texttt{path = []} = pop to root} (0,-3.05) -- (0,-2.15);
+  % deep link lane
+  \node[box, draw=sheetBrown, fill=sheetBrown!8, font=\footnotesize, anchor=west] (u) at (-0.75,-4.1) {URL \texttt{app://item/3/user/a}};
+  \node[box, draw=sheetBlue, font=\footnotesize, anchor=east] (pp) at (7.1,-4.1) {\texttt{path = [.item(3), .user("a")]}};
+  \draw[hot] (u) -- node[above, note, text=sheetOrange]{parse} (pp);
+  \node[note, anchor=west, text width=77mm] at (-0.75,-4.8)
+       {Deep link = \emph{assign} the whole array; SwiftUI pushes every screen, back button included.
+        Codable routes $\Rightarrow$ the same array restores state on relaunch.};
+\end{tikzpicture}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{NavigationLink(isActive:)} / \texttt{(tag:selection:)} are \textbf{deprecated} (iOS 16), and so
+        is \texttt{NavigationView}: one \texttt{Bool} per link, buggy pops, no restoration.}
+  \trap{\texttt{navigationDestination} inside a \texttt{List}/\texttt{LazyVStack} row, or two for one type
+        — ``no matching destination'' or the wrong screen. Declare once, on a stable ancestor.}
+  \trap{\texttt{.sheet(isPresented:)} + separate \texttt{@State var selected} — can present stale/\texttt{nil}
+        data. Use \texttt{.sheet(item: \$selected)}.}
+  \trap{\texttt{dismiss()} inside a \texttt{NavigationStack} \emph{within} a sheet pops the inner stack,
+        it does not close the sheet — pass a closure/binding or read \texttt{dismiss} at sheet level.}
+  \trap{\texttt{.navigationTitle} goes on the \emph{content}, not on \texttt{NavigationStack}; a split view
+        tested only on iPad shows a blank detail when collapsed on iPhone.}
+  \trap{Nesting a \texttt{NavigationStack} in a pushed screen = two bars / broken back stack.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Push values, not views.''} Path = \texttt{[Hashable]}; destination = \emph{per type};
+\texttt{item:} beats \texttt{isPresented:}; \texttt{dismiss} = nearest context.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} ios-swift/navigation-presentation (UIKit) ·
+\texttt{TabView} / \texttt{Tab} (18) · \texttt{@SceneStorage} · universal links · \texttt{.toolbar} ·
+\texttt{presentationDetents}}
+
+\end{document}

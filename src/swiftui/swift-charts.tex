@@ -1,0 +1,228 @@
+% swift-charts.tex — Swift Charts: the grammar (Chart of marks, PlottableValue, encodings),
+% scales, axes, legends, annotations, stacking, date units, interpolation; interactivity by OS
+% version (chartOverlay + ChartProxy, chartXSelection / chartAngleSelection / chartGesture,
+% scrolling); vectorized + function plots (iOS 18); Chart3D + SurfacePlot (iOS 26);
+% accessibility (automatic VoiceOver + Audio Graphs, AXChartDescriptor); performance.
+% Not repeated: Canvas drawing (swiftui-gestures-canvas), the accessibility tree and Dynamic Type
+% (swiftui-accessibility-dynamic-type), view identity / invalidation (swiftui-performance-identity).
+% Sources (checked 2026-09-29):
+%   developer.apple.com/documentation/charts (topic list; iOS 16 / macOS 13 baseline)
+%   developer.apple.com/documentation/updates/swiftcharts (June 2024: vectorized + function plots; June 2025: Chart3D)
+%   developer.apple.com/documentation/charts/lineplot (iOS 18; init(x:y:domain:function:), parametric t:)
+%   developer.apple.com/documentation/charts/chart3d, /surfaceplot, /chart3dpose (iOS 26; y = f(x, z))
+%   developer.apple.com/documentation/charts/sectormark (iOS 17), /scaletype, /markstackingmethod,
+%   /chartproxy (plotAreaFrame deprecated iOS 17, renamed plotFrame), /scaledomain/automatic(includeszero:reversed:)
+%   developer.apple.com/documentation/swiftui/view/chartgesture(_:), /chartangleselection(value:),
+%   /accessibilitychartdescriptor(_:) (iOS 15)
+%   WWDC22 10136 + 10137 (data kinds, VoiceOver + Audio Graphs for free), WWDC23 10037 (selection,
+%   scrolling, zIndex(-1), overflowResolution), WWDC24 10155 (vectorized vs marks, return .nan),
+%   WWDC25 313 (Chart3D, chart3DPose)
+% @labels: area=swiftui kind=api platform=ios topic=ui,platform-apis discussion=174
+% @tags: swift-charts, barmark, linemark, sectormark, plottablevalue, chart-scales, axismarks, chartxselection, chartscrollableaxes, chartproxy, vectorized-plots, chart3d
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,return,if,else,guard,
+    case,self,some,in,private,for,true,false,nil,
+    @State,@Binding,@MainActor},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {...}{{\hbox{.}\hbox{.}\hbox{.}}}3}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{.}\hbox{.}\hbox{.}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!80, inner sep=1pt, align=left},
+  tag/.style={font=\scriptsize\ttfamily, text=sheetBrown, inner sep=1pt, align=left},
+  pt/.style={circle, fill=sheetBlue, inner sep=1.3pt},
+  sq/.style={rectangle, fill=sheetOrange, inner sep=1.5pt},
+  call/.style={->, thin, draw=sheetBrown},
+  pipe/.style={box, font=\scriptsize, text width=21mm, inner sep=2pt},
+}
+
+\begin{document}
+
+\sheettitle{Swift Charts — marks, scales, axes, selection}{swiftui · folio}
+
+\oneliner{Swift Charts (iOS 16) is a \textbf{declarative grammar of graphics}: a \ct{Chart} is a list of
+\textbf{marks} (one visual element per data item); each mark maps data to visual \textbf{properties}
+through \ct{.value("Label", v)} \textbf{plottable values}; \textbf{scales} turn the data domain into pixels
+and colours, and \textbf{axes}, \textbf{legend}, VoiceOver and Audio Graphs are derived from the same
+labels — for free.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ================= annotated chart =================
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.9,4.35) {Anatomy — what each API draws};
+  % grid + axes (y domain 0...200 -> 0..3.2 cm)
+  \foreach \y/\l in {0/0,0.8/50,1.6/100,2.4/150,3.2/200} {
+    \draw[black!12] (0,\y) -- (6.3,\y);
+    \node[font=\tiny, anchor=east] at (-0.05,\y) {\l};
+  }
+  \draw[sheetGrey] (0,0) -- (6.3,0);
+  \foreach \x/\d in {0.45/Mon,1.35/Tue,2.25/Wed,3.15/Thu,4.05/Fri,4.95/Sat,5.85/Sun} {
+    \draw[sheetGrey] (\x,0) -- (\x,-0.07);
+    \node[font=\tiny] at (\x,-0.2) {\d};
+  }
+  % selection rule (behind)
+  \fill[black!10] (3.1,0) rectangle (3.2,3.25);
+  % RuleMark target 120 -> 1.92
+  \draw[sheetRed, thick, dashed] (0,1.92) -- (6.3,1.92);
+  \node[font=\tiny, text=sheetRed, anchor=south west] at (0.02,1.93) {target};
+  % series North (blue circles)
+  \draw[sheetBlue, thick] (0.45,1.1) -- (1.35,1.45) -- (2.25,1.3) -- (3.15,2.27) -- (4.05,2.0) -- (4.95,2.7) -- (5.85,2.55);
+  \foreach \x/\y in {0.45/1.1,1.35/1.45,2.25/1.3,3.15/2.27,4.05/2.0,4.95/2.7,5.85/2.55} \node[pt] at (\x,\y) {};
+  % series South (orange squares)
+  \draw[sheetOrange, thick] (0.45,0.6) -- (1.35,0.75) -- (2.25,1.0) -- (3.15,0.9) -- (4.05,1.25) -- (4.95,1.5) -- (5.85,1.2);
+  \foreach \x/\y in {0.45/0.6,1.35/0.75,2.25/1.0,3.15/0.9,4.05/1.25,4.95/1.5,5.85/1.2} \node[sq] at (\x,\y) {};
+  % popover annotation
+  \node[draw=sheetGrey, fill=white, rounded corners=1.5pt, font=\tiny, align=center, inner sep=1.5pt]
+       at (3.15,3.55) {Thu\\North 142 · South 56};
+  % legend
+  \node[pt] at (1.7,-0.5) {}; \node[font=\tiny, anchor=west] at (1.78,-0.5) {North};
+  \node[sq] at (2.75,-0.5) {}; \node[font=\tiny, anchor=west] at (2.83,-0.5) {South};
+  % call-outs (right of chart)
+  \node[tag, anchor=west] (c1) at (6.55,3.95) {.annotation(position: .top,\\\ overflowResolution:)};
+  \draw[call] (c1.west) -- (3.95,3.6);
+  \node[tag, anchor=west] (c2) at (6.55,3.2) {RuleMark(x: selected)\\\ .zIndex(-1)};
+  \draw[call] (c2.west) -- (3.25,3.0);
+  \node[tag, anchor=west] (c3) at (6.55,2.5) {LineMark + foregroundStyle(by:)\\\ = one line per series};
+  \draw[call] (c3.west) -- (5.0,2.72);
+  \node[tag, anchor=west] (c4) at (6.55,1.85) {RuleMark(y: 120) + lineStyle};
+  \draw[call] (c4.west) -- (6.3,1.92);
+  \node[tag, anchor=west] (c5) at (6.55,1.3) {symbol(by:) — not colour alone};
+  \draw[call] (c5.west) -- (5.93,1.22);
+  \node[tag, anchor=west] (c6) at (6.55,0.7) {chartYScale(domain: 0\dd200)\\\ domain $\to$ range = plot height};
+  \draw[call] (c6.west) to[out=180,in=0] (6.3,0.8);
+  \node[tag, anchor=west] (c7) at (6.55,0.0) {AxisMarks(values: .stride(by: .day))\\\ GridLine · Tick · ValueLabel};
+  \draw[call] (c7.west) -- (6.3,0.0);
+  \node[tag, anchor=west] (c8) at (3.6,-0.55) {$\leftarrow$ legend: derived from the \emph{by:} values};
+  % ================= pipeline + donut =================
+  \draw[sheetGrey!40] (10.35,4.45) -- (10.35,-0.75);
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (10.5,4.35) {One property, end to end};
+  \node[pipe] (d) at (11.75,3.7) {data item\\\ct{Sale(day:, units: 142)}};
+  \node[pipe, draw=sheetOrange, fill=sheetOrange!8] (p) at (14.55,3.7) {\ct{.value("Units", 142)}\\label + value};
+  \node[pipe] (s) at (14.55,2.55) {\textbf{scale} 0\dd200 $\to$ px\\type .linear/.log/.date/\dd};
+  \node[pipe, draw=sheetGreen, fill=sheetGreen!8] (m) at (11.75,2.55) {mark drawn at\\y = 0.71 · plot height};
+  \draw[flow] (d) -- (p); \draw[flow] (p) -- (s); \draw[flow] (s) -- (m);
+  \node[lbl, text=sheetBrown] at (13.15,1.85) {``Units'' also becomes the axis title,\\the legend title and the VoiceOver name};
+  % donut
+  \begin{scope}[shift={(12.0,0.35)}]
+    \fill[sheetBlue!70]   (0,0) -- (90:0.95) arc (90:-60:0.95) -- cycle;
+    \fill[sheetOrange!80] (0,0) -- (-63:0.95) arc (-63:-190:0.95) -- cycle;
+    \fill[sheetGreen!70]  (0,0) -- (-193:0.95) arc (-193:-267:0.95) -- cycle;
+    \fill[white] (0,0) circle (0.59);
+    \node[font=\tiny, align=center] at (0,0) {innerRadius\\.ratio(0.618)};
+  \end{scope}
+  \node[tag, anchor=west] at (12.6,1.25) {SectorMark(angle: .value("Share", v))};
+  \node[tag, anchor=west] at (13.1,0.75) {gaps = angularInset: 1};
+  \node[tag, anchor=west] at (13.1,0.35) {colour = foregroundStyle(by:)};
+  \node[tag, anchor=west] at (13.1,-0.05) {tap = chartAngleSelection};
+  \node[lbl, anchor=west, text=sheetGrey] at (13.1,-0.45) {iOS 17 · no axes, no scale};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{The grammar}
+\begin{itemize}
+  \item \ct{Chart(data) \{ BarMark(\dd) \}} or \ct{Chart \{ ForEach \dd \}}; a \ct{@ChartContentBuilder},
+        so mark kinds mix (bars + a \ct{RuleMark} average).
+  \item \textbf{Marks}: Bar · Line · Point · Area · Rule · Rectangle (heat map) · Sector (iOS 17).
+        \ct{yStart:yEnd:} / \ct{xStart:xEnd:} draw ranges (Gantt, candles).
+  \item \textbf{Data kind picks the scale}: numbers = quantitative, \ct{String}/enum = nominal (bands),
+        \ct{Date} = temporal; own types conform to \ct{Plottable}. \ct{.value("Day", d, unit: .day)}
+        bins: the bar is one day wide.
+  \item \textbf{Encodings} \ct{foregroundStyle / symbol / symbolSize / lineStyle(by:)}: each makes a
+        scale \emph{and} a legend entry. Bars on one x \textbf{stack} (\ct{stacking: .normalized .center
+        .unstacked}); \ct{position(by:)} = side by side.
+  \item \textbf{Scales} \ct{chartXScale(domain:range:type:)}: \ct{.linear .log .squareRoot .symmetricLog
+        .power .date .category}. Bars include 0: \ct{.automatic(includesZero: false)} for a tight y.
+        Fixed colours: \ct{chartForegroundStyleScale(["North": .blue])}.
+  \item \ct{chartYAxis(.hidden)}, \ct{AxisMarks(position: .leading)}, \ct{chartLegend(position:)};
+        lines: \ct{interpolationMethod(.monotone .catmullRom .stepStart \dd)}.
+  \item \ct{.annotation(position:alignment:spacing:)} pins any view to a mark; iOS 17
+        \ct{overflowResolution: .init(x: .fit(to: .chart))} keeps it inside the chart.
+\end{itemize}
+
+\hd{Example — two series, target, tap-to-inspect, scroll}
+\begin{lstlisting}[language=SwiftSheet]
+@State private var raw: Date?           // raw x value, NOT a Sale
+Chart {
+  ForEach(sales) { s in
+    LineMark(x: .value("Day", s.day, unit: .day),
+             y: .value("Units", s.units))
+      .foregroundStyle(by: .value("Store", s.store)) // = series
+      .symbol(by: .value("Store", s.store))
+      .interpolationMethod(.monotone)       // no overshoot
+  }
+  RuleMark(y: .value("Target", 120))
+    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+  if let raw { RuleMark(x: .value("Day", raw, unit: .day)).zIndex(-1) }
+}
+.chartXSelection(value: $raw)                      // iOS 17
+.chartScrollableAxes(.horizontal)                  // iOS 17
+.chartXVisibleDomain(length: 3600 * 24 * 30)       // SECONDS
+\end{lstlisting}
+
+\hd{Accessibility}
+\textbf{VoiceOver per mark} + \textbf{Audio Graphs} (``Describe chart'', ``Play Audio Graph'') come
+free, named from the \ct{.value} labels; refine with \ct{.accessibilityLabel/Value} on the mark.
+A \emph{hand-drawn} chart (\ct{Canvas}, image) gets nothing: \ct{.accessibilityChartDescriptor(r)}
+(iOS 15), \ct{r: AXChartDescriptorRepresentable} $\to$ \ct{AXChartDescriptor} (axes + series).
+
+\columnbreak
+
+\hd{Interactivity and newer plots — by iOS version}
+{\footnotesize
+\begin{tabular}{@{}L{4mm}L{68mm}@{}}
+\toprule
+16 & \ct{chartOverlay \{ p in GeometryReader \{ g in \dd \} \}} + a \ct{DragGesture};
+     \ct{p.value(atX: loc.x - g[p.plotAreaFrame].origin.x, as: Date.self)}. \\
+17 & \ct{chartXSelection(value:/range:)}, \ct{chartAngleSelection} — gesture built in; custom:
+     \ct{chartGesture \{ p in \dd p.selectXValue(at:) \}}; \ct{plotFrame} replaces \ct{plotAreaFrame}.
+     Scroll: \ct{chartScrollableAxes}, \ct{chartXVisibleDomain(length:)},
+     \ct{chartScrollPosition(x:)}, \ct{chartScrollTargetBehavior}. \\
+18 & \textbf{Vectorized}: \ct{LinePlot AreaPlot BarPlot PointPlot RectanglePlot RulePlot SectorPlot} —
+     one plot per collection, \textbf{key paths}: \ct{LinePlot(sales, x: .value("Day",
+     \textbackslash.day), y: .value("Units", \textbackslash.units))}. \textbf{Functions}:
+     \ct{LinePlot(x: "x", y: "y") \{ x in x * x \}}; return \ct{.nan} = undefined. \\
+26 & \ct{Chart3D}: \ct{PointMark(x:y:z:)}, \ct{SurfacePlot(x:y:z:) \{ x, z in \dd \}} ($y = f(x,z)$,
+     y is up), \ct{.chart3DPose(\$pose)}. \\
+\bottomrule
+\end{tabular}}
+
+\hd{Performance}
+Each mark is laid out, hit-tested and exposed to VoiceOver — thousands in a \ct{ForEach} crawl.
+\textbf{Aggregate first} (bin, min/max per pixel), off the main actor, never in \ct{body}. WWDC24:
+\textbf{vectorized plots} for big uniformly-styled data, \textbf{marks} for per-item modifiers or \ct{zIndex}.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{\ct{chartXSelection} yields the \textbf{raw axis value} (a \ct{Date} at 14:37), not an item —
+        look up the item whose day contains it. \ct{chartAngleSelection}: a point on the cumulative
+        total — walk a running sum\unverified.}
+  \trap{Two series, no \ct{series:}/\ct{by:} $\to$ \textbf{one} zig-zag line joining both.}
+  \trap{\ct{chartXVisibleDomain(length:)} on dates is in \textbf{seconds}.}
+  \trap{No \ct{unit:} $\to$ hairline bars; \ct{.catmullRom} overshoots below 0, \ct{.monotone} not.}
+  \trap{Colour-only series fail colour-blind users — add \ct{symbol(by:)}.}
+  \trap{Legend colours follow data order — pin them with \ct{chartForegroundStyleScale}.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Mark $\times$ .value $\to$ scale $\to$ axis + legend + VoiceOver.''}
+16 grammar · 17 select, scroll, pie · 18 vectorized + functions · 26 3D.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} swiftui-gestures-canvas (Canvas for custom
+plots) · swiftui-accessibility-dynamic-type · swiftui-performance-identity · swiftui-layout-system ·
+liquid-glass-swiftui-26-27}
+
+\end{document}

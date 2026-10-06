@@ -1,0 +1,187 @@
+% swiftui-app-scenes-lifecycle.tex — the SwiftUI App protocol and @main, Scene types (WindowGroup,
+% WindowGroup(for:), DocumentGroup, Window, Settings, MenuBarExtra), scenePhase at view vs app level,
+% UIApplicationDelegateAdaptor + a scene delegate via configurationForConnecting, onOpenURL /
+% onContinueUserActivity / handlesExternalEvents, openURL / openWindow / dismissWindow, @SceneStorage vs
+% @AppStorage, backgroundTask(.appRefresh), commands, TN3187 (UIScene lifecycle required).
+% Not repeated: the UIKit scene object model + restoration flow (ios-platform/state-restoration-multiwindow),
+% app states / VC callbacks (ios-swift/app-and-vc-lifecycle), BGTaskScheduler internals
+% (ios-platform/background-execution), deep-link routing into a path (swiftui-navigation).
+% Sources (checked 2026-09-26): developer.apple.com/documentation/swiftui — ScenePhase (view =
+% containing scene; App = aggregate, active if any scene is active), UIApplicationDelegateAdaptor (iOS 14;
+% one per App, runtime error if declared twice; ObservableObject delegate goes into the environment;
+% scene delegate via application(_:configurationForConnecting:options:) + delegateClass), Window (macOS 13,
+% visionOS 26, not iOS), Settings (macOS 11), MenuBarExtra (macOS 13), DocumentGroup (iOS 14),
+% OpenWindowAction (iOS 16; an existing window for the value is brought to front), DismissWindowAction
+% (iOS 17), SceneStorage (lightweight, not for sensitive data, destroyed with the scene),
+% onOpenURL(perform:) (universal links delivered as URLs; see handlesExternalEvents),
+% onOpenURL(prefersInApp:) (26), Scene.backgroundTask(_:action:) (iOS 16; done when the action returns,
+% then suspended; cancelled on timeout), Scene.commands(content:) (iPadOS: ⌘ HUD + menu bar);
+% TN3187 "Migrating to the UIKit scene-based life cycle" (release after iOS 26: UIKit apps built with the
+% latest SDK without UIScene life cycle will not launch).
+% @labels: area=swiftui kind=api platform=apple topic=ui,platform-apis,architecture discussion=176
+% @tags: app-protocol, main-attribute, windowgroup, documentgroup, scenephase, uiapplicationdelegateadaptor, onopenurl, openwindow, scenestorage, appstorage, backgroundtask, commands
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,return,if,else,guard,await,async,try,
+    case,self,some,in,private,for,true,false,nil,
+    @main,@State,@Environment,@SceneStorage,@AppStorage,@UIApplicationDelegateAdaptor,@MainActor},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {...}{{\hbox{.}\hbox{.}\hbox{.}}}3}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!80, inner sep=1pt, align=center},
+  nd/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5mm},
+  sc/.style={nd, draw=sheetBrown, fill=sheetBrown!8},
+  win/.style={nd, draw=sheetBlue, fill=sheetBlue!8, text width=19mm},
+  ph/.style={font=\tiny\bfseries, rounded corners=1pt, inner sep=1.2pt},
+}
+
+\begin{document}
+
+\sheettitle{SwiftUI App, scenes \& lifecycle}{swiftui · folio}
+
+\oneliner{A SwiftUI app is a value: \texttt{@main struct MyApp: App} whose \texttt{body} returns
+\textbf{scenes}. A scene is a \textbf{template} the system instantiates into one or more \textbf{windows}
+(\texttt{UIWindowScene}s), each with its \textbf{own} view tree, \texttt{@State}, \texttt{@SceneStorage} and
+\texttt{scenePhase}. UIKit's delegates come back through an \textbf{adaptor}; URLs, activities and background
+wake-ups are delivered to scenes by \textbf{modifiers}.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{\texttt{@main}} on an \texttt{App} generates \texttt{main()}. \texttt{App.init()} runs once,
+        before any scene. \texttt{@State} on the App = process-wide model, injected into every window via
+        \texttt{.environment(store)}; state in a root \emph{view} = one copy \textbf{per window}.
+  \item \textbf{\texttt{scenePhase}} (\texttt{.active / .inactive / .background}): in a view = the
+        \emph{containing} scene; in the \texttt{App} = \textbf{aggregate} — \texttt{.active} if any scene is,
+        \texttt{.background} = app going to background. \texttt{.inactive} = visible, not interactive
+        (switcher, Control Center) — pause, don't tear down.
+  \item \textbf{UIKit hooks}: \texttt{@UIApplicationDelegateAdaptor} — once, in the \texttt{App} (twice =
+        runtime error); SwiftUI creates it; an \texttt{ObservableObject} one lands in the environment. Push
+        token, SDK setup. Scene delegate: \texttt{delegateClass} on the \texttt{UISceneConfiguration} returned
+        from \texttt{configurationForConnecting}.
+  \item \textbf{Incoming}: \texttt{.onOpenURL} — custom schemes \emph{and} Universal Links, as URLs;
+        \texttt{.onContinueUserActivity(type)} — Handoff, Spotlight; \texttt{.handlesExternalEvents(matching:)}
+        picks the window.
+  \item \textbf{Outgoing} (environment): \texttt{openURL} (own \texttt{OpenURLAction}: \texttt{.handled /
+        .discarded / .systemAction}); \texttt{openWindow(id:/value:)} (16) — a window already showing the value
+        comes forward; \texttt{dismissWindow} (17); \texttt{supportsMultipleWindows}.
+  \item \textbf{Persistence}: \texttt{@SceneStorage} — per window, system-restored, small, \textbf{no
+        secrets}, dies with the scene. \texttt{@AppStorage} — \texttt{UserDefaults}, shared by all windows.
+  \item \textbf{\texttt{.backgroundTask(.appRefresh("id"))}} (16): done when the closure \textbf{returns},
+        then suspended; cancelled on timeout. Still needs the id in
+        \texttt{BGTaskSchedulerPermittedIdentifiers} + a \emph{submitted} \texttt{BGAppRefreshTaskRequest}.
+  \item \textbf{\texttt{.commands \{ CommandMenu \ldots \}}}: macOS menu bar; iPadOS: Cmd-hold HUD + menu bar.
+\end{itemize}
+
+\section{Scene types}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}L{34mm}L{11mm}L{33mm}@{}}
+\toprule
+\texttt{WindowGroup} & all & template; many windows on iPad / Mac \\
+\texttt{WindowGroup(for: T.self)} & 16 & a window per value \\
+\texttt{DocumentGroup} & 14 & browser, open / save, window per doc \\
+\texttt{Window} & macOS 13 & single unique window, not iOS \\
+\texttt{Settings}, \texttt{MenuBarExtra} & macOS & preferences; menu-bar item \\
+\bottomrule
+\end{tabular}\par}
+
+\section{Remember}
+\textbf{``App = the process, Scene = a template, Window = an instance with its own state and phase.''}
+
+
+\columnbreak
+
+\section{App, scenes, windows, phases}
+\begin{tikzpicture}[sheet]
+  \node[nd, draw=sheetGreen!70!black, fill=sheetGreen!10, minimum width=74mm] (app) at (3.6,0)
+       {\textbf{\texttt{NotesApp: App}} — one process · \texttt{@State store} · adaptor};
+  \node[nd, draw=sheetGrey, fill=black!4] (ad) at (2.8,-0.75) {\texttt{AppDelegate}};
+  \node[nd, draw=sheetGrey, fill=black!4] (sd) at (4.95,-0.75) {\texttt{SceneDelegate}};
+  \draw[sheetGrey, dashed, ->] (ad) -- (sd);
+  \node[lbl, text=black!60, font=\tiny] at (3.9,-1.12) {\texttt{delegateClass}};
+  \draw[sheetGrey, dashed] (ad.north) -- (ad.north |- app.south);
+  % scenes
+  \node[sc] (s1) at (1.3,-1.6) {scene: \texttt{WindowGroup}};
+  \node[sc] (s2) at (5.6,-1.6) {scene: \texttt{WindowGroup(for:)}};
+  \draw[flow] (app.south -| s1) -- (s1);
+  \draw[flow] (6.75,0 |- app.south) -- (6.75,0 |- s2.north);
+  % windows
+  \node[win] (w1) at (0.3,-2.75) {window 1\\\texttt{@State}, path,\\\texttt{@SceneStorage}};
+  \node[win] (w2) at (2.6,-2.75) {window 2\\own copies};
+  \node[win] (w3) at (5.6,-2.75) {note 42\\\texttt{\$id} = 42};
+  \draw[flow] (s1) -- (w1); \draw[flow] (s1) -- (w2); \draw[flow] (s2) -- (w3);
+  \node[nd, draw=sheetRed, fill=sheetRed!6, font=\tiny] (url) at (4.05,-2.2) {URL};
+  \draw[hot] (url) -- (w3.west);
+  % phases
+  \node[ph, fill=sheetGreen!25] at (0.3,-3.55) {.active};
+  \node[ph, fill=sheetOrange!25] at (2.6,-3.55) {.inactive};
+  \node[ph, fill=black!12] at (5.6,-3.55) {.background};
+  \draw[hot, rounded corners=3pt] (0.3,-3.75) -- (0.3,-4.05) -- (5.6,-4.05) -- (5.6,-3.75);
+  \draw[hot] (2.6,-4.05) -- (2.6,-3.75);
+  \node[lbl, anchor=north, text=sheetOrange, align=center] at (2.95,-4.1)
+       {\texttt{App}'s \texttt{scenePhase} = \textbf{.active} (any window active) — a view's = its own window};
+  \node[lbl, anchor=west, align=left, text=black!70, text width=78mm] at (-0.7,-4.8)
+       {\texttt{store} in the App = shared; in a root view's \texttt{@State} = per window.
+        {\color{sheetRed}URL}: \texttt{handlesExternalEvents} picks the window.};
+\end{tikzpicture}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+@main struct NotesApp: App {
+  @UIApplicationDelegateAdaptor(AppDelegate.self) var delegate
+  @State private var store = NoteStore()     // shared
+  @Environment(\.scenePhase) private var phase  // aggregate
+  var body: some Scene {
+    WindowGroup { RootView() }.environment(store)
+      .onChange(of: phase) { _, p in
+        if p == .background { store.save(); scheduleRefresh() } }
+      .backgroundTask(.appRefresh("com.example.sync")) {
+        await store.sync() }                    // return = done
+    WindowGroup("Note", id: "note", for: Note.ID.self) { $id in
+      NoteWindow(id: id) }.environment(store)
+  } }
+struct RootView: View {
+  @SceneStorage("sel") private var sel: String?  // per window
+  var body: some View { NoteList(sel: $sel)
+    .onOpenURL { sel = Route($0)?.noteID } } }
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Saving on \texttt{.inactive} only, or in one window's \texttt{onChange} — use the App-level
+        \texttt{.background}; per-window phases fire once per window.}
+  \trap{\texttt{@AppStorage} for a selection: two iPad windows overwrite each other — \texttt{@SceneStorage}.}
+  \trap{\texttt{.backgroundTask} with no submitted request / Info.plist id never runs; timing is the system's.}
+  \trap{\texttt{Window}, \texttt{Settings}, \texttt{MenuBarExtra} are not iOS — \texttt{\#if os(macOS)}.}
+  \trap{\textbf{TN3187}: a UIKit app without the UIScene life cycle, built with the SDK after iOS 26,
+        \textbf{won't launch}. SwiftUI \texttt{App} is scene-based already.}
+\end{itemize}
+
+\section{UIKit callback $\to$ SwiftUI}
+{\footnotesize
+\begin{tabular}{@{}L{37mm}L{40mm}@{}}
+\toprule
+\texttt{didFinishLaunching} & \texttt{App.init} / adaptor \\
+\texttt{sceneDidBecomeActive} \ldots & \texttt{onChange(of: scenePhase)} \\
+\texttt{scene(\_:openURLContexts:)} & \texttt{.onOpenURL} \\
+\texttt{scene(\_:continue:)} & \texttt{.onContinueUserActivity} \\
+\texttt{stateRestorationActivity} & \texttt{@SceneStorage}, \texttt{path.codable} \\
+\texttt{BGTaskScheduler.register} & \texttt{.backgroundTask(.appRefresh)} \\
+push token, \texttt{UNUserNotificationCenter} delegate & the adaptor's delegate methods \\
+\bottomrule
+\end{tabular}\par}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} state-restoration-multiwindow (UIKit scene model) ·
+app-and-vc-lifecycle · background-execution · swiftui-navigation · deep-links-universal-links · push-notifications}
+
+\end{document}

@@ -1,0 +1,182 @@
+% swiftui-async-task-data-flow.tex — .task / .task(id:) lifetime and cancellation, View main-actor
+% isolation, @Observable model owned in @State + @Bindable, onChange(of:initial:), refreshable,
+% searchable + debounce with task(id:), AsyncImage limits (+ iOS 27 caching), loading-state enum,
+% FocusState, presentations driven by an optional item.
+% Not repeated: wrapper table (ios-swift/swiftui-state), sheet(item:) routing (swiftui-navigation).
+% Sources (checked 2026-09-26): developer.apple.com/documentation/swiftui —
+% task(id:name:priority:file:line:_:) (iOS 15; default .userInitiated; "created by Task.immediate …
+% synchronously until it suspends at the first await"; cancelled after the view disappears; id change
+% cancels + restarts; name/file/line no-op before 26.4), task(...executorPreference...) (26.4),
+% View protocol (@MainActor @preconcurrency; opt out via extension conformance),
+% onChange(of:initial:_:) (17), refreshable(action:) (15; indicator stays until the action returns;
+% sets the refresh environment value), AsyncImage (15; shared URLSession; iOS 27: caches per HTTP,
+% init(request:), asyncImageURLSession(_:)), alert(_:item:actions:message:).
+% Swift 6.2 nonisolated(nonsending) / @concurrent: SE-0461 (swift.org, swift-evolution).
+% @labels: area=swiftui kind=api platform=apple topic=ui,concurrency,data discussion=177
+% @tags: task-modifier, task-id, cancellation, mainactor, bindable, onchange, refreshable, searchable, debounce, asyncimage, focusstate, loading-state
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,return,if,else,guard,await,async,try,
+    do,catch,throws,case,self,some,in,private,for,true,false,nil,
+    @State,@Bindable,@Observable,@MainActor,@FocusState,@concurrent},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {...}{{\hbox{.}\hbox{.}\hbox{.}}}3}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!80, inner sep=1pt, align=center},
+  run/.style={draw=sheetGreen!70!black, fill=sheetGreen!18, rounded corners=1pt, minimum height=3.6mm,
+              inner sep=0pt, font=\tiny},
+  dead/.style={draw=sheetRed, fill=sheetRed!12, rounded corners=1pt, minimum height=3.6mm, inner sep=0pt,
+              font=\tiny},
+  xx/.style={font=\bfseries\small, text=sheetRed, inner sep=0pt},
+  ev/.style={draw=sheetGrey, dashed},
+}
+
+\begin{document}
+
+\sheettitle{Async work \& data flow in SwiftUI views}{swiftui · folio}
+
+\oneliner{SwiftUI owns the \textbf{lifetime} of async work: \texttt{.task} starts with the view and is
+\textbf{cancelled} when the view goes away or its \texttt{id} changes. Views are \textbf{\texttt{@MainActor}}:
+writing state after \texttt{await} is safe, blocking the main actor is your bug. Truth lives in
+\texttt{@State} / \texttt{@Observable}; effects hang off \texttt{.task(id:)}, \texttt{onChange}, \texttt{.refreshable}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet, x=1.38cm]
+  % axis + lanes
+  \node[lbl, anchor=east] at (-0.05,0.6) {\textbf{view}};
+  \node[lbl, anchor=east] at (-0.05,0) {\textbf{\texttt{.task(id: query)}}};
+  \node[lbl, anchor=east] at (-0.05,-0.6) {\textbf{\texttt{onChange(of: query)}}};
+  \draw[flow] (0,-1.05) -- (9.5,-1.05) node[lbl, right]{t};
+  % view lifetime
+  \draw[sheetBlue, line width=3pt] (0.2,0.6) -- (8.6,0.6);
+  \node[lbl, fill=white, text=sheetBlue, anchor=west] at (0.2,0.85) {appears: \texttt{.task} A starts \emph{before} first frame};
+  \node[lbl, fill=white, text=sheetBlue] at (8.6,0.85) {disappears};
+  % events
+  \node[lbl, anchor=east] at (-0.05,-1.2) {\texttt{query} typed:};
+  \foreach \t/\q in {0.2/{""}, 2.2/{"sw"}, 3.4/{"swi"}, 4.0/{"swift"}, 7.3/{"swiftu"}} {
+    \draw[ev] (\t,0.45) -- (\t,-1.05);
+    \node[lbl, below] at (\t,-1.05) {\texttt{\q}};
+  }
+  % task runs
+  \node[run, minimum width=2.7cm, anchor=west] at (0.2,0) {A: empty $\to$ \texttt{.idle}, ends};
+  \node[dead, minimum width=1.63cm, anchor=west] at (2.2,0) {B: sleeping};
+  \node[xx] at (3.4,0) {$\times$};
+  \node[dead, minimum width=0.8cm, anchor=west] at (3.4,0) {C};
+  \node[xx] at (4.0,0) {$\times$};
+  \node[run, minimum width=4.0cm, anchor=west] at (4.0,0) {D: sleep 300 ms $\to$ \texttt{await api.search}};
+  \node[lbl, text=sheetGreen!50!black] at (5.5,-0.32) {result written on main};
+  \node[dead, minimum width=1.75cm, anchor=west] at (7.3,0) {E: sleeping};
+  \node[xx] at (8.6,0) {$\times$};
+  \node[lbl, text=sheetRed, anchor=west] at (8.7,0) {auto-cancel};
+  % onChange lane
+  \foreach \t in {2.2,3.4,4.0,7.3} \node[circle, fill=sheetOrange, inner sep=1.2pt] at (\t,-0.6) {};
+  \node[circle, draw=sheetOrange, inner sep=1.2pt] at (0.2,-0.6) {};
+  \node[lbl, text=sheetOrange, anchor=west] at (0.35,-0.6) {\texttt{initial: true} only};
+  \node[lbl, text=sheetOrange, anchor=west] at (4.15,-0.6) {\texttt{\{ old, new in \}} once per change};
+  % legend
+  \node[lbl, anchor=west, text=sheetRed, align=left] at (-2.3,-1.65) {$\times$ = cancelled (a flag):
+        \texttt{Task.sleep} throws \texttt{CancellationError}, \texttt{URLSession} throws \texttt{URLError(.cancelled)};
+        code that never checks runs to the end — its late write can clobber newer results.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{\texttt{.task \{ \}}} (15): starts before the view appears, priority \texttt{.userInitiated};
+        cancelled if the view disappears first. \textbf{\texttt{.task(id:)}}: a new \texttt{Equatable} id value
+        cancels the old task and starts a fresh one. Current docs: created with \texttt{Task.immediate} —
+        synchronous up to the first \texttt{await}.
+  \item \textbf{Cancellation is cooperative}: only a flag; \texttt{Task.sleep}, \texttt{URLSession},
+        \texttt{try Task.checkCancellation()} turn it into an error.
+  \item \textbf{Isolation}: \texttt{View} is \texttt{@MainActor @preconcurrency} (Xcode 16 SDK; before, only
+        \texttt{body}). \texttt{init}, \texttt{body}, actions, the \texttt{.task} closure run on main;
+        \texttt{await} suspends without blocking. Swift 6.2 approachable concurrency: a \texttt{nonisolated
+        async} func runs on the \emph{caller's} actor; CPU work: \texttt{@concurrent}.
+  \item \textbf{Models}: \texttt{@State private var model = Model()} owns an \texttt{@Observable}; pass it
+        down as a plain \texttt{let}; a child needing \texttt{\$model.name} declares \texttt{@Bindable var model}
+        (or \texttt{@Bindable var m = model} in \texttt{body}). Load in \texttt{.task}, not \texttt{init}.
+  \item \textbf{\texttt{onChange(of:initial:\_:)}} (17): \texttt{\{ old, new in \}} or \texttt{\{ \}};
+        \texttt{initial: true} also fires on appear; main actor, keep it short. \texttt{(of:perform:)} deprecated.
+  \item \textbf{\texttt{.refreshable}} (15): pull-to-refresh; spinner stays \textbf{until the closure
+        returns}; env \texttt{\textbackslash.refresh} for custom views.
+  \item \textbf{Search}: \texttt{.searchable(text: \$q)} (15) + \texttt{.task(id: q)} with a sleep =
+        debounce \emph{and} cancel-previous; \texttt{searchScopes}, \texttt{searchSuggestions} (16).
+  \item \textbf{\texttt{AsyncImage}} (15): shared \texttt{URLSession}; phases \texttt{empty / success /
+        failure}; no downsampling. \textbf{iOS 27} adds HTTP caching, \texttt{init(request:)},
+        \texttt{.asyncImageURLSession(\_:)}.
+  \item \textbf{Focus} (15): \texttt{@FocusState var f: Field?}, \texttt{.focused(\$f, equals: .email)},
+        \texttt{.onSubmit \{ f = .password \}}. \textbf{Optional-driven UI}: \texttt{.sheet(item:)},
+        \texttt{.alert(\_:isPresented:presenting:)}, now \texttt{alert(\_:item:)}; \texttt{nil} = dismissed.
+\end{itemize}
+
+\section{Example — debounced search}
+\begin{lstlisting}[language=SwiftSheet]
+enum Phase<T> { case idle, loading, loaded(T), failed(String) }
+struct SearchView: View {
+  @State private var query = ""
+  @State private var phase: Phase<[Hit]> = .idle
+  let api: SearchAPI
+  var body: some View {
+    ResultsList(phase: phase)
+      .searchable(text: $query)
+      .task(id: query) {                   // restart per keystroke
+        guard !query.isEmpty else { phase = .idle; return }
+        do {
+          try await Task.sleep(for: .milliseconds(300)) // debounce
+          phase = .loading
+          phase = .loaded(try await api.search(query)) // on main
+        } catch {                           // incl. URLError
+          if !Task.isCancelled { phase = .failed("\(error)") } }
+      }
+      .refreshable { await reload() }      // spinner until done
+  } }
+\end{lstlisting}
+
+\columnbreak
+
+\section{Which tool for which job}
+{\footnotesize
+\begin{tabular}{@{}p{33mm}p{43mm}@{}}
+\toprule
+load once per appearance & \texttt{.task \{ \}} \\
+reload when an input changes & \texttt{.task(id: input)} \\
+consume a stream for the view's life & \texttt{.task \{ for await v in seq \{ \} \}} \\
+cheap sync effect on a change & \texttt{onChange(of:initial:)} \\
+user pull / refresh action & \texttt{.refreshable \{ await \}} \\
+button kicks off work & \texttt{Task \{ \}} in the action — lives on; keep the handle to cancel \\
+observe a model outside views & \texttt{Observations} / \texttt{withObservationTracking} \\
+\bottomrule
+\end{tabular}\par}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{.onAppear \{ Task \{ await load() \} \}} — unstructured: \textbf{not} cancelled on disappear,
+        outlives the screen.}
+  \trap{\texttt{try? await Task.sleep(\ldots)} swallows cancellation — the stale ``debounced'' search still
+        fires. Let it throw, or check \texttt{Task.isCancelled}.}
+  \trap{Showing \texttt{URLError.cancelled} as an error — every keystroke flashes a failure.}
+  \trap{JSON decode / image resize inside \texttt{.task} runs on the \textbf{main actor} — hitches.}
+  \trap{\texttt{.refreshable \{ Task \{ \ldots \} \}} returns at once — spinner vanishes.}
+  \trap{\texttt{.id(UUID())} / unstable identity re-creates the view: \texttt{.task} re-runs, duplicate fetches.}
+  \trap{The opposite: a split-view detail keeps its identity while \texttt{selection} changes — a plain
+        \texttt{.task} never re-runs and shows the old item. Key it: \texttt{.task(id: item.id)}.}
+  \trap{\texttt{onChange} that writes the value it watches (directly or via layout) — a feedback loop;
+        runtime log: ``tried to update multiple times per frame''\unverified.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``The view's life is the task's life; the id is its restart button; main actor by default.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} ios-swift/swiftui-state · ios-swift/observation-and-combine ·
+swift/swift6-strict-concurrency · swift/async-sequences-streams · swiftui-navigation}
+
+\end{document}
