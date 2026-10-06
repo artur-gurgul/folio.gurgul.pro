@@ -1,0 +1,84 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>The modern Jetpack app stack — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/cross-platform/android-jetpack-stack.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">128</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area current" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">The modern Jetpack app stack</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">cross-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Google’s recommended app: <strong>UI</strong> (Compose) observes <code>StateFlow</code> from a
+<strong>ViewModel</strong>, which calls a <strong>repository</strong> whose <strong>single source of truth is
+the local DB</strong> (Room) — the network only <em>writes</em> into it. <strong>Hilt</strong> builds the graph
+at <strong>compile time</strong>; <strong>WorkManager</strong> runs deferrable work that must survive process
+death and reboot. Every piece has an iOS twin (green).</p>
+<p class="sheet-tools"><a class="sheet-download" href="android-jetpack-stack.pdf" download>Download PDF</a> <a href="android-jetpack-stack.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/cross-platform/android-jetpack-stack.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="android-jetpack-stack-fig1.svg" width="636" height="144" class="wide" alt="The modern Jetpack app stack — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Hilt (Dagger underneath)</h2>
+<ul>
+<li><code>@HiltAndroidApp</code> Application <span class="math">→</span> <code>@AndroidEntryPoint</code> Activity/Service  <span class="math">→</span> <code>@HiltViewModel</code> + <code>@Inject constructor</code>. A missing binding  <strong>fails the build</strong> (Koin fails at runtime). Use <strong>KSP</strong>, not kapt.</li>
+<li><code>@Module @InstallIn(X::class)</code>: <code>@Binds</code> = interface <span class="math">→</span> impl, no code;  <code>@Provides</code> = factory for types you don’t own (Retrofit, Room). Two of one  type: <code>@Qualifier</code>. Runtime args: <code>@AssistedInject</code>; tests:  <code>@TestInstallIn</code> swaps a module.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>ViewModel scope + SavedStateHandle</h2>
+<p>Each <strong>nav back-stack entry</strong> is a <code>ViewModelStore</code>: one VM per destination, cleared when popped; share one across a flow by scoping it to the graph’s entry. <code>SavedStateHandle</code> = Bundle-backed map that survives <strong>process death</strong> (<code>getStateFlow(k, d)</code>, <code>toRoute&lt;T&gt;()</code>) — ids, not data.</p>
+</section>
+<section class="sheet-section">
+<h2>Room</h2>
+<ul>
+<li>SQL <strong>verified at compile time</strong>. A <code>Flow</code> query re-emits on <em>any</em>  write to its <strong>table</strong> — <code>distinctUntilChanged()</code>. <code>@Transaction</code>  for multi-query reads (<code>@Relation</code>); <code>withTransaction{}</code> for writes.</li>
+<li>Migrations: <code>Migration(1, 2) { execSQL(…) }</code> or <code>@AutoMigration</code>  (needs the exported schema JSON in git) + <code>MigrationTestHelper</code>;  <code>fallbackToDestructiveMigration()</code> = data loss. KMP since <strong>2.7</strong>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example — the stack in 13 lines</h2>
+<pre class="sheet-code"><code class="hljs language-kotlin"><span class="hljs-meta">@Dao</span> <span class="hljs-keyword">interface</span> <span class="hljs-title class_">NoteDao</span> {
+  <span class="hljs-meta">@Query(<span class="hljs-string">&quot;SELECT * FROM Note&quot;</span>)</span> <span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-title">all</span><span class="hljs-params">()</span></span>: Flow&lt;List&lt;Note&gt;&gt;
+  <span class="hljs-meta">@Upsert</span> <span class="hljs-keyword">suspend</span> <span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-title">upsert</span><span class="hljs-params">(n: <span class="hljs-type">List</span>&lt;<span class="hljs-type">Note</span>&gt;)</span></span> }
+<span class="hljs-meta">@Singleton</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">NoteRepo</span> <span class="hljs-meta">@Inject</span> <span class="hljs-keyword">constructor</span>(
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">val</span> dao: NoteDao, <span class="hljs-keyword">private</span> <span class="hljs-keyword">val</span> api: NoteApi) {
+  <span class="hljs-keyword">val</span> notes = dao.all()                           <span class="hljs-comment">// UI reads the DB</span>
+  <span class="hljs-keyword">suspend</span> <span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-title">refresh</span><span class="hljs-params">()</span></span> = dao.upsert(api.fetch()) <span class="hljs-comment">// network -&gt; DB</span>
+}
+<span class="hljs-meta">@HiltViewModel</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">NotesVM</span> <span class="hljs-meta">@Inject</span> <span class="hljs-keyword">constructor</span>(
+    saved: SavedStateHandle, repo: NoteRepo) : ViewModel() {
+  <span class="hljs-keyword">val</span> folder = saved.toRoute&lt;Notes&gt;().folder      <span class="hljs-comment">// typed nav arg</span>
+  <span class="hljs-keyword">val</span> ui = repo.notes.stateIn(viewModelScope,
+      SharingStarted.WhileSubscribed(<span class="hljs-number">5_000</span>), emptyList()) }</code></pre>
+</section>
+<section class="sheet-section">
+<h2>WorkManager — guaranteed, not punctual</h2>
+<ul>
+<li>Persisted in its own SQLite DB: survives death and <strong>reboot</strong>, honours Doze.  <code>CoroutineWorker</code> <span class="math">→</span> <code>Result.success/failure/retry</code> (backoff  exponential, 30 s).</li>
+<li>Constraints (network, charging, battery/storage not low, idle); periodic  <span class="math">≥</span> <strong>15 min</strong>. <code>enqueueUniqueWork(name, KEEP/REPLACE/APPEND, r)</code>  stops duplicate syncs; <code>beginWith(a).then(b)</code> chains.</li>
+<li><strong>Expedited</strong> (<code>setExpedited(OutOfQuotaPolicy.…)</code>): quota by standby  bucket; below Android 12 runs as a foreground service (<code>getForegroundInfo</code>).  <span class="math">&gt;</span>10 min: <code>setForeground()</code>. Not for exact alarms or “now, visibly”.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>DataStore (replaces SharedPreferences)</h2>
+<p><strong>Preferences</strong> (keys) or <strong>typed</strong> (Proto / JSON + <code>Serializer&lt;T&gt;</code>); reads <code>Flow&lt;T&gt;</code>, writes <code>edit{}</code>/<code>updateData{}</code> — suspend, <strong>transactional</strong>. SharedPreferences: sync reads on main, <code>apply()</code> blocks in <code>fsync</code>. <strong>One instance per file per process</strong> or <code>IllegalStateException</code>.</p>
+</section>
+<section class="sheet-section">
+<h2>Navigation &amp; Paging</h2>
+<ul>
+<li><strong>Nav Compose 2.8+</strong>: <code>@Serializable</code> routes, <code>composable&lt;Profile&gt;</code>,  <code>navigate(Profile(id))</code>, <code>toRoute()</code> — no string routes.  <strong>Navigation 3</strong> (1.0 Nov 2025): <strong>you own the back stack</strong>  (<code>SnapshotStateList&lt;NavKey&gt;</code>), <code>NavDisplay</code> + <code>entryProvider</code>  — like <code>NavigationStack(path:)</code>.</li>
+<li><strong>Paging 3</strong>: <code>PagingSource.load()</code> <span class="math">→</span> <code>LoadResult.Page(data,
+ prevKey, nextKey)</code>; <code>Pager.flow.cachedIn(scope)</code>; <code>RemoteMediator</code>  fills Room from the network.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><code>@Singleton</code> everywhere — state leaks across logins.</li>
+<li class="trap">“WorkManager runs it now” — <em>eventually</em>, once constraints hold.</li>
+<li class="trap">A DataStore created in a composable — two instances, crash.</li>
+</ul>
+<p><strong>Remember:</strong> <em>UI <span class="math">←</span> VM <span class="math">←</span> repo <span class="math">←</span> DB; the network
+writes the DB · Hilt at compile time · WorkManager survives reboot.</em></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> android-compose-lifecycle ·
+android-coroutines-platform · kmp-stack-concurrency · android-build-performance ·
+background-execution · ios-client-system-design</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=cross-platform" title="area">cross-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=architecture" title="kind">architecture</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=android" title="platform">android</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=architecture" title="topic">architecture</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=data" title="topic">data</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=platform-apis" title="topic">platform-apis</a></li><li class="sheet-tag"><a href="/folios.html?tag=jetpack">jetpack</a></li><li class="sheet-tag"><a href="/folios.html?tag=viewmodel">viewmodel</a></li><li class="sheet-tag"><a href="/folios.html?tag=savedstatehandle">savedstatehandle</a></li><li class="sheet-tag"><a href="/folios.html?tag=hilt">hilt</a></li><li class="sheet-tag"><a href="/folios.html?tag=dagger">dagger</a></li><li class="sheet-tag"><a href="/folios.html?tag=room">room</a></li><li class="sheet-tag"><a href="/folios.html?tag=datastore">datastore</a></li><li class="sheet-tag"><a href="/folios.html?tag=workmanager">workmanager</a></li><li class="sheet-tag"><a href="/folios.html?tag=navigation-compose">navigation-compose</a></li><li class="sheet-tag"><a href="/folios.html?tag=navigation-3">navigation-3</a></li><li class="sheet-tag"><a href="/folios.html?tag=paging-3">paging-3</a></li><li class="sheet-tag"><a href="/folios.html?tag=offline-first">offline-first</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=cross-platform%2Fandroid-jetpack-stack.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/111">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

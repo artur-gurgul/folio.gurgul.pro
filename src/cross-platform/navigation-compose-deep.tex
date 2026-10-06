@@ -1,0 +1,191 @@
+% navigation-compose-deep.tex — Navigation Compose in depth: NavController / NavBackStackEntry model,
+% type-safe @Serializable routes (2.8+), toRoute(), nested graphs, back-stack ops (popUpTo,
+% inclusive, launchSingleTop, saveState/restoreState = multiple back stacks), ViewModel scoping to an
+% entry or a graph, results between screens, deep links + App Links verification, predictive back
+% by Android version, Navigation 3 (you own the back stack). Diagram: the back stack before/after
+% the standard bottom-nav navigate() with saveState/restoreState, plus the three wrong variants.
+% Extends android-jetpack-stack (one Navigation bullet) and android-compose-lifecycle — does not
+% repeat them.
+% Sources (checked 2026-09-26):
+%   https://developer.android.com/jetpack/androidx/releases/navigation   (2.8.0 Sep 2024, 2.9.0 May 2025,
+%                                                                         2.10.0 Aug 2026, 2.10.2 Sep 2026)
+%   https://developer.android.com/guide/navigation/design/type-safety
+%   https://developer.android.com/guide/navigation/backstack  +  .../backstack/multi-back-stacks
+%   https://developer.android.com/guide/navigation/custom-back/predictive-back-gesture
+%   https://developer.android.com/training/app-links/verify-applinks
+%   https://developer.android.com/jetpack/androidx/releases/navigation3  (1.0.0 19 Nov 2025, 1.2.0 23 Sep 2026)
+%   https://developer.android.com/guide/navigation/navigation-3/save-state (rememberNavBackStack, decorators)
+% @labels: area=cross-platform kind=api platform=android topic=ui,architecture,platform-apis discussion=123
+% @tags: navigation-compose, navcontroller, type-safe-navigation, back-stack, popupto, savestate, viewmodel-scoping, deep-links, app-links, predictive-back, navigation-3, navdisplay
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,when,is,in,out,as,by,
+    override,private,return,if,else,null,this,it,remember},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {?.}{{\hbox{?}\hbox{.}}}2 {?:}{{\hbox{?}\hbox{:}}}2
+           {!!}{{\hbox{!}\hbox{!}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {::}{{\hbox{:}\hbox{:}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2 {>=}{{\hbox{>}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\sq{\texttt{\hbox{?}\hbox{.}}}
+
+\tikzset{
+  en/.style={draw=sheetBlue, thick, fill=sheetBlue!8, font=\tiny\ttfamily, minimum width=15mm,
+    minimum height=3.6mm, inner sep=0.5pt},
+  sv/.style={en, draw=sheetGreen, fill=sheetGreen!12},
+  bad/.style={en, draw=sheetRed, fill=sheetRed!8, minimum width=11mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Navigation Compose — back stack, routes, scoping, Nav 3}{cross-platform · folio}
+
+\oneliner{A \texttt{NavController} owns a \textbf{back stack of \texttt{NavBackStackEntry}} — each entry
+is its own \textbf{Lifecycle}, \textbf{ViewModelStore} and \textbf{SavedState} owner — and
+\texttt{NavHost} shows the top one. Routes are \texttt{@Serializable} classes (2.8+); every
+\texttt{navigate()} is a push plus \textbf{NavOptions} that pop, dedupe, save and restore.
+\textbf{Navigation 3} drops the controller: \emph{you} own the back stack as a state list.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[hd] at (-0.3,3.0) {Bottom nav: \texttt{navigate(tab) \{ popUpTo(graph.findStartDestination().id) \{ saveState = true \};
+    launchSingleTop = true; restoreState = true \}}};
+  % A
+  \node[lbl, font=\tiny\bfseries] at (0.8,2.55) {A · on Search, drilled in};
+  \node[en] at (0.8,0.6) {Home};
+  \node[en] at (0.8,1.0) {Search};
+  \node[en] at (0.8,1.4) {Result(7)};
+  \node[lbl, text=sheetGrey] at (0.8,0.2) {bottom = start};
+  \draw[hot] (1.75,1.2) -- node[lbl, above]{tap Profile} (3.0,1.2);
+  % B
+  \node[lbl, font=\tiny\bfseries] at (3.9,2.55) {B · on Profile};
+  \node[en] at (3.9,0.6) {Home};
+  \node[en] at (3.9,1.0) {Profile};
+  \node[draw=sheetGreen, dashed, rounded corners=2pt, minimum width=21mm, minimum height=12mm] (bag) at (6.0,1.1) {};
+  \node[sv] at (6.0,1.3) {Search};
+  \node[sv] at (6.0,0.9) {Result(7)};
+  \node[lbl, text=sheetGreen!60!black] at (6.0,2.0) {popped + \texttt{saveState}: kept\\with VMs + \texttt{rememberSaveable}};
+  \node[lbl, text=sheetGrey] at (6.0,0.3) {saved stack, keyed by tab};
+  \draw[hot] (7.15,1.2) -- node[lbl, above]{tap Search} (8.3,1.2);
+  % C
+  \node[lbl, font=\tiny\bfseries] at (9.2,2.55) {C · Search restored};
+  \node[en] at (9.2,0.6) {Home};
+  \node[sv] at (9.2,1.0) {Search};
+  \node[sv] at (9.2,1.4) {Result(7)};
+  \node[lbl, text=sheetGrey] at (9.2,0.2) {same VMs, same scroll};
+  \draw[sheetGrey!40] (10.25,2.75) -- (10.25,0.0);
+  % wrong variants
+  \node[hd] at (10.35,2.55) {Drop one option (from A, tap Profile):};
+  \node[lbl, anchor=west, text=sheetRed] at (10.35,2.15) {no \texttt{popUpTo}: stack grows, Back walks the tabs};
+  \foreach \i/\t in {0/Home,1/Search,2/Result,3/Profile} \node[bad] at (10.95+\i*1.18,1.8) {\t};
+  \node[lbl, anchor=west, text=sheetRed] at (10.35,1.4) {\texttt{popUpTo} but no save/restore: Result(7) + VM gone};
+  \foreach \i/\t in {0/Home,1/Profile} \node[bad] at (10.95+\i*1.18,1.05) {\t};
+  \node[lbl, anchor=west] at (13.25,1.05) {$\to$ Search = fresh};
+  \node[lbl, anchor=west, text=sheetRed] at (10.35,0.65) {no \texttt{launchSingleTop}: re-tap Profile};
+  \foreach \i/\t in {0/Home,1/Profile,2/Profile} \node[bad] at (10.95+\i*1.18,0.3) {\t};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{The model}
+\begin{itemize}\raggedright
+  \item \texttt{rememberNavController()} + \texttt{NavHost(nav, startDestination = Home) \{…\}}
+        builds a \texttt{NavGraph}; \texttt{currentBackStackEntryAsState()} drives the bottom
+        bar. Screens get \textbf{lambdas}, not the \texttt{NavController} (testable, previewable).
+  \item \textbf{Type-safe routes} (2.8.0, Sep 2024): \texttt{@Serializable object}/\texttt{data
+        class}, fields = arguments (Bundle-encoded: pass \textbf{ids}; custom types need a
+        \texttt{typeMap}). Read: \texttt{entry.toRoute<Profile>()}, in the VM
+        \texttt{savedStateHandle.toRoute<Profile>()}. 2.9: \texttt{KClass} overloads, value
+        classes; \textbf{2.10} (Aug 2026): KMP targets, predictive-pop transitions.
+  \item \texttt{navigation<Checkout>(startDestination = Cart) \{…\}} = nested graph: a flow
+        with its own start, poppable as a unit (\texttt{popUpTo<Checkout> \{ inclusive = true \}}).
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=KotlinSheet]
+@Serializable object Home
+@Serializable data class Profile(val id: String)
+@Serializable object Checkout; @Serializable object Cart
+NavHost(nav, startDestination = Home) {
+  composable<Home> { HomeScreen(onUser = { nav.navigate(Profile(it)) }) }
+  composable<Profile>(deepLinks = listOf(navDeepLink<Profile>(
+      basePath = "https://example.com/u"))) { ProfileScreen() }
+  navigation<Checkout>(startDestination = Cart) {
+    composable<Cart> { entry ->
+      val flow = remember(entry) { nav.getBackStackEntry<Checkout>() }
+      val vm: CheckoutVM = hiltViewModel(flow)  // shared by the flow
+      CartScreen(vm, onDone = { nav.navigate(Home) {
+        popUpTo<Checkout> { inclusive = true } } }) } } }
+\end{lstlisting}
+
+\section{Back-stack operations}
+\begin{itemize}\raggedright
+  \item \texttt{popUpTo(X)} pops all above X; \texttt{inclusive = true} pops X too (after
+        login). \texttt{launchSingleTop}: no second copy on top.
+  \item \texttt{saveState}/\texttt{restoreState} = \textbf{multiple back stacks} (2.4+): popped
+        entries keep state + VMs, keyed by the tab.
+  \item \texttt{popBackStack()} returns \texttt{false} if nothing popped (empty host = blank
+        screen); \texttt{navigateUp()} goes to the parent inside your own task.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{\texttt{navigate()} in the composable body runs on every recomposition — call it from
+        an event or a \texttt{LaunchedEffect}.}
+  \trap{Double tap = two pushes: wrap in \texttt{dropUnlessResumed \{ … \}}.}
+  \trap{A whole object in a route: Bundle size, stale copy — pass the id.}
+\end{itemize}
+
+\textbf{Remember:} \emph{entry = lifecycle + VM store + saved state · pop, single-top, save,
+restore · Nav 3: the stack is your list.}
+
+\columnbreak
+
+\section{ViewModel scope \& results}
+\begin{itemize}\raggedright
+  \item Default \texttt{hiltViewModel()} = the \textbf{entry}: survives rotation, cleared when
+        popped. Graph-scoped (Example) lives while any of the graph is on the stack.
+  \item \textbf{Result back}: \texttt{previousBackStackEntry\sq savedStateHandle\sq
+        set("k", id)}; the caller collects its own \texttt{savedStateHandle.getStateFlow("k",
+        null)}. Or a shared graph VM — never a callback into a popped screen.
+\end{itemize}
+
+\section{Deep links \& App Links}
+\begin{itemize}\raggedright
+  \item \texttt{<intent-filter>} \texttt{VIEW} + \texttt{DEFAULT} + \texttt{BROWSABLE} +
+        \texttt{<data>}; \texttt{navDeepLink} matches. The controller builds a
+        \textbf{synthetic back stack} (start of each parent graph) so Back works; with
+        \texttt{FLAG\_ACTIVITY\_NEW\_TASK} the task is cleared and rebuilt.
+  \item \textbf{App Links}: \texttt{autoVerify="true"} + \texttt{/.well-known/assetlinks.json}
+        (package + SHA-256 cert). Android 12+: unverified links open the \textbf{browser}.
+        \texttt{adb shell pm get-app-links <pkg>}.
+\end{itemize}
+
+\section{Predictive back}
+\raggedright 13: opt-in \texttt{enableOnBackInvokedCallback="true"}; 15: system
+back-to-home / cross-activity animations for opted-in apps; \textbf{16 + targetSdk 36}: on by
+default — \texttt{onBackPressed()} / \texttt{KEYCODE\_BACK} no longer delivered. Use
+\texttt{OnBackPressedCallback}, \texttt{BackHandler}, \texttt{PredictiveBackHandler} (a
+\texttt{Flow<BackEventCompat>} of progress); \texttt{NavHost} animates the pop (2.8+).
+
+\section{Navigation 3 — you own the stack}
+\raggedright \textbf{1.0.0 stable 19 Nov 2025} (1.2.0 Sep 2026), runtime KMP.
+\texttt{rememberNavBackStack(Home)} — keys \texttt{@Serializable : NavKey}, survives process
+death; push \texttt{backStack.add(Profile(id))}, pop \texttt{removeLastOrNull()}.
+\texttt{NavDisplay(backStack, onBack, entryDecorators, entryProvider \{ entry<Home> \{…\} \})};
+per-entry VMs need \texttt{rememberViewModelStoreNavEntryDecorator()}
+(\texttt{lifecycle-viewmodel-navigation3}). \texttt{SceneStrategy}: several entries at once
+(list-detail, dialog). Tabs = lists you keep; $\approx$ SwiftUI \texttt{NavigationStack(path:)}.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} android-jetpack-stack ·
+android-compose-lifecycle · hilt-dagger-deep · compose-layout-modifiers · universal links (iOS) ·
+swiftui navigation}
+
+\end{document}

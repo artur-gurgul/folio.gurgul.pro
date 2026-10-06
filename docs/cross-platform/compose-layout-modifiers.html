@@ -1,0 +1,90 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Compose layout &amp; modifiers — constraints, measure, place — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/cross-platform/compose-layout-modifiers.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">128</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area current" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Compose layout &amp; modifiers — constraints, measure, place</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">cross-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Layout is <strong>one pass</strong>: a parent hands each child <strong>Constraints</strong> (min/max
+width, height), the child is <strong>measured once</strong> and reports a <strong>size</strong>, the parent
+<strong>places</strong> it. A <code>Modifier</code> chain wraps outer <span class="math">→</span> inner; each link may change the
+constraints going down and the size coming up — <strong>order is behaviour</strong>.</p>
+<p class="sheet-tools"><a class="sheet-download" href="compose-layout-modifiers.pdf" download>Download PDF</a> <a href="compose-layout-modifiers.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/cross-platform/compose-layout-modifiers.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="compose-layout-modifiers-fig1.svg" width="627" height="125" class="wide" alt="Compose layout &amp; modifiers — constraints, measure, place — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Measure <span class="math">→</span> size <span class="math">→</span> place</h2>
+<ul>
+<li><code>MeasurePolicy</code> gets <code>(measurables, constraints)</code>; <code>measure()</code> twice  on one child <strong>throws</strong> — single pass is enforced, so deep nesting is cheap  (unlike nested <code>RelativeLayout</code>).</li>
+<li><strong>Tight</strong> = min <span class="math">=</span> max (<code>Constraints.fixed</code>); <strong>loose</strong> = min 0;  <strong>unbounded</strong> = max <code>Infinity</code> (in a scrollable).</li>
+<li><code>layout(w, h) { p.placeRelative(x, y) }</code> — <code>placeRelative</code> mirrors in  RTL, <code>place</code> does not. A size outside the constraints is coerced + centred.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Size modifiers &amp; intrinsics</h2>
+<ul>
+<li><code>size</code> = a <em>preference</em> coerced into incoming constraints; the first tight  one wins: <code>size(100).size(50)</code> = <strong>100</strong>. <code>requiredSize</code> ignores them.</li>
+<li><code>fillMaxWidth(f)</code>: min = max = <code>f</code>·max. <code>wrapContentSize()</code>: min  <span class="math">→</span> 0 + align — a child smaller than a tight parent.</li>
+<li><code>weight(w)</code>: unweighted children measured first, the rest split by weight  (<code>fill = false</code> = a cap). <code>Box</code>: <code>matchParentSize()</code> takes the size  <em>after</em> siblings set it; <code>fillMaxSize()</code> helps set it.</li>
+<li><code>Row(Modifier.height(IntrinsicSize.Min))</code> asks children  <code>minIntrinsicHeight</code> <em>before</em> measuring, so a <code>fillMaxHeight()</code>  divider matches the tallest text. A query, not a measure — but a second walk. A custom  <code>Layout</code>’s default intrinsics are <strong>approximated</strong>: override them.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example — a custom <code>Layout</code></h2>
+<pre class="sheet-code"><code class="hljs language-kotlin"><span class="hljs-meta">@Composable</span> <span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-title">Stack</span><span class="hljs-params">(modifier: <span class="hljs-type">Modifier</span> = Modifier,
+                      content: @<span class="hljs-type">Composable</span> () -&gt; <span class="hljs-type">Unit</span>)</span></span> =
+  Layout(content, modifier) { measurables, constraints -&gt;
+    <span class="hljs-keyword">val</span> loose = constraints.copy(minWidth = <span class="hljs-number">0</span>, minHeight = <span class="hljs-number">0</span>)
+    <span class="hljs-keyword">val</span> ps = measurables.map { it.measure(loose) } <span class="hljs-comment">// once each</span>
+    <span class="hljs-keyword">val</span> w = (ps.maxOfOrNull { it.width } ?: <span class="hljs-number">0</span>)
+        .coerceIn(constraints.minWidth, constraints.maxWidth)
+    <span class="hljs-keyword">val</span> h = ps.sumOf { it.height }
+        .coerceIn(constraints.minHeight, constraints.maxHeight)
+    layout(w, h) {                                 <span class="hljs-comment">// report size</span>
+      <span class="hljs-keyword">var</span> y = <span class="hljs-number">0</span>
+      ps.forEach { it.placeRelative(<span class="hljs-number">0</span>, y); y += it.height }
+    }
+  }</code></pre>
+<p>One wrapped node only? <code>Modifier.layout { m, c -&gt; …}</code> (measure it, add an offset/baseline gap). <strong>vs SwiftUI <code>Layout</code>:</strong> a proposal is a <em>suggestion</em> and a subview may be asked <code>sizeThatFits</code> several times; Compose constraints are hard <em>bounds</em> and each child is measured <strong>once</strong>.</p>
+</section>
+<section class="sheet-section">
+<h2>SubcomposeLayout &amp; BoxWithConstraints</h2>
+<ul>
+<li><code>SubcomposeLayout</code> <strong>composes during layout</strong> — children exist only once  constraints are known (<code>LazyColumn</code>, <code>Scaffold</code>,  <code>BoxWithConstraints</code>). Composition moves into the layout pass; a new constraint  re-subcomposes.</li>
+<li>Use it only when the <em>tree</em> depends on size (1 vs 2 panes); to <em>position</em> by  size use <code>Layout</code>. <code>onSizeChanged</code> + state write = a frame late.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2><code>Modifier.Node</code>, not <code>composed{}</code></h2>
+<p><code>composed{}</code> runs composition per use site, allocates, never skips. A <code>Modifier.Node</code> lives long; its <code>ModifierNodeElement</code> (<code>create</code>, <code>update</code>, <strong>equals/hashCode</strong> — a <code>data class</code>) is diffed and <code>update()</code> mutates the node. Roles: <code>LayoutModifierNode</code>, <code>DrawModifierNode</code>, <code>PointerInputModifierNode</code>, <code>SemanticsModifierNode</code>.</p>
+<pre class="sheet-code"><code class="hljs language-kotlin"><span class="hljs-function"><span class="hljs-keyword">fun</span> Modifier.<span class="hljs-title">circle</span><span class="hljs-params">(c: <span class="hljs-type">Color</span>)</span></span> = <span class="hljs-keyword">this</span> then CircleEl(c)
+<span class="hljs-keyword">private</span> <span class="hljs-keyword">data</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CircleEl</span>(<span class="hljs-keyword">val</span> c: Color) :
+    ModifierNodeElement&lt;CircleNode&gt;() {
+  <span class="hljs-keyword">override</span> <span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-title">create</span><span class="hljs-params">()</span></span> = CircleNode(c)
+  <span class="hljs-keyword">override</span> <span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-title">update</span><span class="hljs-params">(node: <span class="hljs-type">CircleNode</span>)</span></span> { node.c = c } }
+<span class="hljs-keyword">private</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">CircleNode</span>(<span class="hljs-keyword">var</span> c: Color) :
+    Modifier.Node(), DrawModifierNode {
+  <span class="hljs-keyword">override</span> <span class="hljs-function"><span class="hljs-keyword">fun</span> ContentDrawScope.<span class="hljs-title">draw</span><span class="hljs-params">()</span></span> { drawCircle(c); drawContent() } }</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Moving things &amp; lazy lists</h2>
+<ul>
+<li>Animating <code>padding</code>/<code>size</code>/<code>offset(x.dp)</code> <span class="math">→</span> <strong>relayout</strong>,  neighbours move. <code>graphicsLayer { translationX; scaleX; alpha }</code> transforms  the drawn layer only — <strong>no remeasure</strong>; a scaled item keeps its old slot.</li>
+<li><code>key = { it.id }</code> (Bundle-able) keeps item state across inserts;  <code>contentType</code> reuses same-type compositions; <code>Modifier.animateItem()</code>  (fade + placement, needs keys) replaced <code>animateItemPlacement</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><code>LazyColumn</code> in a <code>verticalScroll</code> <span class="math">→</span> crash: <strong>infinite max
+ height</strong>. Use one lazy list with several <code>item{}</code>s.</li>
+<li class="trap">“<code>size(50)</code> is 50” — not after <code>fillMaxSize()</code>: the min wins.</li>
+<li class="trap">No margin API: padding <em>before</em> background is the margin.</li>
+</ul>
+<p><strong>Remember:</strong> <em>constraints down, sizes up, place last · measure once · order =
+wrapping · move with graphicsLayer.</em></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> compose-recomposition-stability ·
+android-compose-lifecycle · android-jetpack-stack · auto-layout (iOS) · swiftui layout protocol</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=cross-platform" title="area">cross-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=android" title="platform">android</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=ui" title="topic">ui</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=performance" title="topic">performance</a></li><li class="sheet-tag"><a href="/folios.html?tag=jetpack-compose">jetpack-compose</a></li><li class="sheet-tag"><a href="/folios.html?tag=compose-layout">compose-layout</a></li><li class="sheet-tag"><a href="/folios.html?tag=constraints">constraints</a></li><li class="sheet-tag"><a href="/folios.html?tag=modifier-order">modifier-order</a></li><li class="sheet-tag"><a href="/folios.html?tag=requiredsize">requiredsize</a></li><li class="sheet-tag"><a href="/folios.html?tag=intrinsic-measurements">intrinsic-measurements</a></li><li class="sheet-tag"><a href="/folios.html?tag=custom-layout">custom-layout</a></li><li class="sheet-tag"><a href="/folios.html?tag=subcomposelayout">subcomposelayout</a></li><li class="sheet-tag"><a href="/folios.html?tag=boxwithconstraints">boxwithconstraints</a></li><li class="sheet-tag"><a href="/folios.html?tag=modifier-node">modifier-node</a></li><li class="sheet-tag"><a href="/folios.html?tag=graphicslayer">graphicslayer</a></li><li class="sheet-tag"><a href="/folios.html?tag=lazy-column-keys">lazy-column-keys</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=cross-platform%2Fcompose-layout-modifiers.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/112">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

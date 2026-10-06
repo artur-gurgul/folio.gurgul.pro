@@ -1,0 +1,92 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Kotlin type system &amp; generics — variance, reified, nullability — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/cross-platform/kotlin-type-system-generics.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">128</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area current" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Kotlin type system &amp; generics — variance, reified, nullability</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">cross-platform · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Every Kotlin type has a <strong>nullable twin</strong>; the hierarchy is a lattice with
+<code>Any?</code> on top and <code>Nothing</code> (no values) at the bottom, so <code>throw</code>,
+<code>TODO()</code> and <code>return</code> fit any expected type. Generics are <strong>invariant</strong> unless
+declared <code>out</code>/<code>in</code> at the class (declaration site) or projected at a use; on the
+JVM type arguments are <strong>erased</strong>, so runtime checks see only <code>List&lt;*&gt;</code> — unless an
+<code>inline</code> function makes <code>T</code> <strong>reified</strong>.</p>
+<p class="sheet-tools"><a class="sheet-download" href="kotlin-type-system-generics.pdf" download>Download PDF</a> <a href="kotlin-type-system-generics.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/cross-platform/kotlin-type-system-generics.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="kotlin-type-system-generics-fig1.svg" width="641" height="147" class="wide" alt="Kotlin type system &amp; generics — variance, reified, nullability — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Top, bottom, platform</h2>
+<ul>
+<li><code>Nothing</code> makes failure branches type-check: <code>val n: String = x <code>?:</code>
+ fail(&quot;no&quot;)</code>. <code>emptyList()</code> is an <code>object EmptyList : List&lt;Nothing&gt;</code> —  one instance fits every <code>List&lt;T&gt;</code> <em>because</em> <code>List</code> is <code>out</code>.  Same trick: <code>data object Loading : Load&lt;Nothing&gt;</code>.</li>
+<li>Default upper bound of <code>&lt;T&gt;</code> is <code>Any?</code>: <code>fun &lt;T&gt; f(t: T)</code> accepts  <code>null</code>. <code>&lt;T : Any&gt;</code> forbids it. <code>T &amp; Any</code> = <strong>definitely
+ non-nullable</strong> (1.7) — e.g. to override Java’s <code>@NotNull T</code>.</li>
+<li><strong>Platform type</strong> <code>T!</code> (from un-annotated Java) = “<code>T</code> or  <code>T?</code>, you decide”. <code>@Nullable</code>/<code>@NonNull</code> (JSpecify, AndroidX,  JetBrains) turn it into a real type. Declare the type explicitly at the boundary.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Smart casts — exactly when</h2>
+<ul>
+<li><strong>Stable</strong> values only: <code>val</code> locals; <code>val</code> properties that are  not <code>open</code>, have no custom getter and live in the <strong>same module</strong>;  <code>var</code> locals not changed between check and use (and not captured by a lambda  that changes them). Never: <code>var</code> properties, delegated properties.</li>
+<li><strong>K2</strong> (2.0) adds: a check stored in a local (<code>val isCat = a is Cat</code>),  <code>a is B || a is C</code> <span class="math">→</span> closest common supertype, captured vars inside  <code>inline</code> lambdas, info carried into <code>catch</code>/<code>finally</code>.</li>
+<li><strong>Contracts</strong> teach the compiler: <code>requireNotNull</code>, <code>check</code>,  <code>isNullOrEmpty</code> smart-cast after the call; <code>run</code>/<code>let</code> promise  <code>callsInPlace</code>. Your own <code>contract {}</code> still needs  <code>@OptIn(ExperimentalContracts</code><code>::</code><code>class)</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example</h2>
+<pre class="sheet-code"><code class="hljs language-kotlin"><span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-title">fail</span><span class="hljs-params">(msg: <span class="hljs-type">String</span>)</span></span>: <span class="hljs-built_in">Nothing</span> = <span class="hljs-keyword">throw</span> IllegalStateException(msg)
+<span class="hljs-keyword">sealed</span> <span class="hljs-keyword">interface</span> <span class="hljs-title class_">Res</span>&lt;<span class="hljs-type">out T</span>&gt; {                   <span class="hljs-comment">// out: Res&lt;Nothing&gt; fits</span>
+  <span class="hljs-keyword">data</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">Ok</span>&lt;<span class="hljs-type">T</span>&gt;(<span class="hljs-keyword">val</span> v: T) : Res&lt;T&gt;
+  <span class="hljs-keyword">data</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">Err</span>(<span class="hljs-keyword">val</span> e: Throwable) : Res&lt;<span class="hljs-built_in">Nothing</span>&gt;
+}
+<span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-title">copy</span><span class="hljs-params">(from: <span class="hljs-type">Array</span>&lt;<span class="hljs-type">out</span> <span class="hljs-type">Any</span>&gt;, to: <span class="hljs-type">Array</span>&lt;<span class="hljs-type">in</span> <span class="hljs-type">Any</span>&gt;)</span></span> { <span class="hljs-comment">/*..*/</span> } <span class="hljs-comment">// use-site</span>
+<span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-type">&lt;T&gt;</span> <span class="hljs-title">max</span><span class="hljs-params">(xs: <span class="hljs-type">List</span>&lt;<span class="hljs-type">T</span>&gt;)</span></span>: T <span class="hljs-keyword">where</span> T : Comparable&lt;T&gt;, T : Any = xs.max()
+<span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-type">&lt;T&gt;</span> T.<span class="hljs-title">orThrow</span><span class="hljs-params">()</span></span>: T &amp; Any = <span class="hljs-keyword">this</span> ?: fail(<span class="hljs-string">&quot;null&quot;</span>)  <span class="hljs-comment">// DNN type</span>
+<span class="hljs-keyword">inline</span> <span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-type">&lt;<span class="hljs-keyword">reified</span> T&gt;</span> Any?.<span class="hljs-title">asOrNull</span><span class="hljs-params">()</span></span>: T? = <span class="hljs-keyword">this</span> <span class="hljs-keyword">as</span>? T
+<span class="hljs-keyword">val</span> t = typeOf&lt;List&lt;String&gt;&gt;()     <span class="hljs-comment">// reified: keeps the type ARGUMENT</span>
+<span class="hljs-keyword">if</span> (x <span class="hljs-keyword">is</span> List&lt;*&gt;) { }              <span class="hljs-comment">// is List&lt;String&gt; = compile error</span>
+<span class="hljs-meta">@JvmInline</span> value <span class="hljs-keyword">class</span> <span class="hljs-title class_">Email</span>(<span class="hljs-keyword">val</span> raw: String) {
+  <span class="hljs-keyword">init</span> { require(<span class="hljs-string">&#x27;@&#x27;</span> <span class="hljs-keyword">in</span> raw) }     <span class="hljs-comment">// validated, zero-cost when unboxed</span>
+}
+<span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-keyword">interface</span> Rule { <span class="hljs-keyword">fun</span> <span class="hljs-title">ok</span><span class="hljs-params">(s: <span class="hljs-type">String</span>)</span></span>: <span class="hljs-built_in">Boolean</span> }
+<span class="hljs-keyword">val</span> notBlank = Rule { it.isNotBlank() }       <span class="hljs-comment">// SAM conversion</span></code></pre>
+</section>
+<section class="sheet-section">
+<h2>Erasure &amp; reified</h2>
+<ul>
+<li>JVM keeps only the class: <code>is List&lt;String&gt;</code> = error, <code>as List&lt;String&gt;</code>  = <em>unchecked</em> warning — the CCE fires later, at the first element read.</li>
+<li><code>reified</code> (inline only): the call site pastes the real class, so <code>is T</code>,  <code>T</code><code>::</code><code>class</code>, <code>typeOf&lt;T&gt;()</code> work. <code>T</code><code>::</code><code>class.java</code> still drops  <em>arguments</em> (<code>List&lt;User&gt;</code> <span class="math">→</span> <code>List</code>); <code>typeOf</code> keeps them.</li>
+<li>Erased overloads clash (<code>f(List&lt;String&gt;)</code>/<code>f(List&lt;Int&gt;)</code>) <span class="math">→</span> <code>@JvmName</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Variance in practice</h2>
+<ul>
+<li><code>out T</code>: <code>T</code> only in <em>out</em> positions (returns, <code>val</code>);  escape hatch <code>List.contains(e: @UnsafeVariance E)</code>. <code>Array&lt;T&gt;</code> is  invariant (mutable), so <code>copy(from: Array&lt;out Any&gt;)</code> takes an  <code>Array&lt;String&gt;</code> but cannot write into it.</li>
+<li>Star: <code>Foo&lt;out T : U&gt;</code> <span class="math">→</span> <code>Foo&lt;*&gt;</code> reads <code>U</code>;  <code>Foo&lt;in T&gt;</code> <span class="math">→</span> <code>Foo&lt;*&gt;</code> = <code>Foo&lt;in Nothing&gt;</code>: writes nothing.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Sealed, value, alias, SAM</h2>
+<ul>
+<li><strong>sealed</strong>: direct subclasses in the same <strong>module + package</strong>; <code>when</code>  on sealed/enum/<code>Boolean</code> must be exhaustive (statements too, since 1.7) — skip  <code>else</code> so a new subclass breaks the build.</li>
+<li><strong>value class</strong>: one <code>val</code>, unboxed; <strong>boxed</strong> as nullable, generic  <code>T</code>, interface/<code>Any</code>; no <code>===</code>; functions taking one get a  <strong>mangled JVM name</strong> (<code>send-&lt;hash&gt;</code>).</li>
+<li><strong>typealias</strong> = new name, same type, no safety. <strong>fun interface</strong>: one  abstract method <span class="math">→</span> lambda converts (Java SAMs always did).</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><code>fun &lt;T&gt; f(t: T)</code>: <code>t</code> may be null — the bound is <code>Any?</code>.</li>
+<li class="trap"><code>val s = javaObj.name</code> infers <code>String!</code>: NPE at first use, far away.</li>
+<li class="trap">No smart cast on <code>open val</code>/other-module <code>val</code> — copy to a local.</li>
+<li class="trap"><code>List&lt;Email&gt;</code> of a value class = boxed elements; saving gone.</li>
+</ul>
+<p><strong>Remember:</strong> <em><code>Any?</code> top · <code>Nothing</code> bottom · out produces, in
+consumes · erased unless reified.</em></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> kotlin-language ·
+kotlin-under-the-hood · kotlin-dsl-delegation-inline · kmp-fundamentals-interop (generics
+in the ObjC header) · protocols-generics (Swift)</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=cross-platform" title="area">cross-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=android" title="platform">android</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=language" title="topic">language</a></li><li class="sheet-tag"><a href="/folios.html?tag=kotlin">kotlin</a></li><li class="sheet-tag"><a href="/folios.html?tag=type-system">type-system</a></li><li class="sheet-tag"><a href="/folios.html?tag=nothing-type">nothing-type</a></li><li class="sheet-tag"><a href="/folios.html?tag=platform-types">platform-types</a></li><li class="sheet-tag"><a href="/folios.html?tag=smart-cast">smart-cast</a></li><li class="sheet-tag"><a href="/folios.html?tag=variance">variance</a></li><li class="sheet-tag"><a href="/folios.html?tag=star-projection">star-projection</a></li><li class="sheet-tag"><a href="/folios.html?tag=type-erasure">type-erasure</a></li><li class="sheet-tag"><a href="/folios.html?tag=reified">reified</a></li><li class="sheet-tag"><a href="/folios.html?tag=value-class">value-class</a></li><li class="sheet-tag"><a href="/folios.html?tag=sealed-class">sealed-class</a></li><li class="sheet-tag"><a href="/folios.html?tag=fun-interface">fun-interface</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=cross-platform%2Fkotlin-type-system-generics.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/121">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

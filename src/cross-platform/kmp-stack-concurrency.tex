@@ -1,0 +1,210 @@
+% kmp-stack-concurrency.tex — the common KMP library stack (Ktor + engines,
+% kotlinx.serialization, SQLDelight, Koin/kotlin-inject, kotlinx-datetime, settings, logging),
+% shared-module architecture, the Kotlin/Native memory model, exposing StateFlow to SwiftUI,
+% threading on iOS, testing shared code, and the team/process trade-offs.
+% Sources (checked 2026-10-06):
+%   kotlinlang.org/docs/native-memory-manager.html (new memory manager, default since 1.7.20;
+%     tracing GC; freezing deprecated) · github.com/Kotlin/kotlinx.coroutines CHANGES.md
+%     (1.7.0: Dispatchers.IO on Kotlin/Native) · kotlinlang.org/api/kotlinx.coroutines
+%     (Dispatchers.Main on Darwin = main queue; kotlinx-coroutines-android for Android)
+%   ktor.io/docs/client-engines.html (OkHttp, Darwin) · kotlinlang.org/docs/serialization.html ·
+%     sqldelight.github.io (drivers, .sqm migrations) · insert-koin.io · github.com/evant/
+%     kotlin-inject · github.com/Kotlin/kotlinx-datetime · github.com/russhwolf/
+%     multiplatform-settings · github.com/touchlab/Kermit · github.com/cashapp/turbine ·
+%     kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-test (runTest virtual time)
+%   github.com/touchlab/xcode-kotlin (debugging Kotlin in Xcode)
+% @labels: area=cross-platform kind=architecture platform=cross-platform topic=architecture,concurrency,testing discussion=116
+% @tags: kotlin-multiplatform, ktor, kotlinx-serialization, sqldelight, koin, kotlinx-datetime, stateflow, kotlin-native-memory-model, dispatchers-main, turbine, skie
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usepackage{tabularx}
+
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,suspend,when,is,in,out,
+    override,private,return,if,else,import,package,companion,by,lazy,launch,flow,emit,collect},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,case,switch,default,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,as,import,for,in},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  lb/.style={box, font=\tiny, inner sep=1.2pt, minimum height=4.2mm, text width=#1, align=center},
+  lb/.default=24mm,
+  ios/.style={lb=24mm, draw=sheetGreen, fill=sheetGreen!10},
+  and/.style={lb=24mm, draw=sheetOrange, fill=sheetOrange!10},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+  lane/.style={draw=sheetGrey!60},
+  ln/.style={font=\tiny\bfseries, anchor=east, text=sheetGrey, align=right},
+  wk/.style={draw=none, minimum height=2.6mm, inner sep=0pt, font=\tiny, text=white},
+}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+
+\begin{document}
+
+\sheettitle{KMP in practice — library stack, shared architecture, concurrency}{kmp · folio}
+
+\oneliner{A shared module is \textbf{repositories + use cases + a state holder exposing
+\texttt{StateFlow}} in \texttt{commonMain}, built on \textbf{Ktor}, \textbf{kotlinx.serialization},
+\textbf{SQLDelight}, \textbf{Koin} and \textbf{kotlinx-datetime}, with per-platform engines
+and drivers; each platform binds native UI to it. On iOS, \texttt{Dispatchers.Main} is the
+main queue and the \textbf{new memory model} (tracing GC, no freezing) lets objects cross
+threads like on the JVM.}
+
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- shared architecture ----------
+  \node[hd] at (-0.2,3.05) {Shared-module architecture};
+  \node[ios] (sv) at (1.3,2.6) {SwiftUI view};
+  \node[and] (cv) at (6.6,2.6) {Compose screen};
+  \node[ios] (sa) at (1.3,2.0) {\texttt{@Observable} adapter / \texttt{.task}};
+  \node[and] (va) at (6.6,2.0) {AndroidX \texttt{ViewModel} wraps store};
+  \node[lb=34mm] (st) at (3.95,1.35) {\textbf{Store / presenter}: \texttt{StateFlow<Ui>}, own scope};
+  \node[lb=16mm] (uc) at (2.75,0.75) {use cases};
+  \node[lb=16mm] (rp) at (5.15,0.75) {repository};
+  \node[lb=14mm] (api) at (2.4,0.15) {Ktor API};
+  \node[lb=14mm] (db) at (3.95,0.15) {SQLDelight};
+  \node[lb=14mm] (kv) at (5.5,0.15) {Settings};
+  \begin{scope}[on background layer]
+    \node[draw=sheetBlue, dashed, rounded corners=2pt, fit=(st)(uc)(rp)(api)(db)(kv), inner sep=3pt] {};
+  \end{scope}
+  \node[font=\tiny\bfseries, text=sheetBlue] at (7.0,0.75) {commonMain};
+  \draw[flow] (sv) -- (sa); \draw[flow] (cv) -- (va);
+  \draw[flow, draw=sheetGreen] (sa) -- (st);
+  \draw[flow, draw=sheetOrange] (va) -- (st);
+  \draw[flow] (st) -- (uc); \draw[flow] (uc) -- (rp);
+  \draw[flow] (rp) -- (api); \draw[flow] (rp) -- (db); \draw[flow] (rp) -- (kv);
+  \node[lbl, text=sheetBrown] at (3.95,-0.4) {platform pieces injected: Ktor \textbf{engine}
+    (OkHttp · Darwin) · SQL \textbf{driver} (Android · Native) · \texttt{Settings} impl};
+  \node[lbl, text=sheetBlue] at (0.6,1.3) {state $\uparrow$ events $\downarrow$};
+  % ---------- threading on iOS ----------
+  \node[hd] at (8.6,3.05) {One refresh on iOS — threads};
+  \foreach \y/\t in {2.45/{Swift\\\texttt{@MainActor}}, 1.65/{\texttt{Dispatchers.Main}\\= main queue}, 0.85/{\texttt{Dispatchers.Default}\\worker threads}}
+    { \node[ln] at (10.9,\y) {\t}; \draw[lane] (11.0,\y) -- (16.6,\y); }
+  \node[lbl, anchor=south west] at (11.05,2.5) {tap: \texttt{store.refresh()}};
+  \draw[hot] (11.3,2.45) -- (11.55,1.65);
+  \node[wk, fill=sheetBlue, minimum width=6mm] at (11.85,1.65) {launch};
+  \draw[hot] (12.15,1.65) -- (12.4,0.85);
+  \node[wk, fill=sheetOrange, minimum width=17mm] at (13.3,0.85) {withContext: parse};
+  \draw[hot] (14.2,0.85) -- (14.45,1.65);
+  \node[wk, fill=sheetBlue, minimum width=10mm] at (15.0,1.65) {\_state.value=};
+  \draw[hot, draw=sheetGreen] (15.55,1.65) -- (15.8,2.45);
+  \node[lbl, anchor=south] at (15.7,2.5) {\texttt{for await} $\to$ \texttt{ui = s}};
+  \node[lbl, text=sheetBrown] at (13.6,1.25) {suspension frees main: UI keeps running};
+  \node[lbl, text=sheetBrown, align=left, anchor=west] at (8.6,0.25) {\textbf{New memory model} (default since Kotlin 1.7.20): objects shared across
+    threads,\\no \texttt{freeze()}, no \texttt{InvalidMutabilityException}; a \textbf{tracing GC} (not ARC):\\
+    collection time is non-deterministic; data races are now \emph{your} problem.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{The stack — common core, platform piece}
+{\scriptsize
+\noindent\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{18mm}L>{\raggedright\arraybackslash}p{15mm}@{}}
+\toprule
+\textbf{Library} & \textbf{Role · platform part} & \textbf{iOS twin} \\
+\midrule
+\textbf{Ktor} client & HTTP, plugins (\texttt{ContentNegotiation}, auth, logging);
+  \textbf{engine per target}: OkHttp/Android · \textbf{Darwin} (NSURLSession) &
+  URLSession \\
+\textbf{kotlinx .serialization} & \texttt{@Serializable} + \textbf{compiler plugin}, no
+  reflection; \texttt{Json \{ ignoreUnknownKeys = true \}}; sealed = class discriminator &
+  Codable \\
+\textbf{SQLDelight} & write \texttt{.sq} SQL $\to$ typed Kotlin; \texttt{.sqm} migrations
+  verified; \texttt{asFlow()}; driver: \texttt{AndroidSqliteDriver} ·
+  \texttt{NativeSqliteDriver} & GRDB / Core Data \\
+\textbf{Koin} · kotlin-inject & runtime DSL (errors at runtime) · KSP compile-time
+  graph; Hilt is Android-only & init injection \\
+\textbf{kotlinx -datetime} & \texttt{Instant}, \texttt{LocalDateTime}, \texttt{TimeZone} —
+  no \texttt{java.time} in common & Date, Calendar \\
+multiplatform -settings & KV over SharedPreferences / NSUserDefaults — \textbf{not} for
+  secrets (Keychain via an interface) & UserDefaults \\
+Kermit / Napier & logging to Logcat / \texttt{os\_log} & \texttt{Logger} \\
+\bottomrule
+\end{tabularx}}
+
+\section{Exposing state to SwiftUI}
+\begin{itemize}\raggedright
+  \item Shared store owns \texttt{CoroutineScope(SupervisorJob() + Dispatchers.Main)} and a
+        \texttt{clear()}; Android calls it from \texttt{onCleared}, iOS from the owner's
+        teardown — iOS has no \texttt{viewModelScope}.
+  \item Swift side: \textbf{SKIE} (\texttt{for await} over the flow), \textbf{KMP-NativeCoroutines}
+        (\texttt{asyncSequence(for:)}), or a hand-written \texttt{watch(\{…\}) $\to$ cancel handle}
+        wrapper. Map Kotlin types to Swift structs in the adapter.
+\end{itemize}
+\begin{lstlisting}[language=KotlinSheet]
+class DevicesStore(private val repo: DeviceRepo,
+    private val scope: CoroutineScope) {     // injected
+  private val _s = MutableStateFlow<Ui>(Ui.Loading)
+  val state: StateFlow<Ui> = _s.asStateFlow()
+  fun refresh() { scope.launch {
+    _s.value = try { Ui.Loaded(repo.devices()) }
+      catch (e: ApiError) { Ui.Failed(e.message) } } }
+  fun clear() = scope.cancel()
+}
+\end{lstlisting}
+\vspace{-3pt}
+\begin{lstlisting}[language=SwiftSheet]
+.task { for await s in store.state { ui = map(s) } } // SKIE
+\end{lstlisting}
+
+\section{Threading \& memory on iOS}
+\begin{itemize}\raggedright
+  \item \texttt{Dispatchers.Main} on iOS = main dispatch queue (in coroutines-core; Android
+        needs \texttt{-android}). \texttt{Dispatchers.IO} exists on Native since coroutines
+        1.7 — still inject dispatchers.
+  \item Old model (pre-1.7.20): shared objects had to be \textbf{frozen} (immutable) or
+        crashed — the \#1 historic KMP pain; now gone.
+  \item Hop to \texttt{@MainActor} before touching SwiftUI state; never
+        \texttt{runBlocking} on the main thread.
+  \item Kotlin objects in Swift are GC-managed: \texttt{deinit}-style cleanup is late —
+        call \texttt{close()/clear()} explicitly; capture \texttt{[weak self]} in closures
+        handed to Kotlin.
+\end{itemize}
+
+\columnbreak
+
+\section{Testing shared code}
+\begin{itemize}\raggedright
+  \item \texttt{commonTest} + \texttt{kotlin.test}; \texttt{runTest} = virtual time
+        (skips \texttt{delay}); \texttt{StandardTestDispatcher} +
+        \texttt{Dispatchers.setMain}; \textbf{Turbine} \texttt{flow.test \{ awaitItem() \}}
+        for hot flows.
+  \item Fakes over mocks (MockK is JVM-only); Ktor \texttt{MockEngine}; in-memory SQLite
+        driver. JVM runs fast on CI; iOS-simulator tests need macOS.
+\end{itemize}
+
+\section{Team \& process}
+\begin{itemize}\raggedright
+  \item \textbf{Ownership}: a cross-platform core team, or iOS becomes a second-class
+        consumer of an Android-shaped API. iOS devs \textbf{review the Swift surface}.
+  \item \textbf{Debugging}: iOS devs must read Kotlin; Xcode steps into Kotlin only with a
+        plugin (Touchlab xcode-kotlin); Kotlin/Native link time slows iOS builds.
+  \item \textbf{Delivery}: monorepo + build phase (fast iteration) vs versioned XCFramework
+        via SPM (decoupled, slower loop). Crash reports need Kotlin symbolication.
+  \item \textbf{Adopt incrementally}: one module (API client, validation) behind a facade;
+        measure, then grow.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{Forgot the iOS Ktor engine / SQL driver $\to$ compiles, fails at \emph{runtime} on iOS.}
+  \trap{\texttt{catch (e: Exception)} around \texttt{suspend} eats cancellation — rethrow.}
+  \trap{\texttt{StateFlow} is conflated: rapid events are lost — a \texttt{Channel} for events.}
+  \trap{Hard-coded \texttt{Dispatchers.Main} in shared code = untestable on the JVM.}
+\end{itemize}
+
+\section{Remember}
+\emph{Core in common, engines and drivers per platform · inject scope and dispatcher ·
+no freezing, but a GC · iOS reviews the API.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} kmp-fundamentals-interop ·
+android-coroutines-platform · concurrency · swiftui-state · modularization-spm ·
+keychain-secure-enclave · async-and-network-testing}
+
+\end{document}

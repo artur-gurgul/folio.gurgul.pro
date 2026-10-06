@@ -1,0 +1,222 @@
+% kotlin-type-system-generics.tex — the Kotlin type system in depth: the lattice (Any? top,
+% Nothing bottom, the nullable mirror), Unit vs Nothing, platform types, the exact smart-cast
+% rules (+ K2 additions, contracts), declaration-site vs use-site variance, star projections,
+% Java wildcards, erasure + reified + typeOf, upper bounds / where / T & Any, sealed
+% exhaustiveness, value-class boxing, typealias, fun interfaces.
+% Diagram: the type lattice with the nullable mirror + variance subtyping arrows.
+% Goes deeper than kotlin-language (null-safety basics, a first variance picture) — no repeats.
+% Sources (checked 2026-09-26):
+%   https://kotlinlang.org/docs/generics.html · https://kotlinlang.org/docs/typecasts.html
+%   https://kotlinlang.org/docs/java-to-kotlin-interop.html  (wildcards, Nothing -> raw type)
+%   https://kotlinlang.org/docs/java-interop.html  (platform types, nullability annotations)
+%   https://kotlinlang.org/docs/whatsnew20.html  (K2 smart-cast improvements)
+%   https://kotlinlang.org/docs/whatsnew24.html  (contracts still Experimental)
+%   https://kotlinlang.org/docs/inline-classes.html · https://kotlinlang.org/docs/fun-interfaces.html
+%   https://kotlinlang.org/docs/sealed-classes.html · https://kotlinlang.org/docs/null-safety.html
+% @labels: area=cross-platform kind=concept platform=android topic=language discussion=121
+% @tags: kotlin, type-system, nothing-type, platform-types, smart-cast, variance, star-projection, type-erasure, reified, value-class, sealed-class, fun-interface
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usepackage{tabularx}
+
+% Kotlin listings language; literate = one \hbox per char so 0xProto ligatures never form
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,suspend,when,is,in,out,
+    override,private,return,if,else,throw,null,this,it,inline,reified,value,where,typealias,as},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {?.}{{\hbox{?}\hbox{.}}}2 {?:}{{\hbox{?}\hbox{:}}}2
+           {!!}{{\hbox{!}\hbox{!}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {::}{{\hbox{:}\hbox{:}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2 {<*>}{{\hbox{<}\hbox{*}\hbox{>}}}3}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\st{\hbox{<}\hbox{*}\hbox{>}}  % use inside \texttt: star projection without ligature
+\newcommand\elv{\texttt{\hbox{?}\hbox{:}}}
+\newcommand\eqeqeq{\texttt{\hbox{=}\hbox{=}\hbox{=}}}
+\newcommand\cc{\texttt{\hbox{:}\hbox{:}}}
+
+\tikzset{
+  ty/.style={box, font=\tiny\ttfamily\bfseries, inner sep=1.2pt, minimum height=3.8mm, minimum width=11mm},
+  tn/.style={ty, draw=sheetOrange, fill=sheetOrange!10},
+  sub/.style={->, thick, draw=sheetGrey},
+  nul/.style={->, thick, dashed, draw=sheetOrange!80!black},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+  vt/.style={box, font=\tiny\ttfamily, inner sep=1.2pt, minimum height=3.8mm},
+}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+
+\begin{document}
+
+\sheettitle{Kotlin type system \& generics — variance, reified, nullability}{cross-platform · folio}
+
+\oneliner{Every Kotlin type has a \textbf{nullable twin}; the hierarchy is a lattice with
+\texttt{Any?} on top and \texttt{Nothing} (no values) at the bottom, so \texttt{throw},
+\texttt{TODO()} and \texttt{return} fit any expected type. Generics are \textbf{invariant} unless
+declared \texttt{out}/\texttt{in} at the class (declaration site) or projected at a use; on the
+JVM type arguments are \textbf{erased}, so runtime checks see only \texttt{List\st} — unless an
+\texttt{inline} function makes \texttt{T} \textbf{reified}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- A: lattice ----------
+  \node[hd] at (-0.3,3.35) {The lattice — arrow = ``is a subtype of''};
+  \node[tn] (aq) at (4.3,2.95) {Any?};
+  \node[ty] (an) at (2.2,2.3) {Any};
+  \node[tn] (nq) at (5.3,2.3) {Number?};
+  \node[tn] (sq) at (7.0,2.3) {String?};
+  \node[ty] (un) at (0.3,1.65) {Unit};
+  \node[ty] (nu) at (1.7,1.65) {Number};
+  \node[ty] (st) at (3.3,1.65) {String};
+  \node[tn] (iq) at (5.3,1.65) {Int?};
+  \node[ty] (in) at (1.7,1.0) {Int};
+  \node[tn] (xq) at (6.2,1.0) {Nothing?};
+  \node[ty, draw=sheetRed, fill=sheetRed!10] (no) at (3.8,0.35) {Nothing};
+  \draw[sub] (an) -- (aq); \draw[sub] (nq) -- (aq); \draw[sub] (sq) -- (aq);
+  \draw[sub] (un) -- (an); \draw[sub] (nu) -- (an); \draw[sub] (st) -- (an);
+  \draw[sub] (iq) -- (nq); \draw[sub] (in) -- (nu);
+  \draw[nul] (nu) -- (nq); \draw[nul] (st.east) -- (sq.south west); \draw[nul] (in) -- (iq);
+  \draw[sub] (xq) -- (iq); \draw[sub] (xq) -- (sq);
+  \draw[sub, draw=sheetRed] (no) -- (in); \draw[sub, draw=sheetRed] (no) -- (st); \draw[sub, draw=sheetRed] (no) -- (xq);
+  \draw[sub, draw=sheetRed] (no.west) to[bend left=20] (un.south);
+  \node[lbl, text=sheetOrange, align=left, anchor=west] at (5.4,2.95) {top: every value incl. \texttt{null}};
+  \node[lbl, text=sheetOrange!80!black, align=left, anchor=west] at (6.9,1.65) {dashed: \texttt{T} $<$ \texttt{T?}};
+  \node[lbl, text=sheetOrange, align=left, anchor=west] at (6.95,1.0) {only value: \texttt{null}\\(type of the literal)};
+  \node[lbl, text=sheetRed, align=left, anchor=west] at (4.5,0.35) {bottom: \textbf{no} value; \texttt{throw},
+    \texttt{TODO()},\\\texttt{return}, \texttt{fail(): Nothing}; code after it is dead};
+  \node[lbl, text=sheetBlue, align=left, anchor=west] at (-0.3,0.35) {\texttt{Unit} = a real singleton\\
+    (Swift \texttt{Void}); \texttt{Nothing}\\= Swift \texttt{Never}};
+  \draw[sheetGrey!40] (9.3,3.35) -- (9.3,-0.05);
+  % ---------- B: variance ----------
+  \node[hd] at (9.45,3.35) {Variance — what the arrow does to \texttt{C<\_>}};
+  \node[vt] (s) at (9.85,2.85) {String}; \node[vt] (a) at (9.85,2.15) {Any};
+  \draw[sub] (s) -- (a);
+  \node[vt, draw=sheetGreen, fill=sheetGreen!10] (ls) at (11.4,2.85) {List<String>};
+  \node[vt, draw=sheetGreen, fill=sheetGreen!10] (la) at (11.4,2.15) {List<Any>};
+  \draw[sub, draw=sheetGreen] (ls) -- node[lbl, right, text=sheetGreen!60!black]{\textbf{out}} (la);
+  \node[vt, draw=sheetOrange, fill=sheetOrange!10] (cs) at (13.4,2.85) {Comparable<String>};
+  \node[vt, draw=sheetOrange, fill=sheetOrange!10] (ca) at (13.4,2.15) {Comparable<Any>};
+  \draw[sub, draw=sheetOrange] (ca) -- node[lbl, right, text=sheetOrange]{\textbf{in}} (cs);
+  \node[vt, draw=sheetRed, fill=sheetRed!8] (ms) at (15.55,2.85) {MutableList<String>};
+  \node[vt, draw=sheetRed, fill=sheetRed!8] (ma) at (15.55,2.15) {MutableList<Any>};
+  \node[lbl, text=sheetRed, fill=white] at (15.55,2.5) {\textbf{$\times$} invariant};
+  \node[anchor=north west, inner sep=0pt, font=\scriptsize] at (9.45,1.8) {%
+    \begin{tabular}{@{}l@{\hspace{4pt}}l@{\hspace{4pt}}l@{\hspace{4pt}}l@{}}
+    \toprule
+    \textbf{Kotlin} & \textbf{Java} & \textbf{you may} & \textbf{PECS role} \\
+    \midrule
+    \texttt{C<out T>} & \texttt{C<\hbox{?} extends T>} & read \texttt{T}, write nothing & producer \\
+    \texttt{C<in T>} & \texttt{C<\hbox{?} super T>} & write \texttt{T}, read \texttt{Any?} & consumer \\
+    \texttt{C\st} & \texttt{C<\hbox{?}>} & read upper bound, write nothing & unknown \\
+    \texttt{C<T>} & \texttt{C<T>} & both — invariant & both \\
+    \bottomrule
+    \end{tabular}};
+  \node[lbl, text=sheetBrown, align=left, anchor=west] at (9.45,0.0) {Kotlin emits wildcards for \emph{parameters}
+    only (not returns, not final types);\\\texttt{@JvmSuppressWildcards}/\texttt{@JvmWildcard} override it.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Top, bottom, platform}
+\begin{itemize}\raggedright
+  \item \texttt{Nothing} makes failure branches type-check: \texttt{val n: String = x \elv{}
+        fail("no")}. \texttt{emptyList()} is an \texttt{object EmptyList : List<Nothing>} —
+        one instance fits every \texttt{List<T>} \emph{because} \texttt{List} is \texttt{out}.
+        Same trick: \texttt{data object Loading : Load<Nothing>}.
+  \item Default upper bound of \texttt{<T>} is \texttt{Any?}: \texttt{fun <T> f(t: T)} accepts
+        \texttt{null}. \texttt{<T : Any>} forbids it. \texttt{T \& Any} = \textbf{definitely
+        non-nullable} (1.7) — e.g. to override Java's \texttt{@NotNull T}.
+  \item \textbf{Platform type} \texttt{T!} (from un-annotated Java) = ``\texttt{T} or
+        \texttt{T?}, you decide''. \texttt{@Nullable}/\texttt{@NonNull} (JSpecify, AndroidX,
+        JetBrains) turn it into a real type. Declare the type explicitly at the boundary.
+\end{itemize}
+
+\section{Smart casts — exactly when}
+\begin{itemize}\raggedright
+  \item \textbf{Stable} values only: \texttt{val} locals; \texttt{val} properties that are
+        not \texttt{open}, have no custom getter and live in the \textbf{same module};
+        \texttt{var} locals not changed between check and use (and not captured by a lambda
+        that changes them). Never: \texttt{var} properties, delegated properties.
+  \item \textbf{K2} (2.0) adds: a check stored in a local (\texttt{val isCat = a is Cat}),
+        \texttt{a is B \hbox{|}\hbox{|} a is C} $\to$ closest common supertype, captured vars inside
+        \texttt{inline} lambdas, info carried into \texttt{catch}/\texttt{finally}.
+  \item \textbf{Contracts} teach the compiler: \texttt{requireNotNull}, \texttt{check},
+        \texttt{isNullOrEmpty} smart-cast after the call; \texttt{run}/\texttt{let} promise
+        \texttt{callsInPlace}. Your own \texttt{contract \{\}} still needs
+        \texttt{@OptIn(ExperimentalContracts}\cc\texttt{class)}.
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=KotlinSheet]
+fun fail(msg: String): Nothing = throw IllegalStateException(msg)
+sealed interface Res<out T> {                   // out: Res<Nothing> fits
+  data class Ok<T>(val v: T) : Res<T>
+  data class Err(val e: Throwable) : Res<Nothing>
+}
+fun copy(from: Array<out Any>, to: Array<in Any>) { /*..*/ } // use-site
+fun <T> max(xs: List<T>): T where T : Comparable<T>, T : Any = xs.max()
+fun <T> T.orThrow(): T & Any = this ?: fail("null")  // DNN type
+inline fun <reified T> Any?.asOrNull(): T? = this as? T
+val t = typeOf<List<String>>()     // reified: keeps the type ARGUMENT
+if (x is List<*>) { }              // is List<String> = compile error
+@JvmInline value class Email(val raw: String) {
+  init { require('@' in raw) }     // validated, zero-cost when unboxed
+}
+fun interface Rule { fun ok(s: String): Boolean }
+val notBlank = Rule { it.isNotBlank() }       // SAM conversion
+\end{lstlisting}
+
+\columnbreak
+
+\section{Erasure \& reified}
+\begin{itemize}\raggedright
+  \item JVM keeps only the class: \texttt{is List<String>} = error, \texttt{as List<String>}
+        = \emph{unchecked} warning — the CCE fires later, at the first element read.
+  \item \texttt{reified} (inline only): the call site pastes the real class, so \texttt{is T},
+        \texttt{T}\cc\texttt{class}, \texttt{typeOf<T>()} work. \texttt{T}\cc\texttt{class.java} still drops
+        \emph{arguments} (\texttt{List<User>} $\to$ \texttt{List}); \texttt{typeOf} keeps them.
+  \item Erased overloads clash (\texttt{f(List<String>)}/\texttt{f(List<Int>)}) $\to$ \texttt{@JvmName}.
+\end{itemize}
+
+\section{Variance in practice}
+\begin{itemize}\raggedright
+  \item \texttt{out T}: \texttt{T} only in \emph{out} positions (returns, \texttt{val});
+        escape hatch \texttt{List.contains(e: @UnsafeVariance E)}. \texttt{Array<T>} is
+        invariant (mutable), so \texttt{copy(from: Array<out Any>)} takes an
+        \texttt{Array<String>} but cannot write into it.
+  \item Star: \texttt{Foo<out T : U>} $\to$ \texttt{Foo\st} reads \texttt{U};
+        \texttt{Foo<in T>} $\to$ \texttt{Foo\st} = \texttt{Foo<in Nothing>}: writes nothing.
+\end{itemize}
+
+\section{Sealed, value, alias, SAM}
+\begin{itemize}\raggedright
+  \item \textbf{sealed}: direct subclasses in the same \textbf{module + package}; \texttt{when}
+        on sealed/enum/\texttt{Boolean} must be exhaustive (statements too, since 1.7) — skip
+        \texttt{else} so a new subclass breaks the build.
+  \item \textbf{value class}: one \texttt{val}, unboxed; \textbf{boxed} as nullable, generic
+        \texttt{T}, interface/\texttt{Any}; no \eqeqeq; functions taking one get a
+        \textbf{mangled JVM name} (\texttt{send-<hash>}).
+  \item \textbf{typealias} = new name, same type, no safety. \textbf{fun interface}: one
+        abstract method $\to$ lambda converts (Java SAMs always did).
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{\texttt{fun <T> f(t: T)}: \texttt{t} may be null — the bound is \texttt{Any?}.}
+  \trap{\texttt{val s = javaObj.name} infers \texttt{String!}: NPE at first use, far away.}
+  \trap{No smart cast on \texttt{open val}/other-module \texttt{val} — copy to a local.}
+  \trap{\texttt{List<Email>} of a value class = boxed elements; saving gone.}
+\end{itemize}
+
+\textbf{Remember:} \emph{\texttt{Any?} top · \texttt{Nothing} bottom · out produces, in
+consumes · erased unless reified.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} kotlin-language ·
+kotlin-under-the-hood · kotlin-dsl-delegation-inline · kmp-fundamentals-interop (generics
+in the ObjC header) · protocols-generics (Swift)}
+
+\end{document}

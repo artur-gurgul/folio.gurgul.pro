@@ -1,0 +1,221 @@
+% kotlin-language.tex — Kotlin the language for a Swift engineer: null safety (?, ?., ?:, !!,
+% platform types), val/var, data classes, sealed + exhaustive when, value classes, extension
+% functions (static dispatch), scope functions, inline + reified, lambdas with receivers / DSLs,
+% delegation, variance (in/out, star projection) vs Swift, objects/companions, visibility, K2
+% and current versions. Diagram: scope-function decision tree + declaration-site variance.
+% Extends kmp-fundamentals-interop (the Swift boundary) — does not repeat it.
+% Sources (checked 2026-09-26):
+%   https://kotlinlang.org/docs/releases.html        (2.4.20 = 7 Sep 2026; K2 stable in 2.0.0, May 2024)
+%   https://kotlinlang.org/docs/whatsnew24.html      (context parameters + explicit backing fields stable)
+%   https://kotlinlang.org/docs/whatsnew22.html      (guard conditions, non-local break/continue, $$ stable)
+%   https://kotlinlang.org/docs/null-safety.html · https://kotlinlang.org/docs/scope-functions.html
+%   https://kotlinlang.org/docs/generics.html · https://kotlinlang.org/docs/inline-functions.html
+%   https://kotlinlang.org/docs/extensions.html · https://kotlinlang.org/docs/delegated-properties.html
+%   https://kotlinlang.org/docs/inline-classes.html · https://kotlinlang.org/docs/visibility-modifiers.html
+% @labels: area=cross-platform kind=concept platform=android topic=language discussion=120
+% @tags: kotlin, null-safety, data-class, sealed-class, value-class, extension-functions, scope-functions, reified, kotlin-dsl, delegation, variance, kotlin-vs-swift
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usepackage{tabularx}
+
+% Kotlin listings language; literate = one \hbox per char so 0xProto ligatures never form
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,when,is,in,out,as,
+    override,private,internal,return,if,else,inline,reified,value,by,lazy,companion,
+    null,this,it,typealias,open},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {?.}{{\hbox{?}\hbox{.}}}2 {?:}{{\hbox{?}\hbox{:}}}2
+           {!!}{{\hbox{!}\hbox{!}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {::}{{\hbox{:}\hbox{:}}}2 {..}{{\hbox{.}\hbox{.}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+% inline operators, one \hbox per character (defeats the mono ligatures)
+\newcommand\sq{\texttt{\hbox{?}\hbox{.}}}
+\newcommand\elv{\texttt{\hbox{?}\hbox{:}}}
+\newcommand\bb{\texttt{\hbox{!}\hbox{!}}}
+\newcommand\ar{\texttt{\hbox{-}\hbox{>}}}
+\newcommand\eqeq{\texttt{\hbox{=}\hbox{=}}}
+\newcommand\eqeqeq{\texttt{\hbox{=}\hbox{=}\hbox{=}}}
+
+\tikzset{
+  q/.style={box, font=\tiny, inner sep=1.2pt, minimum height=4.2mm, text width=#1},
+  q/.default=26mm,
+  leaf/.style={box, font=\scriptsize\ttfamily\bfseries, draw=sheetGreen!70!black,
+               fill=sheetGreen!12, inner sep=1.2pt, minimum width=10mm, minimum height=4.2mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+  ty/.style={box, font=\tiny\ttfamily, inner sep=1.2pt, minimum height=4mm},
+}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+
+\begin{document}
+
+\sheettitle{Kotlin the language — for a Swift engineer}{cross-platform · folio}
+
+\oneliner{Kotlin is Swift's closest cousin: \textbf{nullability in the type system},
+\textbf{immutable-by-default bindings}, \textbf{sealed hierarchies + exhaustive
+\texttt{when}}, extensions and trailing lambdas. The differences that matter:
+\textbf{classes only} (no value-type structs — \texttt{data class} is a reference type),
+\textbf{JVM generics are erased} (\texttt{reified} is the escape), extensions are
+\textbf{statically dispatched}, and \texttt{internal} means \textbf{Gradle module}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- scope-function decision tree ----------
+  \node[hd] at (-0.3,3.05) {Scope functions — which one?};
+  \node[q=30mm, draw=sheetBlue] (r) at (3.9,2.6) {What should the call \textbf{return}?};
+  \node[q=27mm] (a) at (1.6,1.75) {the \textbf{receiver}\\(configure / side effect)};
+  \node[q=24mm] (b) at (6.3,1.75) {the \textbf{lambda result} (compute / transform)};
+  \draw[flow] (r) -- (a); \draw[flow] (r) -- (b);
+  \node[leaf] (ap) at (0.55,0.85) {apply};
+  \node[leaf] (al) at (2.35,0.85) {also};
+  \node[leaf] (le) at (4.75,0.85) {let};
+  \node[leaf] (ru) at (6.3,0.85) {run};
+  \node[leaf] (wi) at (7.85,0.85) {with};
+  \draw[flow] (a) -- node[lbl, fill=white, text=sheetBlue]{\texttt{this}} (ap);
+  \draw[flow] (a) -- node[lbl, fill=white, text=sheetBlue]{\texttt{it}} (al);
+  \draw[flow] (b) -- node[lbl, fill=white, text=sheetBlue]{\texttt{it}} (le);
+  \draw[flow] (b) -- node[lbl, fill=white, text=sheetBlue]{\texttt{this}} (ru);
+  \draw[flow] (b) -- node[lbl, fill=white, text=sheetBlue, pos=0.6]{\texttt{this}} (wi);
+  \node[lbl, text=sheetBrown] at (0.55,0.3) {builder:\\\texttt{Paint().apply\{…\}}};
+  \node[lbl, text=sheetBrown] at (2.35,0.3) {log / validate\\in a chain};
+  \node[lbl, text=sheetBrown] at (4.75,0.3) {\texttt{x}\sq\texttt{let\{…\}} =\\Swift \texttt{if let}};
+  \node[lbl, text=sheetBrown] at (6.3,0.3) {compute with\\members of \texttt{x}};
+  \node[lbl, text=sheetBrown] at (7.85,0.3) {\texttt{with(x)\{…\}}: not an\\extension; many calls};
+  \node[lbl, text=sheetGrey] at (3.9,-0.2) {all are \texttt{inline}: no allocation; \texttt{this} = lambda with receiver, \texttt{it} = plain lambda arg};
+  \draw[sheetGrey!40] (8.75,3.1) -- (8.75,-0.3);
+  % ---------- variance ----------
+  \node[hd] at (8.9,3.05) {Declaration-site variance};
+  \node[ty] (ca) at (9.9,2.45) {Cat};
+  \node[ty] (an) at (9.9,1.55) {Animal};
+  \draw[flow] (ca) -- node[lbl, left]{is a} (an);
+  \node[ty, draw=sheetGreen, fill=sheetGreen!10] (pc) at (12.0,2.45) {List<Cat>};
+  \node[ty, draw=sheetGreen, fill=sheetGreen!10] (pa) at (12.0,1.55) {List<Animal>};
+  \draw[flow, draw=sheetGreen] (pc) -- node[lbl, right]{\textbf{out}: same way} (pa);
+  \node[ty, draw=sheetOrange, fill=sheetOrange!10] (cc) at (14.9,2.45) {Comparator<Cat>};
+  \node[ty, draw=sheetOrange, fill=sheetOrange!10] (cn) at (14.9,1.55) {Comparator<Animal>};
+  \draw[flow, draw=sheetOrange] (cn) -- node[lbl, right]{\textbf{in}: reversed} (cc);
+  \node[lbl, text=sheetGreen!60!black] at (12.0,1.05) {\texttt{interface List<out E>}\\producer: E only returned};
+  \node[lbl, text=sheetOrange] at (14.9,1.05) {\texttt{interface Comparator<in T>}\\consumer: T only taken};
+  \node[lbl, text=sheetRed, align=left, anchor=west] at (8.9,0.4) {\texttt{MutableList<T>} is \textbf{invariant} (reads + writes).
+    Use-site: \texttt{Array<out Any>};\\\texttt{List<*>} = star projection (read as \texttt{Any?}, write nothing).};
+  \node[lbl, text=sheetBlue, align=left, anchor=west] at (8.9,-0.2) {Swift: no \texttt{in}/\texttt{out}; your generics are invariant, only
+    \texttt{Array}/\texttt{Optional}\\are covariant by compiler magic; \texttt{some}/\texttt{any P} instead of wildcards.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Null safety \& types}
+\begin{itemize}\raggedright
+  \item \texttt{String} never null, \texttt{String?} may be. \sq{} safe call, \elv{} Elvis
+        (right side may \texttt{return}/\texttt{throw}), \bb{} = NPE if null (Swift
+        \texttt{!}). Smart cast after \texttt{if (x != null)} / \texttt{is} — only for
+        \texttt{val}s/locals the compiler can prove unchanged.
+  \item \textbf{Platform types} \texttt{String!}: Java values without nullness annotations —
+        the compiler trusts you; a null blows up at \emph{first use}, far from the cause.
+  \item \texttt{val} = read-only reference (Swift \texttt{let}), \emph{not} deep immutability.
+        \texttt{lateinit var}: non-null, set later, throws if read first.
+  \item \eqeq{} calls \texttt{equals()}, \eqeqeq{} = same instance. \texttt{Unit} =
+        \texttt{Void}, \texttt{Nothing} = \texttt{Never}. No checked exceptions.
+\end{itemize}
+
+\section{Classes}
+\begin{itemize}\raggedright
+  \item \textbf{final by default} — \texttt{open} to subclass. Visibility: \texttt{public}
+        (default!), \texttt{internal} = same \textbf{module}, \texttt{protected} =
+        subclasses, \texttt{private} top-level = file.
+  \item \textbf{\texttt{data class}}: \texttt{equals}/\texttt{hashCode}/\texttt{toString}/
+        \texttt{copy()}/\texttt{componentN()} from the \textbf{primary constructor only} —
+        body properties ignored. Still a \emph{reference}: \texttt{copy} is shallow.
+  \item \textbf{\texttt{sealed class/interface}}: subclasses known at compile time (same
+        module + package) $\to$ \texttt{when} without \texttt{else}; exhaustiveness is an
+        error for sealed/enum/Boolean subjects. Guards: \texttt{is A if x > 0 \ar{} …}
+        (2.2). Swift \texttt{enum} with payloads $\approx$ sealed + \texttt{data class}es.
+  \item \textbf{\texttt{@JvmInline value class}}: one property, unboxed at runtime (boxed
+        when nullable/generic/as interface) — a zero-cost type-safe id.
+  \item \texttt{object} = thread-safe lazy singleton; \texttt{companion object} = statics.
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=KotlinSheet]
+@JvmInline value class UserId(val raw: String)
+data class User(val id: UserId, val name: String?)
+sealed interface Load<out T> {            // out: Load<Nothing> fits all
+  data object Loading : Load<Nothing>
+  data class Done<T>(val value: T) : Load<T>
+  data class Failed(val e: Throwable) : Load<Nothing>
+}
+fun label(s: Load<User>): String = when (s) {   // no else needed
+  Load.Loading -> "..."
+  is Load.Done -> s.value.name?.uppercase() ?: "anon" // smart cast
+  is Load.Failed -> s.e.message!!                // NPE if null
+}
+inline fun <reified T> Any.asOrNull(): T? = this as? T // T kept
+val cfg by lazy { loadConfig() }          // once, SYNCHRONIZED
+fun html(init: Html.() -> Unit) = Html().apply(init)   // DSL
+\end{lstlisting}
+
+\columnbreak
+
+\section{Functions, lambdas, delegation}
+\begin{itemize}\raggedright
+  \item \textbf{Extensions} compile to static functions taking the receiver:
+        \textbf{resolved by the declared type}, never overridden; a \textbf{member always
+        wins}. Nullable receivers OK (\texttt{String?.isNullOrEmpty()}).
+  \item \textbf{\texttt{inline fun}} pastes body + lambda into the call site: no lambda
+        object; \texttt{return} in the lambda returns from the \emph{caller} (non-local).
+        \texttt{noinline} keeps a lambda as an object, \texttt{crossinline} bans non-local
+        return. \textbf{\texttt{reified T}} (inline only) survives erasure: \texttt{is T},
+        \texttt{T::class}.
+  \item \textbf{Lambda with receiver} \texttt{T.() \ar{} R}: \texttt{this} is a \texttt{T} —
+        \texttt{buildString}, Gradle Kotlin DSL, Compose scopes; \texttt{@DslMarker} stops
+        outer receivers leaking in.
+  \item \textbf{Delegation}: \texttt{by lazy} (\texttt{SYNCHRONIZED} default),
+        \texttt{Delegates.observable} ($\approx$ \texttt{didSet}), \texttt{by map};
+        \textbf{class delegation} \texttt{class Logged(d: Repo) : Repo by d} = free forwarding.
+\end{itemize}
+
+\section{Swift ↔ Kotlin}
+{\scriptsize
+\noindent\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{33mm}L@{}}
+\toprule
+\textbf{Swift} & \textbf{Kotlin} \\
+\midrule
+\texttt{struct} (value, copy) & \texttt{data class} (reference; \texttt{copy()} by hand) \\
+\texttt{enum} + associated values & \texttt{sealed interface} + \texttt{data class}/\texttt{object} \\
+\texttt{protocol} + extension default & \texttt{interface} with default bodies \\
+\texttt{guard let x else \{ return \}} & \texttt{val x = y }\elv\texttt{ return} \\
+\texttt{lazy var} · \texttt{didSet} & \texttt{by lazy} · \texttt{Delegates.observable} \\
+\texttt{static} · \texttt{fileprivate} & \texttt{companion object} · \texttt{private} top-level \\
+\texttt{internal} (default) & \texttt{internal} (opt-in; default \texttt{public}) \\
+\texttt{@resultBuilder} & lambda with receiver (DSL) \\
+generics kept at runtime & \textbf{erased} on JVM; \texttt{reified} if inline \\
+\bottomrule
+\end{tabularx}}
+
+\textbf{Versions:} \textbf{K2} compiler (new FIR frontend) stable + default since
+\textbf{Kotlin 2.0.0} (May 2024). Current \textbf{2.4.20} (Sep 2026); 2.4 made
+\textbf{context parameters} (\texttt{context(log: Logger) fun …}) stable, 2.2 \texttt{when}
+guards and non-local \texttt{break}/\texttt{continue}.
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{``\texttt{data class} is a struct'' — no: shared reference, \texttt{copy()} shallow;
+        a \texttt{var} in it breaks \texttt{HashSet} lookups after mutation.}
+  \trap{Overriding an extension — impossible; the static type decides.}
+  \trap{\bb{} to silence the compiler — use \elv, \sq{} or \texttt{requireNotNull(x)}.}
+\end{itemize}
+
+\textbf{Remember:} \emph{nulls in types · final + public by default · extensions static ·
+erased unless reified.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} kmp-fundamentals-interop ·
+android-coroutines-platform · compose-recomposition-stability · protocols-generics ·
+kotlin-type-system-generics · kotlin-under-the-hood}
+
+\end{document}

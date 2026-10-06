@@ -1,0 +1,227 @@
+% kotlin-flow-deep.tex — Kotlin Flow beyond the basics: the cold-Flow contract (sequential,
+% context preservation, exception transparency), intermediate vs terminal operators, flowOn
+% (upstream only, channel boundary), buffer / conflate / collectLatest timelines, combine / zip /
+% merge / flatMap{Concat,Merge,Latest}, StateFlow vs SharedFlow parameters, stateIn/shareIn +
+% SharingStarted, callbackFlow/channelFlow + awaitClose, Channel capacities, catch/retry/
+% onCompletion, testing with runTest + Turbine. Diagram: emission timelines for no-operator vs
+% buffer vs conflate vs collectLatest + the upstream/downstream contexts of flowOn.
+% Goes deeper than android-coroutines-platform (cold vs hot, repeatOnLifecycle) — no repeats.
+% Sources (checked 2026-09-26):
+%   https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.flow/-flow/
+%   https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.flow/-state-flow/
+%   https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.flow/-shared-flow/
+%   https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.flow/-sharing-started/
+%   https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.channels/-channel/
+%   https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-test/kotlinx.coroutines.test/run-test.html
+%   https://developer.android.com/topic/libraries/architecture/coroutines  (WhileSubscribed(5000) rationale)
+%   https://github.com/cashapp/turbine
+% @labels: area=cross-platform kind=api platform=android topic=concurrency,testing discussion=119
+% @tags: kotlin-flow, flowon, backpressure, conflate, collectlatest, flatmaplatest, stateflow, sharedflow, statein, callbackflow, channels, turbine
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usepackage{tabularx}
+
+% Kotlin listings language; literate = one \hbox per char so 0xProto ligatures never form
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,suspend,when,is,in,out,
+    override,private,return,if,else,try,catch,finally,throw,null,this,it},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {?.}{{\hbox{?}\hbox{.}}}2 {?:}{{\hbox{?}\hbox{:}}}2
+           {!!}{{\hbox{!}\hbox{!}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {::}{{\hbox{:}\hbox{:}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+  rl/.style={font=\tiny\ttfamily, anchor=east, inner sep=1pt},
+  bk/.style={draw=none, minimum height=2.6mm, inner sep=0pt, font=\tiny\bfseries, text=white},
+  op/.style={box, font=\tiny\ttfamily, inner sep=1.2pt, minimum height=3.8mm, minimum width=25mm, anchor=west},
+}
+\newcommand\ar{\texttt{\hbox{-}\hbox{>}}}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+% time axis: 100 ms = 0.42 cm, origin at x=1.9
+\newcommand\tx[1]{\fpeval{1.9+0.0042*#1}}
+% \job{row y}{start ms}{end ms}{label}{colour}
+\newcommand\job[5]{\node[bk, fill=#5, minimum width=\fpeval{0.0042*(#3-#2)}cm-0.4pt, anchor=west] at (\tx{#2},#1) {#4};}
+
+\begin{document}
+
+\sheettitle{Kotlin Flow — contract, operators, backpressure, hot flows}{cross-platform · folio}
+
+\oneliner{A \texttt{Flow} is a \textbf{cold, sequential} stream: \texttt{collect} runs the
+producer \emph{in the collector's coroutine}, each value passes every operator before the next
+is produced, and the producer suspends while the collector works (natural backpressure). Two
+rules make operators composable: \textbf{context preservation} (only \texttt{flowOn} changes
+where upstream runs) and \textbf{exception transparency} (never emit from inside a
+\texttt{catch}). Concurrency and hotness are \emph{opt-in}: \texttt{buffer}, \texttt{flowOn},
+channels, \texttt{stateIn}/\texttt{shareIn}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- A: timelines ----------
+  \node[hd] at (-0.3,3.3) {\texttt{flow \{ repeat(4) \{ delay(100); emit(it + 1) \} \}} — collector needs 250 ms per item};
+  \foreach \t in {0,200,400,600,800,1000,1200,1400} {
+    \draw[sheetGrey!35] (\tx{\t},3.0) -- (\tx{\t},0.75);
+    \node[font=\tiny, text=sheetGrey] at (\tx{\t},3.05) {\t};
+  }
+  \node[rl] at (1.85,2.75) {emits (buffered)};
+  \foreach \v/\t in {1/100,2/200,3/300,4/400}
+    \node[circle, draw=sheetBlue, fill=sheetBlue!15, inner sep=0.6pt, font=\tiny] at (\tx{\t},2.75) {\v};
+  \node[rl] at (1.85,2.3) {plain collect};
+  \job{2.3}{100}{350}{1}{sheetBlue}\job{2.3}{450}{700}{2}{sheetBlue}
+  \job{2.3}{800}{1050}{3}{sheetBlue}\job{2.3}{1150}{1400}{4}{sheetBlue}
+  \node[rl] at (1.85,1.85) {buffer()};
+  \job{1.85}{100}{350}{1}{sheetGreen}\job{1.85}{350}{600}{2}{sheetGreen}
+  \job{1.85}{600}{850}{3}{sheetGreen}\job{1.85}{850}{1100}{4}{sheetGreen}
+  \node[rl] at (1.85,1.4) {conflate()};
+  \job{1.4}{100}{350}{1}{sheetOrange}\job{1.4}{350}{600}{3}{sheetOrange}\job{1.4}{600}{850}{4}{sheetOrange}
+  \node[rl] at (1.85,0.95) {collectLatest};
+  \job{0.95}{100}{200}{1\,$\times$}{sheetGrey}\job{0.95}{200}{300}{2\,$\times$}{sheetGrey}
+  \job{0.95}{300}{400}{3\,$\times$}{sheetGrey}\job{0.95}{400}{650}{4}{sheetRed}
+  \node[lbl, anchor=west, text=sheetBlue] at (\tx{1410},2.3) {1400: emitter waited};
+  \node[lbl, anchor=west, text=sheetGreen!60!black] at (\tx{1110},1.85) {1100: all 4, emitter never waits};
+  \node[lbl, anchor=west, text=sheetOrange] at (\tx{860},1.4) {850: \textbf{2 dropped}, newest kept};
+  \node[lbl, anchor=west, text=sheetRed] at (\tx{660},0.95) {650: blocks 1--3 \textbf{cancelled} mid-work};
+  \node[lbl, anchor=west, text=sheetBrown, align=left] at (-0.3,0.45) {\texttt{buffer(n)} = producer and collector in
+    \textbf{two coroutines} joined by a channel (default 64); \texttt{conflate()} = \texttt{buffer(CONFLATED)};\\
+    \texttt{collectLatest} / \texttt{mapLatest} / \texttt{flatMapLatest} cancel the running block on each new value.};
+  \draw[sheetGrey!40] (10.35,3.35) -- (10.35,0.1);
+  % ---------- B: flowOn ----------
+  \node[hd] at (10.5,3.3) {Where each line runs};
+  \node[op, draw=sheetOrange, fill=sheetOrange!10] (o1) at (10.55,2.8) {flow \{ emit(api()) \}};
+  \node[op, draw=sheetOrange, fill=sheetOrange!10] (o2) at (10.55,2.35) {.map \{ parse(it) \}};
+  \node[op, draw=sheetRed, fill=sheetRed!8] (o3) at (10.55,1.9) {.flowOn(Dispatchers.IO)};
+  \node[op] (o4) at (10.55,1.45) {.filter \{ it.ok \}};
+  \node[op] (o5) at (10.55,1.0) {.collect \{ render(it) \}};
+  \draw[decorate, decoration={brace, amplitude=3pt}, thick, sheetOrange] (13.25,2.95) -- (13.25,2.2)
+    node[midway, right=3pt, lbl, text=sheetOrange, align=left] {\textbf{upstream}: IO};
+  \draw[decorate, decoration={brace, amplitude=3pt}, thick, sheetBlue] (13.25,1.6) -- (13.25,0.85)
+    node[midway, right=3pt, lbl, text=sheetBlue, align=left] {\textbf{downstream}:\\collector's context\\(e.g. Main)};
+  \node[lbl, text=sheetRed, align=left, anchor=west] at (13.35,1.9) {channel boundary:\\2 coroutines};
+  \node[lbl, text=sheetBrown, align=left, anchor=west] at (10.5,0.45) {A 2nd \texttt{flowOn} lower down only covers the
+    lines\\between the two. \texttt{flowOn}+\texttt{buffer} fuse into \textbf{one} channel.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{The contract}
+\begin{itemize}\raggedright
+  \item \textbf{Intermediate} ops (\texttt{map}, \texttt{filter}, \texttt{transform},
+        \texttt{onEach}, \texttt{debounce}) return a new \texttt{Flow}, run nothing.
+        \textbf{Terminal} ops (\texttt{collect}, \texttt{first}, \texttt{single},
+        \texttt{toList}, \texttt{reduce}) are \texttt{suspend} and \emph{start} it;
+        \texttt{launchIn(scope)} = \texttt{scope.launch \{ collect() \}}.
+  \item \textbf{Context preservation}: \texttt{emit} only from the collecting coroutine —
+        \texttt{withContext}/\texttt{launch} inside \texttt{flow \{\}} throws
+        \texttt{IllegalStateException} (``Flow invariant is violated''). Other threads/
+        coroutines $\to$ \texttt{channelFlow}/\texttt{callbackFlow}.
+  \item \textbf{Exception transparency}: if \texttt{emit} throws (downstream failed), stop
+        and rethrow; never swallow it with \texttt{try/catch} around \texttt{emit}. Use
+        \texttt{catch \{\}} — it sees \textbf{upstream} only and may \texttt{emit} a fallback.
+  \item Don't implement \texttt{Flow} yourself (not stable for inheritance) — use
+        \texttt{flow \{\}} or \texttt{AbstractFlow}.
+\end{itemize}
+
+\section{Combining}
+{\scriptsize
+\noindent\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{19mm}X@{}}
+\toprule
+\texttt{combine(a,b)} & latest of each; first output once \emph{all} have emitted; then on any
+  emission — UI state from several sources \\
+\texttt{zip(a,b)} & pairs by index (1st with 1st); ends when either ends \\
+\texttt{merge(a,b)} & interleaves values as they come, no pairing \\
+\texttt{flatMapConcat} & inner flows one after another (order kept) \\
+\texttt{flatMapMerge} & inner flows concurrently, \texttt{concurrency} = 16 by default \\
+\texttt{flatMapLatest} & new outer value \textbf{cancels} the running inner flow — search box \\
+\bottomrule
+\end{tabularx}}
+
+\section{Errors \& completion}
+\begin{itemize}\raggedright
+  \item \texttt{retry(3) \{ it is IOException \}} / \texttt{retryWhen \{ cause, attempt \ar\ … \}}
+        \emph{re-collect upstream} (cold $\Rightarrow$ re-runs the request).
+  \item \texttt{onCompletion \{ cause \ar\ \}}: runs on success, failure or cancel, sees
+        upstream \emph{and} downstream errors, does \emph{not} handle them.
+  \item Collector exceptions: move the work into \texttt{onEach}, then \texttt{catch},
+        then \texttt{launchIn}.
+\end{itemize}
+
+\section{Example — callback, search, screen state}
+\begin{lstlisting}[language=KotlinSheet]
+fun LocationClient.updates(): Flow<Loc> = callbackFlow {
+  val cb = LocationCallback { loc -> trySend(loc) } // non-suspending
+  requestUpdates(cb)
+  awaitClose { removeUpdates(cb) }  // REQUIRED: else ISE on close
+}.conflate()                        // keep only the newest fix
+val results = query                 // MutableStateFlow<String>
+  .debounce(300).distinctUntilChanged()
+  .flatMapLatest { q -> repo.search(q) }   // old search cancelled
+  .catch { emit(emptyList()) }
+val ui = combine(results, prefs) { r, p -> Ui(r, p) }
+  .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), Ui())
+\end{lstlisting}
+
+\columnbreak
+
+\section{Hot flows — the knobs}
+{\scriptsize
+\noindent\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{26mm}L@{}}
+\toprule
+ & \textbf{StateFlow} & \textbf{SharedFlow} (\texttt{replay}, \texttt{extraBufferCapacity},
+  \texttt{onBufferOverflow} = 0, 0, \texttt{SUSPEND}) \\
+\midrule
+read & \texttt{.value}; \texttt{update\{\}} = CAS & \texttt{replayCache} \\
+equal value & \textbf{not} emitted & emitted \\
+slow sub & jumps to newest & buffer, then \texttt{SUSPEND}/\texttt{DROP\_OLDEST}/\texttt{DROP\_LATEST} \\
+no subs & value kept & value \textbf{lost} unless \texttt{replay} > 0 \\
+\bottomrule
+\end{tabularx}}
+{\raggedright StateFlow = SharedFlow(replay 1, \texttt{DROP\_OLDEST}) + \texttt{distinctUntilChanged}
++ initial value; neither ever completes.\par}
+
+\begin{itemize}\raggedright
+  \item \texttt{stateIn}/\texttt{shareIn}: one cold upstream $\to$ one shared collection.
+        \texttt{Eagerly} (now, forever), \texttt{Lazily} (1st subscriber, forever),
+        \texttt{WhileSubscribed(stopTimeoutMillis=0, replayExpirationMillis=MAX)}.
+        \textbf{Why 5\,000}: a rotation gap is far shorter, so upstream survives it; in
+        background it stops after 5 s.
+  \item \textbf{Channels} (hot, each element to \emph{one} receiver): \texttt{Channel()} =
+        \texttt{RENDEZVOUS} (0) · \texttt{BUFFERED} (64) · \texttt{CONFLATED} ·
+        \texttt{UNLIMITED}. \texttt{callbackFlow}/\texttt{channelFlow} buffer 64;
+        \texttt{channelFlow} may \texttt{launch} concurrent senders.
+\end{itemize}
+
+\section{Testing}
+\begin{itemize}\raggedright
+  \item \texttt{runTest}: virtual time (\texttt{delay}/\texttt{debounce} skipped; 60 s
+        timeout); \texttt{advanceTimeBy}/\texttt{advanceUntilIdle}; endless collectors in
+        \texttt{backgroundScope}; \texttt{Dispatchers.setMain(testDispatcher)}.
+  \item \textbf{Turbine}: \texttt{flow.test \{ awaitItem(); awaitComplete() \}},
+        \texttt{expectNoEvents()}. Assert a \texttt{StateFlow}'s \emph{values} — conflation
+        may skip some.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{\texttt{MutableSharedFlow<Event>()} + \texttt{tryEmit}: with a subscriber it
+        \textbf{fails} (no buffer) — set \texttt{extraBufferCapacity}, or \texttt{emit}.}
+  \trap{\texttt{state.value = list.apply \{ add(x) \}} — same instance, \texttt{equals} true:
+        nothing emitted. Publish a \textbf{new} value.}
+  \trap{\texttt{fun items() = flow.stateIn(...)} — a new shared coroutine per call; use a \texttt{val}.}
+  \trap{\texttt{catch} never sees the collector's own exceptions.}
+\end{itemize}
+
+\textbf{Remember:} \emph{cold + sequential · flowOn = upstream · buffer splits, conflate
+drops, latest cancels.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} android-coroutines-platform ·
+kotlin-coroutines-internals · kmp-stack-concurrency · observation-and-combine ·
+async-and-network-testing}
+
+\end{document}

@@ -1,0 +1,190 @@
+% android-build-performance.tex — Android build + runtime performance for an iOS engineer: Gradle
+% phases, configuration cache, build cache, version catalogs, convention plugins, KSP vs kapt, AGP 9;
+% R8 full mode (what breaks, keep-rule kinds, consumer rules, mapping); App Bundle splits; Baseline
+% + Startup Profiles, Macrobenchmark / Microbenchmark; Perfetto; cold/warm/hot starts, TTID/TTFD
+% and the Android vitals startup thresholds. Diagram: Gradle's three phases + the source -> dex ->
+% AAB -> split APKs -> ART pipeline with where profiles and keep rules enter.
+% Extends android-for-rn-developers (SDK levels, signing, basic keep rules) and
+% android-anr-native-crashes (mapping/retrace, crash + ANR vitals) — does not repeat them.
+% Sources (checked 2026-09-26):
+%   https://docs.gradle.org/current/userguide/configuration_cache.html   (preferred since 9.0, default in 10)
+%   https://developer.android.com/build/migrate-to-ksp                   (kapt maintenance mode, up to 2x)
+%   https://developer.android.com/build/releases/agp-9-0-0-release-notes (built-in Kotlin, new DSL, Gradle 9.1)
+%   https://developer.android.com/build/shrink-code                      (full mode default AGP 8.0; AGP 9 resources)
+%   https://r8.googlesource.com/r8/+/refs/heads/main/compatibility-faq.md (full-mode differences)
+%   https://developer.android.com/guide/app-bundle                        (config APKs: ABI, density, language)
+%   https://developer.android.com/topic/performance/baselineprofiles/overview (~30%, startup profiles ~15%)
+%   https://developer.android.com/topic/performance/benchmarking/benchmarking-overview
+%   https://developer.android.com/topic/performance/vitals/launch-time   (TTID/TTFD; 5 s / 2 s / 1.5 s)
+%   https://developer.android.com/topic/performance/vitals/render        (16 ms, frozen 700 ms)
+% @labels: area=cross-platform kind=tooling platform=android topic=build,performance discussion=108
+% @tags: gradle, configuration-cache, version-catalog, ksp, r8, keep-rules, app-bundle, baseline-profiles, macrobenchmark, perfetto, app-startup, android-vitals
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{GradleSheet}{
+  morekeywords={plugins,android,buildTypes,release,dependencies,true,false,val,fun},
+  sensitive=true, morecomment=[l]{//}, morecomment=[l]{\#}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {::}{{\hbox{:}\hbox{:}}}2
+           {--}{{\hbox{-}\hbox{-}}}2 {<=}{{\hbox{<}\hbox{=}}}2 {>=}{{\hbox{>}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\tikzset{
+  gp/.style={box, font=\tiny, inner sep=1.2pt, minimum height=6mm, text width=#1, align=center},
+  gp/.default=27mm,
+  pp/.style={box, font=\tiny, inner sep=1pt, minimum height=7mm, text width=#1, align=center},
+  pp/.default=15mm,
+  inp/.style={font=\tiny, text=sheetBrown, inner sep=1pt, align=center},
+  bar/.style={draw=none, minimum height=2.8mm, inner sep=0pt, font=\tiny, text=white},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Android build \& performance — Gradle, R8, profiles, startup}{cross-platform · folio}
+
+\oneliner{A release build is \textbf{Gradle} (configure a task graph, then run only out-of-date
+tasks) driving \textbf{kotlinc/KSP $\to$ R8 $\to$ dex $\to$ AAB}; Play splits it per device. At
+runtime ART \textbf{interprets/JITs} unbundled code such as Compose, so a \textbf{Baseline
+Profile} tells it what to compile \textbf{ahead of time} at install. Prove every win with \textbf{Macrobenchmark} + \textbf{Perfetto}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- Gradle phases ----------
+  \node[hd] at (-0.3,3.55) {Gradle — three phases, two caches};
+  \node[gp] (i) at (1.2,2.95) {\textbf{Initialization}\\\texttt{settings.gradle.kts}: which projects};
+  \node[gp=34mm, draw=sheetOrange, fill=sheetOrange!10] (c) at (5.0,2.95) {\textbf{Configuration}\\runs \emph{every} build script $\to$ task graph};
+  \node[gp=34mm, draw=sheetGreen, fill=sheetGreen!10] (e) at (9.3,2.95) {\textbf{Execution}\\runs only tasks whose inputs changed};
+  \draw[flow] (i) -- (c); \draw[flow] (c) -- (e);
+  \node[bar, fill=sheetOrange, minimum width=34mm] at (5.0,3.5) {configuration cache: phase skipped};
+  \node[bar, fill=sheetGreen, minimum width=34mm] at (9.3,3.5) {up-to-date / build cache: task skipped};
+  \node[lbl, text=sheetBrown, align=left, anchor=west] at (11.3,2.95) {configuration runs even for \texttt{./gradlew help}: no I/O,\\
+    \texttt{tasks.register} (lazy) not \texttt{create}, \texttt{Provider} APIs.\\
+    CC = preferred mode since Gradle 9.0, default in 10.};
+  % ---------- source -> device ----------
+  \node[hd] at (-0.3,2.2) {From source to a fast first launch};
+  \node[pp=12mm] (s) at (0.4,1.4) {\texttt{.kt}\\\texttt{.java}};
+  \node[pp] (k) at (2.1,1.4) {kotlinc\\+ \textbf{KSP} codegen};
+  \node[pp] (cl) at (3.9,1.4) {\texttt{.class}\\+ library jars};
+  \node[pp=24mm, draw=sheetOrange, fill=sheetOrange!10] (r) at (6.2,1.4) {\textbf{R8}: shrink · optimize ·\\obfuscate · desugar $\to$ \texttt{.dex}};
+  \node[pp=17mm] (a) at (8.75,1.4) {\textbf{AAB}\\+ res · \texttt{.so} ·\\\texttt{baseline.prof}};
+  \node[pp=19mm] (p) at (10.85,1.4) {\textbf{Play}: split APKs\\base + ABI ·\\density · language};
+  \node[pp=32mm, draw=sheetGreen, fill=sheetGreen!10] (art) at (14.1,1.4) {\textbf{ART at install}: AOT-compile the\\profiled methods (+ Cloud Profiles);\\the rest interpreted $\to$ JIT};
+  \foreach \x/\y in {s/k,k/cl,cl/r,r/a,a/p,p/art} \draw[flow] (\x) -- (\y);
+  \node[inp] (kr) at (4.8,0.25) {keep rules: \texttt{proguard-rules.pro}\\+ \emph{consumer} rules from AARs};
+  \node[inp] (mp) at (7.3,0.25) {$\to$ \texttt{mapping.txt}\\(retrace)};
+  \node[inp] (sp) at (9.55,0.25) {\texttt{startup-prof.txt} $\to$ R8 puts\\startup code in the first dex};
+  \node[inp] (bp) at (12.6,0.25) {\texttt{baseline-prof.txt} from a\\\texttt{BaselineProfileRule} run};
+  \draw[hot] (kr) -- (r.south west);
+  \draw[hot] (r.south) -- (mp);
+  \draw[hot] (sp.north west) -- (r.south east);
+  \draw[hot] (bp.north west) -- (a.south east);
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Gradle \& AGP}
+\begin{itemize}\raggedright
+  \item \textbf{Config cache} (\texttt{org.gradle.configuration-cache=true}) stores the task
+        graph; \textbf{build cache} (\texttt{org.gradle.caching=true}, local or remote)
+        stores task \emph{outputs} keyed by input hashes — CI shares them.
+  \item \textbf{Version catalog} \texttt{gradle/libs.versions.toml} $\to$
+        \texttt{libs.hilt.android}; \textbf{convention plugins} (included
+        \texttt{build-logic} build) share module setup.
+  \item \texttt{api} leaks a dependency to consumers $\to$ wider recompiles; prefer
+        \texttt{implementation}.
+  \item \textbf{KSP} over \textbf{kapt} (Java \emph{stubs}, maintenance mode): up to
+        \textbf{2$\times$} faster — but one kapt processor left keeps stubs for the module.
+  \item \textbf{AGP 9}: Kotlin built in (no \texttt{kotlin-android} plugin), new DSL only,
+        Gradle $\geq$ 9.1.
+\end{itemize}
+
+\section{R8 — full mode (default since AGP 8.0)}
+\begin{itemize}\raggedright
+  \item Tree-shakes from entry points (manifest, keep rules), inlines, merges classes,
+        renames; unused resources go too (AGP 9: optimized resource shrinking).
+  \item Full mode vs compat: a kept class \textbf{no longer keeps its default constructor};
+        \texttt{Signature}/annotations kept \textbf{only for kept items} even with
+        \texttt{-keepattributes} — Gson \texttt{TypeToken}, Retrofit generics break.
+  \item \texttt{-keep} (name + existence) · \texttt{-keepclassmembers} (members if class
+        survives) · \texttt{-keepnames}/\texttt{,allowshrinking} (rename no, remove yes) ·
+        \texttt{-if} (conditional). Libraries ship \texttt{consumerProguardFiles}.
+\end{itemize}
+
+\section{Example — build config}
+\begin{lstlisting}[language=GradleSheet]
+# gradle.properties
+org.gradle.configuration-cache=true
+org.gradle.caching=true
+// app/build.gradle.kts
+android { buildTypes { release {
+  isMinifyEnabled = true; isShrinkResources = true
+  proguardFiles(getDefaultProguardFile(
+    "proguard-android-optimize.txt"), "proguard-rules.pro") } } }
+dependencies {
+  ksp(libs.hilt.compiler)                     // not kapt
+  implementation(libs.androidx.profileinstaller)
+  baselineProfile(project(":baselineprofile")) }
+# proguard-rules.pro (Gson in full mode)
+-keepclassmembers,allowobfuscation class * {
+  @com.google.gson.annotations.SerializedName <fields>; }
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{Timing a \emph{debug} build — no R8, no AOT: meaningless numbers.}
+  \trap{A stale profile silently loses its gain — benchmark it in CI.}
+  \trap{``R8 broke my app'' — it removed what only reflection used; add a keep rule, don't
+        disable minify.}
+\end{itemize}
+
+\columnbreak
+
+\section{Baseline \& Startup Profiles}
+\begin{itemize}\raggedright
+  \item Compose/AndroidX are \emph{libraries}, not in the OS image: first runs are
+        interpreted/JIT'd. A \textbf{Baseline Profile} lists hot classes/methods; ART
+        AOT-compiles them at install — about \textbf{30\%} faster from the first launch.
+        Play ships it; \texttt{ProfileInstaller} covers sideloads.
+  \item Generate with \texttt{BaselineProfileRule().collect(pkg) \{ … \}} over startup +
+        key journeys (\texttt{generateBaselineProfile}); regenerate per release.
+  \item \textbf{Startup Profile} (\texttt{includeInStartupProfile = true}): R8 lays startup
+        code into the primary dex — about \textbf{15\%} more. \textbf{Cloud Profiles} (API
+        28+) come later from real users.
+\end{itemize}
+
+\section{Measure — benchmarks \& Perfetto}
+\begin{itemize}\raggedright
+  \item \textbf{Macrobenchmark}: own module drives the installed, non-debuggable
+        \texttt{profileable} app — \texttt{StartupTimingMetric}, \texttt{FrameTimingMetric};
+        \texttt{StartupMode.COLD}; \texttt{CompilationMode.None()} vs \texttt{Partial()}
+        proves the profile. \textbf{Micro}: \texttt{BenchmarkRule}, one function.
+  \item \textbf{Perfetto} system trace $\to$ ui.perfetto.dev; \texttt{trace("load")\{…\}}
+        marks code; read \texttt{bindApplication}, \texttt{doFrame}, lock/binder waits.
+\end{itemize}
+
+\section{Startup — the numbers}
+\begin{itemize}\raggedright
+  \item \textbf{Cold}: new process · \textbf{warm}: process alive, Activity re-created ·
+        \textbf{hot}: Activity brought to front. Optimise for cold.
+  \item \textbf{TTID} = first frame, logged automatically (\texttt{Displayed … +480ms});
+        \textbf{TTFD} = when you call \texttt{reportFullyDrawn()} (Compose:
+        \texttt{ReportDrawnWhen \{ loaded \}}).
+  \item Vitals ``excessive'': cold $\geq$ \textbf{5\,s}, warm $\geq$ \textbf{2\,s}, hot
+        $\geq$ \textbf{1.5\,s}. Frames: $>$16\,ms (60 Hz) slow, $>$700\,ms frozen.
+  \item Fixes: nothing blocking in \texttt{Application.onCreate}, lazy SDK init, profiles.
+\end{itemize}
+
+\textbf{Remember:} \emph{configure cheap, execute cached · R8 keeps what it sees · profile
+$\to$ AOT at install · measure release + cold.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} android-for-rn-developers ·
+android-anr-native-crashes · compose-recomposition-stability · android-jetpack-stack ·
+linking-and-launch-time (iOS) · rn-app-size}
+
+\end{document}

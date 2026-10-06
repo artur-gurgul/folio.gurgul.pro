@@ -1,0 +1,207 @@
+% compose-layout-modifiers.tex — Jetpack Compose layout in depth: single-pass measurement,
+% Constraints (loose/tight/unbounded), measure -> size -> place, modifier chain order, size
+% modifiers (size vs requiredSize, fillMax*, weight, wrapContentSize, matchParentSize),
+% intrinsic measurements, a custom Layout, SubcomposeLayout / BoxWithConstraints cost,
+% Modifier.Node vs composed {}, graphicsLayer vs layout changes, lazy-list keys / contentType /
+% animateItem. Diagram: constraints down and sizes up through one modifier chain + order panels.
+% Extends compose-recomposition-stability (phases, deferred reads) and android-compose-lifecycle
+% (modifier-order one-liner) — does not repeat them.
+% Sources (checked 2026-09-26):
+%   https://developer.android.com/develop/ui/compose/layouts/basics                (single pass)
+%   https://developer.android.com/develop/ui/compose/layouts/constraints-modifiers  (size rules)
+%   https://developer.android.com/develop/ui/compose/layouts/intrinsic-measurements
+%   https://developer.android.com/develop/ui/compose/layouts/custom
+%   https://developer.android.com/develop/ui/compose/custom-modifiers               (Modifier.Node)
+%   https://developer.android.com/develop/ui/compose/lists                          (keys, animateItem)
+%   https://developer.android.com/develop/ui/compose/bom/bom-mapping               (BOM 2026.09.00 = 1.12.1)
+% @labels: area=cross-platform kind=concept platform=android topic=ui,performance discussion=112
+% @tags: jetpack-compose, compose-layout, constraints, modifier-order, requiredsize, intrinsic-measurements, custom-layout, subcomposelayout, boxwithconstraints, modifier-node, graphicslayer, lazy-column-keys
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,when,is,in,out,as,by,
+    override,private,return,if,else,null,this,it,constructor},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {?.}{{\hbox{?}\hbox{.}}}2 {?:}{{\hbox{?}\hbox{:}}}2
+           {!!}{{\hbox{!}\hbox{!}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {::}{{\hbox{:}\hbox{:}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2 {>=}{{\hbox{>}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\arr{\hbox{-}\hbox{>}}
+
+\tikzset{
+  ch/.style={box, font=\tiny, inner sep=1pt, minimum height=4.2mm, text width=24mm, align=center},
+  cn/.style={font=\tiny, text=sheetOrange, inner sep=0.5pt, anchor=east, align=right},
+  sz/.style={font=\tiny, text=sheetGreen!70!black, inner sep=0.5pt, anchor=west, align=left},
+  lbl/.style={font=\tiny, text=black!75, inner sep=0.5pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Compose layout \& modifiers — constraints, measure, place}{cross-platform · folio}
+
+\oneliner{Layout is \textbf{one pass}: a parent hands each child \textbf{Constraints} (min/max
+width, height), the child is \textbf{measured once} and reports a \textbf{size}, the parent
+\textbf{places} it. A \texttt{Modifier} chain wraps outer $\to$ inner; each link may change the
+constraints going down and the size coming up — \textbf{order is behaviour}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet, y=0.9cm]
+  % ---------- constraints down, sizes up ----------
+  \node[hd] at (-0.3,3.0) {\texttt{Icon(Modifier.padding(8.dp).size(64.dp).background(c))} in a 360\,dp Row};
+  \node[ch, draw=sheetGrey, fill=sheetGrey!8] (p) at (3.6,2.5) {parent \texttt{Row}: measure child};
+  \node[ch] (pd) at (3.6,1.9) {\texttt{padding(8.dp)}};
+  \node[ch, draw=sheetOrange, fill=sheetOrange!10] (s) at (3.6,1.3) {\texttt{size(64.dp)}};
+  \node[ch] (bg) at (3.6,0.7) {\texttt{background(c)}: draw only};
+  \node[ch, draw=sheetGreen, fill=sheetGreen!10] (ic) at (3.6,0.1) {\texttt{Icon} — the layout node};
+  \draw[->, thick, draw=sheetOrange] (2.1,2.6) -- (2.1,0.0);
+  \draw[->, thick, draw=sheetGreen] (5.1,0.0) -- (5.1,2.6);
+  \node[cn] at (2.0,2.2) {w 0–360 · h 0–640 (loose)};
+  \node[cn] at (2.0,1.6) {w 0–344 · h 0–624 ($-16$)};
+  \node[cn] at (2.0,1.0) {64 × 64 \textbf{tight}};
+  \node[cn] at (2.0,0.4) {64 × 64 passed through};
+  \node[cn] at (2.0,-0.1) {constraints $\downarrow$};
+  \node[sz] at (5.2,2.2) {80 × 80 (+16) $\to$ \texttt{place(x, y)}};
+  \node[sz] at (5.2,1.6) {64 × 64};
+  \node[sz] at (5.2,1.0) {64 × 64 (coerced into\\incoming constraints)};
+  \node[sz] at (5.2,0.4) {64 × 64};
+  \node[sz] at (5.2,-0.1) {sizes $\uparrow$};
+  \draw[sheetGrey!40] (7.95,3.15) -- (7.95,-0.3);
+  % ---------- order panels ----------
+  \node[hd] at (8.05,3.0) {Order = wrapping order (outer $\to$ inner)};
+  % A: padding then background
+  \draw[sheetGrey, dashed] (8.3,1.1) rectangle (10.1,2.6);
+  \fill[sheetBlue!30] (8.6,1.4) rectangle (9.8,2.3);
+  \node[lbl] at (9.2,1.85) {content};
+  \node[lbl] at (9.2,0.75) {\texttt{padding(12)}\\\texttt{.background(c)}};
+  \node[lbl, text=sheetGrey] at (9.2,0.3) {colour inside padding};
+  % B: background then padding
+  \fill[sheetOrange!30] (10.5,1.1) rectangle (12.3,2.6);
+  \draw[sheetGrey, dashed] (10.8,1.4) rectangle (12.0,2.3);
+  \node[lbl] at (11.4,1.85) {content};
+  \node[lbl] at (11.4,0.75) {\texttt{background(c)}\\\texttt{.padding(12)}};
+  \node[lbl, text=sheetGrey] at (11.4,0.3) {colour fills padding};
+  % C: size vs requiredSize in a 40 dp parent
+  \fill[sheetGreen!35] (12.95,1.35) rectangle (13.95,2.35);
+  \draw[sheetGrey, dashed, thick] (12.95,1.35) rectangle (13.95,2.35);
+  \node[lbl] at (13.45,1.85) {40};
+  \node[lbl] at (13.45,0.75) {\texttt{size(64)}\\in a 40\,dp parent};
+  \node[lbl, text=sheetGrey] at (13.45,0.3) {clamped to 40};
+  \fill[sheetRed!25] (14.55,1.05) rectangle (16.15,2.65);
+  \draw[sheetGrey, dashed, thick] (14.85,1.35) rectangle (15.85,2.35);
+  \node[lbl] at (15.35,1.85) {64};
+  \node[lbl] at (15.35,0.75) {\texttt{requiredSize(64)}\\in a 40\,dp parent};
+  \node[lbl, text=sheetGrey] at (15.35,0.3) {centred, overflows};
+  \node[lbl, text=sheetBrown, anchor=west, align=left] at (8.05,-0.15) {input too: \texttt{clickable\{\}.padding(12)} = padding tappable; reversed = not ·
+    \texttt{clip} before \texttt{background}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Measure $\to$ size $\to$ place}
+\begin{itemize}\raggedright
+  \item \texttt{MeasurePolicy} gets \texttt{(measurables, constraints)}; \texttt{measure()} twice
+        on one child \textbf{throws} — single pass is enforced, so deep nesting is cheap
+        (unlike nested \texttt{RelativeLayout}).
+  \item \textbf{Tight} = min $=$ max (\texttt{Constraints.fixed}); \textbf{loose} = min 0;
+        \textbf{unbounded} = max \texttt{Infinity} (in a scrollable).
+  \item \texttt{layout(w, h) \{ p.placeRelative(x, y) \}} — \texttt{placeRelative} mirrors in
+        RTL, \texttt{place} does not. A size outside the constraints is coerced + centred.
+\end{itemize}
+
+\section{Size modifiers \& intrinsics}
+\begin{itemize}\raggedright
+  \item \texttt{size} = a \emph{preference} coerced into incoming constraints; the first tight
+        one wins: \texttt{size(100).size(50)} = \textbf{100}. \texttt{requiredSize} ignores them.
+  \item \texttt{fillMaxWidth(f)}: min = max = \texttt{f}·max. \texttt{wrapContentSize()}: min
+        $\to$ 0 + align — a child smaller than a tight parent.
+  \item \texttt{weight(w)}: unweighted children measured first, the rest split by weight
+        (\texttt{fill = false} = a cap). \texttt{Box}: \texttt{matchParentSize()} takes the size
+        \emph{after} siblings set it; \texttt{fillMaxSize()} helps set it.
+  \item \texttt{Row(Modifier.height(IntrinsicSize.Min))} asks children
+        \texttt{minIntrinsicHeight} \emph{before} measuring, so a \texttt{fillMaxHeight()}
+        divider matches the tallest text. A query, not a measure — but a second walk. A custom
+        \texttt{Layout}'s default intrinsics are \textbf{approximated}: override them.
+\end{itemize}
+
+\section{Example — a custom \texttt{Layout}}
+\begin{lstlisting}[language=KotlinSheet]
+@Composable fun Stack(modifier: Modifier = Modifier,
+                      content: @Composable () -> Unit) =
+  Layout(content, modifier) { measurables, constraints ->
+    val loose = constraints.copy(minWidth = 0, minHeight = 0)
+    val ps = measurables.map { it.measure(loose) } // once each
+    val w = (ps.maxOfOrNull { it.width } ?: 0)
+        .coerceIn(constraints.minWidth, constraints.maxWidth)
+    val h = ps.sumOf { it.height }
+        .coerceIn(constraints.minHeight, constraints.maxHeight)
+    layout(w, h) {                                 // report size
+      var y = 0
+      ps.forEach { it.placeRelative(0, y); y += it.height }
+    }
+  }
+\end{lstlisting}
+\raggedright One wrapped node only? \texttt{Modifier.layout \{ m, c \arr{} …\}} (measure it, add
+an offset/baseline gap). \textbf{vs SwiftUI \texttt{Layout}:} a proposal is a \emph{suggestion}
+and a subview may be asked \texttt{sizeThatFits} several times; Compose constraints are hard
+\emph{bounds} and each child is measured \textbf{once}.
+
+\columnbreak
+
+\section{SubcomposeLayout \& BoxWithConstraints}
+\begin{itemize}\raggedright
+  \item \texttt{SubcomposeLayout} \textbf{composes during layout} — children exist only once
+        constraints are known (\texttt{LazyColumn}, \texttt{Scaffold},
+        \texttt{BoxWithConstraints}). Composition moves into the layout pass; a new constraint
+        re-subcomposes.
+  \item Use it only when the \emph{tree} depends on size (1 vs 2 panes); to \emph{position} by
+        size use \texttt{Layout}. \texttt{onSizeChanged} + state write = a frame late.
+\end{itemize}
+
+\section{\texttt{Modifier.Node}, not \texttt{composed\{\}}}
+\raggedright \texttt{composed\{\}} runs composition per use site, allocates, never skips. A
+\texttt{Modifier.Node} lives long; its \texttt{ModifierNodeElement} (\texttt{create},
+\texttt{update}, \textbf{equals/hashCode} — a \texttt{data class}) is diffed and
+\texttt{update()} mutates the node. Roles: \texttt{LayoutModifierNode},
+\texttt{DrawModifierNode}, \texttt{PointerInputModifierNode}, \texttt{SemanticsModifierNode}.
+\begin{lstlisting}[language=KotlinSheet]
+fun Modifier.circle(c: Color) = this then CircleEl(c)
+private data class CircleEl(val c: Color) :
+    ModifierNodeElement<CircleNode>() {
+  override fun create() = CircleNode(c)
+  override fun update(node: CircleNode) { node.c = c } }
+private class CircleNode(var c: Color) :
+    Modifier.Node(), DrawModifierNode {
+  override fun ContentDrawScope.draw() { drawCircle(c); drawContent() } }
+\end{lstlisting}
+
+\section{Moving things \& lazy lists}
+\begin{itemize}\raggedright
+  \item Animating \texttt{padding}/\texttt{size}/\texttt{offset(x.dp)} $\to$ \textbf{relayout},
+        neighbours move. \texttt{graphicsLayer \{ translationX; scaleX; alpha \}} transforms
+        the drawn layer only — \textbf{no remeasure}; a scaled item keeps its old slot.
+  \item \texttt{key = \{ it.id \}} (Bundle-able) keeps item state across inserts;
+        \texttt{contentType} reuses same-type compositions; \texttt{Modifier.animateItem()}
+        (fade + placement, needs keys) replaced \texttt{animateItemPlacement}.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{\texttt{LazyColumn} in a \texttt{verticalScroll} $\to$ crash: \textbf{infinite max
+        height}. Use one lazy list with several \texttt{item\{\}}s.}
+  \trap{``\texttt{size(50)} is 50'' — not after \texttt{fillMaxSize()}: the min wins.}
+  \trap{No margin API: padding \emph{before} background is the margin.}
+\end{itemize}
+
+\textbf{Remember:} \emph{constraints down, sizes up, place last · measure once · order =
+wrapping · move with graphicsLayer.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} compose-recomposition-stability ·
+android-compose-lifecycle · android-jetpack-stack · auto-layout (iOS) · swiftui layout protocol}
+
+\end{document}
