@@ -1,0 +1,187 @@
+% data-access-patterns.tex — the data-layer patterns under a mobile Repository: DTO <-> domain
+% mapping, Data Mapper vs Active Record, Unit of Work + Identity Map (Core Data / SwiftData
+% contexts), Specification / Query Object, Gateway, Anti-Corruption Layer, cache strategies for
+% mobile, single source of truth (offline-first), cursor pagination.
+% Sources (checked 2026-10-06):
+%   martinfowler.com/eaaCatalog (PoEAA, 2002: Repository, Data Mapper, Active Record, Unit of Work,
+%     Identity Map, Query Object, Gateway) · martinfowler.com/apsupp/spec.pdf (Evans + Fowler,
+%     Specifications) · Evans, Domain-Driven Design (2003: Anti-Corruption Layer)
+%   developer.apple.com/documentation/coredata/nsmanagedobjectcontext (insertedObjects,
+%     updatedObjects, deletedObjects, hasChanges, save, rollback; uniquing)
+%   developer.apple.com/documentation/swiftdata/modelcontext + /autosaveenabled · WWDC23 10196
+%     "Dive deeper into SwiftData" (autosave on by default for the container's main context,
+%     disabled for contexts created by hand)
+%   raw.githubusercontent.com/groue/GRDB.swift/master/README.md ("try player.insert(db)")
+%   RFC 5861 (stale-while-revalidate) · RFC 9111 (HTTP caching, Cache-Control)
+% @labels: area=design kind=pattern platform=ios topic=data,architecture discussion=94
+% @tags: repository, dto-mapping, anti-corruption-layer, data-mapper, active-record, unit-of-work, identity-map, single-source-of-truth, offline-first, cache-aside, stale-while-revalidate, cursor-pagination
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{tabularx}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,case,switch,
+    if,else,return,guard,self,Self,nil,try,await,async,throws,private,static,
+    true,false,Void,String,Bool,Int,Date,extension,where,some,any,Sendable},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5mm},
+  dbn/.style={sb, draw=sheetBrown, fill=sheetBrown!10},
+  ext/.style={sb, draw=sheetGrey, fill=black!4},
+  rd/.style={->, thick, draw=sheetBlue},
+  rf/.style={->, thick, draw=sheetOrange},
+  wr/.style={->, thick, draw=sheetGreen!60!black},
+  lbl/.style={font=\tiny, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Data access patterns — under the Repository}{design · folio}
+
+\oneliner{A Repository is only the \emph{front door}. Behind it: \textbf{DTOs} mapped to domain
+models at an \textbf{anti-corruption} edge, a local \textbf{DB as the single source of truth} the UI
+\emph{observes}, a network \textbf{gateway} that only \emph{refreshes} it, a \textbf{unit of work}
+committing changes together, a \textbf{cache policy} per data type, and \textbf{cursors} for
+paging. Offline-first: reads never wait for the network; writes go through an outbox.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[sb, minimum height=11mm, minimum width=11mm] (v) at (0.6,1.7) {View};
+  \node[sb, minimum height=11mm, minimum width=15mm] (vm) at (2.85,1.7) {ViewModel};
+  \node[sb, minimum height=16mm, minimum width=20mm, draw=sheetGreen!70!black, fill=sheetGreen!8, align=center] (rp) at (5.7,1.7)
+      {\textbf{Repository}\\[1pt]{\tiny domain types only}\\{\tiny owns the policy}};
+  \node[ext] (mc) at (4.45,3.25) {memory cache (\texttt{NSCache})};
+  \node[dbn, minimum height=13mm, minimum width=26mm, align=center] (db) at (10.0,1.7)
+      {\textbf{Local DB}\\{\tiny SQLite / Core Data / SwiftData}\\\textbf{single source of truth}};
+  \node[cell, fill=sheetGreen!15, font=\tiny\ttfamily, minimum width=16mm] (ob) at (10.0,0.45) {outbox rows};
+  \node[sb, draw=sheetOrange, fill=sheetOrange!8, align=center] (mp) at (13.3,2.75) {Mapper: DTO $\to$ domain\\{\tiny anti-corruption layer}};
+  \node[sb, draw=sheetGreen!70!black, fill=sheetGreen!8, align=center] (sw) at (13.3,0.45) {sync worker\\{\tiny write-behind, retries}};
+  \node[ext, minimum height=11mm, align=center] (api) at (15.95,1.7) {API client\\{\tiny gateway}\\{\tiny \texttt{URLSession}}};
+  % read path (blue)
+  \draw[rd] ([yshift=2mm]db.west) -- node[lbl, above, text=sheetBlue]{\textbf{1} observe\\\texttt{AsyncStream}} ([yshift=2mm]rp.east);
+  \draw[rd] ([yshift=2mm]rp.west) -- node[lbl, above, text=sheetBlue]{\texttt{[Article]}} ([yshift=2mm]vm.east);
+  \draw[rd] ([yshift=2mm]vm.west) -- node[lbl, above, text=sheetBlue]{state} ([yshift=2mm]v.east);
+  % refresh path (orange)
+  \draw[rf] ([xshift=6mm]rp.north) |- (15.95,3.65) node[lbl, above, pos=0.7, text=sheetOrange]{\textbf{2} \texttt{refresh(after: cursor)}: GET in the background — never blocks the UI} -- (api.north);
+  \draw[rf] (api.north west) -- node[lbl, above, sloped, text=sheetOrange]{DTOs} (mp.south east);
+  \draw[rf] (mp.south west) -- ([xshift=-4mm]db.north east);
+  \node[lbl, text=sheetOrange, align=left, anchor=north west] at (11.45,2.2) {upsert in\\one transaction};
+  % write path (green)
+  \draw[wr] ([yshift=-2mm]v.east) -- node[lbl, below, text=sheetGreen!50!black]{tap} ([yshift=-2mm]vm.west);
+  \draw[wr] ([yshift=-2mm]vm.east) -- node[lbl, below, text=sheetGreen!50!black]{\texttt{like(id)}} ([yshift=-2mm]rp.west);
+  \draw[wr] (rp.south) |- node[lbl, below, pos=0.72, text=sheetGreen!50!black]{\textbf{3} optimistic write + outbox row} (ob.west);
+  \draw[wr] (ob.east) -- (sw.west);
+  \draw[wr] (sw.east) -- (api.south west);
+  \node[lbl, text=sheetGreen!50!black] at (13.3,-0.05) {POST + idempotency key · 2xx: delete row · 4xx: revert + tell the user};
+  % cache-aside
+  \draw[<->, thick, dashed, draw=sheetGrey] (mc.south) -- node[lbl, left, text=sheetGrey]{cache-aside} ([xshift=-5mm]rp.north);
+  % legend + note
+  \node[lbl, anchor=west, align=left] at (0,3.3) {\textcolor{sheetBlue}{\textbf{blue}} read · \textcolor{sheetOrange}{\textbf{orange}} refresh\\\textcolor{sheetGreen!50!black}{\textbf{green}} write};
+  \node[lbl, anchor=west, align=left, text=black!75] at (0,0.45) {UI re-renders because the \textbf{DB}\\\textbf{changed}, not because a request returned};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Repository vs DAO}: a DAO/data source is CRUD over \emph{one} store; a Repository
+        is a collection-like API over \emph{domain} objects hiding \emph{several} sources and the
+        policy between them.
+  \item \textbf{DTO $\leftrightarrow$ domain}: the DTO mirrors the wire (optionals, server names);
+        the domain model is valid by construction. Map once, at the edge: that mapper is the
+        \textbf{Anti-Corruption Layer} (Evans) — a foreign model (backend JSON, a vendor SDK)
+        never leaks inward, so an API rename stops at one file.
+  \item \textbf{Data Mapper vs Active Record} (Fowler): AR = the object carries its own persistence
+        (\texttt{row.save()}; GRDB's \texttt{try player.insert(db)} is AR-style); DM = a separate
+        mapper moves data, the domain type knows nothing of storage (plain \texttt{struct}
+        $\leftrightarrow$ \texttt{NSManagedObject}).
+  \item \textbf{Unit of Work} = track every change of a business transaction, commit together.
+        \texttt{NSManagedObjectContext} is one (\texttt{insertedObjects}, \texttt{updatedObjects},
+        \texttt{deletedObjects}, \texttt{hasChanges}, \texttt{save()}, \texttt{rollback()}) and an
+        \textbf{Identity Map} (uniquing: one object per record per context). SwiftData's
+        \texttt{ModelContext}: \texttt{insert}, \texttt{delete}, \texttt{save()}; autosave only on the
+        container's main context — a context you create yourself must \texttt{save()}.
+  \item \textbf{Specification} (Evans/Fowler) = a composable predicate object
+        (\texttt{isSatisfied(by:)}, and/or/not); \textbf{Query Object} = a query as data. Apple:
+        \texttt{NSPredicate}, \texttt{\#Predicate} (translated to SQL), \texttt{NSFetchRequest},
+        \texttt{FetchDescriptor} (\texttt{fetchLimit}, \texttt{fetchOffset}).
+  \item \textbf{Gateway} (Fowler) = one object wrapping \emph{one external system} in your terms
+        (API client, \texttt{PaymentGateway} over an SDK). A Repository \emph{uses} gateways.
+\end{itemize}
+
+\section{Example — the edges, in code}
+\begin{lstlisting}[language=SwiftSheet]
+struct ArticleDTO: Decodable { let id: String   // wire shape
+  let title: String?; let publishedAt: Date }   // .iso8601
+struct Article: Identifiable, Hashable {        // domain shape
+  let id: String; let title: String; let published: Date }
+extension Article { init?(_ d: ArticleDTO) {    // the ACL edge
+  guard let t = d.title, !t.isEmpty else { return nil }
+  self.init(id: d.id, title: t, published: d.publishedAt) } }
+struct Cursor: Hashable, Sendable { let token: String } // opaque
+protocol ArticleRepository: Sendable {
+  func articles() -> AsyncStream<[Article]>  // observe the SSOT
+  func refresh(after: Cursor?) async throws -> Cursor? // nil: end
+  func like(_ id: Article.ID) async throws } // DB now, API later
+\end{lstlisting}
+
+\section{Remember}
+\textbf{DTO at the edge · domain inside · DB is the truth · network only refreshes · writes go
+through the outbox · page by cursor.}
+
+\columnbreak
+
+\section{Cache strategies on a phone}
+{\footnotesize\setlength\tabcolsep{2pt}\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\linewidth}{@{}L{14mm}L{23mm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Strategy} & \textbf{Mechanism} & \textbf{iOS use · risk} \\
+\midrule
+\textbf{Cache-aside} & get; miss $\to$ load $\to$ put & \texttt{NSCache} before an image/API call ·
+stale until TTL; miss stampede $\to$ share one in-flight \texttt{Task} per key \\
+\textbf{Read-through} & the cache loads a miss itself & $\approx$ \texttt{URLCache} in
+\texttt{URLSession} (\texttt{Cache-Control}) · cache must know the source \\
+\textbf{Write-through} & write store \emph{and} cache, then return & settings edits · slower
+writes, always consistent \\
+\textbf{Write-behind} & write locally, flush later in batches & the \textbf{outbox} + sync
+worker · lost if not persisted; conflicts \\
+\textbf{Stale-while-} \textbf{revalidate} & show cached now, refresh in background & every SSOT
+screen (RFC 5861, HTTP) · show ``updating'' \\
+\bottomrule
+\end{tabularx}}
+
+\section{Single source of truth + paging}
+\begin{itemize}
+  \item \textbf{SSOT}: the UI observes the DB, the network writes \emph{into} it, the view model
+        never keeps its own copy — offline and online share one code path.
+  \item \textbf{Offset} (\texttt{?page=3}, \texttt{fetchOffset}): an insert shifts every page
+        $\to$ duplicates/skips; cost grows with the offset.
+  \item \textbf{Cursor/keyset} (\texttt{?after=<opaque>}): stable under inserts; the repository
+        stores \texttt{next} beside the rows, \texttt{nil} = end; the VM only calls
+        \texttt{loadMore()}.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{DTOs or \texttt{NSManagedObject}s in the UI: API shape + persistence leak everywhere.}
+  \trap{\texttt{NSManagedObject} is bound to its context's queue — pass
+        \texttt{NSManagedObjectID}, or map to structs.}
+  \trap{Optimistic update without a persisted outbox: kill the app, lose the write.}
+  \trap{Two sources of truth (VM array + DB) drift — observe, don't copy.}
+  \trap{Offset paging on a live feed = duplicate rows.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} coordinator-repository-di-clean (read flow) ·
+dependency-injection-deep · swift-idiom-patterns ·
+gof-creational-structural (caching Decorator)}
+
+\end{document}

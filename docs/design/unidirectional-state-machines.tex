@@ -1,0 +1,206 @@
+% unidirectional-state-machines.tex — unidirectional data flow (Elm, Redux, TCA),
+% pure reducers + effects at the edge, exhaustive tests, trade-offs vs MVVM;
+% finite state machines and statecharts (Harel 1987, SCXML, XState); illegal
+% states unrepresentable with Swift enums.
+% Sources (checked 2026-10-06):
+%   Harel, "Statecharts: a visual formalism for complex systems", Science of Computer
+%     Programming 8(3), 1987 (hierarchy, orthogonality, guards, entry/exit, history)
+%   w3.org/TR/scxml (W3C Recommendation, 2015) · stately.ai/docs (XState)
+%   guide.elm-lang.org/effects (update : Msg -> Model -> (Model, Cmd Msg)) ·
+%     redux.js.org/understanding/history-and-design/middleware (effects in middleware)
+%   pointfreeco.github.io/swift-composable-architecture (1.x: @Reducer, @ObservableState,
+%     Effect .none/.send/.run/.cancellable(id:), Scope/ifLet/forEach, @Presents, StackState,
+%     TestStore exhaustivity)
+% @labels: area=design kind=architecture platform=general topic=architecture,patterns discussion=105
+% @tags: unidirectional-data-flow, elm, redux, tca, reducer, effects, teststore, state-machine, statecharts, scxml, xstate, illegal-states-unrepresentable
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false,AnyObject,Void,String,Bool,Int,case,switch,default,mutating,
+    static,inout,Error},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+
+\tikzset{
+  lp/.style={box, font=\scriptsize, minimum width=17mm, minimum height=7mm},
+  pure/.style={lp, draw=sheetGreen!60!black, fill=sheetGreen!12},
+  eff/.style={lp, draw=sheetOrange, fill=sheetOrange!10},
+  st/.style={draw=sheetBlue, thick, rounded corners=4pt, fill=sheetBlue!6, font=\scriptsize,
+             minimum height=5.5mm, minimum width=13mm, inner sep=1.5pt, align=center},
+  bad/.style={st, draw=sheetRed, fill=sheetRed!8},
+  tr/.style={->, thick, draw=sheetGrey},
+  ev/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small},
+}
+
+\begin{document}
+
+\sheettitle{Unidirectional data flow \& state machines}{design · folio}
+
+\oneliner{State lives in \textbf{one place}; the view \textbf{renders} it and sends
+\textbf{actions}; a \textbf{pure reducer} computes the next state and returns
+\textbf{effects} (side effects as values) whose results come back as actions — one loop,
+one direction (Elm $\to$ Redux $\to$ TCA). A \textbf{state machine} constrains \emph{which}
+transitions exist; \textbf{statecharts} add hierarchy, parallel regions and guards. Both
+aim at \textbf{``make illegal states unrepresentable''}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── the loop ───────────────────────────────────────────
+  \node[ttl, anchor=west] at (-0.3,2.45) {The loop (TCA names)};
+  \node[lp] (s) at (0.8,1.3) {\textbf{State}\\[-1pt]{\tiny struct, single source}};
+  \node[lp] (v) at (4.0,1.3) {\textbf{View}\\[-1pt]{\tiny a function of state}};
+  \node[lp] (a) at (4.0,-0.6) {\textbf{Action}\\[-1pt]{\tiny enum: user + system}};
+  \node[pure] (r) at (0.8,-0.6) {\textbf{Reducer}\\[-1pt]{\tiny pure, sync}};
+  \draw[flow] (s) -- node[lbl, above]{observe / render} (v);
+  \draw[flow] (v) -- node[lbl, right]{\texttt{send(.tap)}} (a);
+  \draw[flow] (a) -- node[lbl, above]{Store feeds} (r);
+  \draw[flow] (r) -- node[lbl, left, align=right]{mutate\\\texttt{inout}} (s);
+  \node[eff] (e) at (0.8,-2.05) {\textbf{Effect}\\[-1pt]{\tiny \texttt{.run \{ send in \}}}};
+  \node[eff, fill=black!4, draw=sheetGrey] (d) at (4.0,-2.05) {\textbf{Dependencies}\\[-1pt]{\tiny API · clock · UUID}};
+  \draw[hot] (r) -- node[lbl, left]{returns} (e);
+  \draw[hot] (e) -- node[lbl, above]{uses} (d);
+  \draw[hot] (e.south) .. controls (1.2,-3.1) and (6.2,-3.0) .. node[lbl, right, pos=0.75]{result\\as action} (a.east);
+  \node[lbl, text=sheetGreen!50!black] at (2.4,0.35) {\textbf{pure core}};
+  \node[lbl, text=sheetOrange] at (2.4,-1.4) {\textbf{impure edge}\\(run by the Store)};
+
+  % ── BLE statechart ─────────────────────────────────────
+  \node[ttl, anchor=west] at (6.7,2.45) {Statechart — a BLE connection};
+  \fill[black] (7.0,1.55) circle (2pt);
+  \node[st] (idle) at (7.9,1.55) {Idle};
+  \node[st] (scan) at (10.0,1.55) {Scanning};
+  \node[st] (conn) at (12.3,1.55) {Connecting\\[-1pt]{\tiny entry: start timer}};
+  \draw[tr] (7.08,1.55) -- (idle);
+  \draw[tr] (idle) -- node[ev, above]{scan} (scan);
+  \draw[tr] (scan) -- node[ev, above]{found(p)} (conn);
+  \draw[tr] (scan.south) to[bend left=25] node[ev, below]{stop} (idle.south);
+  % compound state
+  \draw[draw=sheetBlue, very thick, rounded corners=6pt, fill=sheetBlue!3] (10.9,-2.35) rectangle (16.3,0.55);
+  \node[font=\scriptsize\bfseries, text=sheetBlue, anchor=north west] at (10.95,0.52) {Connected};
+  \node[lbl, anchor=north east] at (16.25,0.52) {compound (hierarchical)};
+  \fill[black] (11.25,-0.3) circle (1.6pt);
+  \node[st] (disc) at (12.4,-0.3) {Discovering};
+  \node[st] (ready) at (14.8,-0.3) {Ready};
+  \draw[tr] (11.33,-0.3) -- (disc);
+  \draw[tr] (disc) -- node[ev, above]{services ok} (ready);
+  \draw[sheetBlue, dashed] (10.95,-0.95) -- (16.25,-0.95);
+  \node[lbl, anchor=north west, text=sheetBlue] at (10.95,-0.98) {parallel region};
+  \node[st, minimum width=11mm] (bon) at (12.4,-1.7) {Battery ok};
+  \node[st, minimum width=11mm] (blo) at (14.8,-1.7) {Battery low};
+  \draw[tr] (bon) -- node[ev, above]{level$<$20} (blo);
+  \draw[tr] (conn.south) -- node[ev, right]{didConnect} (13.0,0.55);
+  % failures
+  \node[bad] (fail) at (8.9,-0.3) {Failed\\[-1pt]{\tiny error}};
+  \draw[tr, draw=sheetRed] (11.6,1.27) -- (11.6,0.8) -| node[ev, above, pos=0.25, text=sheetRed]{timeout \textbf{[retries$\geq$3]}} (fail.north);
+  \draw[tr] (conn.north) -- ++(0,0.35) -| node[ev, above, pos=0.25]{timeout \textbf{[retries$<$3]} / retries += 1} (11.9,1.83);
+  \draw[tr, draw=sheetRed] (10.9,-0.3) -- node[ev, below, text=sheetRed]{didDisconnect} (fail.east);
+  \draw[tr] (fail.west) to[bend left=30] node[ev, left]{retry} (idle.south);
+  \node[lbl, anchor=west] at (6.7,-2.25) {\textbf{[guard]} · event / action · one transition on the};
+  \node[lbl, anchor=west] at (6.7,-2.5) {\emph{parent} exits every child (disconnect from Ready)};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+{\raggedright
+\begin{itemize}
+  \item \textbf{Elm}: \texttt{update} returns (new model, \texttt{Cmd}) — the ancestor
+        of ``reducer returns effects''. \textbf{Redux}: \texttt{dispatch(action)};
+        reducer (state, action) $\to$ new state; effects live in \textbf{middleware}
+        (thunks, sagas).
+  \item \textbf{TCA}: \texttt{@Reducer} = \texttt{@ObservableState struct State} +
+        \texttt{enum Action} + \texttt{Reduce \{ state, action in \}} returning
+        \texttt{Effect}: \texttt{.none} · \texttt{.send} · \texttt{.run \{ send in \}} ·
+        \texttt{.cancellable(id:)}. The \texttt{Store} runs effects.
+        \textbf{Dependencies} (\texttt{@Dependency}: API, clock, UUID) are overridden in
+        tests and previews.
+  \item \textbf{Composition:} parent state/action embed the child's
+        (\texttt{Scope}, \texttt{.ifLet}, \texttt{.forEach}); views get
+        \texttt{store.scope(...)}. Navigation is state (\texttt{@Presents},
+        \texttt{StackState}).
+  \item \textbf{Testing:} \texttt{TestStore} is \textbf{exhaustive} — assert every state
+        change and \texttt{receive} every effect action, or it fails.
+  \item \textbf{FSM} = states + events + transition (state, event) $\to$ state.
+        \textbf{Statechart} (Harel 1987) adds \textbf{hierarchy}, \textbf{parallel
+        (orthogonal)} regions, \textbf{guards}, \textbf{entry/exit actions},
+        \textbf{history}. W3C \textbf{SCXML}; \textbf{XState} in JS.
+\end{itemize}\par}
+
+\section{vs MVVM}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{36mm}>{\raggedright\arraybackslash}p{38mm}@{}}
+\toprule
+\textbf{Unidirectional / TCA} & \textbf{MVVM} \\
+\midrule
+one reducer mutates; replayable & VM methods mutate anywhere \\
+effects explicit, cancellable by id & ad-hoc \texttt{Task}s per VM \\
+exhaustive, deterministic tests & you pick what to assert \\
+boilerplate, learning curve, lock-in & light, native, familiar \\
+\bottomrule
+\end{tabular}}
+\textbf{Perf:} a huge root state re-renders too much — scope stores narrowly;
+\texttt{@ObservableState} tracks only the fields a view reads. Every tap is several hops
+(action $\to$ reducer $\to$ effect $\to$ action).
+
+\section{When it pays / when it's ceremony}
+\textbf{Pays:} complex shared state, many async effects + cancellation, deep
+navigation/links, a big team wanting one shape; flows with real protocol states (BLE,
+checkout, onboarding, player). \textbf{Ceremony:} small apps, forms, prototypes — plain
+\texttt{@Observable}. The \emph{principles} (one owner, explicit transitions, effects at
+the edge) pay even without the framework.
+
+\columnbreak
+
+\section{Example — illegal states unrepresentable}
+\begin{lstlisting}[language=SwiftSheet]
+// BAD: 2^3 combos, most meaningless
+struct Conn { var connecting, connected: Bool; var error: Error? }
+// GOOD: only real states; data lives where it is valid
+enum BLEState {
+  case idle, scanning
+  case connecting(Peripheral, tries: Int)
+  case connected(Peripheral, services: [Service])
+  case failed(Error) }
+func next(_ s: BLEState, _ e: BLEEvent) -> BLEState {  // pure
+  switch (s, e) {
+  case (.idle, .scan): return .scanning
+  case let (.scanning, .found(p)):
+    return .connecting(p, tries: 0)
+  case let (.connecting(p, n), .timeout) where n < 3:  // guard
+    return .connecting(p, tries: n + 1)
+  case (.connecting, .timeout): return .failed(BLEError.timeout)
+  default: return s }   // event not allowed here: ignored
+}
+\end{lstlisting}
+In TCA this \texttt{switch} is the reducer body; the CoreBluetooth delegate is a
+\textbf{dependency} whose callbacks come back as actions.
+
+\section{Traps}
+\begin{itemize}
+  \trap{``The reducer calls the API.'' No — sync and pure; it \emph{returns} an effect;
+        the result re-enters as an action.}
+  \trap{State as a class — no: value types; \texttt{@ObservableState} gives
+        fine-grained observation of the struct.}
+  \trap{Booleans for modes (\texttt{isLoading} true \emph{and} an \texttt{error} set?)
+        — use an enum.}
+  \trap{\texttt{default: return s} hides missing transitions — list them where the
+        machine is safety-relevant.}
+\end{itemize}
+
+\section{Remember}
+\textbf{State $\to$ View $\to$ Action $\to$ Reducer $\to$ State; effects out, actions
+back in; enums, not flags.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} mvc-mvp-mvvm · tca-composable-architecture ·
+functional-design · State pattern (gof-behavioural) · hexagonal-onion-modular-monolith (effects =
+driven ports)}
+
+\end{document}

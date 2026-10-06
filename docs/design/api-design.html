@@ -1,0 +1,100 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>API design — HTTP resources and Swift APIs — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/design/api-design.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">65</span></a></li><li><a class="side-area current" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">API design — HTTP resources and Swift APIs</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">design · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> An API is a <strong>contract you can never fully take back</strong>: model
+<strong>resources</strong> (nouns) and let <strong>methods</strong> carry the verbs, make every write
+<strong>safe to retry</strong>, make every change <strong>additive</strong>, and judge a Swift API by
+<strong>clarity at the point of use</strong>. Old app versions live for years.</p>
+<p class="sheet-tools"><a class="sheet-download" href="api-design.pdf" download>Download PDF</a> <a href="api-design.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/design/api-design.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="api-design-fig1.svg" width="634" height="145" class="wide" alt="API design — HTTP resources and Swift APIs — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>HTTP: resources, methods, status</h2>
+<p><strong>Nouns, plural, shallow</strong>: <code>/users/7/orders</code>, not <code>/getUserOrders?id=7</code> (RPC-in-URL, Richardson L0); past <span class="math">∼</span>2 levels go flat + filter (<code>/orders?user=7</code>). Non-CRUD action: <code>POST /orders/9/cancel</code> (or a <code>cancellation</code> sub-resource). Root is always an <strong>object</strong>, never a bare array (no room for <code>next</code>/meta later).</p>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>Method</strong></th><th><strong>Safe</strong></th><th><strong>Idem.</strong></th><th><strong>Use</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>GET/HEAD</td><td>yes</td><td>yes</td><td>read; cacheable</td></tr>
+<tr><td>PUT</td><td>no</td><td><strong>yes</strong></td><td>full replace at a known URI (client picks id)</td></tr>
+<tr><td>DELETE</td><td>no</td><td><strong>yes</strong></td><td>2nd call may 404 — the <em>state</em> is the same</td></tr>
+<tr><td>POST</td><td>no</td><td><strong>no</strong></td><td>create / action <span class="math">→</span> needs an Idempotency-Key</td></tr>
+<tr><td>PATCH</td><td>no</td><td>no</td><td>Merge Patch (RFC 7396, <code>null</code> = remove) / JSON Patch (6902)</td></tr>
+</tbody>
+</table></p>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><strong>2xx</strong></td><td><strong>200</strong> body · <strong>201</strong> + <code>Location</code> · <strong>202</strong> accepted, not done · <strong>204</strong> no body</td></tr>
+<tr><td><strong>4xx</strong></td><td><strong>400</strong> malformed · <strong>401</strong> <em>who are you?</em> · <strong>403</strong> known, not allowed · <strong>404</strong> (or hide existence) · <strong>409</strong> state conflict · <strong>412</strong> If-Match failed · <strong>422</strong> valid JSON, invalid values · <strong>429</strong> + <code>Retry-After</code></td></tr>
+<tr><td><strong>5xx</strong></td><td><strong>500</strong> bug · <strong>502</strong> bad upstream reply · <strong>503</strong> overloaded + <code>Retry-After</code> · <strong>504</strong> upstream timeout</td></tr>
+</tbody>
+</table>
+ <strong>Retry</strong> only idempotent requests on 5xx/429/timeout, exponential backoff + jitter.</p>
+<p><strong>Errors — RFC 9457 problem details</strong> (2023, obsoletes 7807):</p>
+<pre class="sheet-code"><code class="hljs language-plaintext">422 Unprocessable Content   Content-Type: application/problem+json
+{&quot;type&quot;:&quot;https://api.example.com/probs/validation&quot;,&quot;status&quot;:422,
+ &quot;title&quot;:&quot;Invalid request&quot;,&quot;detail&quot;:&quot;email is not an address&quot;,
+ &quot;instance&quot;:&quot;/signups/81&quot;,&quot;errors&quot;:[{&quot;field&quot;:&quot;email&quot;}]}</code></pre>
+<p>Clients branch on <code>type</code> (a URI; default <code>about:blank</code>), never on <code>detail</code> text; extra members allowed; never leak stack traces.</p>
+<p><strong>Pagination</strong>. <em>Offset</em> (<code>?offset=40&amp;limit=20</code>): page jumps, but <strong>drifts</strong> (insert <span class="math">→</span> duplicate row, delete <span class="math">→</span> skipped row) and costs O(offset). <em>Cursor/keyset</em> (<code>?after=&lt;opaque&gt;</code>): stable under writes, index-fast, no jumps; needs a <strong>total order</strong> — sort key + unique tie-breaker (<code>created_at, id</code>), the cursor encodes the last pair. Feeds <span class="math">→</span> cursor. Filters/sort as query params (<code>?status=open&amp;sort=created</code>), cap <code>limit</code>, next link in the body or <code>Link: rel=&quot;next&quot;</code> (RFC 8288).</p>
+<p><strong>Mobile</strong>: latency, not bandwidth, dominates — <strong>chunky beats chatty</strong> (one call per screen, not 1 + N). <strong>BFF</strong> (Backends for Frontends, Sam Newman): a per-client backend that aggregates and shapes; plus gzip/br, field selection, delta sync (<code>?since=</code>), ETags.</p>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th><strong>REST</strong></th><th><strong>GraphQL</strong></th><th><strong>gRPC</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>Wire</td><td>HTTP + JSON</td><td>one POST endpoint</td><td>HTTP/2 + protobuf</td></tr>
+<tr><td>Contract</td><td>OpenAPI (opt.)</td><td>typed schema</td><td><code>.proto</code> + codegen</td></tr>
+<tr><td>Caching</td><td>HTTP/CDN, free</td><td>hard: persisted queries</td><td>none built in</td></tr>
+<tr><td>Stream</td><td>SSE / WebSocket</td><td>subscriptions</td><td>4 kinds incl. bidi</td></tr>
+<tr><td>Cost</td><td>chatty screens</td><td>N+1 resolvers, query cost</td><td>no browser (gRPC-Web)</td></tr>
+<tr><td>Fits</td><td>public, cacheable</td><td>many shapes per client</td><td>service-to-service</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Evolution — versions + compatibility</h2>
+<ul>
+<li><strong>URI</strong> <code>/v2/</code> (visible, routable) · <strong>media type</strong>  (<code>vnd.x.v2+json</code>) · <strong>date-pinned</strong> header (Stripe) · <strong>none</strong>,  additive only (GraphQL <code>@deprecated</code>, protobuf).</li>
+<li><strong>Safe</strong>: new endpoint, optional request field, response field.  <strong>Breaking</strong>: remove/rename, change type/unit, newly required, newly  nullable, <strong>a new enum value</strong>, a changed default.</li>
+<li><strong>Never repurpose a field</strong> (protobuf: never reuse a tag). <strong>Tolerant
+ reader</strong> (Fowler): ignore unknown fields, unknown values <span class="math">→</span> <code>.unknown</code>.  Retire: <code>Sunset</code> (RFC 8594) + a min-app-version gate.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Swift library API</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">public</span> <span class="hljs-keyword">enum</span> <span class="hljs-title class_">Status</span>: <span class="hljs-title class_ inherited__">String</span>, <span class="hljs-title class_ inherited__">Decodable</span>, <span class="hljs-title class_ inherited__">Sendable</span> {
+  <span class="hljs-keyword">case</span> active, suspended, unknown          <span class="hljs-comment">// tolerant reader</span>
+  <span class="hljs-keyword">public</span> <span class="hljs-keyword">init</span>(<span class="hljs-params">from</span> <span class="hljs-params">d</span>: <span class="hljs-type">Decoder</span>) <span class="hljs-keyword">throws</span> {
+    <span class="hljs-keyword">let</span> raw <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> d.singleValueContainer().decode(<span class="hljs-type">String</span>.<span class="hljs-keyword">self</span>)
+    <span class="hljs-keyword">self</span> <span class="hljs-operator">=</span> <span class="hljs-type">Status</span>(rawValue: raw) <span class="hljs-operator">??</span> .unknown }
+}
+<span class="hljs-comment">// items.remove(at: i) · a.sort() mutates, a.sorted() returns</span></code></pre>
+<ul>
+<li><strong>Swift API Design Guidelines</strong>: <em>“Clarity at the point of use is your most
+ important goal”</em>, over brevity; <strong>omit needless words</strong>; name by <strong>role</strong>;  factories <code>make…</code>; Bools as assertions (<code>isEmpty</code>); conversions  unlabeled (<code>Int64(x)</code>).</li>
+<li><strong>Progressive disclosure</strong>: common case in one line  (<code>URLSession.shared.data(from:)</code>), power via default arguments.</li>
+<li>Return <code>some P</code> to keep the concrete type changeable; every <code>public</code>  is forever — widen later, never narrow.</li>
+<li><strong>SemVer</strong> MAJOR for a protocol requirement without a default or a new public  enum case. ABI stable Swift 5.0, module stability 5.1 (<code>.swiftinterface</code>,  <code>BUILD_LIBRARY_FOR_DISTRIBUTION</code>: non-<code>@frozen</code> enums need  <code>@unknown default</code>). Rename: <code>@available(*, deprecated, renamed:)</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><code>If-Match</code> mismatch is <strong>412</strong>, not 409. An ETag is opaque, not a hash.</li>
+<li class="trap">A new enum case breaks JSON decoders and Swift <code>switch</code>es alike.</li>
+<li class="trap"><code>no-cache</code> = store but revalidate; <code>no-store</code> = never store.</li>
+<li class="trap">A missing Idempotency-Key where one is required is <strong>400</strong>, not 422.</li>
+</ul>
+<h3 class="sheet-hd">Remember: nouns + HTTP verbs · retry-safe writes · add, never change · cursor
+for feeds · clarity at the point of use.</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> urlsession-networking · ts-type-system
+(unions on the wire) · protocols-generics · error-handling · modularization-spm · functional-design</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=design" title="area">design</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=general" title="platform">general</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=networking" title="topic">networking</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=architecture" title="topic">architecture</a></li><li class="sheet-tag"><a href="/folios.html?tag=rest">rest</a></li><li class="sheet-tag"><a href="/folios.html?tag=http-status-codes">http-status-codes</a></li><li class="sheet-tag"><a href="/folios.html?tag=idempotency-key">idempotency-key</a></li><li class="sheet-tag"><a href="/folios.html?tag=etag">etag</a></li><li class="sheet-tag"><a href="/folios.html?tag=if-match">if-match</a></li><li class="sheet-tag"><a href="/folios.html?tag=problem-details">problem-details</a></li><li class="sheet-tag"><a href="/folios.html?tag=rfc-9457">rfc-9457</a></li><li class="sheet-tag"><a href="/folios.html?tag=cursor-pagination">cursor-pagination</a></li><li class="sheet-tag"><a href="/folios.html?tag=api-versioning">api-versioning</a></li><li class="sheet-tag"><a href="/folios.html?tag=tolerant-reader">tolerant-reader</a></li><li class="sheet-tag"><a href="/folios.html?tag=bff">bff</a></li><li class="sheet-tag"><a href="/folios.html?tag=swift-api-design-guidelines">swift-api-design-guidelines</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=design%2Fapi-design.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/91">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

@@ -1,0 +1,204 @@
+% patterns-in-apple-frameworks.tex — where the classic patterns already live in UIKit /
+% SwiftUI / Foundation / Combine: the API, the mechanism, the gist.
+% Sources (checked 2026-10-06):
+%   developer.apple.com/documentation/uikit/using-responders-and-the-responder-chain-to-handle-events
+%     (next-responder rules, nil-targeted actions, hit-testing) — the window -> scene step is from
+%     an Apple Developer Forums answer only, so it stays \unverified on the page
+%   developer.apple.com/documentation/foundation/urlprotocol/registerclass(_:) ("consulted in the
+%     reverse order of their registration"; the first whose canInit(with:) is true handles it)
+%   developer.apple.com/documentation/foundation/undomanager/registerundo(withtarget:handler:)
+%     (use the handler's target parameter to avoid a retain cycle) + UndoManager overview (undo
+%     operations registered while undoing go on the redo stack)
+%   developer.apple.com/library/archive Cocoa Core Competencies "Class cluster" ("based on the
+%     Abstract Factory design pattern")
+%   developer.apple.com/documentation/uikit/uiappearance ("iOS applies appearance changes when a
+%     view enters a window, but it doesn't change the appearance of a view that's already in a
+%     window")
+%   developer.apple.com/documentation/swiftui/modifiedcontent · /swift/sequence ·
+%     /swift/encodable/encode(to:) · /uikit/uiviewrepresentable
+% @labels: area=design kind=pattern platform=apple topic=patterns,platform-apis discussion=102
+% @tags: responder-chain, chain-of-responsibility, hit-testing, undomanager, class-cluster, abstract-factory, uiappearance, viewmodifier, urlprotocol, nscopying, codable, double-dispatch
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{tabularx}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,case,switch,
+    if,else,return,guard,self,Self,nil,try,await,async,throws,private,static,override,
+    nonisolated,unsafe,true,false,Void,String,Bool,Int,Data,extension},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcommand\say[1]{\textcolor{sheetBlue}{\emph{#1}}}
+
+\tikzset{
+  rn/.style={box, font=\scriptsize, inner sep=1pt, minimum height=3.8mm, minimum width=25mm},
+  vcn/.style={rn, draw=sheetGreen!70!black, fill=sheetGreen!10},
+  sysn/.style={rn, draw=sheetGrey, fill=black!4},
+  frn/.style={rn, draw=sheetOrange, fill=sheetOrange!12, very thick},
+  up/.style={->, thick, draw=sheetOrange},
+  rule/.style={font=\tiny, text=black!80, anchor=west, align=left, inner sep=1pt},
+}
+
+\begin{document}
+
+\sheettitle{Patterns already inside Apple's frameworks}{design · folio}
+
+\oneliner{You use GoF patterns daily: the \textbf{responder chain} is Chain of Responsibility,
+\textbf{target–action}/\texttt{UndoManager} is Command (+ Memento), NotificationCenter/KVO/Combine are
+Observer, \textbf{class clusters} are Abstract Factory, \texttt{appearance()} is a Proxy, a
+\texttt{ViewModifier} a Decorator. Each row: \textbf{pattern + API + mechanism + the gist}.}
+
+\vspace{2pt}
+{\footnotesize\setlength\tabcolsep{3pt}\renewcommand{\arraystretch}{1.0}
+\noindent\begin{tabularx}{\linewidth}{@{}L{16mm}L{50mm}L{53mm}X@{}}
+\toprule
+\textbf{Pattern} & \textbf{Where Apple put it} & \textbf{Mechanism} & \textbf{In short} \\
+\midrule
+\textbf{Chain of Resp.} & responder chain: \texttt{UIResponder.next};
+\texttt{sendAction(\_:to: nil, from:for:)} & selector not implemented? pass to \texttt{next}
+until someone does, or the chain ends & \say{Copy/Paste find a handler by walking the chain.} \\
+\textbf{Command} +Memento & target–action, \texttt{UIAction}, \texttt{UIKeyCommand}, ObjC
+\texttt{NSInvocation}; \texttt{UndoManager} & request stored as data, run later; the undo closure
+captures the \emph{old value} = the memento & \say{UndoManager is a command stack over
+snapshots.} \\
+\textbf{Observer} & NotificationCenter · KVO · Combine \texttt{@Published} · \texttt{@Observable}
+(iOS 17) & notify subscribers you don't know; \texttt{@Observable} tracks the properties a
+\texttt{body} \emph{read} & \say{broadcast $\to$ KVO $\to$ typed streams $\to$ access tracking} \\
+\textbf{Delegation} +Strategy & table delegate + data source; \texttt{UICollectionViewLayout};
+\texttt{keyDecodingStrategy} &
+\texttt{weak} helper called at fixed hooks; a layout object = a whole algorithm, swapped at
+runtime & \say{Delegate: many hooks, one owner. Layout: Strategy.} \\
+\textbf{Abstract Factory} & \textbf{class clusters}: \texttt{NSArray}, \texttt{NSNumber},
+\texttt{NSString}, \texttt{NSDictionary} & public abstract class; \texttt{init} returns a
+\emph{private} subclass (\texttt{\_\_NSArrayI}, \texttt{\_\_NSArrayM}) & \say{Apple documents
+clusters as Abstract Factory.} \\
+\textbf{Proxy} & \texttt{UIAppearance}: \texttt{UINavigationBar.appearance()}; ObjC
+\texttt{NSProxy} & proxy \emph{records} setters, applies them when a view \textbf{enters a
+window} & \say{Not the bar — a recorder.} \\
+\textbf{Decorator} & SwiftUI \texttt{ViewModifier}, \texttt{.padding()}, \texttt{.background()} &
+each call wraps: \texttt{ModifiedContent<Content, Modifier>}, nested & \say{The wrapping is in
+the type — order matters.} \\
+\textbf{Composite} & \texttt{UIView}/\texttt{CALayer} trees, SwiftUI view tree,
+\texttt{UIMenu(children:)} & leaf + container share one interface; operations recurse &
+\say{Hit-test walks it down, the chain up.} \\
+\textbf{Adapter} & \texttt{UIViewRepresentable} (UIKit$\to$SwiftUI), \texttt{UIHostingController}
+(SwiftUI$\to$UIKit) & \texttt{makeUIView}/\texttt{updateUIView}; its \texttt{Coordinator}
+adapts UIKit delegates & \say{Imperative view behind a declarative protocol.} \\
+\textbf{Iterator} & \texttt{Sequence} + \texttt{IteratorProtocol}, \texttt{AsyncSequence} &
+\texttt{makeIterator()}, then \texttt{next()} until \texttt{nil} & \say{\texttt{for-in} is sugar
+for it.} \\
+\textbf{Visitor-like} & \texttt{Codable}: \texttt{JSONEncoder().encode(v)} $\to$
+\texttt{v.encode(to:)} $\to$ \texttt{c.encode(x, forKey:)} & hop 1 dispatches on the
+\emph{value's} type, hop 2 on the \emph{encoder's} (= format) & \say{Double dispatch: one
+\texttt{encode(to:)}, any format.} \\
+\textbf{Chain$\to$Strategy} & \texttt{URLProtocol}; \texttt{config.protocolClasses};
+\texttt{URLProtocol.registerClass} & first class whose \texttt{canInit(with:)} says
+\texttt{true} loads it (registered: \textbf{reverse} order) & \say{The standard network stub in
+tests.} \\
+\textbf{Prototype} & \texttt{NSCopying}: \texttt{copy()}, \texttt{mutableCopy()} & copy a
+configured instance; Foundation copies are \textbf{shallow} & \say{Swift: \texttt{var b = a}.} \\
+\textbf{Singleton} & \texttt{UIApplication.shared} vs shared \emph{instances}
+(\texttt{URLSession.shared}, \texttt{FileManager.default}) & only \texttt{UIApplication} is one per
+process (\texttt{UIApplicationMain}); others you may create & \say{Shared instance $\neq$
+singleton; inject it anyway.} \\
+\bottomrule
+\end{tabularx}}
+
+{\footnotesize\noindent\textbf{Also, on other folios:} Template Method = VC lifecycle,
+\texttt{layoutSubviews} · Factory Method = \texttt{class var layerClass} · Facade =
+\texttt{URLSession} · Flyweight = \texttt{UIImage(named:)} · Interpreter = \texttt{NSPredicate} ·
+Object Pool = cell reuse.\par}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{The responder chain, exact rules}
+\begin{tikzpicture}[sheet]
+  \def\d{0.5}
+  \node[frn] (tf) at (0,0) {UITextField (1st resp.)};
+  \node[rn]  (fv) at (0,1*\d) {FeedVC.view};
+  \node[vcn] (fvc) at (0,2*\d) {FeedVC (child VC)};
+  \node[rn]  (tv) at (0,3*\d) {TabVC.view};
+  \node[vcn] (tvc) at (0,4*\d) {TabVC (window root)};
+  \node[sysn] (w) at (0,5*\d) {UIWindow};
+  \node[sysn] (ws) at (0,6*\d) {UIWindowScene};
+  \node[sysn] (app) at (0,7*\d) {UIApplication};
+  \node[sysn] (ad) at (0,8*\d) {AppDelegate};
+  \draw[up] (tf) -- (fv);   \node[rule] at (1.35,0.5*\d) {plain view $\to$ \textbf{superview}};
+  \draw[up] (fv) -- (fvc);  \node[rule] at (1.35,1.5*\d) {root view of a VC $\to$ \textbf{its VC}};
+  \draw[up] (fvc) -- (tv);  \node[rule] at (1.35,2.5*\d) {child VC $\to$ its view's \textbf{superview}\unverified};
+  \draw[up] (tv) -- (tvc);  \node[rule] at (1.35,3.5*\d) {root view $\to$ its VC};
+  \draw[up] (tvc) -- (w);   \node[rule] at (1.35,4.5*\d) {VC is the window's root $\to$ \textbf{window}};
+  \draw[up] (w) -- (ws);    \node[rule] at (1.35,5.5*\d) {scene apps: window $\to$ \textbf{scene}\unverified};
+  \draw[up] (ws) -- (app);  \node[rule] at (1.35,6.5*\d) {$\to$ the application};
+  \draw[up] (app) -- (ad);  \node[rule] at (1.35,7.5*\d) {delegate, \emph{only if} a \texttt{UIResponder}};
+  \node[rule, text=sheetRed] at (1.35,8.35*\d) {chain ends $\to$ action \textbf{silently dropped}};
+  % presented branch
+  \node[vcn, minimum width=15mm] (cp) at (-2.65,4*\d) {ComposeVC};
+  \draw[up, draw=sheetGreen!60!black] (cp) -- (tvc);
+  \node[font=\tiny, text=sheetGreen!50!black, align=center] at (-2.65,2.95*\d) {presented $\to$\\\textbf{presenting VC}};
+  % hit-test
+  \draw[->, very thick, draw=sheetBlue] (-1.55,2.6*\d) -- (-1.55,-0.1);
+  \node[font=\tiny, text=sheetBlue, align=center] at (-2.55,1.0*\d) {hit-test DOWN:\\\texttt{hitTest(\_:with:)}\\$\to$ deepest view};
+  \node[font=\tiny, text=sheetOrange, align=center] at (-2.55,6.6*\d) {\texttt{next} UP until\\someone implements\\the selector};
+\end{tikzpicture}
+
+{\footnotesize Touches start at the hit-tested view; keys, menus and \texttt{nil}-target actions
+at the \textbf{first responder}. Scene step: Apple forum answer — the article still says
+window $\to$ app.\par}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Hit-test (down) $\ne$ responder chain (up): two walks over one Composite.}
+  \trap{A \texttt{nil}-target action nobody implements does \textbf{nothing} — no crash, no log.}
+  \trap{\texttt{appearance()} changed while a view is on screen: no effect until it re-enters a window.}
+  \trap{\texttt{type(of: NSArray())} is a private subclass — never compare a cluster's class.}
+  \trap{\texttt{URLSession.shared} is a shared \emph{instance}, not a singleton.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Chain walks up · Command stores the request · Observer fans out · Delegate answers back ·
+Cluster hides the subclass · Proxy records · Modifier wraps · Codable dispatches twice.}
+
+\columnbreak
+
+\section{Example — drive the patterns yourself}
+\begin{lstlisting}[language=SwiftSheet]
+// Chain: nil target -> first responder -> up ("hide keyboard")
+UIApplication.shared.sendAction(#selector(UIResponder
+  .resignFirstResponder), to: nil, from: nil, for: nil)
+// Chain -> Strategy: URLProtocol stubs the network in tests
+final class StubProtocol: URLProtocol {
+  nonisolated(unsafe) static var body = Data()
+  override class func canInit(with r: URLRequest) -> Bool { true }
+  override class func canonicalRequest(for r: URLRequest)
+    -> URLRequest { r }
+  override func startLoading() {
+    client?.urlProtocol(self, didLoad: Self.body)
+    client?.urlProtocolDidFinishLoading(self) }
+  override func stopLoading() {} }
+let cfg = URLSessionConfiguration.ephemeral
+cfg.protocolClasses = [StubProtocol.self]
+// Command + Memento: the closure captures the OLD value
+@MainActor func rename(_ doc: Doc, to new: String,
+                       undo: UndoManager) {
+  let old = doc.title                     // the memento
+  undo.registerUndo(withTarget: doc) { d in   // use d, not doc
+    rename(d, to: old, undo: undo) }      // = registers redo
+  undo.setActionName("Rename"); doc.title = new }
+\end{lstlisting}
+{\footnotesize \texttt{Doc}: a \texttt{final class} with \texttt{var title}. Registering
+\emph{inside} the undo handler is what makes \textbf{redo} work — during undo, UndoManager puts
+new registrations on the redo stack.\par}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} gof-behavioural · gof-creational-structural ·
+gof-prototype-composite-bridge-flyweight · gof-visitor-memento-interpreter · ios-idioms-antipatterns ·
+swift-idiom-patterns · testable-design-seams}
+
+\end{document}
