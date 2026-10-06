@@ -1,0 +1,159 @@
+% store-policy-and-deadlines.tex — App Store Review Guidelines hot spots (2.1, 2.3, 2.5.1/2.5.2, 3.1.1, 3.1.1(a),
+% 3.1.3, 4.2, 4.3, 4.8, 5.1.1(v)), how to answer a rejection (App Review messages, bug-fix submissions,
+% expedited review, App Review Board appeal), Apple SDK / deployment-target minimums, Google Play target API
+% level, 16 KB page size, Data safety, testing tracks + the new-account closed-test rule; the deadlines drawn
+% on one timeline. Only dates confirmed on the primary pages below (checked 2026-09-25) are printed.
+% GDPR / account-deletion flow / SIWA revoke / label details live in security/privacy-compliance.tex.
+% Sources (checked 2026-10-06) — Apple upcoming-requirements dates and the 16 KB deadline re-read:
+% https://developer.apple.com/app-store/review/guidelines/ · https://developer.apple.com/distribute/app-review/
+% https://developer.apple.com/news/upcoming-requirements/ (28 Apr 2026: Xcode 26 + iOS 26-family SDKs;
+%   9 Sep 2026: iOS/iPadOS apps must target iOS 13+; 31 Jan 2026: new age-rating questions)
+% https://support.google.com/googleplay/android-developer/answer/11926878 (target API: 31 Aug 2025 -> 35,
+%   31 Aug 2026 -> 36, Wear OS / Automotive 35, TV / XR 34, extension to 1 Nov 2026)
+% https://android-developers.googleblog.com/2025/05/prepare-play-apps-for-devices-with-16kb-page-size.html (1 Nov 2025)
+% https://developer.android.com/guide/practices/page-sizes (updated 2026-09-16: from 1 Feb 2027 updates without
+%   16 KB support cannot be released; AGP 8.5.1+, NDK r28+, zipalign -P 16, Java/Kotlin-only apps unaffected)
+% https://support.google.com/googleplay/android-developer/answer/14151465 (personal accounts after 13 Nov 2023:
+%   closed test, 12 testers, 14 days) · https://support.google.com/googleplay/android-developer/answer/9845334 (tracks)
+% @labels: area=engineering kind=process platform=cross-platform topic=build,platform-apis discussion=136
+% @tags: app-review-guidelines, app-store-rejection, app-review-board, in-app-purchase, minimum-functionality, login-services, sdk-minimum, target-api-level, 16kb-page-size, data-safety, testing-tracks, expedited-review
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt,
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcommand\g[1]{\textcolor{sheetBlue}{\textbf{#1}}}
+
+\tikzset{
+  l/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  ev/.style={font=\tiny, inner sep=1.5pt, align=center, draw=#1, fill=#1!8, rounded corners=1pt},
+}
+% month index m (Jul 2025 = 0) -> x
+\newcommand\mx[1]{{0.4+0.76*(#1)}}
+
+\begin{document}
+
+\sheettitle{Store policy \& platform deadlines — review, rejections, SDK minimums}{engineering · folio}
+
+\oneliner{Two gatekeepers with different levers. \textbf{Apple} reviews every build against the \textbf{App
+Review Guidelines} (90\,\% reviewed in $<$ 24 h) and each spring requires the \textbf{new Xcode/SDK} for
+uploads. \textbf{Google Play} runs policy checks and yearly raises the \textbf{target API level}, now also
+\textbf{16 KB page-size} support. Knowing the hot-spot guidelines, how to answer a rejection, and the dates
+on your calendar is part of senior release ownership.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.1,3.35) {Deadlines (verified on the primary pages, 25 Sep 2026)};
+  % axis
+  \draw[->, thick, sheetGrey] (0.1,1.6) -- (16.55,1.6);
+  \foreach \m/\t in {0/{Jul 25},3/{Oct},6/{Jan 26},9/{Apr},12/{Jul},15/{Oct},18/{Jan 27},20/{Mar}}
+    { \draw[sheetGrey] (\mx{\m},1.52) -- (\mx{\m},1.68); \node[l, text=sheetGrey] at (\mx{\m},1.43) {\t}; }
+  % today
+  \draw[sheetRed, thick, dashed] (\mx{14.8},0.1) -- (\mx{14.8},3.1);
+  \node[l, text=sheetRed, fill=white] at (\mx{14.8},3.1) {\textbf{today}};
+  \node[font=\scriptsize\bfseries, text=sheetBlue, anchor=west] at (-0.1,2.95) {Apple};
+  \node[font=\scriptsize\bfseries, text=sheetGreen!50!black, anchor=west] at (-0.1,0.25) {Google Play};
+  % Apple events (above)
+  \foreach \m/\y/\t in {7.0/2.3/{31 Jan 2026\\answer new\\age-rating questions},
+                        9.9/2.75/{28 Apr 2026\\uploads: \textbf{Xcode 26}\\+ iOS 26 SDK},
+                        14.3/2.3/{9 Sep 2026\\min deployment\\target \textbf{iOS 13}}}
+    { \draw[sheetBlue] (\mx{\m},1.6) -- (\mx{\m},\y-0.3); \node[ev=sheetBlue] at (\mx{\m},\y) {\t}; }
+  \node[l, text=sheetGrey, align=left, anchor=west] at (\mx{16.2},2.55) {next SDK minimum (Xcode 27):\\\emph{not announced yet}; pattern:\\each spring, the previous\\September's SDK\unverified};
+  % Google events (below)
+  \foreach \m/\y/\t in {2.0/0.85/{31 Aug 2025\\target \textbf{API 35}},
+                        4.0/0.3/{1 Nov 2025\\\textbf{16 KB} pages: new\\apps + updates (15+)},
+                        14.0/0.85/{31 Aug 2026\\target \textbf{API 36}\\(Wear/Auto 35, TV/XR 34)},
+                        16.0/0.3/{1 Nov 2026\\extension ends},
+                        19.0/0.85/{1 Feb 2027: updates\\without 16 KB\\cannot be released}}
+    { \draw[sheetGreen!60!black] (\mx{\m},1.6) -- (\mx{\m},\y+0.25); \node[ev=sheetGreen!70!black] at (\mx{\m},\y) {\t}; }
+  \node[ev=sheetGrey, anchor=west] at (\mx{5.6},0.55) {existing apps below the target: hidden\\from \emph{new} users on newer Android;\\installed users unaffected};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{App Review Guidelines — the hot spots}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{66mm}@{}}
+\toprule
+\g{2.1} & \textbf{App completeness}: final build, no placeholders, no crashes; \textbf{demo account} + backend live
+          in Review Notes; IAPs complete and visible (2.1(b)). \\
+\g{2.3} & \textbf{Accurate metadata}: no hidden/dormant features, new features described in Notes (2.3.1);
+          screenshots show the app in use, not splash/login (2.3.3); name $\leq$ 30 chars, no keyword stuffing (2.3.7). \\
+\g{2.5.1} & public APIs only; runs on the currently shipping OS. \\
+\g{2.5.2} & self-contained: may not download code that \emph{changes features} — the line RN/Expo OTA must respect. \\
+\g{3.1.1} & unlocking digital features/content $\Rightarrow$ \textbf{In-App Purchase}; no license keys, QR codes,
+          crypto to unlock. \textbf{3.1.1(a)}: link-out entitlement; \emph{not needed for US-storefront} buttons/links. \\
+\g{3.1.3} & exceptions: reader apps (a), multiplatform (b), enterprise (c), person-to-person (d),
+          physical goods/services (e). \\
+\g{4.2} & \textbf{minimum functionality}: more than a repackaged website. \textbf{4.3} spam: no clones, no
+          bundle-ID variants of one app. \\
+\g{4.8} & third-party/social login for the \emph{primary account} $\Rightarrow$ also offer a login that limits data
+          to name + email, lets the user hide the email, no ad tracking without consent (Sign in with Apple
+          qualifies). \\
+\g{5.1.1(v)} & account creation $\Rightarrow$ \textbf{in-app account deletion} (details: privacy-compliance). \\
+\bottomrule
+\end{tabular}}
+
+\hd{Common rejections — and the fix}
+\begin{itemize}
+  \item Crash on the reviewer's device / missing demo login / backend down during review $\to$ test the
+        Release build on a clean device, put credentials + steps in Review Notes.
+  \item Metadata mismatch (screenshots from another version, ``beta'' wording, other platforms' names).
+  \item Purpose strings that don't say \emph{why} (``Camera needed'' $\to$ ``to scan receipts'').
+  \item Digital goods sold outside IAP; a web wrapper with no native value; Google-only login (4.8).
+  \item Demanding personal data the core function does not need (5.1.1(v): ``may not require users to
+        enter personal information to function'' unless directly relevant or required by law).
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Discovering the SDK minimum in April from a failed upload — track it with the Xcode upgrade plan.}
+  \trap{``OTA lets us ship features without review'' — 2.5.2: fixes yes, new functionality no.}
+  \trap{Arguing in the reply instead of showing: a 30-second video beats three paragraphs.}
+  \trap{``16 KB is an Android thing, we're RN'' — RN ships \ct{.so} files; you are affected.}
+\end{itemize}
+
+\columnbreak
+
+\hd{Answering a rejection}
+\begin{enumerate}
+  \item Read the cited guideline number; reproduce what the reviewer saw.
+  \item \textbf{Misunderstanding} $\to$ reply in App Store Connect's App Review messages: steps, a demo
+        video, which screen shows the feature. Polite, specific, no argument about other apps.
+  \item \textbf{Real issue} $\to$ fix, resubmit, say what changed in Review Notes.
+  \item \textbf{Bug-fix update} blocked by an unrelated older issue $\to$ you may fix that in the
+        \emph{next} submission unless it is a legal or safety concern: reply asking to approve this one.
+  \item Still disagree $\to$ \textbf{appeal to the App Review Board}: one appeal per rejection, specific
+        reasons it complies; answer open questions first.
+  \item Urgent: \textbf{expedited review} (critical bug fix with repro steps, or a dated event). 30-min App
+        Review appointments exist for grey areas — ask \emph{before} building.
+\end{enumerate}
+
+\hd{Google Play specifics}
+\begin{itemize}
+  \item \textbf{Target API} = \ct{targetSdk}: raising it opts you into new runtime behaviour (API 35:
+        edge-to-edge enforced), so budget the work, not just the number.
+  \item \textbf{16 KB pages} only matter with native code (\ct{.so}: NDK, RN, most SDKs); Java/Kotlin-only apps
+        already comply. AGP $\geq$ 8.5.1, NDK r28+ aligns by default; verify with APK Analyzer, \ct{zipalign -c
+        -P 16} or \ct{llvm-objdump -p} (\ct{align 2**14}); test on a 16 KB emulator image.
+  \item \textbf{Data safety} form: required for every app, even one that collects nothing; must match the
+        app, its SDKs and the privacy policy.
+  \item \textbf{Tracks}: internal ($\leq$ 100 testers, minutes, no full review) $\to$ closed $\to$ open $\to$
+        production (staged \%). \textbf{New personal accounts} (after 13 Nov 2023): a closed test with
+        \textbf{12 testers opted in for 14 days} before production access.
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Cite the number, show don't argue, fix or appeal once — and put every store date on the release calendar.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} privacy-compliance (5.1.1, Data safety) ·
+release-engineering · storekit2 (IAP) · app-hardening-privacy (manifests) · rn-tooling-release (OTA) · signing-and-cicd}
+
+\end{document}

@@ -1,0 +1,196 @@
+% git-in-depth.tex — git internals (blob / tree / commit / tag, refs, HEAD, the DAG), merge vs rebase vs
+% fast-forward (drawn), conflict resolution (3-way, ours/theirs swapped in a rebase, zdiff3, rerere),
+% git bisect with a run script (exit-code contract), reflog recovery, cherry-pick -x for hotfixes,
+% trunk-based vs GitFlow vs GitHub flow vs mobile release branches, merge queues, monorepo concerns
+% (sparse checkout, partial clone, shallow-clone traps, CODEOWNERS), signed commits.
+% Sources (checked 2026-10-06) — reflog 90/30-day defaults and zdiff3 re-read at git-scm.com:
+% https://git-scm.com/book/en/v2/Git-Internals-Git-Objects · https://git-scm.com/docs/git-bisect
+% https://git-scm.com/docs/git-rerere · https://git-scm.com/docs/git-reflog · https://git-scm.com/docs/git-config
+%   (gc.reflogExpire 90 days, gc.reflogExpireUnreachable 30 days, merge.conflictStyle zdiff3)
+% https://git-scm.com/docs/git-cherry-pick (-x) · https://git-scm.com/docs/git-sparse-checkout
+% https://nvie.com/posts/a-successful-git-branching-model/ (GitFlow, 2010, + 2020 note of reflection)
+% https://trunkbaseddevelopment.com/ · https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue
+% https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+% @labels: area=engineering kind=tooling platform=general topic=tooling,build discussion=130
+% @tags: git, git-objects, commit-dag, merge-vs-rebase, fast-forward, git-bisect, rerere, reflog, cherry-pick, trunk-based-development, gitflow, merge-queue, codeowners, signed-commits
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{ShSheet}{
+  morekeywords={git,xcodebuild,exit,if,then,fi},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]",
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2 {||}{{\hbox{|}\hbox{|}}}2
+           {&&}{{\hbox{\&}\hbox{\&}}}2 {==}{{\hbox{=}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  c/.style={circle, draw=sheetBlue, thick, fill=sheetBlue!10, minimum size=4.6mm, inner sep=0pt, font=\tiny\bfseries},
+  cf/.style={c, draw=sheetOrange, fill=sheetOrange!12},
+  cn/.style={c, draw=sheetGreen!70!black, fill=sheetGreen!14},
+  cg/.style={c, draw=sheetGrey, fill=white, dashed, text=sheetGrey},
+  ref/.style={font=\tiny\ttfamily, fill=black!6, inner sep=1pt, rounded corners=1pt},
+  par/.style={<-, thick, draw=sheetGrey},
+  l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  ob/.style={box, font=\tiny, inner sep=1.5pt, align=left},
+}
+
+\begin{document}
+
+\sheettitle{Git in depth — objects, the DAG, merge vs rebase, bisect, branching}{engineering · folio}
+
+\oneliner{Git is a \textbf{content-addressed object store} plus \textbf{movable pointers}. A \textbf{commit} is
+a full \emph{snapshot} (a tree) with pointers to its \textbf{parent(s)}; history is the resulting \textbf{DAG};
+a \textbf{branch} is just a ref naming one commit. \textbf{Merge} adds a commit with two parents (history kept);
+\textbf{rebase} \emph{re-creates} your commits on a new base (new IDs, linear history) — which is why rebasing
+commits others already have breaks their clones.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- object model ----------
+  \node[ttl] at (-0.1,3.6) {Objects + refs};
+  \node[ref] (head) at (0.35,3.1) {HEAD};
+  \node[ref] (br) at (1.75,3.1) {refs/heads/main};
+  \node[ob, draw=sheetBlue] (cm) at (1.3,2.25) {\textbf{commit} 3f2a…\\tree 9c1e… · parent 81b0…\\author, committer, message};
+  \node[ob, draw=sheetGreen!70!black, fill=sheetGreen!8] (tr) at (0.75,1.15) {\textbf{tree} 9c1e…\\\ct{100644 README} $\to$ blob\\\ct{040000 src} $\to$ tree};
+  \node[ob, draw=sheetOrange, fill=sheetOrange!8] (bl) at (3.0,0.95) {\textbf{blob}\\bytes only,\\no name};
+  \draw[->, sheetGrey] (head) -- (br); \draw[->, sheetGrey] (br) -- (br |- cm.north);
+  \draw[->, sheetGrey] (cm.south -| tr) -- (tr);
+  \draw[->, sheetGrey] (tr.east) -- (bl.west);
+  \node[l, anchor=west, align=left] at (-0.1,0.2) {ID $=$ hash(\ct{"type size\textbackslash0"} + content):\\same bytes $\to$ same ID; one byte changed $\to$\\new IDs all the way up to the commit};
+  \draw[sheetGrey!40] (3.95,3.75) -- (3.95,0.0);
+  % ---------- before ----------
+  \node[ttl] at (4.05,3.6) {Before};
+  \node[c] (a) at (4.35,2.5) {A}; \node[c] (b) at (5.05,2.5) {B}; \node[c] (cc) at (5.75,2.5) {C};
+  \node[cf] (d) at (5.75,1.55) {D}; \node[cf] (e) at (6.45,1.55) {E};
+  \draw[par] (b) -- (a); \draw[par] (cc) -- (b); \draw[par] (d) -- (b); \draw[par] (e) -- (d);
+  \node[ref, anchor=south] at (cc.north) {main};
+  \node[ref, anchor=north] at (e.south) {feature};
+  \node[l, align=left, anchor=west] at (4.05,0.45) {arrows point to the\\\textbf{parent}; commits never\\change, refs move};
+  \draw[sheetGrey!40] (7.05,3.75) -- (7.05,0.0);
+  % ---------- merge ----------
+  \node[ttl] at (7.15,3.6) {\ct{git merge feature} (on main)};
+  \node[c] (a2) at (7.45,2.5) {A}; \node[c] (b2) at (8.15,2.5) {B}; \node[c] (c2) at (8.85,2.5) {C};
+  \node[cf] (d2) at (8.85,1.55) {D}; \node[cf] (e2) at (9.55,1.55) {E};
+  \node[cn] (m) at (10.3,2.5) {M};
+  \draw[par] (b2) -- (a2); \draw[par] (c2) -- (b2); \draw[par] (d2) -- (b2); \draw[par] (e2) -- (d2);
+  \draw[par] (m) -- (c2); \draw[par] (m) -- (e2);
+  \node[ref, anchor=south] at (m.north) {main};
+  \node[ref, anchor=north] at (e2.south) {feature};
+  \node[l, align=left, anchor=west] at (7.15,0.45) {M has \textbf{2 parents}; D, E keep their IDs;\\true history, busier graph. If main had\\no C: \textbf{fast-forward} = just move the ref};
+  \draw[sheetGrey!40] (11.0,3.75) -- (11.0,0.0);
+  % ---------- rebase ----------
+  \node[ttl] at (11.1,3.6) {\ct{git rebase main} (on feature)};
+  \node[c] (a3) at (11.4,2.5) {A}; \node[c] (b3) at (12.1,2.5) {B}; \node[c] (c3) at (12.8,2.5) {C};
+  \node[cn] (d3) at (13.5,2.5) {D$'$}; \node[cn] (e3) at (14.2,2.5) {E$'$};
+  \node[cg] (dg) at (12.8,1.55) {D}; \node[cg] (eg) at (13.5,1.55) {E};
+  \draw[par] (b3) -- (a3); \draw[par] (c3) -- (b3); \draw[par] (d3) -- (c3); \draw[par] (e3) -- (d3);
+  \draw[par, dashed, draw=sheetGrey!60] (dg) -- (b3); \draw[par, dashed, draw=sheetGrey!60] (eg) -- (dg);
+  \node[ref, anchor=south] at (c3.north) {main};
+  \node[ref, anchor=south] at (e3.north) {feature};
+  \node[l, text=sheetGrey, anchor=west] at (13.8,1.55) {old D, E: only in\\the reflog now};
+  \node[l, align=left, anchor=west] at (11.1,0.45) {D$'$, E$'$ are \textbf{new commits} (new parent $\to$ new ID);\\linear. A teammate who has D, E now has\\duplicates $\to$ \textbf{never rebase shared commits}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{4 object types}: blob (content), tree (names + modes $\to$ blobs/trees), commit (tree +
+        parents + author/committer + message), annotated tag. Stored zlib'd, later delta-packed; a commit is
+        a snapshot, diffs are computed on demand. Default hash SHA-1 (SHA-256 repos exist).
+  \item \textbf{Refs}: a branch is a file with a commit ID; \ct{HEAD} names the current branch (detached =
+        a raw ID). \ct{origin/main} is a remote-tracking ref, moved only by \ct{fetch}. The \textbf{index}
+        is the next commit's tree.
+  \item \textbf{Fast-forward}: target is an ancestor $\to$ move the ref, no commit (\ct{\dd ff-only} insists,
+        \ct{\dd no-ff} forces a merge commit to keep the feature visible).
+  \item \textbf{Squash merge}: one new commit on main; the branch's commits are \emph{not} ancestors, so a
+        branch continued after it conflicts with itself — delete it.
+\end{itemize}
+
+\hd{Conflicts}
+\begin{itemize}
+  \item A \textbf{3-way merge} compares base (\ct{git merge-base}) with both sides; only lines both changed
+        conflict. \ct{merge.conflictStyle = zdiff3} also prints the \emph{base} — resolve by intent.
+  \item In a \textbf{rebase}, \ct{\dd ours} = the branch you are rebasing \emph{onto}, \ct{\dd theirs} = your
+        replayed commit — the reverse of a merge.
+  \item \textbf{rerere} (\ct{rerere.enabled true}) records each resolved hunk and re-applies it when the
+        same conflict returns: repeated rebases, back-merging a release branch.
+  \item Escape hatches: \ct{git merge \dd abort}, \ct{git rebase \dd abort}.
+\end{itemize}
+
+\hd{Example — \ct{git bisect} with a run script}
+\begin{lstlisting}[language=ShSheet]
+git bisect start
+git bisect bad HEAD            # broken now
+git bisect good v5.11.0        # last known good tag
+git bisect run ./repro.sh      # ~log2(N) builds
+git bisect reset               # back to where you were
+# repro.sh -- exit 0 good, 1..127 bad, 125 = skip
+xcodebuild build-for-testing -scheme App -quiet || exit 125
+xcodebuild test-without-building -scheme App \
+  -only-testing:AppTests/CartTests/testTotal || exit 1
+\end{lstlisting}
+1{,}000 commits $\to$ $\sim$10 steps. A build that fails for an unrelated reason must \textbf{skip} (125), not
+say ``bad''. \ct{git bisect skip} by hand; \ct{\dd first-parent} walks only merges into main.
+
+\hd{Recovery — the reflog}
+Every move of \ct{HEAD} and each branch tip is logged \emph{locally}: \ct{git reflog} $\to$
+\ct{git branch rescue HEAD@\{3\}}. Survives a bad rebase, reset or deleted branch; entries expire
+(\ct{gc.reflogExpire} 90 days, unreachable 30). Never pushed — another clone cannot help.
+
+\hd{Remember}
+\textbf{``Snapshots in a DAG, branches are pointers, rebase makes new commits — never under someone else.''}
+
+\columnbreak
+
+\hd{Branching strategies}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{33mm}>{\raggedright\arraybackslash}p{26mm}@{}}
+\toprule
+\textbf{Model} & \textbf{Shape} & \textbf{Fits} \\ \midrule
+trunk-based & branches live hours–2 days, merge to main daily; unfinished work behind \textbf{flags} & CI/CD, large teams \\
+GitHub flow & main + PR branches, main always releasable & web, continuous deploy \\
+GitFlow (2010) & \ct{develop}, \ct{feature/*}, \ct{release/*}, \ct{hotfix/*}, \ct{main} $=$ shipped & versioned products; its author (2020) points CD teams to simpler flows \\
+\textbf{mobile}: trunk + release branches & cut \ct{release/5.12} at code freeze; only fixes land there; tag each build & store review + phased rollout \\
+\bottomrule
+\end{tabular}}
+
+\hd{Hotfix a shipped version}
+Fix on \ct{main} first (with a test), then \ct{git switch release/5.12}, \ct{git cherry-pick -x <sha>}
+(\ct{-x} records ``cherry picked from commit …''), bump the build number, tag \ct{v5.12.1}. One direction
+by policy — fixes made only on the release branch get lost in 5.13.
+
+\hd{Team scale}
+\begin{itemize}
+  \item \textbf{Merge queue} (GitHub merge queue, GitLab merge trains): each PR is re-tested on top of main
+        \emph{plus the PRs queued ahead}, then merged in order. Fixes ``two green PRs, red main''
+        (semantic conflicts no text merge sees).
+  \item \textbf{Monorepo}: \ct{git sparse-checkout set \dd cone apps/ios packages/ui}, partial clone
+        \ct{\dd filter=blob:none}, LFS for big binaries, \ct{git maintenance start}.
+        \textbf{CODEOWNERS} (\ct{.github/}, root or \ct{docs/}): \emph{last} matching pattern wins;
+        branch protection makes owner review required.
+  \item \textbf{Signed commits}: \ct{commit.gpgsign true} with GPG, SSH (\ct{gpg.format ssh}) or X.509;
+        ``Verified'' proves \emph{who} committed, not that the code is safe.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Build number from \ct{git rev-list \dd count HEAD} on a CI \textbf{shallow clone} (\ct{\dd depth 1}) $=$ 1
+        $\to$ upload rejected. Shallow clones also break bisect and \ct{describe}.}
+  \trap{\ct{push \dd force} over a teammate's commits — use \ct{\dd force-with-lease}.}
+  \trap{\ct{git pull} merge-commit noise — set \ct{pull.rebase true} or \ct{pull.ff only}.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} release-engineering (release trains, tags) ·
+large-migrations · flags-experiments-observability (trunk + flags) · signing-and-cicd · dependency-management}
+
+\end{document}

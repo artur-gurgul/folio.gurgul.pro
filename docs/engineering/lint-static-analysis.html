@@ -1,0 +1,102 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Lint &amp; static analysis — where each check runs — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/engineering/lint-static-analysis.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">110</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area current" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Lint &amp; static analysis — where each check runs</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">engineering · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A linter is a <strong>program that reads your source</strong> and reports patterns;
+<strong>syntax-only</strong> rules (SwiftLint lint, ESLint core, ktlint) are fast and run on every save,
+<strong>type-aware</strong> ones (SwiftLint <code>analyze</code>, typescript-eslint typed rules, detekt with type
+resolution) need a compile and run in CI. A <strong>formatter</strong> rewrites layout and ends style
+debate. What works is the <strong>pipeline</strong>: the right check at the cheapest stage, one
+<strong>blocking</strong> gate in CI, a <strong>baseline</strong> for old code, and a written <strong>suppression policy</strong>.</p>
+<p class="sheet-tools"><a class="sheet-download" href="lint-static-analysis.pdf" download>Download PDF</a> <a href="lint-static-analysis.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/engineering/lint-static-analysis.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="lint-static-analysis-fig1.svg" width="639" height="104" class="wide" alt="Lint &amp; static analysis — where each check runs — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">Swift / iOS</span></h3>
+<ul>
+<li><strong>SwiftLint</strong> (<code>.swiftlint.yml</code>): <code>disabled_rules</code>, <code>opt_in_rules</code>,  <code>only_rules</code>, <code>analyzer_rules</code>, <code>custom_rules</code> (a <strong>regex</strong> +  <code>match_kinds</code> + <code>message</code> + <code>severity</code>); <code>strict</code> = warnings are errors.  Runs as an SPM <strong>build tool plugin</strong> (package <code>SwiftLintPlugins</code>) or a run-script phase.</li>
+<li><code>swiftlint analyze --compiler-log-path xcodebuild.log</code>: <strong>analyzer rules</strong>  (<code>unused_declaration</code>, <code>unused_import</code>) use the <em>type-checked</em> AST, need  the log of a <strong>clean</strong> build, and are much slower — CI only.</li>
+<li><strong>Formatter</strong>: <strong>swift-format</strong> (swiftlang; <strong>in the toolchain since Swift 6 /
+ Xcode 16</strong>: <code>swift format -i</code>, <code>swift format lint --strict</code>, JSON  <code>.swift-format</code>) <em>vs</em> <strong>SwiftFormat</strong> (Nick Lockwood, community, more rules,  <code>.swiftformat</code>, <code>--lint</code> mode). Pick <em>one</em>; let SwiftLint skip style rules it  already fixes.</li>
+<li><strong>Compiler</strong> (SE-0443, Swift 6.1): <code>-warnings-as-errors -Wwarning
+ DeprecatedDeclaration</code> = all errors <em>except</em> one group; <code>-Werror &lt;group&gt;</code> the  reverse; <strong>last flag wins</strong>; <code>-print-diagnostic-groups</code> shows the group name.</li>
+<li><strong>Clang static analyzer</strong> (Product <span class="math">→</span> Analyze, or “Analyze During Build”):  path-sensitive checks for <strong>C / Obj-C</strong> — leaks, null derefs, use-after-free.  It does not analyse Swift.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — the two configs that matter</span></h3>
+<pre class="sheet-code"><code class="hljs language-plaintext"># .swiftlint.yml
+opt_in_rules: [force_unwrapping, empty_count]
+analyzer_rules: [unused_declaration, unused_import]
+excluded: [Pods, .build, &quot;**/Generated&quot;]
+custom_rules:
+  no_print:
+    regex: &quot;\\bprint\\(&quot;
+    match_kinds: [identifier]
+    message: &quot;Use Logger, not print()&quot;
+    severity: error</code></pre>
+<pre class="sheet-code"><code class="hljs language-plaintext">// eslint.config.js (flat config)
+import { defineConfig } from &#x27;eslint/config&#x27;;
+import tseslint from &#x27;typescript-eslint&#x27;;
+import reactHooks from &#x27;eslint-plugin-react-hooks&#x27;;
+import prettier from &#x27;eslint-config-prettier&#x27;;
+export default defineConfig([
+  tseslint.configs.recommendedTypeChecked,
+  reactHooks.configs.flat.recommended,
+  { languageOptions: { parserOptions: { projectService: true } },
+    linterOptions: { reportUnusedDisableDirectives: &#x27;error&#x27; },
+    rules: { &#x27;@typescript-eslint/no-floating-promises&#x27;: &#x27;error&#x27; } },
+  prettier,            // LAST: turns off every style rule
+]);</code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — the CI lint job (cheapest first, fail fast)</span></h3>
+<pre class="sheet-code"><code class="hljs language-plaintext">swift format lint --strict --recursive Sources
+swiftlint lint --strict --reporter github-actions-logging
+xcodebuild clean build -scheme App ... &gt; xcodebuild.log
+swiftlint analyze --strict --compiler-log-path xcodebuild.log
+npx prettier --check .  &amp;&amp;  npx tsc --noEmit
+npx eslint . --max-warnings 0     # warnings fail too
+./gradlew detekt lint             # android/
+npx danger ci                     # PR comments, fail()</code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<h3 class="sheet-hd">Format on save · lint the staged files · gate in CI · baseline the past · every
+suppression names a rule and a reason.</h3>
+<h3 class="sheet-hd"><span class="c-sheetblue">JavaScript / TypeScript / React Native</span></h3>
+<ul>
+<li><strong>ESLint</strong> flat config (<code>eslint.config.js</code>, default since ESLint 9): an array of  config objects, later ones override earlier; plugins are imported objects, not strings.</li>
+<li><strong>typescript-eslint</strong> <code>recommendedTypeChecked</code> + <code>projectService: true</code> asks  TypeScript for types: <code>no-floating-promises</code> (an un-<code>await</code>ed promise),  <code>no-misused-promises</code> (async fn in <code>onPress</code> expecting <code>void</code>),  <code>switch-exhaustiveness-check</code>. Cost: a TS program build before linting.</li>
+<li><strong>eslint-plugin-react-hooks</strong>: <code>rules-of-hooks</code>, <code>exhaustive-deps</code> + the  <strong>React Compiler</strong> rules in <code>recommended</code>/<code>recommended-latest</code> (<code>purity</code>,  <code>refs</code>, <code>immutability</code>, <code>set-state-in-render</code>, <code>set-state-in-effect</code>,  <code>static-components</code>…; flat: <code>configs.flat.recommended</code>).  <code>eslint-plugin-react-compiler</code> is superseded by it.</li>
+<li><strong>Prettier</strong> = formatter only; <code>eslint-config-prettier</code> last in the config  disables ESLint’s style rules, so the two never fight. CI: <code>prettier --check</code>.</li>
+<li><strong>Types are the biggest static analyser</strong>: <code>tsc --noEmit</code> in CI  (Metro/Babel only strip types) — strict flags: see ts-config-and-practice.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Android (the RN app’s other half)</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>tool</strong></th><th><strong>finds</strong></th><th><strong>run · old debt</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>Android Lint</td><td>manifest, resources, API level, a11y, perf</td><td><code>./gradlew lint</code> · <code>lint-baseline.xml</code></td></tr>
+<tr><td>detekt</td><td>Kotlin smells, complexity, bugs</td><td><code>detekt</code> · <code>detektBaseline</code> <span class="math">→</span> <code>baseline.xml</code></td></tr>
+<tr><td>ktlint</td><td>Kotlin style; <code>--format</code> fixes</td><td>pre-commit + CI</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">PR bots, hooks, gates</span></h3>
+<ul>
+<li><strong>Danger</strong> (JS; also Danger Swift): a <code>dangerfile</code> runs in CI with the PR  (<code>danger.github.pr</code>) and posts <code>message</code>/<code>warn</code>/<code>fail</code>: “no CHANGELOG”,  “PR <span class="math">&gt;</span> 500 lines”, “lockfile changed without <code>package.json</code>”, SwiftLint results  inline. <strong>Judgement rules</strong> a linter can’t express.</li>
+<li><strong>Hooks</strong>: husky (<code>.husky/pre-commit</code>) + <strong>lint-staged</strong> (per-glob commands  on staged files) · <strong>lefthook</strong> (Go binary, one <code>lefthook.yml</code>, <code>parallel</code>,  <code>{staged_files}</code>; no Node needed — good for iOS repos). Hooks are  <strong>convenience</strong>: <code>--no-verify</code> skips them, so CI repeats every check.</li>
+<li><strong>Ratchet</strong>: turning a rule on in a big repo = thousands of hits. Baseline them  (SwiftLint <code>write_baseline</code>/<code>baseline</code>, detekt, Android Lint), block only  <strong>new</strong> violations, burn the baseline down.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Suppressions policy</span></h3>
+<p>Narrowest scope + rule id + reason: <code>// swiftlint:disable:next force_cast</code> · <code>// eslint-disable-next-line no-console -- CLI output</code> · <code>@Suppress(&quot;MagicNumber&quot;)</code>. Ban blanket <code>swiftlint:disable all</code> / bare <code>eslint-disable</code>; report <strong>unused</strong> directives (<code>superfluous_disable_command</code>, <code>reportUnusedDisableDirectives</code>); count them in CI.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">Warnings nobody fails on grow forever — a warning is either an <strong>error</strong> or <strong>off</strong>.</li>
+<li class="trap">Pre-commit as the gate: skippable, per-machine versions. <strong>CI</strong> is the gate.</li>
+<li class="trap">Running <code>analyze</code> / typed ESLint on every keystroke — slow; they need a build.</li>
+<li class="trap">ESLint <em>and</em> Prettier both formatting — endless diffs; one owner per concern.</li>
+<li class="trap">Fixing lint in a 3,000-file “cleanup PR” — ruins <code>git blame</code>; baseline + ratchet.</li>
+</ul>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> ts-config-and-practice (strict flags) ·
+flaky-tests-ci-tdd (CI) · signing-and-cicd · sanitizers-runtime-checkers (dynamic analysis) ·
+code-smells-refactoring · modularization-spm</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=engineering" title="area">engineering</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=tooling" title="kind">tooling</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=cross-platform" title="platform">cross-platform</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=tooling" title="topic">tooling</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=build" title="topic">build</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=testing" title="topic">testing</a></li><li class="sheet-tag"><a href="/folios.html?tag=swiftlint">swiftlint</a></li><li class="sheet-tag"><a href="/folios.html?tag=swift-format">swift-format</a></li><li class="sheet-tag"><a href="/folios.html?tag=swiftformat">swiftformat</a></li><li class="sheet-tag"><a href="/folios.html?tag=clang-static-analyzer">clang-static-analyzer</a></li><li class="sheet-tag"><a href="/folios.html?tag=eslint">eslint</a></li><li class="sheet-tag"><a href="/folios.html?tag=typescript-eslint">typescript-eslint</a></li><li class="sheet-tag"><a href="/folios.html?tag=eslint-plugin-react-hooks">eslint-plugin-react-hooks</a></li><li class="sheet-tag"><a href="/folios.html?tag=prettier">prettier</a></li><li class="sheet-tag"><a href="/folios.html?tag=detekt">detekt</a></li><li class="sheet-tag"><a href="/folios.html?tag=ktlint">ktlint</a></li><li class="sheet-tag"><a href="/folios.html?tag=danger">danger</a></li><li class="sheet-tag"><a href="/folios.html?tag=pre-commit-hooks">pre-commit-hooks</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=engineering%2Flint-static-analysis.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/132">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

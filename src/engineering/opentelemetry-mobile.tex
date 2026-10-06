@@ -1,0 +1,212 @@
+% opentelemetry-mobile.tex — OpenTelemetry from a mobile app: the data model (traces/spans,
+% metrics, logs, resource, semantic conventions, baggage), API vs SDK, context propagation to
+% the backend (W3C traceparent), SDK status per platform, head vs tail sampling, export (OTLP,
+% batching, the Collector), what to instrument in an app, privacy, vendors.
+% Picture: one trace as a waterfall from a tap through app spans, the HTTP client span, the
+% traceparent header and the backend spans; beside it the export pipeline to the Collector.
+% Sources (checked 2026-09-25):
+%   opentelemetry.io/docs/languages/ (status table: Swift traces Stable, metrics+logs
+%     Development; JavaScript traces+metrics Stable, logs Development; Kotlin Development)
+%   opentelemetry.io/docs/languages/swift/ + /libraries/ (NSURLSession instrumentation injects
+%     tracing headers, shouldInjectTracingHeaders; SDKResourceExtension; NetworkStatus;
+%     OSSignposter integration) + /instrumentation/ (tracer, spanBuilder, setActive)
+%   github.com/open-telemetry/opentelemetry-swift-core (Span / SpanBuilder signatures)
+%   github.com/open-telemetry/opentelemetry-android (RUM agent, alpha; on the Java SDK; lifecycle,
+%     ANR, crash, slow/frozen frames, OkHttp/HttpURLConnection, startup, sessions; API 23+)
+%   w3.org/TR/trace-context/ (Recommendation 2021-11-23; traceparent format; tracestate ≤ 32 members)
+%   opentelemetry.io/docs/specs/otlp/ (4317 gRPC, 4318 HTTP, /v1/traces, gzip, retry 429/502/503/504,
+%     partial_success)
+% React Native: no official OTel SDK listed on opentelemetry.io — stated as such, not verified further.
+% Not repeated: Logger / signposts / MetricKit (debugging/logging-signposts-power), crash-free
+% metrics, flags, phased release (engineering/flags-experiments-observability).
+% @labels: area=engineering kind=tooling platform=cross-platform topic=debugging,performance,system-design discussion=133
+% @tags: opentelemetry, distributed-tracing, span, traceparent, w3c-trace-context, context-propagation, otlp, sampling, tail-sampling, otel-collector, rum, semantic-conventions
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={import,let,var,do,try,await,catch,func,true,false,self},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  sp/.style={draw=#1, fill=#1!18, minimum height=3.4mm, inner sep=0pt, anchor=west, font=\tiny},
+  rowl/.style={font=\tiny, anchor=east, inner sep=1pt},
+  st/.style={box, font=\tiny, text width=41mm, inner sep=1.5pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{OpenTelemetry for mobile — one trace from tap to database}{engineering · folio}
+
+\oneliner{\textbf{OpenTelemetry} (OTel) is the vendor-neutral standard for telemetry: an
+\textbf{API} you instrument against, an \textbf{SDK} that samples, batches and exports, the
+\textbf{OTLP} wire protocol and a \textbf{Collector}. A \textbf{trace} is a tree of
+\textbf{spans} sharing one trace-id; the app starts it at the user's tap, and the W3C
+\ct{traceparent} header carries it into every backend service — so one timeline shows
+where the 3 seconds went.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet, x=1cm, y=1cm]
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (-0.05,3.95) {One trace (trace-id \ct{4bf9…4736}) — waterfall, time $\to$};
+  % time axis 0..9.4 = 0..3000 ms ; x offset 2.2
+  \foreach \t/\l in {0/0, 1.57/500, 3.13/1000, 4.7/1500, 6.27/2000, 7.83/2500} {
+    \draw[sheetGrey!40] (2.2+\t,3.65) -- (2.2+\t,-0.05);
+    \node[lbl, text=sheetGrey] at (2.2+\t,3.75) {\l\,ms};
+  }
+  % rows
+  \node[rowl] at (2.15,3.4) {app · INTERNAL};
+  \node[sp=sheetBlue, minimum width=86mm] at (2.2,3.4) {\ \textbf{checkout.tap} (root, span-id \ct{a1})};
+  \node[rowl] at (2.15,3.0) {app · INTERNAL};
+  \node[sp=sheetBlue, minimum width=10mm] at (2.4,3.0) {\ validate};
+  \node[rowl] at (2.15,2.6) {app · CLIENT};
+  \node[sp=sheetOrange, minimum width=68mm] (cl) at (3.5,2.6) {\ \textbf{HTTP POST} \ct{/orders} (span-id \ct{00f0…})};
+  \node[rowl] at (2.15,2.2) {api · SERVER};
+  \node[sp=sheetGreen, minimum width=60mm] (sv) at (3.85,2.2) {\ POST /orders (parent = \ct{00f0…})};
+  \node[rowl] at (2.15,1.8) {api · CLIENT};
+  \node[sp=sheetGreen, minimum width=14mm] at (4.1,1.8) {\ auth};
+  \node[rowl] at (2.15,1.4) {db · CLIENT};
+  \node[sp=sheetRed, minimum width=38mm] at (5.6,1.4) {\ \textbf{INSERT orders} — slow!};
+  \node[rowl] at (2.15,1.0) {api · PRODUCER};
+  \node[sp=sheetGreen, minimum width=6mm] at (9.5,1.0) {};
+  \node[lbl, anchor=west] at (10.15,1.0) {order.created};
+  \node[rowl] at (2.15,0.6) {app · INTERNAL};
+  \node[sp=sheetBlue, minimum width=13mm] at (9.4,0.6) {\ render};
+  % traceparent header
+  \draw[hot] (3.55,2.47) -- (3.9,2.33);
+  \node[lbl, anchor=west, text=sheetOrange!80!black, fill=white, draw=sheetOrange, rounded corners=1pt] at (0.0,0.1)
+     {\ct{traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01}};
+  \node[lbl, anchor=west, align=left] at (6.9,0.1) {version · trace-id 16 B · parent\\span-id 8 B · flags 01 = sampled};
+  \draw[flow, draw=sheetOrange] (3.7,0.25) -- (3.7,2.45);
+  % ── export pipeline ──
+  \draw[sheetGrey!50] (11.95,4.05) -- (11.95,-0.1);
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (12.0,3.95) {Where spans go};
+  \node[st, draw=sheetBlue, fill=sheetBlue!8] (a) at (14.3,3.4) {app SDK: sampler $\to$ \ct{BatchSpanProcessor}\\queue, disk buffer when offline};
+  \node[st, draw=sheetGrey, fill=black!5] (o) at (14.3,2.5) {\textbf{OTLP} protobuf or JSON, gzip\\HTTP \ct{:4318/v1/traces} · gRPC \ct{:4317}};
+  \node[st, draw=sheetBrown, fill=sheetBrown!8] (c) at (14.3,1.55) {\textbf{Collector} (your gateway): receivers $\to$\\processors (batch, redact PII, \textbf{tail}\\\textbf{sampling}) $\to$ exporters};
+  \node[st, draw=sheetGreen!70!black, fill=sheetGreen!8] (b) at (14.3,0.55) {backends: Jaeger, Grafana Tempo, Honeycomb,\\Datadog, … (examples)};
+  \draw[flow] (a) -- (o); \draw[flow] (o) -- (c); \draw[flow] (c) -- (b);
+  \node[lbl, anchor=west, text=sheetRed, align=left] at (12.0,0.0) {no vendor key in the app — it is public};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{The model}
+\begin{itemize}
+  \item \textbf{Span} = name, trace-id, span-id, parent, \textbf{kind} (INTERNAL, CLIENT,
+        SERVER, PRODUCER, CONSUMER), start/end, \textbf{attributes}, \textbf{events}
+        (timestamped points), \textbf{links} (to other traces), \textbf{status} (Unset / Ok /
+        Error). A \textbf{trace} = all spans with one trace-id.
+  \item \textbf{Metrics}: counters, histograms, gauges — aggregated, cheap, never sampled.
+        \textbf{Logs}: records stamped with trace/span id for correlation.
+  \item \textbf{Resource} = who emitted it (\ct{service.name}, version, OS, device).
+        \textbf{Semantic conventions} fix names: \ct{http.request.method}, \ct{url.full},
+        \ct{http.response.status\_code}, \ct{session.id}.
+  \item \textbf{API vs SDK}: libraries call only the API (no-op without an SDK); the app
+        configures the SDK: provider, sampler, processors, exporter.
+  \item \textbf{Context} holds the active span; a \textbf{propagator} injects it into requests
+        and the server extracts it. \textbf{Baggage} (\ct{baggage} header): never PII.
+\end{itemize}
+
+\hd{Example — a manual root span (Swift)}
+\begin{lstlisting}[language=SwiftSheet]
+import OpenTelemetryApi
+let tracer = OpenTelemetry.instance.tracerProvider
+  .get(instrumentationName: "com.example.checkout",
+       instrumentationVersion: "1.4.0")
+let span = tracer.spanBuilder(spanName: "checkout.tap")
+  .setSpanKind(spanKind: .internal)
+  .setActive(true)             // URLSession spans become children
+  .startSpan()
+span.setAttribute(key: "cart.items", value: cart.count) // no PII
+do { try await api.placeOrder(cart)    // CLIENT span + traceparent
+     span.status = .ok }
+catch { span.status = .error(description: "\(type(of: error))") }
+span.end()                             // on EVERY path
+\end{lstlisting}
+
+\hd{SDKs — status on opentelemetry.io (Sep 2026)}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{59mm}@{}}
+\toprule
+Swift & \ct{opentelemetry-swift}: traces \textbf{stable}, metrics + logs in development.
+  URLSession instrumentation (spans + header injection, \ct{shouldInjectTracingHeaders}),
+  \ct{SDKResourceExtension}, signpost integration \\
+Android & \ct{opentelemetry-android} RUM agent, \textbf{alpha}, on the Java SDK: lifecycle,
+  ANR, crashes, slow/frozen frames, OkHttp, startup, sessions (API 23+) \\
+Web (JS) & traces + metrics stable, logs in development; fetch/XHR/document-load
+  instrumentations \\
+React Native & no official SDK — JS API + native SDKs, or a vendor SDK \\
+\bottomrule
+\end{tabular}}
+
+\hd{Sampling — who decides what you pay for}
+\begin{itemize}
+  \item \textbf{Head} sampling: decided at the root, before the outcome is known —
+        \ct{TraceIdRatioBased(0.1)} wrapped in \ct{ParentBased}, so every child (and the
+        backend) follows the \ct{01} flag. Cheap, consistent, but blind to errors.
+  \item \textbf{Tail} sampling: in the Collector after the trace completes — keep all errors,
+        all traces > 2~s, 5\,\% of the rest. Needs every span of a trace on the same Collector
+        (route by trace-id) and memory to wait.
+  \item Mobile: head-sample on device (millions of devices, metered radios); errors and
+        crashes via an always-on path.
+\end{itemize}
+
+\hd{Export from a phone}
+\begin{itemize}
+  \item \ct{BatchSpanProcessor} (queue + size/time flush); \ct{SimpleSpanProcessor} only for
+        debugging. OTLP retries 429/502/503/504 with backoff; honour \ct{partial\_success}.
+  \item Flush when the app backgrounds (short background task), buffer to disk offline,
+        cap the queue (drop oldest, count drops), gzip, batch to save radio wake-ups.
+  \item Send to \textbf{your} Collector/gateway: it authenticates the app, redacts, samples,
+        and lets you switch vendors by config.
+\end{itemize}
+
+\hd{What to instrument in an app}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{57mm}@{}}
+\toprule
+app start & process start $\to$ first frame (cold/warm as an attribute) \\
+screen load & appear $\to$ content ready; name the screen \\
+network & auto CLIENT spans + \ct{traceparent} to your hosts only \\
+user flows & tap $\to$ result as the root (checkout, login, search) \\
+local work & DB queries, decoding, image processing, long main-thread work \\
+state & app version, network type, \ct{session.id}, feature-flag arms \\
+\bottomrule
+\end{tabular}}
+
+\hd{Privacy}
+No PII in names, attributes, events, baggage: strip URL queries and ids, pseudonymise user
+ids. Honour consent; redact again in the Collector; declare it in the privacy manifest.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{The backend starts a new trace — propagator not configured, or a proxy/CDN strips
+        \ct{traceparent}. Check the header on the wire.}
+  \trap{Device clocks drift: a child ``starts before'' its parent. Trust durations, not
+        cross-device offsets.}
+  \trap{User ids or raw URLs as \emph{metric} attributes — cardinality explosion; use route
+        templates (\ct{/orders/\{id\}}).}
+  \trap{A span not ended on the error path is never exported (and leaks).}
+  \trap{Injecting \ct{traceparent} into third-party hosts: leaks ids, can break CORS/signing.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Spans say what and how long, context says whose, \ct{traceparent} carries it across,
+sampling decides what you pay for, the Collector decides where it goes.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} logging-signposts-power (Logger,
+signposts, MetricKit) · flags-experiments-observability (crash-free, gates) · http-deep ·
+distributed-system-design}
+
+\end{document}

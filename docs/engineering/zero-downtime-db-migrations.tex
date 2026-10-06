@@ -1,0 +1,206 @@
+% zero-downtime-db-migrations.tex — schema changes without downtime: expand/contract (parallel change) over app
+% versions N, N+1, N+2; why old code (rolling deploys, blue/green rollback, mobile apps in the wild) makes every
+% breaking change multi-release; batched backfills; PostgreSQL lock levels (ACCESS EXCLUSIVE, the lock queue,
+% lock_timeout), fast ADD COLUMN with default (PG 11+), CREATE INDEX CONCURRENTLY, NOT VALID + VALIDATE CONSTRAINT,
+% SET NOT NULL via a CHECK; MySQL INSTANT DDL, gh-ost vs pt-online-schema-change; dual writes vs CDC / outbox;
+% rolling a migration back; ordering migrations around deploys.
+% Not repeated: API backward compatibility + min-version gate (engineering/release-engineering), the blue/green
+% switch (engineering/blue-green-deployments), canary analysis (engineering/progressive-delivery).
+% Sources (checked 2026-09-26):
+% https://martinfowler.com/bliki/ParallelChange.html (expand / migrate / contract)
+% https://www.postgresql.org/docs/current/sql-altertable.html (PG 18: ACCESS EXCLUSIVE unless noted; VALIDATE
+%   CONSTRAINT = SHARE UPDATE EXCLUSIVE; ADD FOREIGN KEY = SHARE ROW EXCLUSIVE on both tables; non-volatile DEFAULT
+%   stored in metadata, no rewrite; SET NOT NULL skips the scan when a valid CHECK proves it; NOT VALID allowed for
+%   foreign-key, CHECK and not-null constraints; ALTER TYPE rewrites unless binary coercible, indexes still rebuilt)
+% https://www.postgresql.org/docs/release/11.0/ (ADD COLUMN with a non-null constant default without a rewrite)
+% https://www.postgresql.org/docs/release/18.0/ (NOT VALID for NOT NULL constraints; released 2025-09-25)
+% https://www.postgresql.org/docs/current/sql-createindex.html (CONCURRENTLY: no write lock, two scans, waits for
+%   transactions, not in a transaction block, failure leaves an INVALID index: drop + retry or REINDEX CONCURRENTLY)
+% https://www.postgresql.org/docs/current/runtime-config-client.html (lock_timeout per lock acquisition attempt)
+% https://dev.mysql.com/doc/refman/8.4/en/innodb-online-ddl-operations.html (INSTANT add/drop column, any
+%   position, default; 64 row versions, 255 from 9.1.0)
+% https://github.com/github/gh-ost (triggerless, binlog, ghost table, throttle/pause, postponed cut-over)
+% @labels: area=engineering kind=pattern platform=backend topic=data,system-design discussion=139
+% @tags: expand-contract, parallel-change, schema-migration, backfill, postgresql, lock-timeout, create-index-concurrently, not-valid, gh-ost, dual-writes, cdc, backward-compatibility
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SQLSheet}{
+  morekeywords={SET,ALTER,TABLE,ADD,COLUMN,UPDATE,WHERE,IN,SELECT,FROM,IS,NOT,NULL,ORDER,BY,LIMIT,
+    CONSTRAINT,CHECK,VALID,VALIDATE,DROP,CREATE,INDEX,CONCURRENTLY,ON,text},
+  sensitive=true, morecomment=[l]{--}, morestring=[b]'}
+% columns=fixed boxes every character on its own, so the mono font cannot form a
+% ligature from the "--" comment delimiter (a literate rule would stop listings
+% from recognising it as a comment).
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt, columns=fixed}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  l/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  ln/.style={font=\scriptsize\bfseries, anchor=east, inner sep=1pt, align=right},
+  pb/.style={draw=white, line width=0.8pt, inner sep=1pt, font=\tiny, text=white, align=center,
+             minimum height=6mm, anchor=west},
+}
+% a lane bar: \lb{colour}{x0}{x1}{y}{label}
+\newcommand\lb[5]{\draw[draw=#1, fill=#1!18, rounded corners=1pt] (#2,#4-0.15) rectangle (#3,#4+0.15);
+  \node[l, text=#1!55!black] at ({(#2+#3)/2},#4) {#5};}
+
+\begin{document}
+
+\sheettitle{Zero-downtime database migrations}{engineering · folio}
+
+\oneliner{Every schema change must be tolerated by \textbf{all code that is still running} — the old pods of a
+rolling deploy, the blue stack you may roll back to, and \textbf{app versions installed on phones for months}.
+So a breaking change becomes \textbf{expand $\to$ migrate $\to$ contract} across several releases, data moves
+in \textbf{small batches}, and every DDL holds its lock for \textbf{milliseconds}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % phases
+  \node[pb, minimum width=2.9cm, fill=sheetGreen!65!black] at (1.9,3.55) {\textbf{1 EXPAND}\\\ct{ADD COLUMN full\_name} (nullable)};
+  \node[pb, minimum width=2.9cm, fill=sheetBlue] at (4.8,3.55) {\textbf{2 DUAL WRITE}\\N+1 writes both, reads old};
+  \node[pb, minimum width=2.9cm, fill=sheetBrown] at (7.7,3.55) {\textbf{3 BACKFILL}\\batches of 5k, watch lag};
+  \node[pb, minimum width=2.9cm, fill=sheetOrange] at (10.6,3.55) {\textbf{4 SWITCH READS}\\N+2 uses new; add NOT NULL};
+  \node[pb, minimum width=3.0cm, fill=sheetRed] at (13.5,3.55) {\textbf{5 CONTRACT}\\\ct{DROP COLUMN name}};
+  % lanes
+  \node[ln] at (1.8,2.75) {server N};
+  \node[ln] at (1.8,2.3) {server N+1};
+  \node[ln] at (1.8,1.85) {server N+2};
+  \node[ln] at (1.8,1.35) {mobile app 5.1\\(API field \ct{name})};
+  \node[ln] at (1.8,0.8) {rollback};
+  \lb{sheetGrey}{1.9}{5.5}{2.75}{reads + writes \ct{name}};
+  \lb{sheetBlue}{4.8}{11.3}{2.3}{writes \ct{name} + \ct{full\_name} · reads \ct{name}};
+  \lb{sheetOrange}{10.6}{16.5}{1.85}{};
+  \node[l, text=sheetOrange!55!black, anchor=east] at (13.4,1.85) {uses \ct{full\_name} only};
+  % overlaps
+  \fill[sheetRed!25, opacity=0.6] (4.8,2.15) rectangle (5.5,2.9);
+  \fill[sheetRed!25, opacity=0.6] (10.6,1.7) rectangle (11.3,2.45);
+  \node[l, text=sheetRed!80!black, anchor=west] at (5.55,2.75) {$\leftarrow$ rolling deploy: N and N+1 run \emph{together}};
+  \node[l, text=sheetRed!80!black, anchor=west] at (11.35,2.3) {$\leftarrow$ N+1 and N+2 together};
+  % mobile
+  \draw[draw=sheetBrown, fill=sheetBrown!15, rounded corners=1pt] (1.9,1.2) rectangle (14.6,1.5);
+  \shade[left color=sheetBrown!15, right color=white] (14.6,1.2) rectangle (15.6,1.5);
+  \node[l, text=sheetBrown!70!black] at (8.2,1.35) {installed for months: the API keeps returning \ct{name} (from \ct{full\_name}) until 5.1 traffic $\approx$ 0 or min-version $>$ 5.1};
+  % rollback lane
+  \draw[draw=sheetGreen!70!black, fill=sheetGreen!15, rounded corners=1pt] (1.9,0.65) rectangle (13.5,0.95);
+  \node[l, text=sheetGreen!40!black] at (7.7,0.8) {every step so far is \textbf{reversible}: redeploy the previous version, the old column is intact};
+  \draw[draw=sheetRed, fill=sheetRed!15, rounded corners=1pt] (13.5,0.65) rectangle (16.5,0.95);
+  \node[l, text=sheetRed!80!black] at (15.0,0.8) {\textbf{one-way door}: data gone};
+  % contract gate
+  \draw[hot, very thick, draw=sheetRed] (13.5,3.2) -- (13.5,0.5);
+  \node[l, text=sheetRed, anchor=north, align=center] at (13.5,0.5) {contract only after N, N+1 and old apps are gone + backup};
+  % time axis
+  \draw[->, sheetGrey] (1.9,0.1) -- (16.5,0.1);
+  \node[l, anchor=south west, text=sheetGrey] at (1.9,0.12) {deploys over days / weeks $\to$};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Why every breaking change takes several releases}
+\begin{itemize}
+  \item A \textbf{rolling deploy} runs N and N+1 against one DB; a \textbf{blue/green rollback} brings N back;
+        \textbf{mobile clients} are version N-k for months. A rename in one step breaks at least one of them.
+  \item Rule: schema $v$ must work with code N \emph{and} N+1; code N+1 must work with schema $v$ and $v$+1.
+  \item Same for the API: add the field, keep the old one until its clients are gone; for app clients
+        measure by version header, then raise the min version.
+\end{itemize}
+
+\hd{Expand / contract — rename \ct{name} $\to$ \ct{full\_name}}
+\begin{enumerate}
+  \item \textbf{Expand}: add the column nullable (or constant default), tables, indexes. Old code ignores them.
+  \item \textbf{Dual write} (N+1): write both, still read old. Or a DB trigger — keeps writes from old
+        code in sync too.
+  \item \textbf{Backfill} old rows in batches (below). Verify: counts, checksums, sample diffs.
+  \item \textbf{Switch reads} (N+2); then constraints: \ct{NOT NULL}, FK, unique.
+  \item \textbf{Stop writing} the old column; make the ORM ignore it (Rails \ct{ignored\_columns}) or its
+        cached column list breaks on drop.
+  \item \textbf{Contract}: drop column / trigger — after rollback window + old clients.
+\end{enumerate}
+
+\hd{Backfill — batches, not one \ct{UPDATE}}
+One \ct{UPDATE} of 50\,M rows = one huge transaction: row locks held for its whole length, WAL burst,
+replica lag, dead tuples. Instead: keyset batches (1–10k rows by PK), commit each, sleep, throttle on
+replica lag; \textbf{idempotent} (\ct{WHERE full\_name IS NULL}) and \textbf{resumable}; run as a job, not
+inside the deploy.
+
+\hd{MySQL}
+\ct{ALGORITHM=INSTANT} ADD/DROP COLUMN (default in 8.4, any position; 64 row versions, then a rebuild).
+Other changes: \textbf{gh-ost} — triggerless: copies into a ghost table and applies the \textbf{binlog}
+stream; throttle / pause, cut-over when \emph{you} choose; \textbf{pt-online-schema-change} — same copy,
+but \textbf{triggers} on the live table (extra write load). Both end with an atomic \ct{RENAME}.
+
+\hd{Dual writes vs CDC (moving data to a new store)}
+App \textbf{dual write} = two non-atomic writes: one fails or reorders $\Rightarrow$ silent drift; needs
+reconciliation. \textbf{CDC} (Debezium-style reading WAL/binlog) or a \textbf{transactional outbox}: one
+source of truth, ordered by log position, replayable. Snapshot + stream $\to$ verify $\to$ switch reads $\to$
+switch writes.
+
+\hd{Order around deploys · rollback}
+\textbf{Expand before} the code that needs it (old code must survive it); \textbf{contract after} the old code
+and the rollback window are gone. One migrator with an advisory lock — not every pod at start-up. A
+``down'' migration after data is written loses data: roll \textbf{forward}; contract is the only one-way
+door, so back up (PITR) before it.
+
+\columnbreak
+
+\hd{PostgreSQL — which lock, which trick}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{46mm}@{}}
+\toprule
+\textbf{statement} & \textbf{lock · safe form}\\ \midrule
+most \ct{ALTER TABLE} & \textbf{ACCESS EXCLUSIVE}: blocks reads \emph{and} writes — must be instant\\
+\ct{ADD COLUMN … DEFAULT} & PG 11+: constant default kept in metadata, no rewrite; \emph{volatile}
+  (\ct{clock\_timestamp()}) rewrites\\
+\ct{ALTER COLUMN TYPE} & rewrite + index rebuild, unless binary coercible (\ct{varchar(n)} $\to$ \ct{text})\\
+\ct{CREATE INDEX} & SHARE: blocks writes $\to$ \ct{CONCURRENTLY}\\
+\ct{ADD CONSTRAINT … CHECK / FOREIGN KEY} & \ct{NOT VALID} (instant) then \ct{VALIDATE CONSTRAINT} (SHARE UPDATE
+  EXCLUSIVE: reads + writes go on). FK locks \emph{both} tables\\
+\ct{SET NOT NULL} & full scan — unless a valid \ct{CHECK (c IS NOT NULL)} proves it. PG 18: NOT NULL itself
+  can be \ct{NOT VALID}\\
+\ct{ADD PRIMARY KEY / UNIQUE} & build the unique index \ct{CONCURRENTLY}, then \ct{ADD CONSTRAINT … USING INDEX}\\
+\bottomrule
+\end{tabular}}
+
+\hd{Example — PostgreSQL, one step per deploy}
+\begin{lstlisting}[language=SQLSheet]
+SET lock_timeout = '2s';   -- fail fast + retry, never queue
+ALTER TABLE users ADD COLUMN full_name text;    -- metadata only
+-- deploy N+1 (writes both); then repeat until 0 rows:
+UPDATE users SET full_name = name WHERE id IN (SELECT id
+  FROM users WHERE full_name IS NULL ORDER BY id LIMIT 5000);
+ALTER TABLE users ADD CONSTRAINT full_name_nn
+  CHECK (full_name IS NOT NULL) NOT VALID;       -- instant
+ALTER TABLE users VALIDATE CONSTRAINT full_name_nn; -- no write lock
+ALTER TABLE users ALTER full_name SET NOT NULL;  -- CHECK proves it
+CREATE INDEX CONCURRENTLY users_full_name_idx ON users (full_name);
+-- deploy N+2; weeks later, when N, N+1 and app 5.1 are gone:
+ALTER TABLE users DROP COLUMN name;             -- contract
+\end{lstlisting}
+
+\hd{The lock queue — how a 1 ms ALTER causes an outage}
+The \ct{ALTER} waits for ACCESS EXCLUSIVE behind one long \ct{SELECT} or an \emph{idle in transaction}
+session; every query that arrives \emph{after} it queues behind the \ct{ALTER}. \ct{lock\_timeout} applies to each
+lock attempt: give up after 1–5\,s, retry with backoff. \ct{CONCURRENTLY}: two scans, waits for old
+transactions, not inside a transaction block (turn off the tool's wrapping txn), failure leaves an
+\textbf{INVALID} index — drop it and retry, or \ct{REINDEX INDEX CONCURRENTLY}.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Rename / drop in the same release as the code change: old pods and old apps crash.}
+  \trap{New \ct{NOT NULL} column with no default: old code's \ct{INSERT}s fail.}
+  \trap{``The ALTER is instant'' — not while it waits in the lock queue.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Add, write both, backfill, read new, stop old, drop — each its own deploy.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} blue-green-deployments · progressive-delivery ·
+release-engineering (API compatibility, min version) · mobile-incident-playbook (backend shim)}
+
+\end{document}

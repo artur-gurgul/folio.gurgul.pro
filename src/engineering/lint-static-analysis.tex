@@ -1,0 +1,212 @@
+% lint-static-analysis.tex — lint and static-analysis pipelines for iOS, React Native and
+% Android: SwiftLint (lint vs analyze, custom rules, baseline), SwiftFormat vs swift-format,
+% Swift compiler warning groups (-Werror), the Clang static analyzer, ESLint flat config +
+% typescript-eslint typed rules + eslint-plugin-react-hooks (compiler-powered rules), Prettier,
+% Android Lint / detekt / ktlint, Danger on PRs, pre-commit hooks (husky + lint-staged,
+% lefthook), CI gates, a suppressions policy and the "ratchet" (baseline) strategy.
+% Sources (checked 2026-09-25): github.com/realm/SwiftLint README (analyze +
+% --compiler-log-path, custom_rules, disable:next/this/previous, SwiftLintPlugins, baseline /
+% write_baseline, strict); github.com/swiftlang/swift-format README (in the toolchain since
+% Swift 6 / Xcode 16, `swift format`, `lint --strict`, `.swift-format`); SE-0443 (Swift 6.1:
+% -Werror / -Wwarning <group>, last one wins, -print-diagnostic-groups);
+% typescript-eslint.io/getting-started/typed-linting (projectService, recommendedTypeChecked,
+% cost statement); react.dev/reference/eslint-plugin-react-hooks (rule list) and
+% react.dev/blog/2025/10/07/react-compiler-1 (compiler rules in recommended, plugin
+% eslint-plugin-react-compiler superseded); detekt.dev baseline (detektBaseline, baseline.xml);
+% github.com/evilmartians/lefthook (Go, {staged_files}, parallel); danger.systems/js.
+% Strict tsconfig flags are NOT repeated here: typescript/ts-config-and-practice.tex.
+% @labels: area=engineering kind=tooling platform=cross-platform topic=tooling,build,testing discussion=132
+% @tags: swiftlint, swift-format, swiftformat, clang-static-analyzer, eslint, typescript-eslint, eslint-plugin-react-hooks, prettier, detekt, ktlint, danger, pre-commit-hooks
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+% config listings — literate kills the mono font's ligatures
+\lstdefinelanguage{CfgSheet}{
+  morekeywords={import,export,default,from,const,true,false,error,warning,off},
+  sensitive=true, morecomment=[l]{//}, morecomment=[l]{\#}, morestring=[b]", morestring=[b]',
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {->}{{\hbox{-}\hbox{>}}}2 {--}{{\hbox{-}\hbox{-}}}2
+           {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2 {>=}{{\hbox{>}\hbox{=}}}2
+           {<=}{{\hbox{<}\hbox{=}}}2 {**}{{\hbox{*}\hbox{*}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}        % "--" without the ligature
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  stg/.style={box, font=\scriptsize, text width=37mm, align=left, inner sep=2pt,
+              minimum height=16mm, anchor=north},
+  sh/.style={font=\bfseries\small, anchor=south},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Lint \& static analysis — where each check runs}{engineering · folio}
+
+\oneliner{A linter is a \textbf{program that reads your source} and reports patterns;
+\textbf{syntax-only} rules (SwiftLint lint, ESLint core, ktlint) are fast and run on every save,
+\textbf{type-aware} ones (SwiftLint \ct{analyze}, typescript-eslint typed rules, detekt with type
+resolution) need a compile and run in CI. A \textbf{formatter} rewrites layout and ends style
+debate. What works is the \textbf{pipeline}: the right check at the cheapest stage, one
+\textbf{blocking} gate in CI, a \textbf{baseline} for old code, and a written \textbf{suppression policy}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x/\n/\t/\c/\body in {
+    0.0/e/{1 EDITOR · ms}/sheetGreen!70!black/{format on save (Prettier,\\\ct{swift format}, ktlint)\\ESLint / SwiftLint inline\\\ct{tsc} in the language server\\\textit{advisory — fix as you type}},
+    4.3/p/{2 PRE-COMMIT · < 10 s}/sheetBlue/{\textbf{staged files only}\\husky + lint-staged, lefthook\\format + fast lint, autofix\\+ re-stage the fixed files\\\textit{skippable: \ct{\dd{}no-verify}}},
+    8.6/c/{3 CI on the PR · minutes}/sheetOrange/{\textbf{the only real gate}: blocks merge\\\ct{swiftlint \dd{}strict} · \ct{analyze}\\\ct{eslint \dd{}max-warnings 0} · \ct{tsc}\\\ct{detekt} · \ct{lint} · format \ct{\dd{}check}\\Danger comments on the diff},
+    12.9/r/{4 RELEASE / nightly}/sheetRed/{\ct{-warnings-as-errors}\\Clang analyzer (ObjC/C)\\Android Lint \ct{release} vitals\\dependency + licence audit\\slow whole-repo scans}}
+  {
+    \node[sh, text=\c] at (\x+1.9,0.05) {\t};
+    \node[stg, draw=\c, fill=\c!6] (\n) at (\x+1.9,0) {\body};
+  }
+  \draw[flow] (e.east) -- (p.west); \draw[flow] (p.east) -- (c.west); \draw[flow] (c.east) -- (r.west);
+  \shade[left color=sheetGreen!35, right color=sheetRed!35] (0.05,-1.85) rectangle (16.65,-1.72);
+  \node[lbl, anchor=north west] at (0.05,-1.88) {cheap · fast · local · \textbf{advisory}};
+  \node[lbl, anchor=north] at (8.35,-1.88) {same config file everywhere $\to$ the editor, the hook and CI never disagree};
+  \node[lbl, anchor=north east] at (16.65,-1.88) {slow · complete · shared · \textbf{blocking}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\footnotesize\setstretch{1.0}
+
+\hd{Swift / iOS}
+\begin{itemize}
+  \item \textbf{SwiftLint} (\ct{.swiftlint.yml}): \ct{disabled\_rules}, \ct{opt\_in\_rules},
+        \ct{only\_rules}, \ct{analyzer\_rules}, \ct{custom\_rules} (a \textbf{regex} +
+        \ct{match\_kinds} + \ct{message} + \ct{severity}); \ct{strict} = warnings are errors.
+        Runs as an SPM \textbf{build tool plugin} (package \ct{SwiftLintPlugins}) or a run-script phase.
+  \item \ct{swiftlint analyze \dd{}compiler-log-path xcodebuild.log}: \textbf{analyzer rules}
+        (\ct{unused\_declaration}, \ct{unused\_import}) use the \emph{type-checked} AST, need
+        the log of a \textbf{clean} build, and are much slower — CI only.
+  \item \textbf{Formatter}: \textbf{swift-format} (swiftlang; \textbf{in the toolchain since Swift 6 /
+        Xcode 16}: \ct{swift format -i}, \ct{swift format lint \dd{}strict}, JSON
+        \ct{.swift-format}) \emph{vs} \textbf{SwiftFormat} (Nick Lockwood, community, more rules,
+        \ct{.swiftformat}, \ct{\dd{}lint} mode). Pick \emph{one}; let SwiftLint skip style rules it
+        already fixes.
+  \item \textbf{Compiler} (SE-0443, Swift 6.1): \ct{-warnings-as-errors -Wwarning
+        DeprecatedDeclaration} = all errors \emph{except} one group; \ct{-Werror <group>} the
+        reverse; \textbf{last flag wins}; \ct{-print-diagnostic-groups} shows the group name.
+  \item \textbf{Clang static analyzer} (Product $\to$ Analyze, or ``Analyze During Build''):
+        path-sensitive checks for \textbf{C / Obj-C} — leaks, null derefs, use-after-free.
+        It does not analyse Swift.
+\end{itemize}
+
+\hd{Example — the two configs that matter}
+\begin{lstlisting}[language=CfgSheet]
+# .swiftlint.yml
+opt_in_rules: [force_unwrapping, empty_count]
+analyzer_rules: [unused_declaration, unused_import]
+excluded: [Pods, .build, "**/Generated"]
+custom_rules:
+  no_print:
+    regex: "\\bprint\\("
+    match_kinds: [identifier]
+    message: "Use Logger, not print()"
+    severity: error
+\end{lstlisting}
+\begin{lstlisting}[language=CfgSheet]
+// eslint.config.js (flat config)
+import { defineConfig } from 'eslint/config';
+import tseslint from 'typescript-eslint';
+import reactHooks from 'eslint-plugin-react-hooks';
+import prettier from 'eslint-config-prettier';
+export default defineConfig([
+  tseslint.configs.recommendedTypeChecked,
+  reactHooks.configs.flat.recommended,
+  { languageOptions: { parserOptions: { projectService: true } },
+    linterOptions: { reportUnusedDisableDirectives: 'error' },
+    rules: { '@typescript-eslint/no-floating-promises': 'error' } },
+  prettier,            // LAST: turns off every style rule
+]);
+\end{lstlisting}
+
+\hd{Example — the CI lint job (cheapest first, fail fast)}
+\begin{lstlisting}[language=CfgSheet]
+swift format lint --strict --recursive Sources
+swiftlint lint --strict --reporter github-actions-logging
+xcodebuild clean build -scheme App ... > xcodebuild.log
+swiftlint analyze --strict --compiler-log-path xcodebuild.log
+npx prettier --check .  &&  npx tsc --noEmit
+npx eslint . --max-warnings 0     # warnings fail too
+./gradlew detekt lint             # android/
+npx danger ci                     # PR comments, fail()
+\end{lstlisting}
+
+\hd{Remember}
+\textbf{Format on save · lint the staged files · gate in CI · baseline the past · every
+suppression names a rule and a reason.}
+
+\columnbreak
+
+\hd{JavaScript / TypeScript / React Native}
+\begin{itemize}
+  \item \textbf{ESLint} flat config (\ct{eslint.config.js}, default since ESLint 9): an array of
+        config objects, later ones override earlier; plugins are imported objects, not strings.
+  \item \textbf{typescript-eslint} \ct{recommendedTypeChecked} + \ct{projectService: true} asks
+        TypeScript for types: \ct{no-floating-promises} (an un-\ct{await}ed promise),
+        \ct{no-misused-promises} (async fn in \ct{onPress} expecting \ct{void}),
+        \ct{switch-exhaustiveness-check}. Cost: a TS program build before linting.
+  \item \textbf{eslint-plugin-react-hooks}: \ct{rules-of-hooks}, \ct{exhaustive-deps} + the
+        \textbf{React Compiler} rules in \ct{recommended}/\ct{recommended-latest} (\ct{purity},
+        \ct{refs}, \ct{immutability}, \ct{set-state-in-render}, \ct{set-state-in-effect},
+        \ct{static-components}\ldots; flat: \ct{configs.flat.recommended}).
+        \ct{eslint-plugin-react-compiler} is superseded by it.
+  \item \textbf{Prettier} = formatter only; \ct{eslint-config-prettier} last in the config
+        disables ESLint's style rules, so the two never fight. CI: \ct{prettier \dd{}check}.
+  \item \textbf{Types are the biggest static analyser}: \ct{tsc \dd{}noEmit} in CI
+        (Metro/Babel only strip types) — strict flags: see ts-config-and-practice.
+\end{itemize}
+
+\hd{Android (the RN app's other half)}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{31mm}>{\raggedright\arraybackslash}p{29mm}@{}}
+\toprule
+\textbf{tool} & \textbf{finds} & \textbf{run · old debt} \\ \midrule
+Android Lint & manifest, resources, API level, a11y, perf & \ct{./gradlew lint} · \ct{lint-baseline.xml} \\
+detekt & Kotlin smells, complexity, bugs & \ct{detekt} · \ct{detektBaseline} $\to$ \ct{baseline.xml} \\
+ktlint & Kotlin style; \ct{\dd{}format} fixes & pre-commit + CI \\
+\bottomrule
+\end{tabular}}
+
+\hd{PR bots, hooks, gates}
+\begin{itemize}
+  \item \textbf{Danger} (JS; also Danger Swift): a \ct{dangerfile} runs in CI with the PR
+        (\ct{danger.github.pr}) and posts \ct{message}/\ct{warn}/\ct{fail}: ``no CHANGELOG'',
+        ``PR $>$ 500 lines'', ``lockfile changed without \ct{package.json}'', SwiftLint results
+        inline. \textbf{Judgement rules} a linter can't express.
+  \item \textbf{Hooks}: husky (\ct{.husky/pre-commit}) + \textbf{lint-staged} (per-glob commands
+        on staged files) · \textbf{lefthook} (Go binary, one \ct{lefthook.yml}, \ct{parallel},
+        \ct{\{staged\_files\}}; no Node needed — good for iOS repos). Hooks are
+        \textbf{convenience}: \ct{\dd{}no-verify} skips them, so CI repeats every check.
+  \item \textbf{Ratchet}: turning a rule on in a big repo = thousands of hits. Baseline them
+        (SwiftLint \ct{write\_baseline}/\ct{baseline}, detekt, Android Lint), block only
+        \textbf{new} violations, burn the baseline down.
+\end{itemize}
+
+\hd{Suppressions policy}
+Narrowest scope + rule id + reason: \ct{// swiftlint:disable:next force\_cast} ·
+\ct{// eslint-disable-next-line no-console \dd{} CLI output} · \ct{@Suppress("MagicNumber")}.
+Ban blanket \ct{swiftlint:disable all} / bare \ct{eslint-disable}; report \textbf{unused}
+directives (\ct{superfluous\_disable\_command}, \ct{reportUnusedDisableDirectives}); count them in CI.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Warnings nobody fails on grow forever — a warning is either an \textbf{error} or \textbf{off}.}
+  \trap{Pre-commit as the gate: skippable, per-machine versions. \textbf{CI} is the gate.}
+  \trap{Running \ct{analyze} / typed ESLint on every keystroke — slow; they need a build.}
+  \trap{ESLint \emph{and} Prettier both formatting — endless diffs; one owner per concern.}
+  \trap{Fixing lint in a 3,000-file ``cleanup PR'' — ruins \ct{git blame}; baseline + ratchet.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} ts-config-and-practice (strict flags) ·
+flaky-tests-ci-tdd (CI) · signing-and-cicd · sanitizers-runtime-checkers (dynamic analysis) ·
+code-smells-refactoring · modularization-spm}
+
+\end{document}

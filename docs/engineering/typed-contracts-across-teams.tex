@@ -1,0 +1,196 @@
+% typed-contracts-across-teams.tex — working across iOS / Android / web / backend through typed
+% contracts: OpenAPI + codegen (swift-openapi-generator, openapi-generator, openapi-typescript),
+% GraphQL schema + codegen, Protobuf, JSON Schema; breaking vs safe changes; consumer-driven
+% contract tests (Pact, broker, can-i-deploy); versioning + deprecation (Deprecation / Sunset
+% headers); sharing models with React Native (TS types, TurboModule codegen); the API review
+% process. Picture: one schema fanned out to generated clients, server stubs, mocks and the
+% CI gates, with the Pact loop underneath.
+% Sources (checked 2026-09-25):
+%   github.com/apple/swift-openapi-generator (OpenAPI 3.0 + 3.1, preliminary 3.2; SwiftPM build
+%     plugin; runtime + transports swift-openapi-urlsession / async-http-client / vapor /
+%     hummingbird; Client(serverURL:transport:); iOS 13+)
+%   rfc-editor.org/rfc/rfc9745 (Deprecation header, March 2025; Sunset = RFC 8594)
+%   From memory, well established (no version numbers printed): openapi-generator CLI flags
+%   -i/-g/-o, oasdiff, Spectral, Prism, buf lint/breaking, GraphQL @deprecated, Pact concepts
+%   (pact file, broker, provider states, can-i-deploy).
+% Not repeated: REST design, status codes, idempotency (design/api-design); GraphQL + Apollo
+% cache (networking/graphql-apollo); TurboModule spec → Codegen details (react-native/rn-native-modules).
+% @labels: area=engineering kind=process platform=cross-platform topic=architecture,networking,testing discussion=138
+% @tags: openapi, swift-openapi-generator, openapi-generator, graphql-codegen, protobuf, json-schema, pact, consumer-driven-contracts, breaking-changes, api-versioning, deprecation-header, codegen
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={let,var,switch,case,try,await,throw,import,func},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2}
+\lstdefinelanguage{YamlSheet}{
+  morekeywords={paths,get,operationId,parameters,responses,content,schema,components,schemas,
+    type,required,properties,enum,generate,accessModifier,deprecated},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]'}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  gn/.style={box, font=\tiny, text width=30mm, inner sep=1.5pt, align=center},
+  gate/.style={box, font=\tiny, text width=22mm, inner sep=1.5pt, align=center, draw=sheetRed, fill=sheetRed!6},
+}
+
+\begin{document}
+
+\sheettitle{Typed contracts across iOS, Android, web \& backend}{engineering · folio}
+
+\oneliner{Teams stop arguing about JSON when \textbf{one machine-readable schema} — OpenAPI,
+GraphQL SDL, Protobuf or JSON Schema — is the \textbf{source of truth} in version control:
+every client and the server \textbf{generate} their types from it, CI \textbf{rejects breaking
+diffs}, and \textbf{contract tests} prove the provider still serves what each consumer uses —
+a mismatch fails a build, not a user's app.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[box, draw=sheetBrown, fill=sheetBrown!10, text width=30mm, font=\scriptsize] (s) at (1.6,2.1)
+     {\textbf{schema in git}\\\ct{openapi.yaml} · \ct{schema.graphql}\\\ct{orders.proto}\\reviewed like code (PR)};
+  % gates
+  \node[gate] (g1) at (5.0,3.25) {\textbf{lint}: Spectral / \ct{buf lint}\\naming, errors, paging};
+  \node[gate] (g2) at (5.0,2.1) {\textbf{breaking diff}: oasdiff,\\\ct{buf breaking}, schema check};
+  \node[gate, draw=sheetGreen!70!black, fill=sheetGreen!8] (g3) at (5.0,0.95) {\textbf{mock server} (Prism)\\clients start before the API};
+  \draw[flow] (s.east) -- (g1.west); \draw[flow] (s.east) -- (g2.west); \draw[flow] (s.east) -- (g3.west);
+  % generators
+  \node[gn, draw=sheetOrange, fill=sheetOrange!8] (i) at (9.0,3.55) {\textbf{iOS}: swift-openapi-generator\\· Apollo iOS · swift-protobuf};
+  \node[gn, draw=sheetGreen!70!black, fill=sheetGreen!8] (a) at (9.0,2.7) {\textbf{Android}: openapi-generator\\\ct{-g kotlin} · Apollo Kotlin · Wire};
+  \node[gn, draw=sheetBlue, fill=sheetBlue!8] (w) at (9.0,1.85) {\textbf{web / RN JS}: openapi-typescript\\· GraphQL Code Generator};
+  \node[gn, draw=sheetGrey, fill=black!5] (b) at (9.0,1.0) {\textbf{server}: stubs / interfaces\\(or spec generated from code)};
+  \node[gn, draw=sheetGrey, fill=white] (d) at (9.0,0.2) {docs · SDK changelog};
+  \foreach \n in {i,a,w,b,d} \draw[hot] (g2.east) -- (\n.west);
+  \node[lbl, text=sheetOrange!80!black] at (6.95,3.85) {codegen};
+  % pact loop
+  \draw[sheetGrey!50] (10.75,4.0) -- (10.75,-0.1);
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (10.85,3.9) {Consumer-driven contract (Pact)};
+  \node[gn, text width=24mm, draw=sheetOrange, fill=sheetOrange!8] (c1) at (12.3,3.25) {1 app test vs Pact\\\textbf{mock provider}};
+  \node[gn, text width=24mm, draw=sheetOrange, fill=sheetOrange!8] (c2) at (12.3,2.25) {2 \textbf{pact file}: requests\\+ minimal responses};
+  \node[gn, text width=20mm, draw=sheetBrown, fill=sheetBrown!8] (c3) at (15.2,2.25) {3 \textbf{broker}:\\version + branch};
+  \node[gn, text width=20mm, draw=sheetGreen!70!black, fill=sheetGreen!8] (c4) at (15.2,1.1) {4 \textbf{provider verify}\\replay vs real API\\(provider states)};
+  \node[gate, text width=24mm] (c5) at (12.3,1.1) {5 \ct{can-i-deploy}?\\matrix of versions};
+  \draw[flow] (c1) -- (c2); \draw[flow] (c2) -- (c3); \draw[flow] (c3) -- (c4); \draw[flow] (c4) -- (c5);
+  \node[lbl, anchor=north west, align=left] at (10.85,0.55) {mobile: verify against the pacts of \textbf{every app version}\\still installed, not just the latest};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{The four contract languages}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{31mm}@{}}
+\toprule
+ & \textbf{shape} & \textbf{evolution rule} \\ \midrule
+OpenAPI & REST/JSON; 3.1 = JSON Schema 2020-12 inside & add optional fields; \ct{deprecated: true}; breaking $\to$ new path/version \\
+GraphQL & one typed graph; clients pick fields per operation & never version: add fields, \ct{@deprecated(reason:)}, remove when unused \\
+Protobuf & binary; \textbf{field numbers} are the wire identity & never reuse a number (\ct{reserved 3}); unknown fields are kept \\
+JSON Schema & payloads, events, config; validates at runtime & same as OpenAPI; codegen via quicktype etc. \\
+\bottomrule
+\end{tabular}}
+
+\hd{Safe vs breaking — the table that matters}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{37mm}>{\raggedright\arraybackslash}p{37mm}@{}}
+\toprule
+\textcolor{sheetGreen!60!black}{\textbf{safe}} & \textcolor{sheetRed}{\textbf{breaking}} \\ \midrule
+add endpoint / operation & remove or rename a field / path \\
+add \emph{optional} response field & change a type (\ct{int} $\to$ \ct{string}) \\
+add optional request field & make a request field required \\
+loosen validation & tighten validation, shrink limits \\
+add enum case \emph{if clients tolerate unknowns} & add enum case for strict decoders \\
+\bottomrule
+\end{tabular}}
+Mobile twist: old builds live for \textbf{years} — judge ``breaking'' against every one.
+
+\hd{Example — OpenAPI $\to$ Swift, generated at build time}
+\begin{lstlisting}[language=YamlSheet]
+paths:
+  /orders/{id}:
+    get:
+      operationId: getOrder
+      parameters: [{name: id, in: path, required: true,
+                    schema: {type: string}}]
+      responses:
+        '200': {content: {application/json:
+                  {schema: {$ref: '#/components/schemas/Order'}}}}
+# openapi-generator-config.yaml (beside it, in the target)
+generate: [types, client]
+accessModifier: internal
+\end{lstlisting}
+\begin{lstlisting}[language=SwiftSheet]
+let client = Client(serverURL: URL(string: "https://api.example.com")!,
+                    transport: URLSessionTransport())
+switch try await client.getOrder(path: .init(id: "42")) {
+case .ok(let ok):   let order = try ok.body.json  // Components.Schemas.Order
+case .undocumented(let status, _): throw APIError.unexpected(status)
+}
+\end{lstlisting}
+swift-openapi-generator (Apple): SwiftPM \textbf{build plugin}, OpenAPI 3.0/3.1 (3.2
+preliminary), transports for URLSession, AsyncHTTPClient, Vapor, Hummingbird; nothing
+generated is committed; every status is an enum case.
+
+\hd{Contract tests — what they prove}
+\begin{itemize}
+  \item \textbf{Schema checks} prove the \emph{shape} is compatible. \textbf{Consumer-driven
+        contracts} (Pact) prove the provider still serves what each consumer \emph{actually
+        uses} — the consumer's test writes the contract, the provider's CI replays it.
+  \item \textbf{Provider states} (``given order 42 exists'') seed each replay;
+        \ct{can-i-deploy} asks the broker if this version fits what is deployed — a gate for
+        both sides.
+  \item Pact $\neq$ E2E: contracts, not business behaviour. Bi-directional: pact vs OpenAPI.
+\end{itemize}
+
+\columnbreak
+
+\hd{Versioning and deprecation}
+\begin{itemize}
+  \item Prefer \textbf{additive evolution}, no version bump. Breaking: new field/endpoint beside
+        the old, or \ct{/v2}, or a dated header version (Stripe style).
+  \item Deprecate in the schema, then on the wire: \ct{Deprecation: @1688169599} (RFC 9745,
+        2025) + \ct{Sunset:} (RFC 8594) — sunset never earlier than deprecation.
+  \item Measure usage \textbf{per app version} (\ct{User-Agent}, an app-version header); remove only
+        when traffic is \textasciitilde0 or a \textbf{minimum-version / force-update} gate covers it.
+\end{itemize}
+
+\hd{Sharing models with React Native}
+\begin{itemize}
+  \item JS layer: TS types from the same schema (openapi-typescript, GraphQL Code Generator),
+        not hand-written DTOs.
+  \item JS $\leftrightarrow$ native: the \textbf{TurboModule TS spec} is itself a typed
+        contract — Codegen emits the ObjC++/Java interfaces; a mismatch fails the native
+        build. Alternatives: KMP shared models for Android + iOS.
+\end{itemize}
+
+\hd{API review process}
+RFC with the schema diff $\to$ CODEOWNERS from each client team $\to$ lint + breaking check
+block the merge $\to$ mock + SDKs published $\to$ changelog $\to$ deprecation window in app
+adoption, not weeks.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Adding an enum value is backward compatible'' — a strict \ct{Codable} enum throws and
+        the \emph{whole} response fails. Decode unknowns to \ct{.unknown}.}
+  \trap{Server sends \ct{null} where the schema says non-nullable — the decoder fails. Validate
+        responses against the schema in backend tests, or the spec drifts.}
+  \trap{Renaming a proto field is wire-safe for binary but breaks ProtoJSON and generated
+        names; reusing a field number silently corrupts data.}
+  \trap{Hand-editing generated code — overwritten next build; extend it instead.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{One schema, many generators; CI says no before users do; add, don't change; retire by
+version telemetry.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} api-design (REST, idempotency, errors) ·
+graphql-apollo · rn-native-modules (Codegen) · kmp-fundamentals-interop · swift-codable-deep}
+
+\end{document}

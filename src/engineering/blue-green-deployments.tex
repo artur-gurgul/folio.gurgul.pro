@@ -1,0 +1,197 @@
+% blue-green-deployments.tex — blue/green: two identical environments, one switch (load balancer / target group,
+% Kubernetes Service selector, DNS, symlink); what switches and what does not (DB, caches, queues, sessions, cron);
+% draining, warm-up, smoke test on green, instant rollback and its limits; cost; blue/green vs canary vs A/B;
+% the mobile analogue; Kubernetes, Argo Rollouts, AWS (ALB weighted target groups, CodeDeploy, ECS native).
+% Not repeated: release trains / forced update (engineering/release-engineering), flags + phased release
+% (engineering/flags-experiments-observability), incident levers (debugging/mobile-incident-playbook).
+% Sources (checked 2026-09-26):
+% https://martinfowler.com/bliki/BlueGreenDeployment.html (the pattern)
+% https://docs.aws.amazon.com/elasticloadbalancing/latest/application/rule-action-types.html (weights 0-999;
+%   no automatic failover to a healthy weighted group; target-group stickiness cookie AWSALBTG)
+% https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-target-groups.html
+%   (deregistration_delay.timeout_seconds: 0-3600 s, default 300 s)
+% https://docs.aws.amazon.com/codedeploy/latest/userguide/deployment-configurations.html (ECSAllAtOnce,
+%   ECSCanary10Percent5Minutes, ECSLinear10PercentEvery1Minutes; NLB = AllAtOnce only)
+% https://aws.amazon.com/about-aws/whats-new/2025/07/amazon-ecs-built-in-blue-green-deployments/ (ECS native
+%   blue/green, bakeTimeInMinutes, lifecycle hooks, July 2025)
+% https://argo-rollouts.readthedocs.io/en/stable/features/bluegreen/ (activeService, previewService,
+%   autoPromotionEnabled default true, scaleDownDelaySeconds default 30, pre/postPromotionAnalysis)
+% https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/ (grace period 30 s, preStop before SIGTERM,
+%   endpoint removal concurrent)
+% @labels: area=engineering kind=process platform=backend topic=system-design,build discussion=127
+% @tags: blue-green, traffic-switch, connection-draining, smoke-test, rollback, target-groups, service-selector, argo-rollouts, codedeploy, canary, feature-flags
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{YAMLSheet}{
+  morekeywords={apiVersion,kind,metadata,spec,selector,ports,name},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]', morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {--}{{\hbox{-}\hbox{-}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  l/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  ph/.style={draw=white, line width=0.8pt, minimum height=4.6mm, inner sep=0pt,
+             font=\scriptsize\bfseries, text=white, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Blue/green deployments}{engineering · folio}
+
+\oneliner{Run \textbf{two identical production environments}: \textbf{blue} serves users, the new version is
+deployed to idle \textbf{green}, tested there with no user traffic, then \textbf{one switch} (load balancer,
+Service selector, DNS, symlink) moves \emph{all} traffic at once. Blue stays up, warm, as the
+\textbf{instant rollback} — but only the \emph{stateless} tier is doubled: the database, queues and
+side effects are shared, so rollback is instant only if v1 still works with what v2 wrote.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % phases
+  \foreach \x/\w/\c/\t in {0/3.2/sheetGrey/{1 deploy green}, 3.2/2.6/sheetBrown/{2 smoke + warm-up},
+      5.8/0.9/sheetOrange/{3 switch}, 6.7/2.4/sheetBlue/{4 drain blue}, 9.1/4.4/sheetGreen!65!black/{5 bake: blue idle, hot standby},
+      13.5/3.0/sheetGrey/{6 retire blue}}
+    \node[ph, minimum width=\w cm, fill=\c] at (\x,2.35) {\t};
+  % axes
+  \draw[->, sheetGrey] (0,0) -- (16.6,0) node[l, anchor=north east]{time $\to$};
+  \draw[->, sheetGrey] (0,0) -- (0,1.95);
+  \node[l, anchor=east] at (0,1.6) {100\,\%};
+  \node[l, anchor=east] at (0,0.05) {0};
+  \draw[sheetGrey!40, dashed] (0,1.6) -- (16.4,1.6);
+  % blue traffic
+  \draw[sheetBlue, line width=1.6pt] (0,1.6) -- (6.1,1.6) -- (6.1,0.35);
+  \fill[sheetBlue!25] (6.1,0.35) .. controls (6.8,0.12) and (7.8,0.05) .. (9.1,0.02) -- (6.1,0.02) -- cycle;
+  \draw[sheetBlue, thick] (6.1,0.35) .. controls (6.8,0.12) and (7.8,0.05) .. (9.1,0.02) -- (13.5,0.02);
+  \node[l, text=sheetBlue, anchor=west] at (6.25,0.62) {in-flight requests, WebSockets finish};
+  \node[l, text=sheetBlue, anchor=west] at (6.25,0.45) {(ALB deregistration delay, default 300\,s)};
+  \node[l, text=sheetBlue, fill=white] at (1.7,1.8) {\textbf{blue v1}: all users};
+  % green traffic
+  \draw[sheetGreen!70!black, line width=1.6pt] (0,0.02) -- (3.4,0.02) -- (3.4,0.2) -- (5.6,0.2) -- (5.6,0.02) -- (6.1,0.02) -- (6.1,1.6) -- (16.4,1.6);
+  \node[l, text=sheetGreen!45!black, anchor=west] at (3.3,0.38) {test traffic only};
+  \node[l, text=sheetGreen!45!black, fill=white] at (11.5,1.8) {\textbf{green v2}: all users};
+  % rollback path
+  \draw[sheetRed, very thick, dashed, ->] (11.2,1.55) -- (11.2,0.35) -- (11.9,0.35)
+     node[l, text=sheetRed, anchor=west, align=left]{\textbf{rollback} = flip the switch back:\\seconds, blue is still warm};
+  \draw[sheetRed, thick, dashed, ->] (14.6,1.55) -- (14.6,0.35);
+  \node[l, text=sheetRed, anchor=west, align=left] at (14.7,0.62) {after retire: rollback\\= redeploy (minutes)};
+  % switch marker
+  \draw[hot, very thick] (6.1,2.1) -- (6.1,1.7);
+  \node[l, text=sheetOrange!80!black, anchor=west, align=left] at (0.1,0.95) {\textbf{switch} $=$ one atomic change:\\LB listener / target-group weights 0/100 $\to$ 100/0,\\Service selector \ct{color: blue} $\to$ \ct{green}, symlink, DNS};
+  % shared state
+  \draw[draw=sheetRed, fill=sheetRed!7, rounded corners=2pt] (0,-0.9) rectangle (16.4,-0.28);
+  \node[l, text=sheetRed!80!black, text width=160mm] at (8.2,-0.59) {\textbf{NOT switched, shared by both colours:} database · queues + their consumers · caches · object storage · cron /
+    scheduled jobs · 3rd-party webhooks · emails, pushes, payments already sent\\$\Rightarrow$ the schema, cached values and messages must work for v1 \emph{and} v2 — for the whole rollback window};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Two full stacks} behind one entry point; the idle one is the \emph{target}. Deploy to green,
+        run migrations that are \textbf{backward compatible} (expand only), wait for readiness.
+  \item \textbf{Verify before users}: smoke tests through a private route (preview Service, test listener,
+        header rule), then \textbf{warm-up}: fill caches, JIT, connection pools; scale green to \emph{blue's}
+        size, not the autoscaler's minimum — a cold green at 100\,\% is an outage.
+  \item \textbf{Switch} in one step. Existing TCP / HTTP/2 / WebSocket connections are \emph{not} moved:
+        they \textbf{drain} on blue (deregistration delay, preStop + \ct{terminationGracePeriodSeconds}, 30\,s
+        default in K8s). Endpoints are removed \emph{concurrently} with SIGTERM — sleep in \ct{preStop}.
+  \item \textbf{Bake}: watch errors/latency on green; blue idle for the rollback window, then retired or
+        reused as the next green. \textbf{Cost}: 2$\times$ the stateless tier for that window.
+\end{itemize}
+
+\hd{Where the switch lives}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{29mm}>{\raggedright\arraybackslash}p{29mm}@{}}
+\toprule
+\textbf{switch} & \textbf{how} & \textbf{catch}\\ \midrule
+load balancer & ALB rule, 2 target groups, weights 0–999 & no auto failover to the healthy group; sticky cookie \ct{AWSALBTG}\\
+K8s Service & patch \ct{spec.selector} & long-lived conns stay on blue pods\\
+DNS & swap record / weights & TTL + resolvers that ignore it: slow switch, slow rollback\\
+symlink & \ct{ln -sfn releases/v2 current} + reload & one host: not a second env\\
+\bottomrule
+\end{tabular}}
+
+\hd{Implementations}
+\begin{itemize}
+  \item \textbf{Argo Rollouts} \ct{blueGreen}: \ct{activeService} + \ct{previewService}; controller injects the
+        ReplicaSet hash into Service selectors. \ct{autoPromotionEnabled} (default true),
+        \ct{prePromotionAnalysis} gates the switch, \ct{postPromotionAnalysis} failure switches back,
+        \ct{scaleDownDelaySeconds} (default 30) keeps blue.
+  \item \textbf{AWS}: CodeDeploy ECS blue/green — two target groups, prod + optional test listener,
+        \ct{ECSAllAtOnce}, \ct{ECSCanary10Percent5Minutes}, \ct{ECSLinear10PercentEvery1Minutes} (NLB:
+        all-at-once only); EC2 = replacement ASG; Lambda = alias weights. Since July 2025 \textbf{ECS native}
+        \ct{BLUE\_GREEN} strategy: \ct{bakeTimeInMinutes}, lifecycle hooks, alarms.
+\end{itemize}
+
+\hd{Mobile — you cannot blue/green a binary}
+The installed app is the ``blue'' you can't switch off, and the stores have no rollback. Equivalents:
+B/G the \textbf{backend} behind the app; ship \emph{both} code paths and flip a \textbf{remote flag}
+(in-app B/G); route by an \ct{App-Version} header; \textbf{min-version} gate as the last resort; RN:
+point an EAS Update channel at another branch (JS only).
+
+\columnbreak
+
+\hd{Example — Kubernetes: the Service is the switch}
+\begin{lstlisting}[language=YAMLSheet]
+apiVersion: v1
+kind: Service                 # the ONLY thing that flips
+metadata: { name: api }
+spec:
+  selector: { app: api, color: blue }    # -> green
+  ports: [{ port: 80, targetPort: 8080 }]
+# 1 kubectl apply -f api-green.yaml      # Deployment color: green
+# 2 kubectl rollout status deploy/api-green
+# 3 smoke: curl -f http://api-preview/healthz  (preview Svc -> green)
+# 4 switch:
+#   kubectl patch svc api -p '{"spec":{"selector":{"color":"green"}}}'
+# 5 rollback = same patch with "blue" (blue pods still running)
+# 6 after bake: kubectl scale deploy/api-blue --replicas=0
+\end{lstlisting}
+
+\hd{Rollback — instant, with limits}
+\begin{itemize}
+  \item \textbf{Schema}: a v2 migration that drops/renames breaks v1 on rollback $\Rightarrow$ only
+        \emph{expand} before the switch, \emph{contract} after the bake.
+  \item \textbf{Data written by v2} (new format, cache entries, queue messages): v1 must read or ignore it.
+  \item \textbf{Side effects} are not undone: emails, pushes, charges, webhooks — make them idempotent.
+  \item \textbf{Workers} don't follow the LB: both colours consume queues and run cron $\Rightarrow$
+        double execution. Gate them by colour/flag; scale blue's to 0.
+  \item \textbf{Sessions} in memory are lost: shared store or a signed token.
+\end{itemize}
+
+\hd{Blue/green vs canary vs A/B}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{34mm}@{}}
+\toprule
+& \textbf{exposure} & \textbf{best for}\\ \midrule
+blue/green & 0 $\to$ 100\,\%, whole env & fast whole-version rollback\\
+canary & 1 $\to$ 100\,\%, metric-gated & small blast radius for unknown bugs\\
+A/B & fixed split, weeks & measuring a \emph{product} change\\
+\bottomrule
+\end{tabular}}\par
+Spinnaker calls it \textbf{red/black}. Combine: B/G envs + canary weights (CodeDeploy linear/canary).
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Rollback is instant'' — code yes; schema, data, emails no.}
+  \trap{Blue \emph{and} green workers both eating the queue / cron.}
+  \trap{Cold green: 100\,\% onto empty caches, min-size autoscaler.}
+  \trap{DNS switch called ``instant'' — TTLs and caching resolvers.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Two stacks, one switch, one shared database — expand before, contract after.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} progressive-delivery (canary, rolling) ·
+zero-downtime-db-migrations (expand/contract) · release-engineering (min-version) ·
+flags-experiments-observability · mobile-incident-playbook}
+
+\end{document}
