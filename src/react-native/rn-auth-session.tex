@@ -1,0 +1,206 @@
+% rn-auth-session.tex — auth in a React Native app: OAuth code + PKCE through the system browser
+% (expo-auth-session / react-native-app-auth), where tokens live, bootstrapping a session,
+% single-flight refresh across parallel 401s (axios interceptor), refresh-token rotation,
+% logout wipe, biometric re-auth and app lock.
+% Extends networking/oauth-oidc-jwt (protocol, PKCE drawn, JWT, Swift single-flight) — not repeated.
+% Sources (checked 2026-09-25):
+%   https://docs.expo.dev/versions/latest/sdk/auth-session/ (usePKCE default true, S256,
+%     ASWebAuthenticationSession / Custom Tabs via expo-web-browser openAuthSessionAsync)
+%   https://reactnative.dev/docs/security (react-native-app-auth wraps AppAuth-iOS/Android)
+%   https://github.com/FormidableLabs/react-native-app-auth (authorize/refresh/revoke, appAuthRedirectScheme)
+%   https://docs.expo.dev/versions/latest/sdk/securestore/ · https://oblador.github.io/react-native-keychain/
+%   https://datatracker.ietf.org/doc/html/rfc9700 (refresh rotation) · RFC 7009 (revocation) · RFC 8252
+%   https://reactnavigation.org/docs/auth-flow · https://axios.rest/pages/advanced/interceptors
+%   https://tanstack.com/query/latest/docs/reference/QueryClient (clear)
+%   https://docs.expo.dev/versions/latest/sdk/splash-screen/ · .../sdk/local-authentication/
+%   https://docs.sentry.io/platforms/react-native/enriching-events/identify-user/
+% @labels: area=react-native kind=pattern platform=cross-platform topic=security,networking,architecture discussion=201
+% @tags: rn-auth, pkce, expo-auth-session, react-native-app-auth, token-refresh, single-flight, axios-interceptor, refresh-token-rotation, logout, biometric-reauth, session-bootstrap
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={const,let,function,return,import,from,export,default,type,
+    if,else,new,true,false,null,undefined,async,await,throw,try,catch,finally},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`,
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {===}{{\hbox{=}\hbox{=}\hbox{=}}}3
+           {!==}{{\hbox{!}\hbox{=}\hbox{=}}}3
+           {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2
+           {??}{{\hbox{?}\hbox{?}}}2 {||}{{\hbox{|}\hbox{|}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lane/.style={font=\scriptsize\bfseries, anchor=east, align=right},
+  ev/.style={font=\tiny, inner sep=1pt, align=center},
+  req/.style={draw=sheetBlue, fill=sheetBlue!12, rounded corners=1pt, minimum height=3mm, inner sep=0pt},
+  bad/.style={draw=sheetRed, fill=sheetRed!20, rounded corners=1pt, minimum height=3mm, inner sep=0pt},
+  wait/.style={draw=sheetGrey, dashed, fill=black!4, rounded corners=1pt, minimum height=3mm, inner sep=0pt},
+  ok/.style={draw=sheetGreen!70!black, fill=sheetGreen!18, rounded corners=1pt, minimum height=3mm, inner sep=0pt},
+  st/.style={box, font=\tiny\bfseries, minimum width=12mm, minimum height=4.5mm, inner sep=1pt},
+  tl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+% \bar{x0}{x1}{y}{style}{label}
+\newcommand\seg[5]{\draw[#4] (#1,#3-0.15) rectangle (#2,#3+0.15); \node[ev] at ({(#1+#2)/2},#3) {#5};}
+
+\begin{document}
+
+\sheettitle{Auth \& sessions in React Native}{react-native · folio}
+
+\oneliner{The protocol is the native one — \textbf{authorization code + PKCE in the system browser}
+(\ct{ASWebAuthenticationSession} / Custom Tabs). The RN work is: a library that does it right,
+\textbf{refresh token in Keychain/Keystore}, access token \textbf{in memory}, \textbf{one refresh at a
+time} for every caller, and a \textbf{logout that wipes} every cache the user's data reached.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.05,3.05) {Single-flight refresh — three screens hit 401 at once};
+  \node[lane] at (2.2,2.55) {GET /feed (A)};
+  \node[lane] at (2.2,2.1) {GET /me (B)};
+  \node[lane] at (2.2,1.65) {POST /like (C)};
+  \node[lane] at (2.2,1.1) {\ct{refreshing} promise};
+  \node[lane] at (2.2,0.6) {Keychain};
+  \seg{2.4}{3.6}{2.55}{req}{AT expired}   \seg{3.6}{4.2}{2.55}{bad}{401}
+  \seg{2.6}{3.8}{2.1}{req}{}              \seg{3.8}{4.4}{2.1}{bad}{401}
+  \seg{2.8}{4.0}{1.65}{req}{}             \seg{4.0}{4.6}{1.65}{bad}{401}
+  \seg{4.2}{8.8}{1.1}{draw=sheetOrange, fill=sheetOrange!25, rounded corners=1pt}{A creates it $\to$ POST /token (grant\_type=refresh\_token)}
+  \seg{4.2}{8.8}{2.55}{wait}{await refreshOnce()}
+  \seg{4.4}{8.8}{2.1}{wait}{joins the same promise}
+  \seg{4.6}{8.8}{1.65}{wait}{joins the same promise}
+  \seg{8.8}{10.0}{0.6}{ok}{save new RT}
+  \draw[hot] (8.8,0.95) -- (8.8,0.75);
+  \seg{10.0}{11.3}{2.55}{ok}{retry $\to$ 200}
+  \seg{10.0}{11.3}{2.1}{ok}{retry $\to$ 200}
+  \seg{10.0}{11.3}{1.65}{ok}{retry $\to$ 200}
+  \draw[flow] (10.0,0.75) -- (10.0,1.5);
+  \node[tl, anchor=west, text=sheetGreen!40!black, align=left] at (11.5,2.1)
+     {\textbf{1 refresh, 3 retries.} Each request retries\\\textbf{once} (\ct{\_retried} flag) — a second 401\\means ``really signed out''.};
+  \node[tl, anchor=west, text=sheetRed, align=left] at (11.5,0.95)
+     {\textbf{Without it}: 3 refreshes race. With rotation,\\B and C present the RT that A just used $\to$\\reuse detection revokes the whole family\\$\to$ ``random logouts'' (RFC 9700).};
+  \draw[sheetGrey!40] (-0.05,0.25) -- (16.6,0.25);
+  \node[tl, anchor=west] at (-0.05,0.05) {Better still: refresh \emph{before} sending when \ct{expiresAt - now < 60 s}
+     (compute \ct{expiresAt} from \ct{expires\_in} at receipt — not device clock vs \ct{exp}) and on \ct{AppState} \ct{'active'}. The 401 path is the safety net.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Signing in — the libraries}
+\begin{itemize}
+  \item \textbf{expo-auth-session}: \ct{useAutoDiscovery(issuer)}, \ct{useAuthRequest} (PKCE on by
+        default, \ct{S256}), \ct{promptAsync()} opens expo-web-browser
+        \ct{openAuthSessionAsync} $\to$ \ct{ASWebAuthenticationSession} / Custom Tabs; then
+        \ct{exchangeCodeAsync}, \ct{refreshAsync}; \ct{makeRedirectUri(\{ scheme \})}. Expo Go
+        redirects to \ct{exp://}\ldots{} — test real redirects in a dev build.
+  \item \textbf{react-native-app-auth}: wraps AppAuth-iOS / AppAuth-Android; \ct{authorize(cfg)},
+        \ct{refresh(cfg, \{ refreshToken \})}, \ct{revoke(cfg, \{ tokenToRevoke \})}; Android
+        \ct{manifestPlaceholders = [appAuthRedirectScheme: 'com.example.app']};
+        \ct{iosPrefersEphemeralSession}.
+  \item \textbf{Never a WebView} login: the app can read the password, no SSO cookie; RFC 8252:
+        apps MUST NOT use embedded user-agents, servers MAY block them. Redirect: claimed \ct{https} (universal/app link) $>$ custom
+        scheme — any app can register a scheme; PKCE makes a stolen \ct{code} useless.
+\end{itemize}
+
+\hd{Where tokens live — and the boot sequence}
+\begin{itemize}
+  \item \textbf{RT}: Keychain/Keystore (\ct{react-native-keychain}, \ct{expo-secure-store}).
+        \textbf{AT}: a module variable / non-persisted store. Never redux-persist, AsyncStorage,
+        MMKV-plain, logs or crash breadcrumbs.
+  \item \textbf{Boot}: keep the splash (\ct{SplashScreen.preventAutoHideAsync()}) $\to$ read RT $\to$
+        refresh $\to$ pick the navigator. No RT $\to$ auth stack. Offline $\to$ stay signed in with
+        cached data; only \ct{invalid\_grant} means signed out.
+  \item \textbf{Reinstall}: iOS Keychain outlives the app, AsyncStorage does not — no
+        ``installed'' flag in AsyncStorage $\Rightarrow$ wipe Keychain items first.
+  \item \textbf{Rotation}: persist the \emph{new} RT before anything else; two processes (app +
+        background task) must not both refresh — share the lock or skip in background.
+\end{itemize}
+
+\hd{Session states}
+\begin{tikzpicture}[sheet]
+  \node[st] (b) at (0,0) {BOOT};
+  \node[st] (r) at (2.3,0) {REFRESH};
+  \node[st, draw=sheetGreen!70!black, fill=sheetGreen!12] (i) at (4.9,0) {SIGNED IN};
+  \node[st, draw=sheetOrange, fill=sheetOrange!10] (l) at (7.2,0) {LOCKED};
+  \node[st, draw=sheetGrey, fill=black!5] (o) at (2.3,-1.15) {SIGNED OUT};
+  \node[st, draw=sheetRed, fill=sheetRed!8] (w) at (4.9,-1.15) {WIPING};
+  \draw[flow] (b) -- node[tl, above]{RT found} (r);
+  \draw[flow] (r) -- node[tl, above]{ok / offline} (i);
+  \draw[flow] (b.south) |- node[tl, pos=0.3, left]{no RT} (o.west);
+  \draw[flow] (r) -- node[tl, left]{invalid\_grant} (o);
+  \draw[hot] ([yshift=1mm]i.east) -- node[tl, above]{bg $>$ N min} ([yshift=1mm]l.west);
+  \draw[flow, draw=sheetGreen!60!black] ([yshift=-1mm]l.west) -- node[tl, below]{biometric} ([yshift=-1mm]i.east);
+  \draw[flow] (i) -- node[tl, right]{logout / 2nd 401} (w);
+  \draw[flow] (w) -- node[tl, below]{wiped} (o);
+  \draw[flow, draw=sheetBlue] (o.north east) -- node[tl, sloped, below, pos=0.55]{login} (i.south west);
+\end{tikzpicture}
+
+\hd{Biometric re-auth}
+\ct{expo-local-authentication} \ct{authenticateAsync()} returns a \textbf{JS boolean} — a UI gate,
+hookable on a rooted phone. Stronger: gate the \emph{secret} — a Keychain item with
+\ct{ACCESS\_CONTROL.BIOMETRY\_CURRENT\_SET}: the OS releases the RT only after Face ID; a new
+enrolment invalidates it (iOS: \ct{NSFaceIDUsageDescription}). Payments, password change:
+server-side step-up (\ct{max\_age} / \ct{prompt=login}).
+
+\columnbreak
+
+\hd{Example — axios interceptor, single-flight refresh}
+\begin{lstlisting}[language=TSSheet]
+let refreshing: Promise<string> | null = null;
+function refreshOnce(): Promise<string> {
+  refreshing ??= doRefresh()            // the first caller creates it
+    .finally(() => { refreshing = null; });  // next expiry: new one
+  return refreshing;                     // everyone else joins it
+}
+api.interceptors.response.use(undefined, async (err) => {
+  const cfg = err.config;
+  if (err.response?.status !== 401 || cfg._retried) throw err;
+  cfg._retried = true;                   // retry ONCE, never loop
+  try {
+    const at = await refreshOnce();
+    cfg.headers.Authorization = `Bearer ${at}`;
+    return api(cfg);                     // replay the original call
+  } catch (e) {
+    if (isInvalidGrant(e)) await signOut('expired'); // not on offline
+    throw e;
+  }
+});
+// doRefresh(): read RT from Keychain, POST /token with a BARE
+// client (no interceptor -> no recursion), save new RT, return AT
+\end{lstlisting}
+
+\hd{Logout — wipe everything the user reached}
+\begin{enumerate}
+  \item \ct{revoke} the RT at the server (RFC 7009) — best effort; offline still logs out.
+  \item Delete secure items: \ct{Keychain.resetGenericPassword()} /
+        \ct{SecureStore.deleteItemAsync()}; clear the in-memory AT; abort in-flight requests
+        (\ct{AbortController}).
+  \item Caches: \ct{queryClient.clear()}, reset the Redux root / Zustand store, MMKV
+        \ct{clearAll()}, image + file caches, drafts.
+  \item Unregister the push token server-side; \ct{Sentry.setUser(null)}; analytics reset.
+  \item Navigation: auth-conditional screens swap stacks by themselves (else
+        \ct{navigation.reset}) — no ``back'' into the app.
+  \item Browser session: \ct{end\_session\_endpoint}, or the next login is silent SSO.
+\end{enumerate}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Logging out on \emph{any} refresh failure — airplane mode signs everyone out.}
+  \trap{Refresh through the intercepted client $\to$ 401 inside refresh $\to$ infinite loop.}
+  \trap{Logout that forgets the query cache: user B sees user A's feed.}
+  \trap{Biometric check as a boolean in front of an RT stored without access control.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Browser + PKCE · RT in Keychain, AT in memory · one refresh, one retry · wipe it all.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} oauth-oidc-jwt (PKCE flow, JWT, rotation) ·
+rn-app-security (storage) · rn-navigation (auth flow) · rn-state-and-data (query cache) ·
+keychain-secure-enclave · deep-links-universal-links}
+
+\end{document}

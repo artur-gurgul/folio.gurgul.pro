@@ -1,0 +1,191 @@
+% rn-ci-and-signing.tex — CI/CD for a React Native app: the build matrix, caching (node_modules,
+% Gradle, CocoaPods, ccache, prebuilt RN core), EAS Build/Submit/Workflows vs fastlane vs GitHub
+% Actions/Bitrise, Android signing (upload key vs app signing key, Play App Signing, keystore
+% secrets), iOS signing in CI (pointer), version/build-number automation, OTA channels and
+% runtimeVersion, release promotion and rollback.
+% Sources (checked 2026-09-25):
+%   https://developer.android.com/studio/publish/app-signing
+%   https://docs.expo.dev/build-reference/app-versions/
+%   https://docs.expo.dev/eas-update/deployment/
+%   https://docs.expo.dev/eas/workflows/get-started/
+%   https://reactnative.dev/docs/build-speed · https://reactnative.dev/docs/signed-apk-android
+%   https://reactnative.dev/blog/2026/02/11/react-native-0.84 (prebuilt iOS binaries default)
+% Not repeated: iOS certificates, profiles, match, ASC API key, TestFlight, phased release
+% (security-build/signing-and-cicd); Expo vs bare, runtimeVersion policies (rn-tooling-release).
+% @labels: area=react-native kind=process platform=cross-platform topic=build,security,tooling discussion=203
+% @tags: ci-cd, eas-build, eas-submit, eas-workflows, eas-update, fastlane, github-actions, play-app-signing, upload-key, keystore, versioncode, build-caching
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{YamlSheet}{
+  morekeywords={runs-on,steps,uses,with,run,env},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]", morestring=[b]',
+  literate={--}{{\hbox{-}\hbox{-}}}2 {=>}{{\hbox{=}\hbox{>}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  jb/.style={box, font=\tiny, inner sep=1.5pt, text width=21mm, minimum height=9mm},
+  js/.style={jb, draw=sheetOrange, fill=sheetOrange!8},
+  ios/.style={jb, draw=sheetBlue, fill=sheetBlue!8},
+  and/.style={jb, draw=sheetGreen!70!black, fill=sheetGreen!8},
+  ota/.style={jb, draw=sheetBrown, fill=sheetBrown!8},
+  gate/.style={diamond, draw=sheetRed, thick, fill=sheetRed!5, aspect=2.1, inner sep=0.5pt,
+               font=\tiny, align=center},
+  key/.style={box, font=\tiny, inner sep=1.5pt, text width=19mm, minimum height=8mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{React Native CI/CD \& Android signing — build once, promote}{react-native · folio}
+
+\oneliner{An RN pipeline is \textbf{two native builds} (iOS on macOS, Android on Linux) around one JS
+codebase, plus an \textbf{OTA lane} for JS-only changes. Make it fast with \textbf{lockfile-keyed caches},
+reproducible with \textbf{signing secrets in the CI store} (Android keystore, iOS via match/API key),
+and safe by \textbf{promoting the tested artifact} — never rebuilding for release. On Android you
+sign with an \textbf{upload key}; Google re-signs with the \textbf{app signing key} it keeps.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- pipeline ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.2,3.75) {Pipeline — one push to \ct{main}};
+  \node[js] (js) at (1.0,2.85) {\textbf{JS job} (Linux)\\lint · \ct{tsc} · Jest\\cache: \ct{node\_modules}};
+  \node[gate] (g) at (3.55,2.85) {native\\inputs\\changed?};
+  \node[ios] (ib) at (6.2,3.35) {\textbf{iOS} (macOS runner)\\Pods + ccache cache;\\prebuilt RN core (0.84+)};
+  \node[and] (ab) at (6.2,2.3) {\textbf{Android} (Linux)\\Gradle cache;\\\ct{bundleRelease} $\to$ AAB};
+  \node[ota] (up) at (6.2,1.15) {\textbf{OTA} update\\\ct{eas update}\\\ct{\dd{}channel preview}};
+  \draw[flow] (js) -- (g);
+  \draw[flow] (g.north) |- node[lbl, pos=0.3, left]{yes} (ib.west);
+  \draw[flow] (g.east) -- (ab.west);
+  \draw[hot] (g.south) |- node[lbl, pos=0.3, left]{no: JS only} (up.west);
+  \node[ios, text width=15mm] (tf) at (8.55,3.35) {sign (match)\\$\to$ \textbf{TestFlight}};
+  \node[and, text width=15mm] (pi) at (8.55,2.3) {sign (upload\\key) $\to$ Play\\\textbf{internal}};
+  \node[ota, text width=15mm] (pc) at (8.55,1.15) {QA on the\\preview\\channel};
+  \draw[flow] (ib) -- (tf); \draw[flow] (ab) -- (pi); \draw[hot] (up) -- (pc);
+  \node[lbl, text=sheetGreen!50!black, anchor=west, align=left] at (9.5,3.35) {promote the \textbf{same}\\build: review $\to$\\phased release};
+  \node[lbl, text=sheetGreen!50!black, anchor=west, align=left] at (9.5,2.3) {promote track:\\closed $\to$ production,\\staged rollout \%};
+  \node[lbl, text=sheetGreen!50!black, anchor=west, align=left] at (9.5,1.15) {republish the same\\update to the\\\ct{production} channel};
+  \node[lbl, anchor=west, text=sheetRed, align=left] at (-0.2,1.35) {gate = a native\\\textbf{fingerprint} (Expo)\\or paths filter on\\\ct{ios/ android/}, lockfile};
+  % ---------- Android keys ----------
+  \draw[sheetGrey!40] (12.75,3.9) -- (12.75,0.55);
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (12.85,3.75) {Play App Signing};
+  \node[key, draw=sheetOrange, fill=sheetOrange!10] (uk) at (13.95,3.0) {\textbf{upload key}\\your CI secret};
+  \node[key, draw=sheetGrey, fill=black!4] (gp) at (13.95,1.9) {Play verifies the\\upload certificate};
+  \node[key, draw=sheetRed, fill=sheetRed!7] (ak) at (13.95,0.85) {\textbf{app signing key}\\kept by Google};
+  \draw[flow] (uk) -- node[lbl, right]{signs AAB} (gp);
+  \draw[flow] (gp) -- node[lbl, right]{re-signs APKs} (ak);
+  \node[lbl, anchor=west, align=left, text=sheetGreen!50!black] at (15.1,3.0) {lost? \textbf{reset}\\in Play Console};
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (15.1,0.85) {identity of the\\app for life};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Build matrix and caching}
+\begin{itemize}
+  \item Run cheap \textbf{JS checks once} on Linux; build natives only when native inputs changed;
+        E2E (Detox/Maestro) on a sim/emulator for main or labelled PRs. macOS minutes cost the most.
+  \item \textbf{Cache keys = lockfiles}: \ct{yarn.lock}/\ct{package-lock.json} (\ct{node\_modules} or the
+        package cache), \ct{Podfile.lock} (\ct{ios/Pods}), Gradle wrapper + \ct{*.gradle*}
+        (\ct{gradle/actions/setup-gradle}). A branch-only key goes stale.
+  \item \textbf{Compile less}: prebuilt RN core \ct{.xcframework}s by default since 0.84; \ct{ccache}
+        (Podfile \ct{:ccache\_enabled \hbox{=}\hbox{>} true}); Gradle configuration cache (0.79+); one ABI
+        (\ct{reactNativeArchitectures=arm64-v8a}) for debug/E2E only — store builds keep all.
+\end{itemize}
+
+\hd{Where it runs}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{55mm}@{}}
+\toprule
+\textbf{EAS} & Build (cloud or \ct{\dd{}local}), Submit, Update, Workflows (\ct{.eas/workflows/*.yml}: \ct{build},
+  \ct{submit}, \ct{update}, \ct{fingerprint} jobs); manages keystore + iOS certs (\ct{eas credentials}) \\
+\textbf{fastlane} & Ruby lanes on any CI: \ct{gradle}, \ct{upload\_to\_play\_store} (\ct{supply}),
+  \ct{match}, \ct{gym}, \ct{pilot} — you own the machines \\
+\textbf{GitHub Actions / Bitrise} & the runner + YAML/steps; call fastlane or EAS CLI from it \\
+\bottomrule
+\end{tabular}}
+
+\hd{Android signing}
+\begin{itemize}
+  \item \textbf{Play App Signing} is required for new apps (since Aug 2021, AAB): Google holds the
+        app signing key; you sign uploads with the \textbf{upload key}. Lost/leaked upload key
+        $\to$ \textbf{upload-key reset}; a self-held app key that is lost ends updates.
+  \item Key: \ct{keytool -genkeypair -v -storetype PKCS12 -keyalg RSA -keysize 2048 -validity
+        10000}; Google: validity $\geq$ 25 years (past 22 Oct 2033).
+  \item The RN template signs \textbf{release with the debug keystore} until you add a
+        \ct{signingConfigs.release}. Passwords from \ct{\textasciitilde/.gradle/gradle.properties}
+        (\ct{MYAPP\_UPLOAD\_STORE\_PASSWORD}\ldots) or CI env \ct{ORG\_GRADLE\_PROJECT\_<name>};
+        keystore as a base64 secret decoded in the job.
+\end{itemize}
+
+\hd{iOS signing in CI}
+Same rules as native: \textbf{match} (\ct{readonly}) or EAS-managed certs, an \textbf{App Store
+Connect API key} for upload, temp keychain per job — see signing-and-cicd.
+
+\hd{QA builds before the store}
+iOS: TestFlight internal (no review) or ad hoc; Android: Play \textbf{internal testing} track
+(up to 100 testers) or Firebase App Distribution; EAS: \emph{internal distribution} builds. Dev
+builds (\ct{expo-dev-client}) are for engineers, never for QA sign-off.
+
+\columnbreak
+
+\hd{Example — Android release job (GitHub Actions)}
+\begin{lstlisting}[language=YamlSheet]
+android:
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with: { node-version: 22, cache: yarn }
+    - uses: actions/setup-java@v4
+      with: { distribution: zulu, java-version: 17 }
+    - uses: gradle/actions/setup-gradle@v4    # Gradle cache
+    - run: yarn install --frozen-lockfile
+    - run: echo "$KS" | base64 -d > android/app/upload.keystore
+      env: { KS: "${{ secrets.UPLOAD_KEYSTORE_B64 }}" }
+    - run: ./gradlew bundleRelease -PversionCode=${{ github.run_number }}
+      working-directory: android
+      env:  # read by signingConfigs.release as project properties
+        ORG_GRADLE_PROJECT_MYAPP_UPLOAD_STORE_PASSWORD: ${{ secrets.KS_PW }}
+        ORG_GRADLE_PROJECT_MYAPP_UPLOAD_KEY_PASSWORD: ${{ secrets.KEY_PW }}
+\end{lstlisting}
+
+\hd{Versions, OTA, promotion}
+\begin{itemize}
+  \item \ct{versionName}/\ct{version} is for humans; \ct{versionCode} (integer) and iOS
+        \ct{buildNumber} must \textbf{rise on every upload} — derive from the CI run number, or EAS
+        \ct{cli.appVersionSource: "remote"} + \ct{autoIncrement: true} (recommended since EAS CLI 12;
+        it does not touch \ct{version}).
+  \item \textbf{OTA}: each build profile carries a \textbf{channel}; an update reaches only builds
+        with the same \textbf{runtimeVersion}. Test on \ct{preview}, then
+        \ct{eas update:republish \dd{}destination-channel production} (same bundle); gradual:
+        \ct{eas update \dd{}rollout-percentage 10}, \ct{eas update:edit}; undo: \ct{eas update:rollback}.
+  \item \textbf{Stores}: TestFlight $\to$ review $\to$ phased release; Play internal $\to$ closed
+        $\to$ production with a \textbf{staged rollout} you can halt.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Signed release'' that is debug-signed — the template default.}
+  \trap{Two CI runs uploading the same \ct{versionCode}: the second is rejected.}
+  \trap{A JS-only OTA that needs a new native module crashes old binaries — gate on runtimeVersion/fingerprint.}
+  \trap{Rebuilding for production after QA: you ship an untested binary.}
+  \trap{Secrets in \ct{EXPO\_PUBLIC\_*} or \ct{.env} end up in the bundle — CI secrets are for the \emph{build}, not the app.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Cache by lockfile, sign with secrets, bump by CI, promote the artifact.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} signing-and-cicd (iOS certs, match,
+TestFlight) · rn-tooling-release (EAS, runtimeVersion) · metro-bundler · hermes-v1 (source maps per
+build) · flaky-tests-ci-tdd}
+
+\end{document}

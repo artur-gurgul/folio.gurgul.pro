@@ -1,0 +1,176 @@
+% metro-bundler.tex — Metro in depth: resolution / transformation / serialisation, the dev server and
+% Fast Refresh mechanics, metro.config.js, symlinks and monorepos, caching, source maps, lazy bundling
+% and code-splitting limits, Expo's Metro config, the failures you actually meet.
+% Sources (checked 2026-09-25):
+%   https://metrobundler.dev/docs/concepts · https://metrobundler.dev/docs/configuration
+%   https://reactnative.dev/docs/fast-refresh
+%   https://reactnative.dev/blog/2023/12/06/0.73-debugging-improvements-stable-symlinks
+%   https://reactnative.dev/blog/2025/04/08/react-native-0.79 (Metro 0.82: exports/imports stable, faster start)
+%   https://reactnative.dev/blog/2026/04/07/react-native-0.85 · /2026/08/11/react-native-0.87 (Metro 0.84 TLS, Metro 0.87)
+%   https://docs.expo.dev/guides/customizing-metro/ · https://docs.expo.dev/guides/tree-shaking/
+% Not repeated: Metro basics (platform extensions, --reset-cache, watchFolders one-liner) in rn-tooling-release;
+% Hermes bytecode + composed maps in hermes-v1.
+% @labels: area=react-native kind=tooling platform=cross-platform topic=build,tooling,debugging discussion=193
+% @tags: metro, bundler, module-resolution, babel-transform, serializer, metro-config, monorepo, symlinks, fast-refresh, hmr, source-maps, code-splitting
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{JSSheet}{
+  morekeywords={const,let,return,require,module,exports,function,true,false,new,async},
+  morekeywords=[2]{getDefaultConfig,mergeConfig,resolveRequest},
+  keywordstyle=[2]{\color{sheetOrange}\bfseries},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]", morestring=[b]',
+  literate={===}{{\hbox{=}\hbox{=}\hbox{=}}}3 {=>}{{\hbox{=}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {...}{{\hbox{.}\hbox{.}\hbox{.}}}3}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  st/.style={box, font=\scriptsize, inner sep=2pt, text width=31mm, align=left, anchor=north,
+             minimum height=19mm},
+  hdn/.style={font=\bfseries\small, anchor=south},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  sm/.style={box, font=\tiny, inner sep=1.5pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Metro — how the React Native bundler works}{react-native · folio}
+
+\oneliner{Metro turns an entry file into \textbf{one JS bundle + source map} in three stages:
+\textbf{resolve} every \ct{import} into a dependency graph, \textbf{transform} each module with Babel
+in parallel workers (cached per file), \textbf{serialise} the modules as \ct{\_\_d(factory, id, deps)}
+definitions plus polyfills and a \ct{\_\_r(entry)} call. In development it is also the
+\textbf{server on :8081}, pushing changed modules over a WebSocket for \textbf{Fast Refresh}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x/\n/\t/\c/\body in {
+    0.0/r/{1 RESOLVE}/sheetBlue/{\ct{import './Button'} $\to$ path\\\ct{.ios.tsx} $\to$ \ct{.native.tsx} $\to$ \ct{.tsx}\\pkg: \ct{exports} (cond.\ \ct{react-native}),\\then \ct{react-native}/\ct{browser}/\ct{main}\\file map: Watchman or crawler},
+    4.15/t/{2 TRANSFORM}/sheetOrange/{one module per job, \ct{maxWorkers}\\Babel: \ct{@react-native/babel-preset}\\+ \ct{babel.config.js} plugins\\cache key: file hash + config\\\ct{inlineRequires}: require at use},
+    8.3/s/{3 SERIALISE}/sheetGreen!70!black/{polyfills + prelude\\\ct{\_\_d(fn, 42, [7, 9])} per module\\\ct{\_\_r(0)} runs the entry\\+ source map · minify (terser)\\release: then \ct{hermesc}}}
+  {
+    \node[hdn, text=\c] at (\x+1.7,2.95) {\t};
+    \node[st, draw=\c, fill=\c!7] (\n) at (\x+1.7,2.9) {\body};
+  }
+  \draw[hot] ([yshift=2mm]r.east) -- node[lbl, above]{paths} ([yshift=2mm]t.west);
+  \draw[hot, <-] ([yshift=-3mm]r.east) -- node[lbl, below]{new imports} ([yshift=-3mm]t.west);
+  \draw[hot] (t.east) -- node[lbl, above]{graph} (s.west);
+  % dev loop
+  \draw[sheetGrey!40] (11.95,3.35) -- (11.95,0.4);
+  \node[hdn, text=sheetRed, anchor=south west] at (12.1,2.95) {Dev server + Fast Refresh};
+  \node[sm, draw=sheetGrey, fill=black!4, text width=16mm] (save) at (13.1,2.45) {save \ct{Card.tsx}};
+  \node[sm, draw=sheetOrange, fill=sheetOrange!8, text width=16mm] (w) at (15.4,2.45) {watcher $\to$ re-transform 1 file};
+  \node[sm, draw=sheetBlue, fill=sheetBlue!8, text width=16mm] (ws) at (15.4,1.4) {HMR update over WebSocket};
+  \node[sm, draw=sheetGreen!70!black, fill=sheetGreen!10, text width=16mm] (app) at (13.1,1.4) {app re-runs module; React Refresh swaps};
+  \draw[flow] (save) -- (w); \draw[flow] (w) -- (ws); \draw[flow] (ws) -- (app);
+  \node[lbl, anchor=west, align=left] at (12.1,0.65) {\ct{GET /index.bundle?platform=ios}\\\ct{\&dev=true\&minify=false} + \ct{.map}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Resolution and transformation overlap}: each transformed module reveals new
+        \ct{import}s to resolve. \ct{sourceExts} default \ct{js jsx json ts tsx}; anything in
+        \ct{assetExts} becomes an asset record (scales \ct{@2x}/\ct{@3x}), not code.
+  \item \textbf{Package \ct{exports}/\ct{imports}} resolution is on by default since Metro 0.82
+        (RN 0.79); conditions: \ct{react-native} (+ \ct{browser} on web), \ct{require}/\ct{import}.
+  \item \textbf{Transform cache} (\ct{cacheStores}, default files in \ct{os.tmpdir()}) is keyed by
+        file content and transform options — a change in Babel config or an \emph{inlined env
+        var} can leave stale output: \ct{\dd{}reset-cache} / \ct{expo start \dd{}clear}.
+  \item \textbf{Inline requires} rewrite \ct{require} to the first use site, so a module's
+        top-level code runs on first use — cheaper start-up; side-effect order changes.
+  \item \textbf{Serialiser}: numeric module ids (\ct{createModuleIdFactory}),
+        \ct{getModulesRunBeforeMainModule} (RN's \ct{InitializeCore}), \ct{getPolyfills}.
+        Metro 0.87 (RN 0.87): source maps 2$\times$ faster, half the memory.
+  \item \textbf{Source maps}: dev maps are served beside the bundle (DevTools uses them); release
+        \ct{\dd{}sourcemap-output} + compose with hermesc's map before upload.
+\end{itemize}
+
+\hd{Fast Refresh — the rules}
+\begin{itemize}
+  \item File exports \textbf{only components} $\to$ only that module re-runs; hooks' state kept.
+  \item Exports anything else $\to$ that module \emph{and its importers} re-run.
+  \item Imported by code \textbf{outside the React tree} $\to$ \textbf{full reload}.
+  \item \ct{useState}/\ct{useRef} keep values while hook order is unchanged;
+        \ct{useEffect}/\ct{useMemo}/\ct{useCallback} \textbf{always re-run} (deps ignored).
+        Class state is not kept. \ct{// @refresh reset} forces a remount.
+\end{itemize}
+
+\hd{Code splitting — the limits}
+Metro emits \textbf{one bundle} per app; \ct{import()} resolves inside it. Dev servers can fetch
+lazily\unverified. Real split chunks on native: \textbf{Re.Pack} (Rspack/webpack, Module
+Federation). Expo Router async routes split on \textbf{web}. Hermes mmaps bytecode,
+so a big bundle costs less than it seems.
+
+\hd{Expo's Metro config adds}
+\ct{EXPO\_PUBLIC\_*} inlining, \ct{tsconfig} path aliases, \ct{require.context} (Expo Router),
+CSS + web bundling, asset hashing, and production \textbf{tree shaking} (SDK 52+,
+\ct{EXPO\_UNSTABLE\_TREE\_SHAKING=1} with \ct{EXPO\_UNSTABLE\_METRO\_OPTIMIZE\_GRAPH=1}).
+Always extend \ct{expo/metro-config}, never replace it.
+
+\columnbreak
+
+\hd{Example — \ct{metro.config.js} for a monorepo}
+\begin{lstlisting}[language=JSSheet]
+const { getDefaultConfig, mergeConfig } =
+  require('@react-native/metro-config');  // Expo: 'expo/metro-config'
+const path = require('path');
+const root = path.resolve(__dirname, '../..');
+module.exports = mergeConfig(getDefaultConfig(__dirname), {
+  watchFolders: [root],                 // packages/* live outside the app
+  resolver: {
+    nodeModulesPaths: [path.resolve(__dirname, 'node_modules'),
+                       path.resolve(root, 'node_modules')],
+    blockList: [/\/fixtures\/.*/],      // never crawl these
+    resolveRequest: (ctx, name, platform) =>
+      ctx.resolveRequest(ctx, name === 'lodash' ? 'lodash-es' : name, platform),
+  },
+});
+\end{lstlisting}
+
+\hd{Monorepos and symlinks}
+\begin{itemize}
+  \item Symlinks resolve by default since RN 0.73 — but only inside \ct{watchFolders}; the
+        workspace root must be watched or \emph{``Unable to resolve module''}.
+  \item Two copies of \ct{react} (app + hoisted) $\to$ \emph{``Invalid hook call''}: force one
+        via \ct{nodeModulesPaths}, \ct{extraNodeModules} or \ct{disableHierarchicalLookup}.
+  \item Expo's \ct{getDefaultConfig} configures workspaces for you; start there.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Works on the Mac, fails in Linux CI: \ct{import './button'} vs \ct{Button.tsx} —
+        case-insensitive APFS hid it.}
+  \trap{Release app shows old JS: Release embeds the bundle at build; only Debug loads from Metro.}
+  \trap{\emph{``EMFILE: too many open files''} / slow start $\to$ install Watchman.}
+  \trap{Changed an \ct{.env} value, app still old — inlined at transform time: clear the cache.}
+\end{itemize}
+
+\hd{Symptom $\to$ fix}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{45mm}@{}}
+\toprule
+Android device: no bundle & \ct{adb reverse tcp:8081 tcp:8081} (USB) or same Wi-Fi + dev-menu host \\
+port 8081 busy & \ct{start \dd{}port 8082} — and reverse that port \\
+Watchman ``recrawl'' warning & \ct{watchman watch-del <root>} then \ct{watch-project <root>} \\
+new native dep, JS says ``not found'' & Metro cannot fix native: rebuild the app (pods / Gradle) \\
+\bottomrule
+\end{tabular}}
+
+\hd{Remember}
+\textbf{``Resolve, transform, serialise — cache per file, one bundle, deltas in dev.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rn-tooling-release (Metro basics, OTA) ·
+hermes-v1 (bytecode, composed maps) · rn-releases-0-82-0-85 · rn-ci-and-signing · js-types-coercion-modules (ESM vs CJS)}
+
+\end{document}

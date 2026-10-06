@@ -1,0 +1,216 @@
+% rn-rendering-reconciliation.tex — React's rendering model as it runs on React
+% Native: elements, fibers, reconciliation (type + key), render vs commit, what
+% triggers a re-render, batching, concurrent features under Fabric, StrictMode,
+% Yoga vs web flexbox, host components and the Text rules.
+% Sources (checked 2026-10-06):
+%   reactnative.dev/docs/flexbox (defaults: column, alignContent flex-start, flexShrink 0, flex
+%     a single number; position relative by default) · /docs/layout-props (boxSizing border-box)
+%   reactnative.dev/blog/2024/10/23/the-new-architecture-is-here (automatic batching, Suspense,
+%     Transitions, useLayoutEffect fully supported with the New Architecture) ·
+%     /architecture/render-pipeline (immutable shadow tree; mount on the UI thread) ·
+%     /architecture/view-flattening (layout-only views flattened)
+%   react.dev/reference/react/useState (Object.is bail-out) · /useContext (memo does not stop
+%     context re-renders) · /useEffect (Strict Mode extra setup+cleanup)
+% @labels: area=react-native kind=concept platform=cross-platform topic=ui,performance discussion=212
+% @tags: reconciliation, fiber, keys, index-as-key, render-phase, commit-phase, automatic-batching, usetransition, suspense, strictmode, yoga, react-memo
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={const,let,var,function,return,if,else,import,export,from,type,
+    interface,async,await,new,class,extends,default,true,false,null,undefined,
+    void,string,number,boolean},
+  morekeywords=[2]{useState,useEffect,useTransition,startTransition,FlatList,
+    View,Text,TextInput},
+  keywordstyle=[2]{\color{sheetOrange}\bfseries},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.5mm},
+  js/.style={sb, draw=sheetOrange, fill=sheetOrange!10},
+  ui/.style={sb, draw=sheetGreen!70!black, fill=sheetGreen!10},
+  cpp/.style={sb, draw=sheetBlue, fill=sheetBlue!10},
+  bad/.style={sb, draw=sheetRed, fill=sheetRed!7},
+  good/.style={sb, draw=sheetGreen, fill=sheetGreen!10},
+  fib/.style={circle, draw=sheetBlue, fill=sheetBlue!8, font=\tiny, inner sep=0.5pt, minimum size=4.6mm},
+  wip/.style={fib, draw=sheetOrange, fill=sheetOrange!10},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, anchor=west},
+  row/.style={draw=sheetGrey, font=\tiny\ttfamily, minimum width=20mm, minimum height=3.8mm,
+              inner sep=1pt, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Rendering \& reconciliation — React on React Native}{react-native · folio}
+
+\oneliner{A render \textbf{calls your components} to produce a new element tree;
+\textbf{reconciliation} diffs it against the current \textbf{fiber} tree by \textbf{type +
+key}; only the \emph{differences} are \textbf{committed} — on RN as a new Fabric shadow tree
+that is laid out (Yoga) and mounted as native-view mutations. \emph{Re-render $\neq$
+native update.}}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {5.0,10.75} \draw[sheetGrey!40] (\x,3.45) -- (\x,-0.55);
+  % ── A: pipeline ──
+  \node[pt] at (0,3.3) {\textcolor{sheetBlue}{A} one update, two phases};
+  \node[sb, minimum width=13mm] (t1) at (0.65,2.65) {\texttt{setState}};
+  \node[sb, minimum width=13mm] (t2) at (2.1,2.65) {parent render};
+  \node[sb, minimum width=13mm] (t3) at (3.6,2.65) {context value};
+  \node[js, minimum width=46mm, minimum height=8mm] (rp) at (2.15,1.65)
+       {\textbf{Render phase} — pure, \emph{interruptible}\\\tiny call components · diff · build WIP tree · mark effects};
+  \foreach \t in {t1,t2,t3} \draw[flow] (\t) -- (\t|-rp.north);
+  \node[cpp, minimum width=46mm, minimum height=8mm] (cp) at (2.15,0.6)
+       {\textbf{Commit phase} — sync, \emph{never} interrupted\\\tiny Fabric: new shadow tree $\to$ Yoga $\to$ mount on UI thread};
+  \draw[flow] (rp) -- (cp);
+  \node[lbl, anchor=west] at (-0.1,-0.2) {then: \texttt{useLayoutEffect} (pre-paint) $\to$ paint $\to$ \texttt{useEffect}};
+  \node[lbl, text=sheetRed, anchor=east] at (4.95,1.1) {may be thrown away};
+  % ── B: fiber double buffer ──
+  \node[pt] at (5.1,3.3) {\textcolor{sheetBlue}{B} fibers: current vs work-in-progress};
+  \node[lbl] at (6.5,2.95) {\textbf{current} (on screen)};
+  \node[fib] (ca) at (6.5,2.45) {App};
+  \node[fib] (cl) at (6.5,1.7) {List};
+  \node[fib] (cr1) at (5.95,0.95) {Row};
+  \node[fib] (cr2) at (7.05,0.95) {Row};
+  \draw (ca) -- (cl); \draw (cl) -- (cr1); \draw (cl) -- (cr2);
+  \node[lbl] at (9.35,2.95) {\textbf{WIP} (being built)};
+  \node[wip] (wa) at (9.35,2.45) {App};
+  \node[wip] (wl) at (9.35,1.7) {List};
+  \node[wip] (wr1) at (8.8,0.95) {Row};
+  \node[wip, draw=sheetGreen, fill=sheetGreen!15] (wr2) at (9.9,0.95) {Row};
+  \node[wip, draw=sheetRed, dashed, fill=white] (wr3) at (10.45,1.55) {Img};
+  \draw (wa) -- (wl); \draw (wl) -- (wr1); \draw (wl) -- (wr2);
+  \draw[dashed, sheetRed] (wl) -- (wr3);
+  \node[lbl, text=sheetRed] at (10.45,2.0) {new};
+  \draw[<->, dashed, sheetGrey] (ca) -- node[lbl, above]{alternate} (wa);
+  \draw[<->, dashed, sheetGrey] (cl) -- (wl);
+  \node[lbl, anchor=west] at (5.1,0.2) {same type $\to$ keep fiber (state), update props};
+  \node[lbl, anchor=west, text=sheetRed] at (5.1,-0.2) {new type/key $\to$ unmount subtree, mount fresh (state lost)};
+  \node[lbl, text=sheetGreen!50!black] at (9.9,0.45) {props changed};
+  % ── C: keys ──
+  \node[pt] at (10.85,3.3) {\textcolor{sheetBlue}{C} prepend X: keys decide state};
+  \node[lbl] at (11.9,2.9) {\texttt{key=\{index\}}};
+  \node[lbl] at (15.05,2.9) {\texttt{key=\{item.id\}}};
+  \node[row] at (10.85,2.5) {0: X \textcolor{sheetRed}{[input: "a"]}};
+  \node[row] at (10.85,2.1) {1: A \textcolor{sheetRed}{[input: "b"]}};
+  \node[row] at (10.85,1.7) {2: B \textcolor{sheetRed}{[input: ""]}};
+  \node[row] at (14.0,2.5) {x: X \textcolor{sheetGreen!60!black}{[new, empty]}};
+  \node[row] at (14.0,2.1) {a: A \textcolor{sheetGreen!60!black}{[input: "a"]}};
+  \node[row] at (14.0,1.7) {b: B \textcolor{sheetGreen!60!black}{[input: "b"]}};
+  \node[lbl, text=sheetRed, align=left, anchor=north west] at (10.85,1.35)
+       {state stays with the \emph{position}:\\X shows A's input; every row\\re-renders; B mounts new};
+  \node[lbl, text=sheetGreen!50!black, align=left, anchor=north west] at (14.0,1.35)
+       {state follows the \emph{item}:\\one insert, A/B untouched\\(memo'd rows skip)};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Element} = immutable description \texttt{\{type, props, key\}}, cheap,
+        recreated every render. \textbf{Fiber} = the persistent instance record: state,
+        hooks list, effects, links; \texttt{current} + \texttt{alternate} (WIP)
+        double buffer (diagram B).
+  \item \textbf{Diff heuristics} (O(n), not optimal tree edit): different \textbf{type} at
+        a position $\to$ destroy + recreate the subtree; same type $\to$ reuse, update
+        props; children matched by \textbf{key}, else by index.
+  \item \textbf{Render phase} must be pure — React may run it twice, pause it, or drop
+        it. \textbf{Commit} applies mutations atomically, then runs layout effects;
+        passive effects (\texttt{useEffect}) run after paint.
+  \item RN: React's commit hands Fabric a new \emph{immutable} shadow tree; Fabric
+        diffs it with the mounted one and sends the UI thread only the mutations —
+        like a \texttt{UICollectionView} diffable snapshot.
+\end{itemize}
+
+\section{What re-renders — and what does not}
+\begin{itemize}
+  \item \textbf{Yes}: own state set to a \emph{new} value (\texttt{Object.is}); the
+        \textbf{parent rendered} (props equal or not — unless \texttt{React.memo});
+        a consumed \textbf{context} value changed; an external store snapshot changed.
+  \item \textbf{No}: mutating state in place (same reference $\to$ bail out: a bug),
+        writing a \texttt{ref}, a global variable. Props never ``change on their own''.
+\end{itemize}
+
+\section{Batching \& concurrent React on RN}
+\begin{itemize}
+  \item \textbf{Automatic batching} (React 18): all \texttt{setState}s in one tick
+        (handlers, promises, timeouts) $\to$ one render. On RN it needs the
+        \textbf{concurrent root = New Architecture}; the legacy root batched only
+        inside React event handlers.
+  \item \texttt{startTransition} / \texttt{useTransition}: mark an update
+        \emph{non-urgent} — it renders interruptibly, urgent input (typing) wins.
+        \texttt{useDeferredValue}: lag a value behind. \textbf{Suspense}: show a
+        fallback while a child waits (\texttt{React.lazy}, data via a library or
+        \texttt{use}). Fully supported with Fabric; not on the legacy renderer.
+  \item \textbf{StrictMode} (dev only): renders twice, initialisers/reducers twice, and
+        \emph{mount $\to$ unmount $\to$ mount} for effects — surfaces impure renders and
+        missing cleanups. Production runs once.
+\end{itemize}
+
+\columnbreak
+
+\section{Host components \& Text rules}
+\begin{itemize}
+  \item \texttt{View} $\to$ \texttt{UIView}, \texttt{ScrollView} $\to$
+        \texttt{UIScrollView}, \texttt{TextInput} $\to$ \texttt{UITextField}/\texttt{UITextView}.
+        Layout-only Views are \textbf{flattened} away (\texttt{collapsable=\{false\}} keeps one).
+  \item Every string/number must sit inside \texttt{<Text>}. Nested \texttt{<Text>}
+        = spans of \emph{one} attributed string (\texttt{NSAttributedString}) — the only
+        place styles inherit. A \texttt{View} has no font.
+\end{itemize}
+
+\section{Example — identity bugs}
+\begin{lstlisting}[language=TSSheet]
+// BAD index key: prepend -> state shifts rows (diagram C)
+{items.map((it, i) => <Row key={i} item={it} />)}
+<FlatList data={items} keyExtractor={it => it.id} ... /> // OK
+// BAD component defined in render: NEW type every render
+function Screen() {
+  const Row = () => <TextInput />;  // remounts: text+focus lost
+  return <Row />;                   // fix: hoist to module level
+}
+// BAD on RN: count=0 renders raw "0" outside <Text> -> red box
+{count && <Badge n={count} />}      // OK: {count > 0 && ...}
+<Profile key={userId} />            // new key = deliberate reset
+\end{lstlisting}
+
+\section{Yoga flexbox vs web CSS}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{36mm}@{}}
+\toprule
+& \textbf{Web} & \textbf{RN (Yoga)} \\
+\midrule
+\texttt{flexDirection} & \texttt{row} & \textbf{\texttt{column}} \\
+\texttt{flexShrink} & \texttt{1} & \textbf{\texttt{0}} (overflow instead) \\
+\texttt{alignContent} & \texttt{stretch} & \texttt{flex-start} \\
+\texttt{flex} & shorthand & \textbf{one number} \\
+units & px, em, rem, vh & unitless \textbf{dp/pt} or \texttt{\%} \\
+inheritance & cascade & \textbf{none} — only Text in Text \\
+\texttt{position} & \texttt{static} & \texttt{relative} \\
+box model & content-box & border-box \\
+\bottomrule
+\end{tabular}}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``Re-render = slow'': render is JS work; native cost is only the committed
+        diff. Profile before \texttt{memo}.}
+  \trap{Index keys only for static, never-reordered lists without row state.}
+  \trap{After \texttt{setState} the variable still holds the \emph{old} value — state is
+        a per-render snapshot.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Type + key = identity. Render proposes, commit disposes.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rn-architecture ·
+react-hooks-deep · FlatList virtualisation · React Profiler · diffable data sources}
+
+\end{document}

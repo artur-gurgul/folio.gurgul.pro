@@ -1,0 +1,182 @@
+% rn-native-modules.tex — TurboModules, Fabric components, Expo Modules, threading, linking.
+% Sources (checked 2026-10-06):
+%   reactnative.dev/docs/turbo-native-modules (spec prefixed "Native"; codegenConfig;
+%     getEnforcing throws, get returns null) · /docs/turbo-native-modules-ios (ObjC++
+%     getTurboModule: returning std::make_shared<…SpecJSI>) · /docs/the-new-architecture/
+%     turbo-modules-with-swift (Objective-C++ glue over Swift) · /docs/the-new-architecture/
+%     native-modules-custom-events (CodegenTypes.EventEmitter, emitOn…, EventSubscription)
+%   docs.expo.dev/modules/module-api (Name, Function, AsyncFunction, Events,
+%     requireNativeModule)
+%   reactnative.dev/blog 2024-10-23 0.76 (New Architecture by default)
+%   Not in those sources, marked \unverified: the threads async methods run on.
+% @labels: area=react-native kind=api platform=cross-platform topic=platform-apis,build,concurrency discussion=208
+% @tags: turbomodules, codegen, jsi, hostobject, objcpp-shim, expo-modules, fabric-components, codegennativecomponent, nativeeventemitter, autolinking, methodqueue, interop-layer
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={type,interface,const,let,function,return,import,from,export,
+    default,if,else,true,false,undefined,null,async,await,new,extends,
+    string,number,boolean,void,Promise},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`}
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={import,public,class,func,in,let,var,async,await,throws,try,
+    self,String,Double,return},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  lb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=8mm, text width=27mm},
+  js/.style={lb, draw=sheetOrange, fill=sheetOrange!8},
+  cpp/.style={lb, fill=sheetBlue!12},
+  ios/.style={lb, draw=sheetGrey, fill=black!4},
+  and/.style={lb, draw=sheetGreen!70!black, fill=sheetGreen!10},
+  gen/.style={->, thick, dashed, draw=sheetBrown},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Native modules — TurboModules, Fabric, Expo Modules}{react-native · folio}
+
+\oneliner{A typed \textbf{TypeScript spec} is the contract; \textbf{Codegen} turns it into
+C++/ObjC++/Java glue; at runtime JS holds a \textbf{JSI host object} and calls straight
+into C++ and on to Swift/Kotlin — no JSON bridge, \textbf{sync possible}, modules
+\textbf{lazy-loaded}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % codegen band
+  \node[box, draw=sheetBrown, fill=sheetBrown!8, font=\scriptsize, minimum width=60mm]
+       (cg) at (8.0,3.05) {\textbf{Codegen} — iOS: during \texttt{pod install} · Android: Gradle build\\
+       emits C++ JSI spec · ObjC++ protocol · Java abstract spec};
+  \node[js] (spec) at (1.45,3.05) {\texttt{specs/NativeCalc.ts}\\\texttt{Spec extends TurboModule}};
+  \draw[gen] (spec) -- (cg);
+  % runtime lane
+  \node[js] (call) at (1.45,1.6) {JS thread\\\texttt{NativeCalc.add(2,3)}};
+  \node[cpp] (jsi) at (4.85,1.6) {\textbf{JSI}\\\texttt{jsi::HostObject} (C++)\\no serialisation};
+  \node[cpp] (sp) at (8.25,1.6) {generated\\\texttt{NativeCalcSpecJSI} (C++)};
+  \node[ios] (mm) at (11.65,2.2) {\texttt{RCTNativeCalc.mm}\\ObjC++ $\langle$NativeCalcSpec$\rangle$};
+  \node[ios] (sw) at (15.05,2.2) {\texttt{@objc} Swift class\\(your real code)};
+  \node[and] (jni) at (11.65,0.95) {JNI (fbjni)\\\texttt{NativeCalcSpec.java}};
+  \node[and] (kt) at (15.05,0.95) {Kotlin\\\texttt{CalcModule : NativeCalcSpec}};
+  \draw[hot] (call) -- (jsi); \draw[hot] (jsi) -- (sp);
+  \draw[hot] (sp.east) -- (mm.west); \draw[hot] (sp.east) -- (jni.west);
+  \draw[hot] (mm) -- node[lbl, above]{shim} (sw); \draw[hot] (jni) -- (kt);
+  \draw[gen] (cg) -- (sp); \draw[gen] (cg.east) -| (mm.north);
+  % thread lane
+  \draw[sheetGrey!40] (0,0.4) -- (16.6,0.4);
+  \node[lbl, anchor=west, text=sheetOrange] at (0,0.2)
+    {\textbf{sync} \texttt{add(): number} — runs \textbf{on the JS thread}, JS waits: keep it microseconds, never I/O};
+  \node[lbl, anchor=west, text=sheetBlue] at (0,-0.1)
+    {\textbf{async} \texttt{hash(): Promise} — iOS: module \texttt{methodQueue} (serial, \emph{not} main) · Android: native-modules thread\unverified{}
+     $\to$ UI work hops to \textbf{main} $\to$ \texttt{resolve} once};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{When you need native — and the flow}
+\begin{itemize}
+  \item \textbf{Need it for}: an API no library covers (HealthKit, a vendor SDK), heavy
+        work off the JS thread (crypto, images), native UI (map, camera), existing
+        Swift/Kotlin code. \textbf{First} try an Expo / community module: your native
+        code is yours to upgrade.
+  \item \textbf{Flow}: spec \texttt{Native*.ts} (codegen finds it by that prefix) +
+        \texttt{codegenConfig} in \texttt{package.json} $\to$ Codegen $\to$ implement
+        the generated protocol / abstract class $\to$ autolinking registers it $\to$ JS
+        \texttt{TurboModuleRegistry.getEnforcing} (throws if absent; \texttt{get} $\to$
+        \texttt{null} for optional modules).
+  \item \textbf{iOS}: the protocol and the JSI class use C++ types, so the module is
+        \textbf{ObjC++} (\texttt{.mm}): returns
+        \texttt{std::make\_shared<NativeCalcSpecJSI>(params)} from
+        \texttt{getTurboModule:}. Swift cannot conform directly — thin ObjC++ shim over an
+        \texttt{@objc} Swift class. \textbf{Android}: Kotlin subclass of the generated
+        spec, exposed by a \texttt{ReactPackage}.
+  \item \textbf{Events}: typed in the spec —
+        \texttt{readonly onKeyAdded: CodegenTypes.EventEmitter<Pair>}; native calls the
+        generated \texttt{emitOnKeyAdded(…)} (from the \texttt{…SpecBase} class); JS
+        \texttt{const sub = NativeX.onKeyAdded(cb)} … \texttt{sub.remove()}. Legacy:
+        \texttt{NativeEventEmitter} + \texttt{RCTEventEmitter} / \texttt{RCTDeviceEventEmitter}.
+  \item \textbf{Fabric UI component}: spec \texttt{MapViewNativeComponent.ts} calls
+        \texttt{codegenNativeComponent<NativeProps>}; props extend
+        \texttt{ViewProps} with codegen types (\texttt{Double}, \texttt{WithDefault},
+        \texttt{DirectEventHandler}); imperative calls via
+        \texttt{codegenNativeCommands}. iOS: an \texttt{RCTViewComponentView}
+        (\texttt{updateProps:oldProps:}); Android: a \texttt{ViewManager}. Yoga lays
+        out in C++; mounting on main.
+\end{itemize}
+
+\section{Example — TS spec · Expo Module in Swift}
+\begin{lstlisting}[language=TSSheet]
+import type { TurboModule } from 'react-native';
+import { TurboModuleRegistry } from 'react-native';
+export interface Spec extends TurboModule {
+  add(a: number, b: number): number;      // sync: JS thread
+  hash(input: string): Promise<string>;   // async: queue
+}
+export default
+  TurboModuleRegistry.getEnforcing<Spec>('NativeCalc');
+\end{lstlisting}
+\begin{lstlisting}[language=SwiftSheet]
+import ExpoModulesCore
+public class CalcModule: Module {       // no ObjC++, no codegen
+  public func definition() -> ModuleDefinition {
+    Name("Calc")
+    Function("add") { (a: Double, b: Double) in a + b }
+    AsyncFunction("hash") { (s: String) async -> String in
+      await Hasher.sha256(s) }
+    Events("onProgress")    // sendEvent("onProgress", [...])
+  } }                       // JS: requireNativeModule('Calc')
+\end{lstlisting}
+
+\columnbreak
+
+\section{Expo Modules API · legacy · linking}
+\begin{itemize}
+  \item \textbf{Expo Modules} — Swift/Kotlin DSL (\texttt{Name}, \texttt{Function},
+        \texttt{AsyncFunction}, \texttt{Events}, \texttt{View}+\texttt{Prop}), JSI
+        underneath, works in bare RN too (needs \texttt{expo-modules-core}). Scaffold:
+        \texttt{npx create-expo-module}. \textbf{Usually the simplest path} for app code.
+        Raw TurboModule when you want zero Expo deps or shared \textbf{C++} modules.
+  \item \textbf{Legacy}: \texttt{RCT\_EXPORT\_MODULE} / \texttt{RCT\_EXPORT\_METHOD}
+        (Swift via \texttt{RCT\_EXTERN\_MODULE}), Android \texttt{@ReactMethod}, JS
+        \texttt{NativeModules.X}. New Arch default since \textbf{0.76}; an
+        \textbf{interop layer} keeps old modules running untyped — migrate, don't rely.
+  \item \textbf{Autolinking}: CLI reads each dependency's podspec / Gradle; Podfile
+        \texttt{use\_native\_modules!} (Expo: \texttt{use\_expo\_modules!}); library
+        podspec \texttt{install\_modules\_dependencies(s)}. Native change $\Rightarrow$
+        \texttt{pod install} + rebuild — Metro reload never loads native code.
+  \item \textbf{Types}: \texttt{number}$\to$\texttt{double}, object $\to$
+        \texttt{NSDictionary} / \texttt{ReadableMap}, array $\to$ \texttt{NSArray} /
+        \texttt{ReadableArray}, \texttt{Promise} $\to$ resolve/reject.
+  \item \textbf{Test}: \texttt{jest.mock} the spec — JS tests never touch native;
+        XCTest/JUnit on a plain Swift/Kotlin core (keep glue thin); Detox/Maestro on the
+        example app (\texttt{npx create-react-native-library} scaffolds one).
+  \item \textbf{Version}: the spec is an \textbf{ABI}. Changing it needs a store build;
+        semver-major for breaking spec changes; \texttt{peerDependencies} on
+        \texttt{react-native}.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Sync method doing disk/network $\to$ JS frozen, frames dropped.}
+  \trap{UIKit touched from an async method: it is \textbf{not} on main.}
+  \trap{Promise resolved twice, or never (a hung \texttt{await}).}
+  \trap{OTA JS calls a method the binary lacks $\to$ crash (runtime version).}
+  \trap{``could not be found'' = not linked / not rebuilt, not a JS bug.}
+  \trap{Swift conforms to a TurboModule spec only via an ObjC++ shim.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Spec = contract · Codegen = glue · JSI = direct call · sync blocks JS · async
+$\ne$ main.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rn-tooling-release (runtime
+version, pods) · rn-navigation · JSI · Fabric · Hermes · Swift/ObjC++ interop}
+
+\end{document}

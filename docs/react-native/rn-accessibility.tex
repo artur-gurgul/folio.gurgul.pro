@@ -1,0 +1,197 @@
+% rn-accessibility.tex — React Native accessibility: what the props become natively, accessible /
+% role / aria-* vs the older accessibility* props, grouping, focus order and moving focus, live regions
+% (Android) vs announcements, user settings (reduce motion, bold text, screen reader), text scaling,
+% TalkBack vs VoiceOver differences, testing (Accessibility Inspector, Accessibility Scanner,
+% RNTL *ByRole), WCAG basics (contrast, target size).
+% Sources (checked 2026-09-25):
+%   https://reactnative.dev/docs/accessibility · https://reactnative.dev/docs/accessibilityinfo
+%   https://reactnative.dev/blog/2026/02/11/react-native-0.84 (pressable Text gets role link)
+%   https://reactnative.dev/blog/2026/04/07/react-native-0.85 (setAccessibilityFocus deprecated)
+%   https://oss.callstack.com/react-native-testing-library/docs/api/queries (*ByRole rules)
+%   https://www.w3.org/TR/WCAG22/ (1.4.3, 1.4.11, 2.5.8) · Apple HIG (44 pt) · Material (48 dp)
+% Not repeated: VoiceOver anatomy (label/value/trait/hint), Dynamic Type in UIKit/SwiftUI
+% (ios-platform/accessibility-localization).
+% @labels: area=react-native kind=api platform=cross-platform topic=ui,testing,platform-apis discussion=196
+% @tags: accessibility, aria-props, accessibilityrole, voiceover, talkback, live-region, accessibilityinfo, reduce-motion, font-scaling, touch-target, wcag, getbyrole
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSXSheet}{
+  morekeywords={const,let,return,function,true,false,useEffect,expect},
+  morekeywords=[2]{Pressable,View,Text,AccessibilityInfo,screen,getByRole},
+  keywordstyle=[2]{\color{sheetOrange}\bfseries},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]", morestring=[b]',
+  literate={===}{{\hbox{=}\hbox{=}\hbox{=}}}3 {=>}{{\hbox{=}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {</}{{\hbox{<}\hbox{/}}}2 {/>}{{\hbox{/}\hbox{>}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  pr/.style={draw=sheetOrange, fill=sheetOrange!8, font=\tiny\ttfamily, minimum height=3.9mm,
+             minimum width=27mm, inner sep=1pt, anchor=west},
+  io/.style={draw=sheetBlue, fill=sheetBlue!6, font=\tiny, minimum height=3.9mm,
+             minimum width=33mm, inner sep=1pt, anchor=west},
+  an/.style={draw=sheetGreen!70!black, fill=sheetGreen!8, font=\tiny, minimum height=3.9mm,
+             minimum width=38mm, inner sep=1pt, anchor=west},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  el/.style={draw=sheetRed, thick, rounded corners=2pt, dashed},
+}
+
+\begin{document}
+
+\sheettitle{React Native accessibility — props, platforms, testing}{react-native · folio}
+
+\oneliner{VoiceOver and TalkBack read the \textbf{native} view tree, not your JSX: RN maps each
+prop onto \ct{UIAccessibility} (iOS) or \ct{AccessibilityNodeInfo} (Android). Prefer the
+web-aligned \ct{role} + \ct{aria-*} props (\ct{role} wins over \ct{accessibilityRole}); a few needs
+stay platform-specific — \textbf{live regions} are Android-only, iOS uses \textbf{announcements};
+modal scoping is iOS-only.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- prop mapping ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (0,3.65) {What a prop becomes};
+  \node[lbl, font=\tiny\bfseries, anchor=west] at (0,3.3) {RN prop};
+  \node[lbl, font=\tiny\bfseries, anchor=west, text=sheetBlue] at (2.8,3.3) {iOS (VoiceOver)};
+  \node[lbl, font=\tiny\bfseries, anchor=west, text=sheetGreen!50!black] at (6.2,3.3) {Android (TalkBack)};
+  \foreach \i/\p/\a/\b in {
+    0/{accessible}/{isAccessibilityElement}/{focusable},
+    1/{role · accessibilityRole}/{traits (.button, .header\ldots)}/{node class / role description},
+    2/{aria-label}/{accessibilityLabel}/{contentDescription},
+    3/{aria-disabled/-checked/\ldots}/{traits .notEnabled, .selected}/{node state (enabled, checked\ldots)},
+    4/{aria-live="polite"}/{\textcolor{sheetRed}{none — call announce}}/{live region},
+    5/{aria-modal}/{accessibilityViewIsModal}/{\textcolor{sheetRed}{none — hide siblings}},
+    6/{aria-hidden}/{accessibilityElementsHidden}/{importantForA11y no-hide-descendants}}
+  {
+    \node[pr] at (0,2.9-\i*0.43) {\p};
+    \node[io] at (2.8,2.9-\i*0.43) {\a};
+    \node[an] at (6.2,2.9-\i*0.43) {\b};
+  }
+  % ---------- grouping ----------
+  \draw[sheetGrey!40] (10.45,3.75) -- (10.45,0.1);
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (10.6,3.65) {Grouping a list row};
+  \node[lbl, anchor=west] at (10.6,3.3) {\textbf{before}: 3 swipes, no context};
+  \draw[sheetGrey, rounded corners=2pt] (10.6,2.05) rectangle (16.5,3.15);
+  \node[font=\scriptsize\bfseries] (a) at (11.2,2.85) {Alice};
+  \node[font=\tiny] (b) at (11.55,2.3) {2 new messages};
+  \node[draw=sheetBlue, fill=sheetBlue!10, font=\tiny, rounded corners=1pt] (c) at (15.6,2.6) {Open};
+  \foreach \n/\k in {a/1,b/2,c/3} \node[el, fit=(\n), inner sep=1pt, label={[lbl, text=sheetRed]right:\k}] {};
+  \node[lbl, anchor=west] at (10.6,1.75) {\textbf{after}: \ct{accessible} on the row + an action};
+  \draw[sheetGrey, rounded corners=2pt] (10.6,0.55) rectangle (16.5,1.55);
+  \node[font=\scriptsize\bfseries] at (11.4,1.2) {Alice};
+  \node[font=\tiny] at (11.75,0.8) {2 new messages};
+  \node[draw=sheetBlue, fill=sheetBlue!10, font=\tiny, rounded corners=1pt] at (15.6,1.05) {Open};
+  \draw[el, draw=sheetGreen!60!black, solid] (10.65,0.6) rectangle (16.45,1.5);
+  \node[lbl, anchor=west, text=sheetGreen!50!black, align=left] at (10.6,0.28)
+       {1 swipe: ``Alice, 2 new messages, button'' · \emph{Actions}: Archive};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Elements by default}: \ct{Text}, \ct{TextInput}, \ct{Switch}; \ct{Pressable}/touchables
+        render an \ct{accessible} View. A plain \ct{View} is not. An \ct{accessible} parent
+        \textbf{groups} its children: one focus stop, label = the children's text joined.
+  \item \ct{role} takes web names (\ct{heading}, \ct{img}, \ct{slider}, \ct{searchbox},
+        \ct{list}, \ct{presentation}\ldots); state/value via \ct{aria-checked} (\ct{'mixed'}),
+        \ct{aria-expanded}, \ct{aria-busy}, \ct{aria-valuemin/max/now/text} — same data as
+        \ct{accessibilityState} / \ct{accessibilityValue}.
+  \item \textbf{Hint}: iOS reads it after a pause and users can switch hints off; Android
+        \textbf{always} reads it. Keep it a short result (``Removes it''), never the label again.
+  \item \textbf{Actions}: \ct{accessibilityActions} (\ct{activate}, \ct{increment}/\ct{decrement}
+        for adjustable, \ct{longpress}/\ct{expand}/\ct{collapse} Android, \ct{magicTap}/\ct{escape}
+        iOS, or custom) + \ct{onAccessibilityAction} — the swipe-to-delete for screen readers.
+  \item \textbf{Focus order} = native tree order. Reorder: \ct{experimental\_accessibilityOrder}
+        (list of \ct{nativeID}s). Move focus after navigation or an error:
+        \ct{AccessibilityInfo.sendAccessibilityEvent(ref, 'focus')} (\ct{setAccessibilityFocus}
+        deprecated in 0.85).
+  \item \textbf{Speak a change}: Android \ct{aria-live="polite"|"assertive"} on the view that
+        changes; iOS has no live regions $\to$ \ct{announceForAccessibility(msg)} (iOS:
+        \ct{\ldots WithOptions(msg, \{queue: true\})}, \ct{announcementFinished} event).
+  \item \textbf{User settings} (Promises + change events): both \ct{isScreenReaderEnabled},
+        \ct{isReduceMotionEnabled}; iOS \ct{isBoldTextEnabled}, \ct{isReduceTransparencyEnabled},
+        \ct{isInvertColorsEnabled}; Android \ct{isHighTextContrastEnabled},
+        \ct{getRecommendedTimeoutMillis} (toasts, auto-dismiss).
+  \item \textbf{Text size}: \ct{allowFontScaling} (default \ct{true}), \ct{maxFontSizeMultiplier};
+        read \ct{useWindowDimensions().fontScale}. Fixed-height text rows clip at 200\%.
+\end{itemize}
+
+\hd{VoiceOver vs TalkBack}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{28mm}@{}}
+\toprule
+& \textbf{VoiceOver} & \textbf{TalkBack} \\ \midrule
+hint & optional, after pause & always read \\
+live change & announce API & \ct{aria-live} region \\
+modal scope & \ct{aria-modal} & hide siblings (\ct{aria-hidden}) \\
+labelled by & — & \ct{aria-labelledby} (\ct{nativeID}) \\
+extra gestures & escape (2-finger Z), magic tap & actions menu \\
+\bottomrule
+\end{tabular}}
+
+\columnbreak
+
+\hd{Example}
+\begin{lstlisting}[language=TSXSheet]
+<Pressable role="button" aria-label="Delete draft"
+  accessibilityHint="Removes it from this phone"
+  aria-disabled={saving} disabled={saving}
+  hitSlop={10} onPress={remove}>          // 24pt icon, 44pt target
+  <TrashIcon />
+</Pressable>
+<Pressable role="button" onPress={open}       // one stop per row
+  accessibilityActions={[{ name: 'archive', label: 'Archive' }]}
+  onAccessibilityAction={e =>
+    e.nativeEvent.actionName === 'archive' && archive()}>
+  <Text>Alice</Text><Text>2 new messages</Text>
+</Pressable>
+<Text aria-live="polite">{status}</Text>    // Android
+useEffect(() => {                            // iOS (works on both)
+  AccessibilityInfo.announceForAccessibility(status); }, [status]);
+// test: only accessibility elements match, hidden ones excluded
+expect(screen.getByRole('button', { name: 'Delete draft' }))
+  .toBeDisabled();
+\end{lstlisting}
+
+\hd{WCAG basics}
+\begin{itemize}
+  \item \textbf{Contrast} (1.4.3): text $\geq$ \textbf{4.5:1}, large text (18 pt / 14 pt bold) $\geq$
+        3:1; UI parts and focus rings $\geq$ 3:1 (1.4.11). Never colour alone.
+  \item \textbf{Target size}: Apple \textbf{44$\times$44 pt}, Material \textbf{48$\times$48 dp};
+        WCAG 2.2 AA minimum 24$\times$24 CSS px (2.5.8). \ct{hitSlop} grows the touch area
+        without changing layout.
+  \item Respect \textbf{reduce motion} (swap slides for fades; Reanimated \ct{useReducedMotion()}),
+        don't auto-dismiss faster than the recommended timeout.
+\end{itemize}
+
+\hd{Testing}
+\textbf{Manual}: VoiceOver + Xcode \textbf{Accessibility Inspector} (audit); TalkBack + Android
+\textbf{Accessibility Scanner} (targets, contrast, labels). \textbf{Automated}: RNTL
+\ct{*ByRole} / \ct{*ByLabelText} / \ct{*ByHintText} — a \ct{View} matches by role only if
+\ct{accessible}. \ct{testID} is for E2E (iOS \ct{accessibilityIdentifier}) — never spoken.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{An \ct{accessible} card with a button inside: the button is no longer its own stop — expose it as an action.}
+  \trap{``Disabled'' shown by opacity only: the screen reader still says it works — set
+        \ct{disabled}/\ct{aria-disabled}.}
+  \trap{\ct{aria-live} does nothing on iOS; \ct{aria-modal} nothing on Android.}
+  \trap{Icon-only \ct{Pressable} without \ct{aria-label}: there is no name to read.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Role, name, state — then focus, announce, scale, 44/48.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} accessibility-localization (VoiceOver
+anatomy, Dynamic Type) · rn-testing-typescript (RNTL) · rn-animations-gestures (reduce motion) ·
+rn-navigation (focus after navigation)}
+
+\end{document}

@@ -1,0 +1,173 @@
+% android-anr-native-crashes.tex — Android failure debugging for React Native developers: ANR
+% definition + every timeout, the Play vitals thresholds, traces / bugreport / ApplicationExitInfo
+% / StrictMode, JVM crashes + R8 retrace, native crashes (signals, tombstones, ndk-stack, native
+% debug symbols), logcat filtering, and where RN's own failures land. Diagram: failure -> record
+% -> the tool that reads it.
+% Extends rn-debugging-toolchain (JS-side symbolication) and crashes-symbolication (iOS side).
+% Sources (checked 2026-09-25):
+%   https://developer.android.com/topic/performance/vitals/anr   (timeouts, /data/anr, StrictMode, ApplicationExitInfo, bugreport)
+%   https://developer.android.com/topic/performance/vitals       (bad-behaviour thresholds 1.09% / 0.47%, 8% per device)
+%   https://developer.android.com/reference/android/app/ApplicationExitInfo
+%   https://source.android.com/docs/core/tests/debug             (tombstones, crash_dump since 8.0, SIGSEGV/SIGABRT)
+%   https://developer.android.com/ndk/guides/ndk-stack           (usage, AGP unstripped .so path, asterisks line)
+%   https://developer.android.com/build/shrink-code              (mapping.txt, retrace, keep rules)
+%   https://support.google.com/googleplay/android-developer/answer/9848633 (AAB + AGP 4.1 auto mapping; debugSymbolLevel; 800 MB)
+%   https://developer.android.com/about/versions/16/behavior-changes-16
+% @labels: area=react-native kind=tooling platform=android topic=debugging,performance discussion=189
+% @tags: anr, tombstone, ndk-stack, logcat, adb-bugreport, applicationexitinfo, strictmode, r8-retrace, mapping-txt, android-vitals, sigsegv, native-debug-symbols
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{KtSheet}{
+  morekeywords={val,var,fun,if,else,return,class,object,import,null,true,false,it},
+  sensitive=true, morecomment=[l]{//}, morecomment=[l]{\#}, morestring=[b]",
+  literate={::}{{\hbox{:}\hbox{:}}}2 {?.}{{\hbox{?}\hbox{.}}}2 {->}{{\hbox{-}\hbox{>}}}2
+           {==}{{\hbox{=}\hbox{=}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2 {--}{{\hbox{-}\hbox{-}}}2
+           {||}{{\hbox{|}\hbox{|}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\dd{\hbox{-}\hbox{-}}
+
+\tikzset{
+  fb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=6.2mm, align=center},
+  fail/.style={fb, draw=sheetRed, fill=sheetRed!7, text width=31mm},
+  rec/.style={fb, draw=sheetGrey, fill=black!4, text width=47mm},
+  tool/.style={fb, draw=sheetGreen!70!black, fill=sheetGreen!10, text width=38mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hdr/.style={font=\scriptsize\bfseries},
+}
+
+\begin{document}
+
+\sheettitle{Android ANRs \& native crashes — for RN developers}{react-native · folio}
+
+\oneliner{An RN app on Android fails in \textbf{five} ways — fatal \textbf{JS} error, \textbf{JVM}
+exception, \textbf{native signal} in a \texttt{.so}, \textbf{ANR} (main thread blocked \textbf{5\,s}
+on input), \textbf{silent kill}. Each leaves a \emph{different} record read by a \emph{different} tool.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[hdr] at (1.75,3.62) {what failed};
+  \node[hdr] at (6.4,3.62) {where it is recorded};
+  \node[hdr] at (11.0,3.62) {what reads it};
+  \node[fail] (f1) at (1.75,3.05) {\textbf{JS} fatal error\\(release: no red screen)};
+  \node[fail] (f2) at (1.75,2.3) {\textbf{JVM} exception\\Kotlin/Java, uncaught};
+  \node[fail] (f3) at (1.75,1.55) {\textbf{native signal}\\SIGSEGV / SIGABRT in a \texttt{.so}};
+  \node[fail] (f4) at (1.75,0.8) {\textbf{ANR}: main thread\\blocked $\geq$ 5\,s on input};
+  \node[fail] (f5) at (1.75,0.05) {\textbf{killed}: low memory,\\user, OS policy};
+  \node[rec] (r1) at (6.4,3.05) {logcat \texttt{ReactNativeJS}; reporter gets\\a Hermes stack: \texttt{p@1:132161} (offsets)};
+  \node[rec] (r2) at (6.4,2.3) {logcat \texttt{AndroidRuntime: FATAL EXCEPTION}\\\texttt{logcat -b crash}; R8-obfuscated names};
+  \node[rec] (r3) at (6.4,1.55) {logcat tag \texttt{DEBUG} (\texttt{*** *** ***}) +\\\texttt{/data/tombstones/}: all threads, maps, fds};
+  \node[rec] (r4) at (6.4,0.8) {``isn't responding'' dialog +\\\texttt{/data/anr/anr\_*}: every thread's stack};
+  \node[rec] (r5) at (6.4,0.05) {nothing in your process —\\\texttt{ApplicationExitInfo} (API 30+) next launch};
+  \node[tool] (t1) at (11.0,3.05) {\texttt{metro-symbolicate}\\+ the build's Hermes source map};
+  \node[tool] (t2) at (11.0,2.3) {\texttt{retrace mapping.txt}\\(Play: automatic from the AAB)};
+  \node[tool] (t3) at (11.0,1.55) {\texttt{ndk-stack -sym} unstripped \texttt{.so}\\(Play: native debug symbols)};
+  \node[tool] (t4) at (11.0,0.8) {\texttt{adb bugreport}, Play ANR clusters,\\\texttt{REASON\_ANR} trace stream};
+  \node[tool] (t5) at (11.0,0.05) {\texttt{getHistoricalProcess-}\\\texttt{ExitReasons()} $\to$ your reporter};
+  \foreach \i in {1,...,5} { \draw[flow] (f\i) -- (r\i); \draw[flow] (r\i) -- (t\i); }
+  \node[box, draw=sheetOrange, fill=sheetOrange!8, text width=26mm, minimum height=36mm,
+        font=\scriptsize, align=center] (v) at (15.15,1.55)
+       {\textbf{Play Console\\Android vitals}\\[3pt]bad behaviour:\\user-perceived\\\textbf{crash} $\geq$ \textbf{1.09\%}\\\textbf{ANR} $\geq$ \textbf{0.47\%}\\(8\% on one device)\\[3pt]$\to$ lower visibility,\\listing warning\\[2pt]\tiny 28-day average};
+  \foreach \i in {1,...,5} \draw[hot] (t\i.east) -- (t\i.east -| v.west);
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{ANR — what triggers it (exact)}
+\begin{itemize}\raggedright
+  \item \textbf{Input dispatch}: no response to a key/touch within \textbf{5\,s}.
+  \item \textbf{BroadcastReceiver} not finished in time — \textbf{5\,s} with a foreground activity.
+  \item \texttt{startForegroundService()} without \texttt{startForeground()} within \textbf{5\,s}.
+  \item \textbf{Service} \texttt{onCreate}/\texttt{onStartCommand}/\texttt{onBind} and
+        \textbf{JobService} \texttt{onStartJob}/\texttt{onStopJob}: ``a few seconds'' (job
+        ANRs are reported to the app only when targeting Android 14+).
+  \item Causes: \textbf{I/O} or heavy work \textbf{on main}, \textbf{deadlocks}, slow
+        \texttt{onReceive()}, \textbf{binder} calls.
+\end{itemize}
+
+\section{The RN angle}
+\begin{itemize}\raggedright
+  \item ANRs are about the \textbf{main (UI) thread}. A busy \textbf{JS} thread freezes your
+        React UI but the main thread still consumes input — usually \emph{no} ANR, so it
+        hides from vitals: measure JS stalls yourself (\texttt{longtask} observer).
+  \item Typical RN ANRs: SDK init in \texttt{MainApplication.onCreate}, a native module doing
+        I/O on the UI thread, main blocked on a lock another thread holds.
+  \item Native crashes in RN often sit in \texttt{libhermes.so} / \texttt{libreactnative.so}
+        (merged lib since 0.76) — the \emph{cause} is often a native module misuse higher
+        up. A fatal JS error in release surfaces as a JVM crash
+        (\texttt{JavascriptException}\unverified) carrying the JS stack.
+\end{itemize}
+
+\section{Diagnose}
+\begin{itemize}\raggedright
+  \item \textbf{StrictMode} (debug): flags disk/network on main before users see an ANR.
+  \item \textbf{Traces}: \texttt{/data/anr/anr\_*} (was \texttt{traces.txt}); no root? \texttt{adb bugreport}.
+  \item \textbf{ApplicationExitInfo} (API 30): \texttt{REASON\_ANR},
+        \texttt{REASON\_CRASH}, \texttt{REASON\_CRASH\_NATIVE}, \texttt{REASON\_LOW\_MEMORY}…;
+        \texttt{getTraceInputStream()} = the ANR trace, or the tombstone as protobuf.
+  \item \textbf{Tombstones}: logcat \texttt{DEBUG} = signal, fault address, registers,
+        backtrace; the file adds every thread, maps, fds. Written by \texttt{crash\_dump}
+        since 8.0 (\texttt{debuggerd} before).
+        SIGSEGV = bad memory access; SIGABRT = \texttt{abort()} (assert, uncaught C++ exception).
+  \item \textbf{R8}: \texttt{retrace} + that build's \texttt{mapping.txt} (AAB + AGP 4.1+: Play
+        takes it itself). Native: \texttt{ndk \{ debugSymbolLevel 'SYMBOL\_TABLE' \}} or \texttt{'FULL'}.
+\end{itemize}
+
+\columnbreak
+
+\section{Example — commands + in-app capture}
+\begin{lstlisting}[language=KtSheet]
+# one app only, crash buffer, JS + crash tags
+adb logcat --pid=$(adb shell pidof -s com.example.app)
+adb logcat -b crash -d
+adb logcat ReactNativeJS:V AndroidRuntime:E DEBUG:V *:S
+adb bugreport ./bug.zip          # ANR traces, tombstones
+adb logcat -d | $NDK/ndk-stack -sym \
+  app/build/intermediates/cxx/RelWithDebInfo/<hash>/obj/arm64-v8a
+retrace mapping.txt stack.txt    # R8, per build
+\end{lstlisting}
+\begin{lstlisting}[language=KtSheet]
+// next launch: why did the last process die?
+val am = getSystemService(ActivityManager::class.java)
+am.getHistoricalProcessExitReasons(packageName, 0, 5)
+  .filter { it.reason == ApplicationExitInfo.REASON_ANR }
+  .forEach { i -> i.traceInputStream?.use { upload(it) } }
+// debug builds: catch main-thread I/O early
+if (BuildConfig.DEBUG) StrictMode.setThreadPolicy(
+  StrictMode.ThreadPolicy.Builder().detectDiskReads()
+    .detectDiskWrites().detectNetwork().penaltyLog().build())
+\end{lstlisting}
+
+\section{Logcat essentials}
+\begin{itemize}\raggedright
+  \item Filter spec \texttt{TAG:LEVEL} (V D I W E F S), \texttt{*:S} silences the rest;
+        \texttt{\dd{}pid} scopes to one process; \texttt{-b crash} = crash buffer;
+        \texttt{-d} dump and exit; \texttt{-c} clear. A new PID after a crash = the process
+        restarted — re-run \texttt{pidof}.
+  \item Paste a tombstone to \texttt{ndk-stack} \emph{with} its first
+        \texttt{*** *** ***} line, or it finds nothing.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{``Move it to a coroutine'' when main is \emph{waiting} on that coroutine
+        (\texttt{runBlocking}) — still an ANR, and a deadlock risk.}
+  \trap{Symbolicating with the wrong build's \texttt{.so}/mapping — the build ID must match;
+        output looks plausible and is wrong.}
+  \trap{Not every ANR has a stack in your code: the main thread may be idle in
+        \texttt{nativePollOnce} when the trace is taken (the block already ended).}
+\end{itemize}
+
+\section{Remember}
+\textbf{Five failures, five records:} ReactNativeJS · AndroidRuntime · DEBUG/tombstone ·
+\texttt{/data/anr} · ApplicationExitInfo.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rn-debugging-toolchain ·
+android-for-rn-developers · crashes-symbolication (iOS) · android-coroutines-platform ·
+rn-native-modules}
+
+\end{document}

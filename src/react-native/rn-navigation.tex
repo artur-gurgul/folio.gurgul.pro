@@ -1,0 +1,187 @@
+% rn-navigation.tex — React Navigation (7.x) + Expo Router, with UIKit analogies.
+% Sources (checked 2026-10-06):
+%   reactnavigation.org/docs 7.x: native-stack-navigator (UINavigationController on iOS,
+%     Fragment on Android) · nesting-navigators (back goes to the closest ancestor with history;
+%     options per navigator; params not shared; navigate('Parent', { screen })) ·
+%     navigation-lifecycle (screens not unmounted when navigating away; useFocusEffect) ·
+%     bottom-tab-navigator (lazy, freezeOnBlur); npm @react-navigation/native 7.5.0
+%   docs.expo.dev/router/introduction (file-based routes, typed routes, automatic deep links)
+%     · /router/migrate/from-react-navigation ("along with all the benefits of React Navigation")
+% @labels: area=react-native kind=api platform=cross-platform topic=ui,platform-apis discussion=209
+% @tags: react-navigation, native-stack, react-native-screens, nested-navigators, usefocuseffect, linking-options, deep-links, universal-links, auth-flow, expo-router, typed-params
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={type,interface,const,let,function,return,import,from,export,
+    default,if,else,true,false,undefined,null,async,await,new,extends,declare,
+    global,namespace,string,number,boolean},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`}
+
+\tikzset{
+  nb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.6mm},
+  nav/.style={nb, fill=sheetBlue!12},
+  scr/.style={nb, draw=sheetGreen!70!black, fill=sheetGreen!10},
+  off/.style={nb, draw=sheetGrey, fill=black!4, dashed, text=sheetGrey},
+  tgt/.style={nb, draw=sheetOrange, fill=sheetOrange!15, very thick},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  edge/.style={draw=sheetGrey, thick},
+  lk/.style={box, font=\scriptsize, inner sep=1.5pt, minimum width=54mm, align=left,
+             draw=sheetOrange, fill=sheetOrange!6},
+}
+
+\begin{document}
+
+\sheettitle{React Navigation — navigators, nesting, deep links}{react-native · folio}
+
+\oneliner{Navigation is a \textbf{tree of navigators} holding one serialisable
+\textbf{state object}; actions (\texttt{navigate}, \texttt{goBack}) \textbf{bubble up} to
+the nearest navigator that can handle them, deep links are \textbf{parsed down} into that
+state, and screens \textbf{stay mounted} under a push — so ``appear'' is focus, not mount.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet, yscale=0.85]
+  \draw[sheetGrey!40] (10.0,3.55) -- (10.0,-0.45);
+  % ── the tree ──
+  \node[nav, minimum width=44mm] (nc) at (4.7,3.3) {\texttt{NavigationContainer linking=\{…\}}};
+  \node[nav, minimum width=44mm] (root) at (4.7,2.5) {RootStack \textit{(native-stack)}};
+  \node[off] (si) at (1.1,1.6) {SignIn \textit{(signed out only)}};
+  \node[nav] (tabs) at (4.7,1.6) {Tabs \textit{(bottom-tabs)}};
+  \node[scr] (cmp) at (8.45,1.6) {Compose \textit{(modal)}};
+  \node[nav] (hs) at (3.1,0.75) {HomeStack};
+  \node[nav] (ps) at (6.4,0.75) {ProfileStack};
+  \node[scr] (feed) at (2.2,-0.15) {Feed};
+  \node[tgt] (post) at (3.65,-0.15) {Post \{id:'42'\}};
+  \node[scr] (prof) at (5.75,-0.15) {Profile};
+  \node[scr] (set) at (7.05,-0.15) {Settings};
+  \draw[edge] (nc) -- (root);
+  \draw[edge] (root) -- (si); \draw[edge] (root) -- (cmp);
+  \draw[edge] (tabs) -- (ps); \draw[edge] (ps) -- (prof); \draw[edge] (ps) -- (set);
+  \draw[edge] (hs) -- (feed);
+  \draw[hot, very thick] (root) -- (tabs);
+  \draw[hot, very thick] (tabs) -- (hs);
+  \draw[hot, very thick] (hs) -- (post);
+  \node[lbl, anchor=west, text=sheetGrey] at (-0.3,0.75) {auth = which\\screens exist};
+  \node[lbl, anchor=west] at (7.55,0.75) {modals at the root:\\cover the tab bar};
+  \node[lbl, text=sheetGreen!50!black, anchor=east] at (1.75,-0.15) {initialRouteName\\$\Rightarrow$ Back works};
+  \node[lbl, anchor=west, text=sheetOrange] at (4.6,-0.55) {\texttt{navigate} bubbles UP · a link builds DOWN};
+  % ── the link, resolved ──
+  \node[font=\bfseries\small, anchor=west] at (10.15,3.35) {where \texttt{https://ex.com/post/42} lands};
+  \node[lk, anchor=west] (a) at (10.15,2.75) {1 OS: iOS universal link / Android App Link\\
+     \quad cold: \texttt{Linking.getInitialURL()} · warm: \texttt{'url'} event};
+  \node[lk, anchor=west] (b) at (10.15,1.8) {2 strip a \texttt{prefixes} entry $\to$ \texttt{post/42}};
+  \node[lk, anchor=west] (c) at (10.15,1.1) {3 match \texttt{config}: \texttt{Post: 'post/:id'}};
+  \node[lk, anchor=west] (d) at (10.15,0.25) {4 build state: Root$\,\to\,$Tabs$\,\to\,$HomeStack\\
+     \quad routes \texttt{[Feed, Post\{id:'42'\}]} $\to$ reset};
+  \draw[hot] (a) -- (b); \draw[hot] (b) -- (c); \draw[hot] (c) -- (d);
+  \node[lbl, text=sheetRed, anchor=west] at (10.15,-0.35) {signed out $\Rightarrow$ Post not rendered $\Rightarrow$ link dropped: stash, replay};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Navigators — what they are natively}
+\begin{itemize}
+  \item \textbf{native-stack} — via \texttt{react-native-screens}: a real
+        \textbf{UINavigationController} / Android \textbf{Fragment}. Native push,
+        swipe-back, large titles. Default choice; custom transitions limited.
+  \item \textbf{stack} — JS: \texttt{Animated} + gesture-handler. Any transition you can
+        draw; costs JS/UI work, never quite UIKit.
+  \item \textbf{bottom-tabs} — JS tab bar, screens \textbf{lazy}, then \textbf{kept
+        mounted}. \textbf{drawer} — reanimated + gesture-handler.
+        \texttt{freezeOnBlur} stops re-rendering hidden screens.
+  \item \textbf{Nesting rules.} Each navigator owns its own history.
+        \texttt{navigate(name)} is tried by the current navigator, then its parents —
+        never \emph{into} an unrendered child: use
+        \texttt{navigate('Tabs',\{screen, params\})}. \texttt{goBack} pops the nearest
+        navigator with history. \texttt{setOptions} affects only the screen's own
+        navigator. Params do \textbf{not} flow to child screens.
+  \item \textbf{Shape decides UX}: tabs \emph{inside} a stack screen $\to$ pushed detail
+        hides the tab bar; a stack \emph{inside} each tab $\to$ tab bar stays, per-tab
+        history (the UIKit \texttt{UITabBarController}-of-navs pattern).
+  \item \textbf{Lifecycle $\ne$ component lifecycle.} Push B over A: A is \emph{not}
+        unmounted; Back unmounts B. So \texttt{useEffect} = \texttt{viewDidLoad};
+        \texttt{useFocusEffect} = \texttt{viewWillAppear}/\texttt{Disappear};
+        \texttt{useIsFocused} re-renders; listeners \texttt{focus} · \texttt{blur} ·
+        \texttt{beforeRemove} (unsaved-changes guard).
+\end{itemize}
+
+\section{Example — typed params, linking, focus}
+\begin{lstlisting}[language=TSSheet]
+type HomeParams = { Feed: undefined; Post: { id: string } };
+type TabParams = { HomeTab: NavigatorScreenParams<HomeParams> };
+type RootParams = { Tabs: NavigatorScreenParams<TabParams>;
+  SignIn: undefined; Compose: { draft?: string } };
+type PostProps = NativeStackScreenProps<HomeParams, 'Post'>;
+declare global { namespace ReactNavigation {  // typed hooks
+  interface RootParamList extends RootParams {} } }
+const linking: LinkingOptions<RootParams> = {
+  prefixes: ['myapp://', 'https://ex.com'],
+  config: { screens: { Compose: 'compose', Tabs: { screens: {
+    HomeTab: { initialRouteName: 'Feed',     // Feed under Post
+      screens: { Feed: 'feed', Post: 'post/:id' } } } } } } };
+useFocusEffect(useCallback(() => {          // runs on every focus
+  const sub = feed.subscribe(); return () => sub.remove(); }, []));
+\end{lstlisting}
+
+\columnbreak
+
+\section{Deep links — the native half}
+\begin{itemize}
+  \item \textbf{iOS}: custom scheme in \texttt{CFBundleURLTypes}; universal links need the
+        \textbf{Associated Domains} entitlement \texttt{applinks:ex.com} +
+        \texttt{/.well-known/apple-app-site-association}. Bare RN: AppDelegate forwards
+        \texttt{open url} and \texttt{continue userActivity} to
+        \texttt{RCTLinkingManager} (Expo wires it).
+  \item \textbf{Android}: \texttt{intent-filter} VIEW + BROWSABLE,
+        \texttt{autoVerify="true"} + \texttt{/.well-known/assetlinks.json}.
+  \item Notification taps: override \texttt{getInitialURL}/\texttt{subscribe} — a tap is
+        just a URL. Test:
+        \texttt{xcrun simctl openurl booted <url>} ·
+        \texttt{adb shell am start -a android.intent.action.VIEW -d <url>}.
+\end{itemize}
+
+\section{Auth flows · persistence}
+\begin{itemize}
+  \item \textbf{Auth = conditional screens}, not redirects:
+        \texttt{\{user ? <Screen Tabs/> : <Screen SignIn/>\}}. State flips $\to$ the tree
+        swaps, SignIn leaves history (no Back to login), no \texttt{navigate} race.
+  \item \textbf{Persistence}: \texttt{initialState} + \texttt{onStateChange} $\to$
+        AsyncStorage, restored before first render. \textbf{Serialisable params} only
+        (no callbacks); skip when opened by a link.
+\end{itemize}
+
+\section{Expo Router vs React Navigation}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{33mm}@{}}
+\toprule
+ & \textbf{React Navigation} & \textbf{Expo Router} (built on it) \\
+\midrule
+routes & components in code & files: \texttt{[id].tsx} \texttt{(group)} \texttt{\_layout} \\
+links & \texttt{config} by hand & automatic, one URL per file \\
+types & ParamList by hand & generated typed \texttt{href}s \\
+pick & dynamic trees, non-Expo & Expo, web, link-heavy apps \\
+\bottomrule
+\end{tabular}}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Refetch in \texttt{useEffect} skips Back: \texttt{useFocusEffect(useCallback(…))}.}
+  \trap{\texttt{navigate('Home')} after login — use conditional screens.}
+  \trap{Stack in stack/tab = \textbf{two headers}: \texttt{headerShown:false}.}
+  \trap{Nested link without \texttt{initialRouteName} $\to$ no Back.}
+  \trap{\texttt{push} = new instance (Profile$\to$Profile); \texttt{navigate} reuses.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Actions bubble up, links build down, pushes don't unmount.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rn-native-modules ·
+rn-tooling-release · UINavigationController · universal links · react-native-screens}
+
+\end{document}

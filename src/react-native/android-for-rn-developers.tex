@@ -1,0 +1,188 @@
+% android-for-rn-developers.tex — what a React Native developer must know about the Android side:
+% the android/ tree and build pipeline, Gradle files + AGP/Kotlin/JDK, the manifest (permissions,
+% intent filters, exported), runtime permissions, hardware/predictive back, R8 keep rules, signing
+% (upload key vs Play App Signing), min/compile/target SDK + Play target-API and 16 KB rules,
+% and common build errors. Diagram: android/ folder tree + the build pipeline to the device.
+% Extends rn-tooling-release (3-line "Android specifics") and android-compose-lifecycle.
+% Sources (checked 2026-09-25):
+%   https://github.com/react-native-community/template (android/build.gradle: min 24, compile 37, target 36, Kotlin 2.2.0; settings.gradle; gradle.properties)
+%   https://reactnative.dev/blog/2026/08/11/react-native-0.87 (AGP 9 support, builtInKotlin/newDsl opt-out)
+%   https://reactnative.dev/blog/2025/10/08/react-native-0.82 (newArchEnabled=false ignored)
+%   https://reactnative.dev/blog/2025/08/12/react-native-0.81 (Android 16 target, edge-to-edge, predictive back, BackHandler)
+%   https://reactnative.dev/docs/set-up-your-environment  (JDK 17)
+%   https://reactnative.dev/docs/signed-apk-android        (keytool, gradle.properties, upload key, Play App Signing)
+%   https://reactnative.dev/docs/backhandler               (return true, LIFO, Modal caveat)
+%   https://developer.android.com/google/play/requirements/target-sdk (API 36 from 31 Aug 2026; 35 for existing; extension 1 Nov 2026)
+%   https://developer.android.com/guide/practices/page-sizes (16 KB: API 35+ targets; 1 Feb 2027 for updates; AGP 8.5.1 / NDK r28)
+%   https://developer.android.com/training/permissions/requesting · https://developer.android.com/guide/components/intents-filters
+%   https://developer.android.com/about/versions/16/behavior-changes-16 · https://developer.android.com/build/shrink-code
+% @labels: area=react-native kind=concept platform=android topic=build,platform-apis,security discussion=190
+% @tags: gradle, agp, androidmanifest, runtime-permissions, intent-filters, exported, backhandler, predictive-back, r8-keep-rules, play-app-signing, target-sdk, 16kb-page-size
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{XmlSheet}{
+  sensitive=true, morestring=[b]", morecomment=[s]{<!--}{-->},
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {=>}{{\hbox{=}\hbox{>}}}2
+           {//}{{\hbox{/}\hbox{/}}}2 {</}{{\hbox{<}\hbox{/}}}2 {/>}{{\hbox{/}\hbox{>}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\dd{\hbox{-}\hbox{-}}
+
+\tikzset{
+  tr/.style={font=\tiny\ttfamily, anchor=west, inner sep=0.5pt},
+  tn/.style={font=\tiny, anchor=west, text=sheetBrown, inner sep=0.5pt},
+  pb/.style={box, font=\tiny, inner sep=1.2pt, minimum height=5mm, align=center},
+  src/.style={pb, draw=sheetOrange, fill=sheetOrange!10, text width=19mm},
+  stp/.style={pb, draw=sheetBlue, fill=sheetBlue!8, text width=17mm},
+  outp/.style={pb, draw=sheetGreen!70!black, fill=sheetGreen!10},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Android for React Native developers}{react-native · folio}
+
+\oneliner{\texttt{android/} is an ordinary \textbf{Gradle} project embedding a JS bundle:
+\textbf{AGP} compiles Kotlin/Java (R8 shrinks it), the \textbf{NDK} builds C++ per ABI, the
+\textbf{manifest merger} combines every library's manifest, you sign with an \textbf{upload key}
+and Play re-signs. Most Android ``RN bugs'' are manifest, permission, SDK-level or R8 problems.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet, x=1cm, y=1cm]
+  % ── tree ──
+  \node[font=\bfseries\small, anchor=west] at (-0.1,3.75) {\texttt{android/} — who owns what};
+  \newcommand\trow[3]{\node[tr] at (0,#1) {#2}; \node[tn] at (3.55,#1) {#3};}
+  \trow{3.35}{settings.gradle}{modules, RN Gradle plugin, \textbf{autolinking}}
+  \trow{3.05}{build.gradle}{\texttt{minSdk 24 · compileSdk 37 · targetSdk 36}, Kotlin 2.2 (0.87)}
+  \trow{2.75}{gradle.properties}{ABIs, \texttt{hermesEnabled}, \texttt{edgeToEdgeEnabled}, JVM args, AGP 9 opt-outs}
+  \trow{2.45}{gradle/wrapper/}{Gradle version — \texttt{./gradlew} pins it}
+  \trow{2.15}{local.properties}{\texttt{sdk.dir} — machine-local, never commit}
+  \trow{1.85}{app/build.gradle}{\texttt{react \{\}}, applicationId, versionCode, signing, buildTypes}
+  \trow{1.55}{app/proguard-rules.pro}{R8 keep rules (reflection, JNI)}
+  \trow{1.25}{app/src/main/AndroidManifest.xml}{permissions, activities, intent filters}
+  \trow{0.95}{app/src/main/java/com/example/app/}{\texttt{MainActivity.kt}, \texttt{MainApplication.kt}}
+  \trow{0.65}{app/src/main/res/}{icons (mipmap), splash theme, \texttt{strings.xml}}
+  \draw[sheetGrey!40] (9.35,3.9) -- (9.35,0.45);
+  % ── pipeline ──
+  \node[font=\bfseries\small, anchor=west] at (9.45,3.75) {\texttt{./gradlew bundleRelease}};
+  \node[src] (js) at (10.55,3.2) {JS/TS $\to$ Metro $\to$ \texttt{hermesc}};
+  \node[src] (kt) at (10.55,2.55) {Kotlin/Java + libs};
+  \node[src] (cc) at (10.55,1.9) {C++ (CMake/NDK)};
+  \node[src] (rs) at (10.55,1.25) {res + manifests};
+  \node[stp] (a1) at (12.85,3.2) {\texttt{assets/…bundle}\\(.hbc)};
+  \node[stp] (a2) at (12.85,2.55) {R8: shrink,\\obfuscate $\to$ dex};
+  \node[stp] (a3) at (12.85,1.9) {\texttt{.so} per ABI};
+  \node[stp] (a4) at (12.85,1.25) {aapt2 + manifest\\merger};
+  \foreach \a/\b in {js/a1,kt/a2,cc/a3,rs/a4} \draw[flow] (\a) -- (\b);
+  \node[outp, text width=12mm, minimum height=26mm] (aab) at (14.75,2.22) {\textbf{AAB}\\signed with\\\textbf{upload key}};
+  \foreach \a in {a1,a2,a3,a4} \draw[flow] (\a.east) -- (\a.east -| aab.west);
+  \node[outp, text width=11mm, minimum height=26mm] (play) at (16.2,2.22) {\textbf{Play}\\re-signs\\(app signing key) $\to$ split APKs};
+  \draw[hot] (aab) -- (play);
+  \node[lbl, anchor=west] at (9.45,0.7) {\texttt{mapping.txt} + native symbols come out here too — keep them per build};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Gradle, SDK levels, Play rules}
+\begin{itemize}\raggedright
+  \item \textbf{Three SDK numbers}: \texttt{minSdk} = oldest device that installs;
+        \texttt{compileSdk} = APIs you can call; \texttt{targetSdk} = which new
+        \emph{behaviours} you opt into.
+  \item \textbf{Play target API}: since \textbf{31 Aug 2026} new apps and updates must target
+        \textbf{API 36} (Wear/Automotive 35, TV/XR 34; extension to 1 Nov 2026 on request);
+        existing apps below 35 stop reaching new users on newer Android.
+  \item \textbf{16 KB pages}: targets Android 15+ must support 16 KB-page 64-bit devices
+        (Android guide: updates blocked from \textbf{1 Feb 2027}). AGP 8.5.1+/NDK r28+ align by
+        default; RN is compliant since 0.77 — check third-party \texttt{.so} in APK Analyzer.
+  \item \textbf{Toolchain}: JDK \textbf{17}; AGP comes via RN's Gradle plugin; \textbf{0.87}
+        adds \textbf{AGP 9} (\texttt{android.builtInKotlin=false}, \texttt{android.newDsl=false}).
+        Since 0.82 \texttt{newArchEnabled=false} is \emph{ignored}.
+\end{itemize}
+
+\section{Manifest}
+\begin{itemize}\raggedright
+  \item \textbf{Merged}: every library adds its manifest — read Android Studio's
+        \emph{Merged Manifest} tab; drop an unwanted permission with
+        \texttt{tools:node="remove"}.
+  \item \textbf{\texttt{android:exported}} must be explicit on any component with an intent
+        filter (Android 12+), else the app \emph{won't install}. Launcher activity: true.
+  \item Template \texttt{MainActivity}: \texttt{singleTask} (deep links reuse it),
+        \texttt{adjustResize}, \texttt{configChanges} (rotation keeps the React root).
+        App Links: \texttt{autoVerify} + \texttt{/.well-known/assetlinks.json}.
+\end{itemize}
+
+\section{Example — manifest + permission}
+\begin{lstlisting}[language=XmlSheet]
+<uses-permission android:name="android.permission.CAMERA"/>
+<activity android:name=".MainActivity" android:exported="true"
+  android:launchMode="singleTask"
+  android:windowSoftInputMode="adjustResize">
+  <intent-filter android:autoVerify="true">
+    <action android:name="android.intent.action.VIEW"/>
+    <category android:name="android.intent.category.DEFAULT"/>
+    <category android:name="android.intent.category.BROWSABLE"/>
+    <data android:scheme="https" android:host="example.com"/>
+  </intent-filter></activity>
+<!-- JS: await PermissionsAndroid.request(PERMISSIONS.CAMERA)
+     'granted' | 'denied' | 'never_ask_again' -> openSettings -->
+\end{lstlisting}
+
+\section{Runtime permissions}
+\begin{itemize}\raggedright
+  \item \textbf{Dangerous} permissions (Android 6+) need manifest \emph{and} a runtime
+        request: check $\to$ rationale (\texttt{shouldShowRequestPermissionRationale}) $\to$
+        request. \texttt{POST\_NOTIFICATIONS} is runtime since Android 13.
+  \item Android 11+: \textbf{Deny twice = ``don't ask again''} — the dialog never shows,
+        send users to Settings. ``Only this time'' for location/camera/mic; unused apps get
+        permissions \textbf{auto-reset}. Re-check on every resume.
+\end{itemize}
+
+\section{Back, edge-to-edge, R8, signing}
+\begin{itemize}\raggedright
+  \item \textbf{BackHandler}: listeners run \textbf{LIFO}; \texttt{return true} consumes;
+        none $\to$ default back. An open \texttt{Modal} blocks BackHandler — use
+        \texttt{onRequestClose}.
+  \item \textbf{Target 36}: predictive back on by default, \texttt{onBackPressed} not called,
+        \texttt{KEYCODE\_BACK} not dispatched (BackHandler still works for most cases;
+        opt-out \texttt{enableOnBackInvokedCallback="false"}); \textbf{edge-to-edge}
+        can't be opted out — use safe-area insets.
+  \item \textbf{R8} keeps only what it sees: reflection, JNI, JSON-by-field-name need
+        \texttt{-keep class …} / \texttt{@Keep}.
+  \item \textbf{Signing}: \texttt{keytool -genkeypair … -validity 10000} $\to$ upload key;
+        passwords in \texttt{\~{}/.gradle/gradle.properties}, not git. \textbf{Play App
+        Signing} holds the real key, so a lost \emph{upload} key can be reset.
+\end{itemize}
+
+\section{Build errors $\to$ fix}
+\begin{itemize}\raggedright
+  \item \emph{SDK location not found} $\to$ \texttt{ANDROID\_HOME} / \texttt{local.properties}.
+        \emph{Java version} errors $\to$ JDK 17 (\texttt{JAVA\_HOME}).
+  \item \emph{Duplicate class … in modules} $\to$ two versions of one library: align/exclude.
+        \emph{Incompatible Kotlin metadata} $\to$ align Kotlin versions.
+  \item \texttt{INSTALL\_FAILED\_UPDATE\_INCOMPATIBLE} $\to$ different signing key: uninstall.
+        \emph{Unable to load script} $\to$ \texttt{adb reverse tcp:8081 tcp:8081}.
+  \item Release-only \texttt{ClassNotFoundException} $\to$ keep rules. Stale native build
+        $\to$ \texttt{./gradlew clean}, delete \texttt{app/.cxx}.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{The template's \texttt{release} uses the \textbf{debug keystore} — replace it before
+        shipping.}
+  \trap{Bumping \texttt{targetSdk} ``just for Play'' — it switches on new behaviour
+        (back, edge-to-edge); test it like a feature.}
+\end{itemize}
+
+\section{Remember}
+\textbf{min = who installs · compile = what you call · target = how you behave.}
+You sign uploads; Play signs installs.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} android-anr-native-crashes ·
+rn-app-size · rn-tooling-release · android-compose-lifecycle · rn-navigation (deep links) ·
+signing-and-cicd (iOS)}
+
+\end{document}

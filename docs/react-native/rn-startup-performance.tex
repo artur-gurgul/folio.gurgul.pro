@@ -1,0 +1,166 @@
+% rn-startup-performance.tex — React Native cold start: the phases (native init -> runtime ->
+% bundle load -> module factories -> first render -> TTID -> TTFD), Hermes bytecode + Hermes V1,
+% inline requires / lazy loading, RAM bundles (legacy), lazy TurboModules, the app root, splash
+% screens, and how to measure (am start -W, Displayed / Fully drawn, Perfetto, Instruments App
+% Launch, performance marks) + bundle analysis. Diagram: the startup timeline with where each
+% optimisation cuts.
+% Extends rn-performance (3-line "Startup" bullet) — not repeated. iOS pre-main/dyld: see
+% linking-and-launch-time.
+% Sources (checked 2026-09-25):
+%   https://reactnative.dev/docs/optimizing-javascript-loading (Hermes, lazy, inline require, inlineRequires config, RAM bundles not with Hermes)
+%   https://reactnative.dev/docs/hermes                           (bytecode in release builds, HermesInternal)
+%   https://reactnative.dev/blog/2024/10/23/release-0.76-new-architecture (libreactnative.so: ~3.8 MB, ~15 ms / ~8% median startup)
+%   https://reactnative.dev/blog/2025/10/08/react-native-0.82     (Hermes V1 Expensify numbers)
+%   https://reactnative.dev/blog/2026/02/11/react-native-0.84     (Hermes V1 default)
+%   https://reactnative.dev/blog/2025/12/10/react-native-0.83     (Web Performance APIs stable, PerformanceObserver in production)
+%   https://developer.android.com/topic/performance/vitals/launch-time (cold/warm/hot, TTID/TTFD, reportFullyDrawn, am start -W, Perfetto)
+%   https://docs.expo.dev/guides/analyzing-bundles/  ·  https://github.com/IjzerenHein/react-native-bundle-visualizer
+% @labels: area=react-native kind=concept platform=cross-platform topic=performance,build discussion=213
+% @tags: startup, tti, ttid, ttfd, hermes-bytecode, hermes-v1, inline-requires, lazy-loading, turbomodules, splash-screen, bundle-analysis, perfetto
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={const,let,function,return,import,from,export,new,if,true,false,null,
+    async,await,lazy,useEffect},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]", morestring=[b]',
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {===}{{\hbox{=}\hbox{=}\hbox{=}}}3 {->}{{\hbox{-}\hbox{>}}}2
+           {&&}{{\hbox{\&}\hbox{\&}}}2 {??=}{{\hbox{?}\hbox{?}\hbox{=}}}3}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\dd{\hbox{-}\hbox{-}}
+
+\tikzset{
+  ph/.style={draw=sheetGrey, minimum height=9mm, inner sep=1pt, font=\tiny, align=center},
+  nat/.style={ph, fill=sheetBlue!12},
+  jsp/.style={ph, fill=sheetOrange!15},
+  ui/.style={ph, fill=sheetGreen!15},
+  cut/.style={font=\tiny, text=sheetGreen!45!black, align=center, inner sep=1pt},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{RN startup — phases, what cuts each, how to measure}{react-native · folio}
+
+\oneliner{A cold start runs \textbf{native init} $\to$ \textbf{JS runtime} $\to$ \textbf{bundle load}
+$\to$ \textbf{module factories} (the top-level code of every imported module) $\to$
+\textbf{first render/mount} = \textbf{TTID} $\to$ real content = \textbf{TTFD/TTI}. Every
+optimisation is ``do less before the first frame'': precompiled bytecode, lazy modules, a thin
+root, deferred SDKs. Measure it on a \textbf{release build} on a \textbf{low-end Android}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet, x=1cm, y=1cm]
+  % splash bar
+  \fill[sheetGrey!18] (0,2.55) rectangle (10.3,2.85);
+  \node[lbl, anchor=west] at (0.05,2.7) {native \textbf{splash} visible (Android 12+ system splash / launch screen) — hide at first real frame, not later};
+  % phases
+  \node[nat, minimum width=22mm] (p1) at (1.1,1.95) {process start +\\\texttt{Application.onCreate}\\/ AppDelegate, SDKs};
+  \node[nat, minimum width=14mm] (p2) at (2.9,1.95) {RN host +\\Hermes\\runtime};
+  \node[jsp, minimum width=13mm] (p3) at (4.25,1.95) {load bundle\\\texttt{.hbc} (mmap,\\on demand)};
+  \node[jsp, minimum width=31mm] (p4) at (6.5,1.95) {\textbf{run module factories}\\every \texttt{import}ed module's\\top-level code, in order};
+  \node[ui, minimum width=22mm] (p5) at (9.2,1.95) {\texttt{runApplication}:\\render $\to$ commit\\$\to$ mount};
+  \node[ui, minimum width=38mm, fill=sheetGreen!7] (p6) at (12.2,1.95) {fetch / read cache $\to$ render\\the real content (lists, images)};
+  \draw[sheetRed, very thick] (10.3,1.35) -- (10.3,2.95) node[above, lbl, text=sheetRed] {\textbf{TTID} first frame};
+  \draw[sheetRed, very thick] (14.1,1.35) -- (14.1,2.95) node[above, lbl, text=sheetRed] {\textbf{TTFD / TTI}};
+  \node[lbl, anchor=west, text width=22mm, align=left] at (14.2,1.95) {usable: content on\\screen and input\\answered};
+  % cuts
+  \foreach \x in {1.1,2.9,4.25,6.5,9.2,12.2} \draw[hot, <-] (\x,1.45) -- (\x,1.05);
+  \node[cut] at (1.1,0.72) {defer / lazy-init SDKs;\\no disk or network\\before first frame};
+  \node[cut] at (2.9,0.72) {0.76 merged\\\texttt{libreactnative.so}:\\$\sim$15\,ms median};
+  \node[cut] at (4.25,0.72) {Hermes bytecode:\\no parse; V1\\default (0.84)};
+  \node[cut] at (6.5,0.72) {\texttt{inlineRequires}, \texttt{React.lazy},\\lazy \texttt{require()}; drop heavy\\deps; TurboModules load lazily};
+  \node[cut] at (9.2,0.72) {thin root: fewer\\providers, skeleton,\\below-the-fold later};
+  \node[cut] at (12.2,0.72) {show cached data first,\\start fetch early (in parallel),\\prefetch, right-size images};
+  % measurement lane
+  \draw[sheetGrey!40] (0,0.2) -- (16.4,0.2);
+  \node[lbl, anchor=west] at (0,0.0) {\textbf{measure}: Android \texttt{am start -S -W} (TotalTime) · logcat \texttt{Displayed} = TTID ·
+    \texttt{reportFullyDrawn()} $\to$ \texttt{Fully drawn} = TTFD · Perfetto ``Android App Startups'' · Macrobenchmark in CI};
+  \node[lbl, anchor=west] at (0,-0.3) {iOS: Instruments \emph{App Launch}, Organizer launch metrics, MetricKit · JS: \texttt{performance.mark()} at the top of \texttt{index.js},
+    \texttt{measure()} when content shows · bundle: visualizer / Expo Atlas};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}\raggedright
+  \item \textbf{Cold} = new process (everything above); \textbf{warm} = process alive, activity
+        recreated; \textbf{hot} = brought to front. Optimise and report \emph{cold}.
+  \item \textbf{Hermes} compiles JS to bytecode \emph{at build time} (release builds only);
+        bytecode is loaded on demand, no parse. \textbf{Hermes V1} (opt-in 0.82, default
+        \textbf{0.84}): Expensify measured Android low-end $-$3.2\% bundle load / $-$7.6\% TTI,
+        iOS $-$9\% / $-$2.5\%.
+  \item \textbf{Module factories}: Metro wraps each module in a function; \texttt{import}
+        runs it at first require. A root that imports every screen runs them all at start.
+        \textbf{Inline requires} move each \texttt{require} to its first use, so unused
+        paths never execute. RN CLI inlines \texttt{require}s by default; Expo: enable
+        \texttt{inlineRequires} in \texttt{metro.config.js}.
+  \item \textbf{RAM bundles} (indexed/file bundles, parse on demand) — legacy, \textbf{not
+        supported with Hermes}; Hermes' on-demand bytecode replaces them.
+  \item \textbf{TurboModules} initialise on first access (legacy modules all at start); a
+        module touched in the root still costs at startup.
+  \item \textbf{Splash}: iOS launch storyboard; Android 12+ always draws the system
+        splash (\texttt{installSplashScreen()}, \texttt{setKeepOnScreenCondition});
+        Expo: \texttt{SplashScreen.preventAutoHideAsync()} $\to$ \texttt{hideAsync()} when
+        the first screen has laid out.
+\end{itemize}
+
+\section{Example — lazy paths + marks}
+\begin{lstlisting}[language=TSSheet]
+// index.js - first line executed
+performance.mark('js-start');
+// screens off the first path load on navigation
+const Settings = lazy(() => import('./Settings'));
+let Charts = null;                 // lazy require
+const openCharts = () => {
+  Charts ??= require('./Charts').default; nav('charts'); };
+function Home() {
+  const feed = useFeed();          // cache first, then network
+  useEffect(() => { if (feed.ready)
+    performance.measure('ttfd', 'js-start'); }, [feed.ready]);
+}  // PerformanceObserver ships 'measure' entries to analytics
+\end{lstlisting}
+
+\section{Where the time really goes}
+\begin{itemize}\raggedright
+  \item \textbf{Native}: analytics/crash/ads SDKs in \texttt{onCreate} /
+        \texttt{didFinishLaunching}, synchronous storage reads, big DI graphs — defer
+        until after first frame or init on a background thread.
+  \item \textbf{JS}: moment/lodash-size deps, i18n loading every locale, a store rehydrating
+        megabytes before render, polyfills, JSON config parsing.
+  \item \textbf{First render}: a navigator that builds every tab, providers that compute
+        on mount, images decoded at full size.
+\end{itemize}
+
+\section{Bundle analysis}
+\begin{itemize}\raggedright
+  \item \texttt{npx react-native-bundle-visualizer@latest} (\texttt{\dd{}expo} for Expo)
+        — source-map-explorer over Metro's output, treemap per package.
+  \item Expo Atlas: \texttt{EXPO\_ATLAS=true npx expo export}, then
+        \texttt{npx expo-atlas .expo/atlas.jsonl}.
+  \item source-map-explorer on a Hermes export needs \texttt{\dd{}no-bytecode}.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{Timing a \textbf{debug} build: bundle streamed from Metro, no bytecode, dev checks
+        — startup numbers mean nothing.}
+  \trap{Inline requires change \textbf{evaluation order}: modules with side effects
+        (polyfills, global setup) break — \texttt{blockList} / \texttt{nonInlinedRequires}.}
+  \trap{A long splash makes TTID look great; users feel \textbf{TTFD}. Report both.}
+  \trap{``Use RAM bundles'' on a Hermes app — not supported, and not needed.}
+  \trap{A lazy screen with module side effects (subscribing, globals) defeats laziness.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Less native init · bytecode · lazy modules · thin root · cached first paint} —
+and measure TTID \emph{and} TTFD on a release build.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rn-performance · rn-architecture
+(Hermes, TurboModules) · js-engines-performance · linking-and-launch-time (iOS pre-main) ·
+rn-app-size · rn-debugging-toolchain}
+
+\end{document}

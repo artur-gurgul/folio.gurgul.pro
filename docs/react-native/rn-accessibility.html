@@ -1,0 +1,80 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>React Native accessibility — props, platforms, testing — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/react-native/rn-accessibility.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">157</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">React Native accessibility — props, platforms, testing</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">react-native · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> VoiceOver and TalkBack read the <strong>native</strong> view tree, not your JSX: RN maps each
+prop onto <code>UIAccessibility</code> (iOS) or <code>AccessibilityNodeInfo</code> (Android). Prefer the
+web-aligned <code>role</code> + <code>aria-*</code> props (<code>role</code> wins over <code>accessibilityRole</code>); a few needs
+stay platform-specific — <strong>live regions</strong> are Android-only, iOS uses <strong>announcements</strong>;
+modal scoping is iOS-only.</p>
+<p class="sheet-tools"><a class="sheet-download" href="rn-accessibility.pdf" download>Download PDF</a> <a href="rn-accessibility.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/react-native/rn-accessibility.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="rn-accessibility-fig1.svg" width="629" height="148" class="wide" alt="React Native accessibility — props, platforms, testing — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">How it works</span></h3>
+<ul>
+<li><strong>Elements by default</strong>: <code>Text</code>, <code>TextInput</code>, <code>Switch</code>; <code>Pressable</code>/touchables  render an <code>accessible</code> View. A plain <code>View</code> is not. An <code>accessible</code> parent  <strong>groups</strong> its children: one focus stop, label = the children’s text joined.</li>
+<li><code>role</code> takes web names (<code>heading</code>, <code>img</code>, <code>slider</code>, <code>searchbox</code>,  <code>list</code>, <code>presentation</code>…); state/value via <code>aria-checked</code> (<code>&#39;mixed&#39;</code>),  <code>aria-expanded</code>, <code>aria-busy</code>, <code>aria-valuemin/max/now/text</code> — same data as  <code>accessibilityState</code> / <code>accessibilityValue</code>.</li>
+<li><strong>Hint</strong>: iOS reads it after a pause and users can switch hints off; Android  <strong>always</strong> reads it. Keep it a short result (“Removes it”), never the label again.</li>
+<li><strong>Actions</strong>: <code>accessibilityActions</code> (<code>activate</code>, <code>increment</code>/<code>decrement</code>  for adjustable, <code>longpress</code>/<code>expand</code>/<code>collapse</code> Android, <code>magicTap</code>/<code>escape</code>  iOS, or custom) + <code>onAccessibilityAction</code> — the swipe-to-delete for screen readers.</li>
+<li><strong>Focus order</strong> = native tree order. Reorder: <code>experimental_accessibilityOrder</code>  (list of <code>nativeID</code>s). Move focus after navigation or an error:  <code>AccessibilityInfo.sendAccessibilityEvent(ref, &#39;focus&#39;)</code> (<code>setAccessibilityFocus</code>  deprecated in 0.85).</li>
+<li><strong>Speak a change</strong>: Android <code>aria-live=&quot;polite&quot;|&quot;assertive&quot;</code> on the view that  changes; iOS has no live regions <span class="math">→</span> <code>announceForAccessibility(msg)</code> (iOS:  <code>…WithOptions(msg, {queue: true})</code>, <code>announcementFinished</code> event).</li>
+<li><strong>User settings</strong> (Promises + change events): both <code>isScreenReaderEnabled</code>,  <code>isReduceMotionEnabled</code>; iOS <code>isBoldTextEnabled</code>, <code>isReduceTransparencyEnabled</code>,  <code>isInvertColorsEnabled</code>; Android <code>isHighTextContrastEnabled</code>,  <code>getRecommendedTimeoutMillis</code> (toasts, auto-dismiss).</li>
+<li><strong>Text size</strong>: <code>allowFontScaling</code> (default <code>true</code>), <code>maxFontSizeMultiplier</code>;  read <code>useWindowDimensions().fontScale</code>. Fixed-height text rows clip at 200%.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">VoiceOver vs TalkBack</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th><strong>VoiceOver</strong></th><th><strong>TalkBack</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>hint</td><td>optional, after pause</td><td>always read</td></tr>
+<tr><td>live change</td><td>announce API</td><td><code>aria-live</code> region</td></tr>
+<tr><td>modal scope</td><td><code>aria-modal</code></td><td>hide siblings (<code>aria-hidden</code>)</td></tr>
+<tr><td>labelled by</td><td>—</td><td><code>aria-labelledby</code> (<code>nativeID</code>)</td></tr>
+<tr><td>extra gestures</td><td>escape (2-finger Z), magic tap</td><td>actions menu</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example</span></h3>
+<pre class="sheet-code"><code class="hljs language-tsx">&lt;<span class="hljs-title class_">Pressable</span> role=<span class="hljs-string">&quot;button&quot;</span> aria-label=<span class="hljs-string">&quot;Delete draft&quot;</span>
+  accessibilityHint=<span class="hljs-string">&quot;Removes it from this phone&quot;</span>
+  aria-disabled={saving} disabled={saving}
+  hitSlop={<span class="hljs-number">10</span>} onPress={remove}&gt;          <span class="hljs-comment">// 24pt icon, 44pt target</span>
+  <span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">TrashIcon</span> /&gt;</span></span>
+&lt;/<span class="hljs-title class_">Pressable</span>&gt;
+<span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">Pressable</span> <span class="hljs-attr">role</span>=<span class="hljs-string">&quot;button&quot;</span> <span class="hljs-attr">onPress</span>=<span class="hljs-string">{open}</span>       // <span class="hljs-attr">one</span> <span class="hljs-attr">stop</span> <span class="hljs-attr">per</span> <span class="hljs-attr">row</span>
+  <span class="hljs-attr">accessibilityActions</span>=<span class="hljs-string">{[{</span> <span class="hljs-attr">name:</span> &#x27;<span class="hljs-attr">archive</span>&#x27;, <span class="hljs-attr">label:</span> &#x27;<span class="hljs-attr">Archive</span>&#x27; }]}
+  <span class="hljs-attr">onAccessibilityAction</span>=<span class="hljs-string">{e</span> =&gt;</span>
+    e.nativeEvent.actionName === &#x27;archive&#x27; &amp;&amp; archive()}&gt;
+  <span class="hljs-tag">&lt;<span class="hljs-name">Text</span>&gt;</span>Alice<span class="hljs-tag">&lt;/<span class="hljs-name">Text</span>&gt;</span><span class="hljs-tag">&lt;<span class="hljs-name">Text</span>&gt;</span>2 new messages<span class="hljs-tag">&lt;/<span class="hljs-name">Text</span>&gt;</span>
+<span class="hljs-tag">&lt;/<span class="hljs-name">Pressable</span>&gt;</span></span>
+<span class="language-xml"><span class="hljs-tag">&lt;<span class="hljs-name">Text</span> <span class="hljs-attr">aria-live</span>=<span class="hljs-string">&quot;polite&quot;</span>&gt;</span>{status}<span class="hljs-tag">&lt;/<span class="hljs-name">Text</span>&gt;</span></span>    <span class="hljs-comment">// Android</span>
+<span class="hljs-title function_">useEffect</span>(<span class="hljs-function">() =&gt;</span> {                            <span class="hljs-comment">// iOS (works on both)</span>
+  <span class="hljs-title class_">AccessibilityInfo</span>.<span class="hljs-title function_">announceForAccessibility</span>(status); }, [status]);
+<span class="hljs-comment">// test: only accessibility elements match, hidden ones excluded</span>
+<span class="hljs-title function_">expect</span>(screen.<span class="hljs-title function_">getByRole</span>(<span class="hljs-string">&#x27;button&#x27;</span>, { <span class="hljs-attr">name</span>: <span class="hljs-string">&#x27;Delete draft&#x27;</span> }))
+  .<span class="hljs-title function_">toBeDisabled</span>();</code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">WCAG basics</span></h3>
+<ul>
+<li><strong>Contrast</strong> (1.4.3): text <span class="math">≥</span> <strong>4.5:1</strong>, large text (18 pt / 14 pt bold) <span class="math">≥</span>  3:1; UI parts and focus rings <span class="math">≥</span> 3:1 (1.4.11). Never colour alone.</li>
+<li><strong>Target size</strong>: Apple <strong>44<span class="math">×</span>44 pt</strong>, Material <strong>48<span class="math">×</span>48 dp</strong>;  WCAG 2.2 AA minimum 24<span class="math">×</span>24 CSS px (2.5.8). <code>hitSlop</code> grows the touch area  without changing layout.</li>
+<li>Respect <strong>reduce motion</strong> (swap slides for fades; Reanimated <code>useReducedMotion()</code>),  don’t auto-dismiss faster than the recommended timeout.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Testing</span></h3>
+<p><strong>Manual</strong>: VoiceOver + Xcode <strong>Accessibility Inspector</strong> (audit); TalkBack + Android <strong>Accessibility Scanner</strong> (targets, contrast, labels). <strong>Automated</strong>: RNTL <code>*ByRole</code> / <code>*ByLabelText</code> / <code>*ByHintText</code> — a <code>View</code> matches by role only if <code>accessible</code>. <code>testID</code> is for E2E (iOS <code>accessibilityIdentifier</code>) — never spoken.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">An <code>accessible</code> card with a button inside: the button is no longer its own stop — expose it as an action.</li>
+<li class="trap">“Disabled” shown by opacity only: the screen reader still says it works — set  <code>disabled</code>/<code>aria-disabled</code>.</li>
+<li class="trap"><code>aria-live</code> does nothing on iOS; <code>aria-modal</code> nothing on Android.</li>
+<li class="trap">Icon-only <code>Pressable</code> without <code>aria-label</code>: there is no name to read.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<h3 class="sheet-hd">“Role, name, state — then focus, announce, scale, 44/48.”</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> accessibility-localization (VoiceOver
+anatomy, Dynamic Type) · rn-testing-typescript (RNTL) · rn-animations-gestures (reduce motion) ·
+rn-navigation (focus after navigation)</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=react-native" title="area">react-native</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=cross-platform" title="platform">cross-platform</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=ui" title="topic">ui</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=testing" title="topic">testing</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=platform-apis" title="topic">platform-apis</a></li><li class="sheet-tag"><a href="/folios.html?tag=accessibility">accessibility</a></li><li class="sheet-tag"><a href="/folios.html?tag=aria-props">aria-props</a></li><li class="sheet-tag"><a href="/folios.html?tag=accessibilityrole">accessibilityrole</a></li><li class="sheet-tag"><a href="/folios.html?tag=voiceover">voiceover</a></li><li class="sheet-tag"><a href="/folios.html?tag=talkback">talkback</a></li><li class="sheet-tag"><a href="/folios.html?tag=live-region">live-region</a></li><li class="sheet-tag"><a href="/folios.html?tag=accessibilityinfo">accessibilityinfo</a></li><li class="sheet-tag"><a href="/folios.html?tag=reduce-motion">reduce-motion</a></li><li class="sheet-tag"><a href="/folios.html?tag=font-scaling">font-scaling</a></li><li class="sheet-tag"><a href="/folios.html?tag=touch-target">touch-target</a></li><li class="sheet-tag"><a href="/folios.html?tag=wcag">wcag</a></li><li class="sheet-tag"><a href="/folios.html?tag=getbyrole">getbyrole</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=react-native%2Frn-accessibility.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/196">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>
