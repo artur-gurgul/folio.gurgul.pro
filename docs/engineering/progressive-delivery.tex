@@ -1,0 +1,232 @@
+% progressive-delivery.tex — progressive delivery: recreate, rolling (maxSurge / maxUnavailable), blue/green,
+% canary with automated analysis (golden signals, baseline vs canary, SLO burn rate), shadow / dark launch, rings,
+% flags vs deployment, abort criteria, sticky routing; Argo Rollouts, Flagger, Spinnaker + Kayenta; mobile: App Store
+% phased release, Play staged rollout + halt, EAS Update rollouts, server-driven kill switches.
+% Not repeated: flag kinds, bucketing, A/B statistics, phased-release bar chart (engineering/flags-experiments-observability);
+% release trains, version numbers (engineering/release-engineering); incident levers (debugging/mobile-incident-playbook);
+% the blue/green switch itself (engineering/blue-green-deployments).
+% Sources (checked 2026-09-26):
+% https://kubernetes.io/docs/concepts/workloads/controllers/deployment/ (maxSurge / maxUnavailable default 25 %;
+%   maxUnavailable rounds down, maxSurge rounds up; not both 0; progressDeadlineSeconds default 600)
+% https://argo-rollouts.readthedocs.io/en/stable/features/canary/ (setWeight, pause with/without duration; no traffic
+%   router = weight approximated by replica counts) · .../features/analysis/ (successCondition, failureLimit,
+%   background vs inline analysis; failure = abort, canary weight back to 0, Degraded)
+% https://docs.flagger.app/usage/deployment-strategies (interval, threshold, maxWeight, stepWeight; promotion
+%   = interval x maxWeight/stepWeight, rollback = interval x threshold; A/B by header/cookie; blue/green mirroring)
+% https://spinnaker.io/docs/guides/user/canary/judge/ (NetflixACAJudge, Mann-Whitney U, 98 % confidence, score =
+%   % of metrics passing, marginal / pass thresholds) · .../canary/best-practices/ (baseline deployed with the canary,
+%   not production; >= 50 data points per metric)
+% https://sre.google/sre-book/monitoring-distributed-systems/ (four golden signals)
+% https://sre.google/workbook/alerting-on-slos/ (burn rate 14.4 over 1 h / 5 min = 2 % of budget, page)
+% https://developer.apple.com/help/app-store-connect/update-your-app/release-a-version-update-in-phases
+%   (1/2/5/10/20/50/100 % over 7 days, automatic updates only, pause 30 days total, release to all any time)
+% https://support.google.com/googleplay/android-developer/answer/6346149 (staged rollout, halt, resume; users who
+%   got it stay on it; fix = new release)
+% https://docs.expo.dev/eas-update/rollouts/ (eas update --rollout-percentage, eas channel:rollout,
+%   eas update:revert-update-rollout)
+% @labels: area=engineering kind=process platform=cross-platform topic=system-design,build discussion=134
+% @tags: progressive-delivery, rolling-update, canary, canary-analysis, golden-signals, burn-rate, shadow-traffic, ring-deployment, argo-rollouts, flagger, kayenta, staged-rollout
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{YAMLSheet}{
+  morekeywords={apiVersion,kind,spec,strategy,canary,steps,analysis,templates,replicas,trafficRouting},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {>=}{{\hbox{>}\hbox{=}}}2 {==}{{\hbox{=}\hbox{=}}}2 {--}{{\hbox{-}\hbox{-}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  l/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  nm/.style={font=\scriptsize\bfseries, anchor=east, inner sep=1pt},
+  nt/.style={font=\tiny, text=black!75, anchor=west, align=left, inner sep=1pt},
+  gate/.style={diamond, draw=sheetGreen!60!black, fill=white, inner sep=0.9pt},
+}
+% one strategy row: y baseline #1; x = 2.4 … 12.6; height 0.36 = 100 %
+\newcommand\row[3]{\node[nm, text=#2] at (2.3,#1+0.18) {#3};
+  \draw[sheetGrey!50] (2.4,#1) -- (12.6,#1); \draw[sheetGrey!25, dashed] (2.4,#1+0.36) -- (12.6,#1+0.36);}
+
+\begin{document}
+
+\sheettitle{Progressive delivery — rolling, canary, shadow, rings, staged rollouts}{engineering · folio}
+
+\oneliner{\textbf{Expose a new version to users in steps}, measure each step \textbf{against a baseline}, and
+\textbf{promote or abort automatically} — so a bad release hurts 1–5\,\% of traffic for minutes instead of
+everyone for hours. \textbf{Deploy $\ne$ release}: the binary can be everywhere while the feature is off.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet, yscale=0.88]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.1,4.62) {\% of users on the new version, over one release};
+  \node[l, anchor=west, text=sheetGreen!45!black] at (8.3,4.62) {$\diamond$ = automated analysis gate};
+  \node[l, anchor=west, text=sheetRed] at (10.9,4.62) {red = abort path};
+  % 1 recreate
+  \row{4.0}{sheetGrey}{recreate}
+  \fill[sheetGrey!30] (2.4,4.0) rectangle (4.5,4.36);
+  \fill[sheetRed!35] (4.5,4.0) rectangle (5.2,4.36); \node[l, text=sheetRed] at (4.85,4.18) {down};
+  \fill[sheetBlue!45] (5.2,4.0) rectangle (12.6,4.36);
+  \node[nt] at (12.7,4.18) {kill all v1, then start v2: downtime;\\versions never coexist};
+  % 2 rolling
+  \row{3.45}{sheetBlue}{rolling}
+  \fill[sheetBlue!45] (4.5,3.45) -- (4.5,3.54) -- (5.3,3.54) -- (5.3,3.63) -- (6.1,3.63) -- (6.1,3.72) -- (6.9,3.72) -- (6.9,3.81) -- (12.6,3.81) -- (12.6,3.45) -- cycle;
+  \node[l, anchor=east] at (4.45,3.6) {pod batches};
+  \node[nt] at (12.7,3.63) {\ct{maxSurge}/\ct{maxUnavailable};\\v1 + v2 serve \emph{together}};
+  % 3 blue/green
+  \row{2.9}{sheetBlue}{blue/green}
+  \fill[sheetGrey!30] (4.5,2.9) rectangle (6.0,2.95); \node[l] at (5.25,3.08) {green idle, smoke};
+  \fill[sheetBlue!45] (6.0,2.9) rectangle (12.6,3.26);
+  \node[nt] at (12.7,3.08) {one switch 0 $\to$ 100\,\%;\\blue kept for rollback};
+  % 4 canary
+  \row{2.35}{sheetOrange}{canary}
+  \fill[sheetOrange!45] (4.5,2.35) -- (4.5,2.37) -- (6.0,2.37) -- (6.0,2.44) -- (7.5,2.44) -- (7.5,2.53) -- (9.0,2.53) -- (9.0,2.71) -- (12.6,2.71) -- (12.6,2.35) -- cycle;
+  \node[l, text=sheetOrange!80!black] at (5.25,2.62) {1\,\%}; \node[l, text=sheetOrange!80!black] at (6.75,2.62) {5\,\%};
+  \node[l, text=sheetOrange!80!black] at (8.25,2.62) {25\,\%};
+  \node[l, text=sheetOrange!80!black, anchor=west] at (9.05,2.8) {50 $\to$ 100\,\%};
+  \foreach \x in {6.0,7.5,9.0,10.6} \node[gate] at (\x,2.35) {};
+  \draw[sheetRed, thick, dashed, ->] (7.9,2.46) -- (7.9,2.36) -- (8.4,2.36);
+  \node[nt] at (12.7,2.53) {weight steps + pauses, each gated\\on canary-vs-baseline metrics};
+  % 5 shadow
+  \row{1.8}{sheetBrown}{shadow}
+  \draw[sheetBrown, thick, dashed] (4.5,1.8) rectangle (9.5,2.16);
+  \node[l, text=sheetBrown] at (7.0,1.98) {v2 gets a \emph{copy} of 100\,\% of requests; responses discarded};
+  \node[nt] at (12.7,1.98) {0\,\% user-visible: tests load +\\correctness; writes must be stubbed};
+  % 6 rings
+  \row{1.25}{sheetGreen!55!black}{rings}
+  \fill[sheetGreen!40] (4.5,1.25) -- (4.5,1.27) -- (6.3,1.27) -- (6.3,1.31) -- (8.1,1.31) -- (8.1,1.43) -- (9.9,1.43) -- (9.9,1.61) -- (12.6,1.61) -- (12.6,1.25) -- cycle;
+  \node[l, text=sheetGreen!40!black] at (5.4,1.4) {ring 0: staff};
+  \node[l, text=sheetGreen!40!black] at (7.2,1.44) {ring 1: beta};
+  \node[l, text=sheetGreen!40!black] at (9.0,1.55) {ring 2: 1 region};
+  \node[l, text=sheetGreen!40!black] at (11.2,1.48) {ring 3: all};
+  \node[nt] at (12.7,1.43) {audiences, not random \%:\\blast radius by who, not how many};
+  % 7 flag
+  \row{0.7}{sheetRed!80!black}{feature flag}
+  \fill[sheetGrey!18] (3.0,0.7) rectangle (12.6,0.73);
+  \node[l, text=sheetGrey, anchor=west] at (3.0,0.86) {deployed dark to 100\,\%};
+  \fill[sheetRed!35] (7.0,0.7) -- (7.0,0.72) -- (8.0,0.72) -- (8.0,0.8) -- (9.2,0.8) -- (9.2,0.95) -- (10.4,0.95) -- (10.4,1.06) -- (12.6,1.06) -- (12.6,0.7) -- cycle;
+  \node[l, text=sheetRed!80!black] at (8.6,0.98) {release by flag};
+  \node[nt] at (12.7,0.88) {deploy $\ne$ release; kill = flag off,\\no redeploy};
+  % 8 play staged
+  \row{0.15}{sheetBlue}{Play staged}
+  \fill[sheetBlue!30] (4.5,0.15) -- (4.5,0.17) -- (6.0,0.17) -- (6.0,0.2) -- (7.5,0.2) -- (7.5,0.22) -- (12.6,0.22) -- (12.6,0.15) -- cycle;
+  \draw[sheetRed, very thick] (7.5,0.24) -- (12.6,0.24);
+  \node[l, text=sheetRed, anchor=south] at (10.0,0.25) {\textbf{halted} at 20\,\%: no new users; who has it keeps it};
+  \node[nt] at (12.7,0.3) {mobile: you pick \%; App Store\\phased = fixed 7-day schedule};
+  % time axis
+  \draw[->, sheetGrey] (2.4,-0.12) -- (12.6,-0.12) node[l, anchor=north east] {time $\to$};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Rolling update — the default}
+\begin{itemize}
+  \item K8s \ct{RollingUpdate}: \ct{maxSurge} (extra pods, \% rounds \textbf{up}) and \ct{maxUnavailable} (\%
+        rounds \textbf{down}), both default \textbf{25\,\%}, not both 0. 10 replicas: $\le$\,13 pods, $\ge$\,8
+        ready. \ct{maxUnavailable: 0} = never below capacity.
+  \item Only \textbf{readiness} gates progress (+ \ct{minReadySeconds}); nothing looks at error rates.
+        \ct{progressDeadlineSeconds} (600) only marks the rollout \emph{failed} — \textbf{no automatic rollback}:
+        \ct{kubectl rollout undo}.
+  \item v1 and v2 serve \emph{at the same time} $\Rightarrow$ API, schema and messages compatible both ways.
+  \item \textbf{Recreate} only when versions cannot coexist (singleton, exclusive lock).
+\end{itemize}
+
+\hd{Canary + automated analysis}
+\begin{itemize}
+  \item Route a \textbf{small weight} to v2 (mesh, ingress, Gateway API, ALB weights). No router
+        $\Rightarrow$ weight $\approx$ replica ratio (1 of 10 pods = 10\,\%).
+  \item Compare canary with a \textbf{baseline} of the \emph{old} version deployed \emph{at the same time, same
+        size} — not with the big, warm production fleet (caches, JIT, heap differ).
+  \item \textbf{Golden signals}: latency (p99, successes and errors separately), traffic, errors, saturation;
+        plus restarts/OOM and a business metric (checkout success).
+  \item \textbf{Kayenta} (Spinnaker): Mann–Whitney U per metric at 98\,\% confidence $\to$ Pass/High/Low;
+        score = \% of metrics passing vs \emph{marginal} / \emph{pass} thresholds; critical metric fails
+        $\to$ 0. Needs $\ge$\,50 data points per metric: steps last minutes–hours.
+  \item \textbf{SLO burn rate}: error budget used per unit time; 14.4$\times$ over 1\,h (and 5\,min) = 2\,\% of a
+        30-day budget $\Rightarrow$ abort.
+\end{itemize}
+
+\hd{Abort criteria — write them before the rollout}
+Error rate or p99 worse than baseline beyond a set margin · burn rate over threshold · crash loops /
+OOMKilled · saturation (CPU, pool, queue depth) · business KPI drop · \textbf{no data = fail}, not pass.
+Abort = weight to 0, canary scaled down; investigate, don't retry.
+
+\hd{Sticky routing}
+Per-request \% sends one user to v1 then v2: flickering UI, lost session, v2-written data read by v1.
+Route by \textbf{user/device id hash}, cookie or header (Flagger A/B mode; ALB target-group stickiness);
+send \emph{internal} users via a header. Mobile: route by \ct{App-Version}.
+
+\columnbreak
+
+\hd{Example — Argo Rollouts canary}
+\begin{lstlisting}[language=YAMLSheet]
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+spec:
+  replicas: 10
+  strategy:
+    canary:
+      canaryService: api-canary     # router splits by weight
+      stableService: api-stable
+      trafficRouting: { nginx: { stableIngress: api } }
+      analysis:                     # background: whole rollout
+        templates: [{ templateName: success-rate }]
+      steps:
+      - setWeight: 5
+      - pause: { duration: 15m }
+      - setWeight: 25
+      - pause: {}                   # waits for a human: promote
+# AnalysisTemplate: successCondition: result[0] >= 0.99,
+#   interval: 5m, failureLimit: 2  -> abort: weight 0, Degraded
+\end{lstlisting}
+
+\hd{Tools}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{61mm}@{}}
+\toprule
+Argo Rollouts & \ct{Rollout} CRD: canary \ct{steps} (\ct{setWeight}, \ct{pause}, \ct{analysis}), blueGreen;
+  \ct{AnalysisTemplate} (Prometheus, Datadog, web, job)\\
+Flagger & wraps a Deployment; \ct{interval}, \ct{threshold}, \ct{stepWeight}, \ct{maxWeight}; promote after
+  interval$\times$max/step, roll back after interval$\times$threshold; canary, A/B, B/G, mirroring\\
+Spinnaker & pipelines + \textbf{Kayenta} automated canary analysis\\
+\bottomrule
+\end{tabular}}
+
+\hd{Shadow, rings, flags}
+\begin{itemize}
+  \item \textbf{Shadow / dark launch}: mirror live requests to v2, compare responses offline. Great for rewrites
+        and load; dangerous with side effects (double charge, double email) — stub writes.
+  \item \textbf{Rings}: staff $\to$ beta $\to$ one region $\to$ all, each baked.
+  \item \textbf{Flags}: deploy moves \emph{code}, a flag releases \emph{behaviour} — per user, reversible
+        in seconds. Canary the binary, flag the feature.
+\end{itemize}
+
+\hd{Mobile — the store is your rollout controller}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{59mm}@{}}
+\toprule
+App Store & phased 1/2/5/10/20/50/100\,\%, 7 days, auto-update users\\
+Google Play & staged: any \%, \textbf{halt} (no new users), resume\\
+EAS Update & \ct{eas update \hbox{-}\hbox{-}rollout-percentage=10} (JS only)\\
+server & flags / kill switch: the only lever on installed apps\\
+\bottomrule
+\end{tabular}}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``K8s rolls back a bad rollout'' — it stops; undo is on you.}
+  \trap{Canary vs the whole prod fleet instead of a same-age baseline.}
+  \trap{5\,\% of a quiet hour = too few requests to judge anything.}
+  \trap{Shadowing a write path: every payment happens twice.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Small step, same-age baseline, pre-written abort.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} blue-green-deployments · zero-downtime-db-migrations ·
+flags-experiments-observability (bucketing, phased chart) · release-engineering · mobile-incident-playbook}
+
+\end{document}

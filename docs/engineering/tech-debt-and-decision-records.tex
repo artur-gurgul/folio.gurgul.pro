@@ -1,0 +1,176 @@
+% tech-debt-and-decision-records.tex — technical debt as principal + interest (Fowler's quadrant drawn),
+% kinds of debt, measuring and prioritising (interest x risk / effort, drawn as a matrix), talking to
+% product, RFC / design doc vs ADR, Nygard's ADR template with a worked ADR, build vs buy (TCO + exit cost),
+% a weighted library scorecard. Library SIGNALS + licences live in engineering/dependency-management.tex;
+% hotspots (churn x complexity) and strangler fig live in design/code-smells-refactoring.tex — only pointed to.
+% Sources (checked 2026-10-06) — CocoaPods trunk date re-read; the rest are published works:
+% https://martinfowler.com/bliki/TechnicalDebtQuadrant.html (the four quadrant quotes, 2009)
+% https://martinfowler.com/bliki/TechnicalDebt.html (principal / interest)
+% Ward Cunningham, "The WyCash Portfolio Management System", OOPSLA 1992 (the metaphor)
+% https://www.cognitect.com/blog/2011/11/15/documenting-architecture-decisions (Nygard: title, context,
+%   decision, status, consequences; statuses proposed / accepted / deprecated / superseded)
+% https://adr.github.io/ · https://blog.cocoapods.org/CocoaPods-Specs-Repo/ (trunk read-only 2 Dec 2026)
+% @labels: area=engineering kind=process platform=general topic=architecture,career discussion=137
+% @tags: technical-debt, debt-quadrant, principal-and-interest, prioritisation, architecture-decision-record, adr, rfc, design-doc, build-vs-buy, total-cost-of-ownership, exit-cost, library-evaluation
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{MdSheet}{
+  morekeywords={Status,Context,Decision,Consequences},
+  sensitive=true, morecomment=[l]{\#},
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  q/.style={draw=#1, thick, fill=#1!8, minimum width=24mm, minimum height=11mm, text width=22mm,
+            align=center, font=\scriptsize, inner sep=1pt},
+  l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Tech debt \& decision records — price it, pay it, write down why}{engineering · folio}
+
+\oneliner{\textbf{Technical debt} (Cunningham, 1992) is the extra cost future changes pay because of a
+shortcut taken — or a better design learned — earlier. \textbf{Principal} = the effort to fix it;
+\textbf{interest} = the extra effort (and risk) \emph{every} change in that area pays until you do. Code
+nobody touches charges no interest. Manage debt like a portfolio: make it visible, price it in product
+terms, pay where interest is highest — and record \emph{why} big decisions were made (\textbf{ADRs}) so nobody
+re-litigates them in a year.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- Fowler quadrant ----------
+  \node[ttl] at (-0.1,3.55) {Fowler's debt quadrant (2009)};
+  \node[q=sheetRed]    at (1.25,2.7)  {\textbf{reckless · deliberate}\\``We don't have time\\for design''};
+  \node[q=sheetGreen]  at (3.75,2.7)  {\textbf{prudent · deliberate}\\``We must ship now and\\deal with consequences''};
+  \node[q=sheetRed]    at (1.25,1.55) {\textbf{reckless · inadvertent}\\``What's layering?''};
+  \node[q=sheetBlue]   at (3.75,1.55) {\textbf{prudent · inadvertent}\\``Now we know how we\\should have done it''};
+  \node[l, text=sheetGreen!45!black] at (2.5,0.72) {only prudent-deliberate is a \emph{tool}: take it knowingly,\\record it, name the repayment trigger};
+  \node[l, text=sheetRed] at (2.5,0.2) {reckless = skill/culture problem, not a loan};
+  \draw[sheetGrey!40] (5.15,3.7) -- (5.15,0.0);
+  % ---------- principal and interest ----------
+  \node[ttl] at (5.25,3.55) {Principal vs interest};
+  \draw[->, sheetGrey] (5.5,0.55) -- (10.6,0.55) node[l, below left]{time / releases};
+  \draw[->, sheetGrey] (5.5,0.55) -- (5.5,3.3) node[l, right]{cost per change};
+  \draw[thick, sheetGreen] (5.5,1.0) -- (10.4,1.35);
+  \draw[thick, sheetRed] (5.5,1.0) .. controls (7.0,1.3) and (7.8,2.3) .. (8.3,2.75);
+  \fill[sheetRed!12] (5.5,1.0) .. controls (7.0,1.3) and (7.8,2.3) .. (8.3,2.75) -- (8.3,1.2) -- cycle;
+  \node[l, text=sheetRed, align=left] at (6.7,2.45) {with debt:\\interest compounds};
+  \node[l, text=sheetRed!80!black] at (7.75,1.55) {interest};
+  \draw[thick, sheetOrange, dashed] (8.3,2.75) -- (8.3,3.15) -- (9.2,3.15);
+  \draw[thick, sheetOrange] (9.2,3.15) -- (9.2,1.3) -- (10.4,1.38);
+  \node[l, text=sheetOrange!80!black, align=left, anchor=west] at (9.25,2.55) {pay the\\principal:\\a dip, then\\cheap again};
+  \node[l, text=sheetGreen!45!black] at (6.6,0.8) {clean baseline};
+  \draw[sheetGrey!40] (10.95,3.7) -- (10.95,0.0);
+  % ---------- prioritisation ----------
+  \node[ttl] at (11.05,3.55) {What to pay first};
+  \draw[->, sheetGrey] (11.6,0.55) -- (16.5,0.55) node[l, below left]{effort (principal) $\to$};
+  \draw[->, sheetGrey] (11.6,0.55) -- (11.6,3.35);
+  \node[l, rotate=90] at (11.42,1.9) {interest $=$ touches $\times$ pain};
+  \node[q=sheetOrange, minimum width=22mm, text width=21mm] at (12.85,2.55) {\textbf{PAY NOW}\\next sprint, with\\the feature};
+  \node[q=sheetBlue, minimum width=22mm, text width=21mm] at (15.2,2.55) {\textbf{PROJECT}\\business case,\\strangle in steps};
+  \node[q=sheetGreen, minimum width=22mm, text width=21mm] at (12.85,1.25) {\textbf{boy-scout}\\fix when passing};
+  \node[q=sheetGrey, minimum width=22mm, text width=21mm] at (15.2,1.25) {\textbf{live with it}\\document, revisit};
+  \node[l, text=sheetRed, anchor=west] at (11.05,0.05) {\textbf{risk overrides}: security hole, store SDK deadline = a due date};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Kinds}: code (duplication, god objects) · architecture (wrong boundaries, a shared
+        singleton everything reaches) · test (no seams, flaky suite) · \textbf{dependency} (old SDKs,
+        deprecated APIs, an abandoned library — on mobile the \emph{stores} set the due date) · build/CI
+        (slow, manual release steps) · knowledge (one person understands payments: bus factor 1).
+  \item \textbf{Measure the interest}, not the ugliness: lead time for changes in that area, bugs and
+        incidents per module, change-failure rate, \textbf{hotspots} (churn $\times$ complexity), build and CI
+        time, flaky-test rate, share of unplanned work, dependency age. Before/after numbers make the case.
+  \item \textbf{Prioritise}: interest (how often the code is touched $\times$ how much each touch hurts)
+        $\times$ risk (security, crash, deadline) / effort. Pay \emph{adjacent} to roadmap work (``to build
+        X we first split Y''); keep a standing share of capacity for the rest; big items become projects
+        with milestones, each one shippable.
+  \item \textbf{Register it}: a ticket per debt item with the interest observed, the principal estimate
+        and the \emph{trigger} (``when we add a 2nd payment provider''). A \ct{TODO} in code is not a register.
+\end{itemize}
+
+\hd{Talking to product — their currency}
+\begin{itemize}
+  \item Not ``the code is bad'' but: ``every checkout change costs +3 days and 2 of the last 5 incidents
+        started there; 2 sprints of work removes both''. Cost of delay, risk, and the roadmap item it unblocks.
+  \item Offer options with trade-offs (do now / with feature X / accept and monitor), let them choose —
+        then record the choice. Report the payoff after, so the next request is trusted.
+\end{itemize}
+
+\hd{RFC / design doc vs ADR}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{29mm}>{\raggedright\arraybackslash}p{32mm}@{}}
+\toprule
+& \textbf{RFC / design doc} & \textbf{ADR} \\ \midrule
+purpose & \emph{propose}, gather feedback before deciding & \emph{record} a decision + its context \\
+when & big or cross-team change & every architecturally significant choice \\
+size & pages: goals, non-goals, alternatives, rollout, risks & 1 page \\
+lifecycle & draft $\to$ review $\to$ accepted / rejected & proposed $\to$ accepted $\to$ deprecated / \textbf{superseded by} ADR-n \\
+lives & doc tool or repo, comment threads & repo, \ct{docs/adr/0012-title.md}, beside the code \\
+\bottomrule
+\end{tabular}}\par
+An accepted RFC usually \emph{produces} one or more ADRs. ADRs are \textbf{immutable}: to change your mind,
+write a new ADR that supersedes the old one — the history of \emph{why} is the value.
+
+\hd{Remember}
+\textbf{``Principal + interest; pay where interest is highest; say it in product terms; write down why.''}
+
+\columnbreak
+
+\hd{Example — an ADR (Nygard's template)}
+\begin{lstlisting}[language=MdSheet]
+# ADR 0012: Move iOS dependencies from CocoaPods to SPM
+Status: Accepted, 2026-03-02. Supersedes ADR 0003.
+Context: CocoaPods trunk stops accepting new podspecs
+  on 2 Dec 2026, so pods get no new versions. We use
+  14 pods; 11 ship an SPM package. pod install adds
+  ~4 min to every CI job and needs a Ruby toolchain.
+Decision: Move all 14 to SPM this quarter, one PR per
+  pod. The 3 without SPM: vendor the vendor's binary
+  XCFramework (2) and replace the 3rd with ~200 lines.
+Consequences:
+  + one resolver + Package.resolved; no Ruby on CI
+  - ~2 weeks of work; 2 vendored SDKs updated by hand
+\end{lstlisting}
+Good ADR: \textbf{context} states the forces (facts, constraints, numbers), \textbf{decision} is active
+voice (``we will''), \textbf{consequences} lists the \emph{bad} ones too. Also useful: options considered.
+
+\hd{Build vs buy (or open source)}
+\begin{itemize}
+  \item \textbf{Buy / adopt} what is not your differentiator and hard to do well (crash reporting,
+        payments, maps, video). \textbf{Build} what \emph{is} the product, or when cost grows with scale,
+        or privacy, compliance, offline or latency rule the vendor out.
+  \item Compare \textbf{total cost of ownership}: licence + integration + upkeep + upgrades + \textbf{exit
+        cost} (the migration off it). \textbf{Cap the exit cost}: wrap the SDK behind \emph{your} protocol
+        (adapter / port) in one module; its types never leak into the domain.
+  \item \textbf{Scorecard} (1–5 $\times$ weight, table goes in the ADR): fit (3) · maintenance (3) ·
+        security + privacy (3) · size + transitive deps (2) · platform support — min OS, Swift 6, RN New
+        Arch (2) · exit cost (2) · docs (1) · \textbf{licence = pass/fail gate}.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Let's rewrite it'' as the debt plan — strangle it in shippable steps.}
+  \trap{Calling everything you dislike ``debt'': no recurring cost = no interest = no priority.}
+  \trap{A yearly ``debt sprint'' — debt returns; pay continuously, next to features.}
+  \trap{Editing or deleting an old ADR — supersede it; the old context is the point.}
+  \trap{Picking a library by GitHub stars and forgetting what leaving it will cost.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} code-smells-refactoring (hotspots, strangler fig) ·
+dependency-management (signals, licences) · large-migrations · design-principles · behavioral-star (trade-off stories)}
+
+\end{document}

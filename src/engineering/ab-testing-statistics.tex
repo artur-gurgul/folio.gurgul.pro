@@ -1,0 +1,201 @@
+% ab-testing-statistics.tex — A/B testing statistics for product engineers: hypothesis,
+% p-value, alpha, power / beta, MDE, sample size (n ≈ 16 σ²/δ² per arm), peeking and
+% sequential testing, sample-ratio mismatch (chi-square), novelty / primacy, guardrails,
+% multiple comparisons, CUPED, and the mobile-specific pitfalls (version adoption lag,
+% assignment unit, offline exposure logging, cached flags).
+% Sources (checked 2026-10-06) — SRM threshold re-read at the Microsoft article: Deng, Xu, Kohavi, Walker, "Improving the Sensitivity of Online
+% Controlled Experiments by Utilizing Pre-Experiment Data", WSDM 2013,
+% https://www.exp-platform.com/Documents/2013-02-CUPED-ImprovingSensitivityOfControlledExperiments.pdf
+% (theta = cov(Y,X)/var(X); var reduced by (1 - rho^2); ~50 % at Bing); Fabijan et al.,
+% "Diagnosing Sample Ratio Mismatch in Online Controlled Experiments", KDD 2019, and
+% https://www.microsoft.com/en-us/research/articles/diagnosing-sample-ratio-mismatch-in-a-b-testing/
+% (chi-square, threshold p < 0.0005); Armitage, McPherson, Rowe, "Repeated Significance
+% Tests on Accumulating Data", JRSS A 132 (1969) 235–244 (2 looks ≈ 8 %, 5 looks ≈ 14 %);
+% Kohavi, Tang, Xu, "Trustworthy Online Controlled Experiments" (2020) (Twyman's law,
+% guardrails, novelty / primacy). Sample-size constant derived: 2(1.96 + 0.84)^2 = 15.7.
+% Not repeated: flag kinds, hashed bucketing code, exposure-event design, phased release
+% (engineering/flags-experiments-observability).
+% @labels: area=engineering kind=concept platform=general topic=data,testing discussion=126
+% @tags: ab-testing, p-value, statistical-power, minimum-detectable-effect, sample-size, peeking, sequential-testing, sample-ratio-mismatch, cuped, multiple-comparisons, novelty-effect, guardrail-metrics
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{PySheet}{
+  morekeywords={from,import,def,return},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]",
+  literate={**}{{\hbox{*}\hbox{*}}}2 {==}{{\hbox{=}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2}
+\lstset{language=PySheet, basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\pat[3][sheetBlue]{\par\noindent\fcolorbox{#1}{#1!5}{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{\raggedright{\bfseries\color{#1}#2}\enspace #3}}\par\vspace{2pt}}
+
+\begin{document}
+
+\sheettitle{A/B testing statistics — power, peeking, SRM, CUPED}{engineering · folio}
+
+\oneliner{An A/B test is a \textbf{hypothesis test on randomised groups}. You fix
+\textbf{$\alpha$} (false-positive rate), \textbf{power $1-\beta$} (chance to detect the \textbf{MDE} if it is
+real) and the MDE \textbf{before} starting — together they fix the \textbf{sample size}. Then you
+prove the experiment is \textbf{valid} (SRM, exposure) \emph{before} reading the effect, read it
+\textbf{once} at the planned horizon (unless the test was built for peeking), and report the effect
+with its confidence interval, not a bare p-value.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet, lb/.style={font=\scriptsize, text=sheetBrown, align=center}]
+  % ── power picture: H0 and H1 sampling distributions of the observed difference ──
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.2,2.85) {Why $n \approx 16\,\sigma^2/\delta^2$: the two curves of the observed difference};
+  \def\s{0.62}  % 1 SE in cm
+  \begin{scope}
+    \clip (-2.5*\s+2.2,0) rectangle (2.2+5.5*\s,2.6);
+    % beta region: H1 left of the critical value
+    \fill[sheetOrange!35, domain=-1:1.96, samples=50, smooth, variable=\z]
+      (2.2-1*\s,0) -- plot ({2.2+\z*\s},{2.3*exp(-(\z-2.8)*(\z-2.8)/2)}) -- (2.2+1.96*\s,0) -- cycle;
+    % alpha region: H0 right of the critical value (and the mirror tail)
+    \fill[sheetRed!45, domain=1.96:3.5, samples=30, smooth, variable=\z]
+      (2.2+1.96*\s,0) -- plot ({2.2+\z*\s},{2.3*exp(-\z*\z/2)}) -- (2.2+3.5*\s,0) -- cycle;
+    \fill[sheetRed!45, domain=-3.5:-1.96, samples=30, smooth, variable=\z]
+      (2.2-3.5*\s,0) -- plot ({2.2+\z*\s},{2.3*exp(-\z*\z/2)}) -- (2.2-1.96*\s,0) -- cycle;
+    \draw[thick, sheetBlue, domain=-3.5:3.5, samples=60, smooth, variable=\z] plot ({2.2+\z*\s},{2.3*exp(-\z*\z/2)});
+    \draw[thick, sheetGreen!70!black, domain=-0.7:6.3, samples=60, smooth, variable=\z] plot ({2.2+\z*\s},{2.3*exp(-(\z-2.8)*(\z-2.8)/2)});
+  \end{scope}
+  \draw[flow] (2.2-2.6*\s,0) -- (2.2+5.8*\s,0) node[right, lb]{observed Δ};
+  \draw[dashed, sheetGrey] (2.2+1.96*\s,0) -- (2.2+1.96*\s,2.3);
+  \node[lb, anchor=east, align=right] at (2.2+1.96*\s-0.03,1.95) {critical\\value};
+  \node[lb, text=sheetBlue] at (2.2,2.45) {H0: Δ = 0};
+  \node[lb, text=sheetGreen!60!black] at (2.2+2.8*\s,2.45) {H1: Δ = $\delta$ (MDE)};
+  \node[lb, text=sheetRed] at (2.2+2.9*\s,0.28) {$\alpha/2$};
+  \node[lb, text=sheetRed] at (2.2-2.5*\s,0.28) {$\alpha/2$};
+  \node[lb, text=sheetOrange!70!black] at (2.2+1.2*\s,0.28) {$\beta$};
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}] (2.2,-0.12) -- node[below=2pt, lb]{1.96 SE} (2.2+1.96*\s,-0.12);
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}] (2.2+1.96*\s,-0.12) -- node[below=2pt, lb]{0.84 SE} (2.2+2.8*\s,-0.12);
+  \node[lb, anchor=north west, align=left, text width=37mm] at (6.2,2.35)
+    {$\delta$ must sit \textbf{2.8 SE} from 0 ($\alpha$ = 0.05 two-sided, power 0.8).\\[2pt]
+     SE of a difference of two means = $\sqrt{2\sigma^2/n}$\\[2pt]
+     ⇒ $n = 2(1.96+0.84)^2\sigma^2/\delta^2 = 15.7\,\sigma^2/\delta^2$ per arm (Lehr's 16).\\[2pt]
+     Power 0.9 ⇒ $\approx 21\,\sigma^2/\delta^2$. \textbf{Half the MDE ⇒ 4× the users.}};
+  % ── peeking picture ──
+  \draw[sheetGrey!50] (10.2,3.0) -- (10.2,-0.6);
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (10.35,2.85) {Peeking: a null test crosses 1.96 by chance};
+  \draw[flow] (10.5,0) -- (16.3,0) node[above left, lb]{days →};
+  \draw[flow] (10.5,-0.1) -- (10.5,2.6) node[left, lb]{$z$};
+  \draw[dashed, sheetRed] (10.5,1.3) -- (16.2,1.3) node[below left, lb, text=sheetRed]{fixed 1.96 at every look};
+  \draw[thick, sheetGreen!70!black, domain=1:5.6, samples=40, smooth, variable=\t]
+    plot ({10.5+\t},{1.1+1.3/\t});
+  \node[lb, text=sheetGreen!60!black, anchor=west] at (11.6,2.45) {O'Brien–Fleming-type boundary};
+  \draw[thick, sheetBlue] (10.5,0.2) -- (11.0,0.6) -- (11.5,0.3) -- (12.0,0.9) -- (12.5,1.1) -- (13.0,1.5)
+     -- (13.5,1.2) -- (14.0,0.7) -- (14.5,0.9) -- (15.0,0.4) -- (15.5,0.6) -- (16.0,0.5);
+  \fill[sheetRed] (13.0,1.5) circle (1.6pt);
+  \node[lb, text=sheetRed, anchor=south] at (13.0,1.55) {``ship it!''};
+  \node[lb, anchor=north west, align=left, text width=58mm] at (10.35,-0.12)
+    {stop at the first p < 0.05 ⇒ false positives: 1 look 5\,\%, 2 looks $\approx$8\,\%, 5 looks $\approx$14\,\% (Armitage 1969) — and it keeps growing with continuous monitoring.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\small\setstretch{1.0}\raggedright
+
+\section{The vocabulary, exactly}
+\begin{itemize}
+  \item \textbf{p-value} = P(a difference at least this extreme \textbf{| H0 true}). \emph{Not}
+        P(H0 | data), not ``95\,\% sure it works''.
+  \item \textbf{$\alpha$} (0.05) = false-positive rate you accept when there is no effect (Type I).
+        \textbf{$\beta$} = chance of missing a real effect of size MDE (Type II); \textbf{power} = $1-\beta$, usually 0.8.
+  \item \textbf{MDE} = smallest effect worth shipping \emph{and} the one the test is sized for.
+        Say whether it is \textbf{absolute} (+0.5 pp) or \textbf{relative} (+5\,\%).
+  \item \textbf{95\,\% CI} excludes 0 $\Leftrightarrow$ p < 0.05 (two-sided). Report Δ ± CI.
+        Not significant ≠ ``no effect'' — only ``smaller than we could see''.
+\end{itemize}
+
+\section{Sample size \& duration — worked}
+\begin{itemize}
+  \item Conversion: $\sigma^2 = p(1-p)$. Baseline 10\,\%, MDE +0.5 pp: $16 \cdot 0.09 / 0.005^2$ =
+        \textbf{57\,600 per arm} (exact: $\approx$56\,500).
+  \item Duration = $n$ ÷ \emph{exposed} users per arm per day, rounded up to \textbf{whole weeks}
+        (weekday / weekend behaviour differs).
+  \item Metric per session but randomised per user? Sessions of one user are correlated → the naive
+        variance is too small; use the \textbf{delta method} or bootstrap by user.
+\end{itemize}
+\begin{lstlisting}
+from scipy.stats import norm, chisquare
+def n_per_arm(p, mde, alpha=0.05, power=0.8):
+    z = norm.ppf(1 - alpha / 2) + norm.ppf(power)
+    return 2 * z**2 * p * (1 - p) / mde**2
+n_per_arm(0.10, 0.005)       # 56 512 per arm
+chisquare([50_800, 49_200])  # stat 25.6, p ~ 4e-7: SRM
+\end{lstlisting}
+
+\section{Peeking \& sequential testing}
+\begin{itemize}
+  \item \textbf{Fixed horizon}: pick $n$, look once. Simple, and the default.
+  \item \textbf{Group sequential} (alpha spending, O'Brien–Fleming-type): planned looks,
+        very strict early, near 1.96 at the end.
+  \item \textbf{Always-valid p-values / mSPRT}: built to be monitored continuously, at the cost of power.
+        Stopping for \textbf{harm} (guardrail breach) at any time is fine.
+\end{itemize}
+
+\section{Sample-ratio mismatch (SRM)}
+\begin{itemize}
+  \item $\chi^2$ goodness of fit of the \emph{user counts} against the designed split (1 df for 2 arms):
+        $\chi^2 = \sum (O-E)^2/E$. 50/50 over 100\,000: 50\,800 vs 49\,200 → $\chi^2 = 25.6$, p $\approx 4\cdot10^{-7}$.
+  \item Microsoft's platform flags \textbf{p < 0.0005} and hides results until it passes
+        (Fabijan et al., KDD 2019). An SRM \textbf{voids} the result — find the bug, don't reweight.
+  \item Causes: bucketing bug, one arm crashing (telemetry lost), bot filtering, a trigger the
+        treatment itself changes, late exposure logging.
+\end{itemize}
+
+\columnbreak
+
+\section{Effects that fool you}
+\begin{itemize}
+  \item \textbf{Novelty}: users poke the new thing because it is new — the lift decays.
+        \textbf{Primacy} / change aversion: habit makes the new UI lose at first — the lift grows.
+        Detect: effect by day and by first-exposure cohort; new vs returning users; run ≥ 2 weeks.
+  \item \textbf{Twyman's law}: a result that looks too good is usually a bug — check before celebrating.
+  \item \textbf{Simpson's paradox}: pooling days with different splits (1\,\% → 50\,\% ramp) can
+        reverse the sign — analyse per stage or keep the split fixed.
+\end{itemize}
+
+\section{Guardrails \& multiple comparisons}
+\begin{itemize}
+  \item One pre-registered \textbf{primary metric} (the decision), secondary metrics to explain it,
+        \textbf{guardrails} that must not regress: crash-free users, hang rate, latency, revenue,
+        uninstalls; trust guardrails: SRM, exposure rate.
+  \item 20 metrics, no real effect, $\alpha$ = 0.05: P(at least one ``win'') = $1-0.95^{20} \approx$ \textbf{64\,\%}.
+        Fixes: Bonferroni $\alpha/m$ (family-wise), Benjamini–Hochberg (false discovery rate). Segment slicing too.
+\end{itemize}
+
+\section{CUPED — variance reduction}
+\begin{itemize}
+  \item $Y' = Y - \theta\,(X - E[X])$, $X$ = the same metric in the \textbf{pre-experiment}
+        period, $\theta = \mathrm{cov}(X,Y)/\mathrm{var}(X)$.
+  \item Unbiased (X is fixed before assignment); variance × $(1-\rho^2)$. $\rho = 0.7$ → 0.51 → about
+        \textbf{half the users} for the same power. Bing measured $\approx$50\,\% (Deng et al., WSDM 2013).
+        Brand-new users have no $X$ → little gain for onboarding tests.
+\end{itemize}
+
+\section{Mobile-specific pitfalls}
+\begin{itemize}
+  \item \textbf{Version adoption lag}: only the new build can expose; early updaters may not look
+        like everyone.
+  \item \textbf{Assignment unit}: install id re-randomises on reinstall / second device; logging in
+        mid-test swaps the id → one person sees both arms. Post-login features: user id.
+  \item \textbf{Offline exposure logging}: events queue and arrive late or never (uninstall,
+        crash). A crashier arm \emph{loses} its telemetry → SRM and a flattering metric. Set a late-arrival cutoff.
+  \item \textbf{Cached flags}: a new assignment applies at the next launch; users who never relaunch
+        are never treated → log exposure when the variant \textbf{renders}, analyse exposed users only.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``p = 0.03 means 97\,\% chance B is better'' — no: it is P(data | no effect).}
+  \trap{Extending a test ``until it's significant'' (peeking); reading the metric before the SRM check.}
+\end{itemize}
+
+\pat[sheetOrange]{Remember}{\textbf{$16\sigma^2/\delta^2$ per arm · SRM first · look once or go
+sequential · one primary + guardrails · CUPED · exposure on render.}}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} flags-experiments-observability (flags, bucketing, exposure events, phased release) · production-performance-metrics · opentelemetry-mobile}
+
+\end{document}

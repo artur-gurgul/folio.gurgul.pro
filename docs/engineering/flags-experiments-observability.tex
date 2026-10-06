@@ -1,0 +1,210 @@
+% flags-experiments-observability.tex — feature flags (release / experiment / ops /
+% permission, remote config, kill switch, local overrides, evaluation at launch +
+% caching, flag debt), A/B testing (randomisation unit, hashed bucketing, exposure
+% logging, SRM, sample size / power / significance, peeking, guardrails), analytics
+% event design (schema, naming, PII, batching + offline queue), mobile observability
+% (crash-free users vs sessions, symbolication, hangs/ANR, traces, breadcrumbs),
+% staged rollout (App Store phased release) and release-health gates.
+% Sources (checked 2026-09-25) — phased release; the rest are published works: Pete Hodgson, "Feature Toggles (aka Feature Flags)", martinfowler.com
+% (the four toggle categories); Kohavi, Tang, Xu, "Trustworthy Online Controlled
+% Experiments" (SRM, peeking, guardrails, triggering); Lehr's rule n = 16 s^2/d^2
+% (alpha 0.05 two-sided, power 0.8); App Store Connect Help "Release a version
+% update in phases" (checked 2026-09-25: 1/2/5/10/20/50/100 % over 7 days,
+% automatic updates only, manual download any time, pause up to 30 days total,
+% release to all any time); SE-0206 (Hasher seeded per process). Vendors named
+% only as examples, no vendor specifics.
+% Not repeated: dSYM upload + crash report anatomy (security-build/crashes-symbolication),
+% TestFlight / fastlane pipeline (security-build/signing-and-cicd), MetricKit / Organizer
+% (debugging/logging-signposts-power).
+% @labels: area=engineering kind=process platform=general topic=system-design,data,debugging discussion=129
+% @tags: feature-flags, kill-switch, ab-testing, hashed-bucketing, exposure-logging, sample-ratio-mismatch, sample-size, peeking, guardrail-metrics, analytics-events, crash-free-users, phased-release
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={import,struct,final,class,var,let,func,return,private,init,try,
+    async,await,self,true,false,String,Int,UInt32,Data},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={??}{{\hbox{?}\hbox{?}}}2 {->}{{\hbox{-}\hbox{>}}}2 {<<}{{\hbox{<}\hbox{<}}}2
+           {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\footnotesize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+
+\tikzset{
+  lp/.style={box, font=\scriptsize, text width=25mm, align=center, inner sep=2pt, minimum height=11mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Feature flags, experiments \& mobile observability}{engineering · folio}
+
+\oneliner{Ship code \textbf{dark} behind a \textbf{flag}, turn it on for a
+\textbf{hashed, random slice} of users, \textbf{log who was exposed}, compare their
+metrics with control while \textbf{guardrails} (crashes, hangs, revenue) watch for
+harm, then ramp, hold or \textbf{kill} — without a new binary. On mobile this matters
+twice: a shipped build lives for months and the store rollout cannot be rolled back.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[hd] at (-0.1,3.05) {The loop: flag + experiment + telemetry};
+  \node[lp] (a) at (1.25,2.3) {\textbf{1 ship dark}\\code + flag, default \emph{off}, compiled-in default};
+  \node[lp, draw=sheetBrown, fill=sheetBrown!7] (b) at (4.25,2.3) {\textbf{2 remote config}\\rules, \% ramp, arms: \ct{hash(exp:user)}};
+  \node[lp, draw=sheetGreen!70!black, fill=sheetGreen!8] (c) at (7.25,2.3) {\textbf{3 app evaluates}\\cached at launch, stable for the session};
+  \node[lp, draw=sheetOrange, fill=sheetOrange!8] (d) at (7.25,0.25) {\textbf{4 telemetry}\\exposure + events, crashes, hangs, traces};
+  \node[lp, draw=sheetOrange, fill=sheetOrange!8] (e) at (4.25,0.25) {\textbf{5 analyse}\\SRM check, primary metric, guardrails, CI};
+  \node[lp, draw=sheetRed, fill=sheetRed!6] (f) at (1.25,0.25) {\textbf{6 decide}\\ramp · hold · \textbf{kill switch} · remove flag};
+  \draw[flow] (a) -- (b); \draw[flow] (b) -- (c); \draw[flow] (c) -- (d);
+  \draw[flow] (d) -- (e); \draw[flow] (e) -- (f);
+  \coordinate (x1) at (0.7,0); \coordinate (x2) at (1.9,0); \coordinate (x3) at (3.7,0);
+  \draw[flow] (f.north -| x1) -- node[lbl, right, align=left]{delete\\flag} (a.south -| x1);
+  \draw[hot] (f.north -| x2) |- node[lbl, above, pos=0.75]{ramp / kill:\\config, no release} (3.7,1.28) -- (b.south -| x3);
+  \draw[sheetGrey!50] (9.0,3.2) -- (9.0,-0.2);
+  % ── phased release ──
+  \node[hd] at (9.1,3.05) {App Store phased release (automatic updates)};
+  \foreach \d/\p in {1/1,2/2,3/5,4/10,5/20,6/50,7/100} {
+    \pgfmathsetmacro\h{0.02*\p}
+    \fill[sheetBlue!55] (9.05+\d*0.82-0.25,0.35) rectangle ++(0.5,\h);
+    \node[lbl, anchor=south] at (9.05+\d*0.82,0.35+\h) {\p\,\%};
+    \node[lbl, anchor=north] at (9.05+\d*0.82,0.33) {day \d};
+  }
+  \draw[sheetGrey] (9.3,0.35) -- (15.35,0.35);
+  \foreach \d in {1,...,6} \node[font=\tiny, text=sheetGreen!45!black] at (9.05+\d*0.82+0.41,1.1) {\checkmark};
+  \node[lbl, anchor=west, align=left, text=sheetGreen!45!black] at (9.15,1.55) {gate before each step:\\crash-free users, hang rate,\\funnel vs previous version};
+  \node[lbl, anchor=north west, align=left] at (9.1,-0.05) {pause up to 30 days in total · release to all any time · manual downloads get it at once ·\\\textbf{no rollback}: a bad build needs a new build or a server-side kill switch};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\small\setstretch{1.0}\raggedright
+
+\section{Feature flags}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{32mm}@{}}
+\toprule
+\textbf{kind} & \textbf{purpose} & \textbf{lifetime · decided by}\\ \midrule
+release & hide unfinished work, trunk-based dev & days–weeks · per build/env\\
+experiment & A/B arms & weeks · per user, hashed\\
+ops & kill switch, degrade under load & short or permanent · ops, at runtime\\
+permission & premium, beta, internal & long · per user/entitlement\\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item \textbf{Evaluation}: compiled-in defaults (first launch, offline) $\to$
+        last-known-good cache on disk $\to$ fetch at launch with a short
+        timeout, applied at a \emph{safe point} (next launch / before the screen
+        builds) — never flip UI mid-session. Experiments read once per session.
+  \item \textbf{Kill switch}: server-side off for a risky path without a
+        release; test the \emph{off} path too. Add a minimum-version /
+        force-update switch before you need it.
+  \item \textbf{Local overrides}: debug menu, launch arguments (\ct{-newCheckout
+        YES} lands in \ct{UserDefaults}' argument domain), UI tests set flags
+        explicitly — never depend on the live server.
+  \item \textbf{Flag debt}: owner + expiry per flag, delete at 100\,\%, lint for
+        stale keys. Mobile twist: old app versions still read the key — keep a
+        server default until they are gone. $n$ flags = $2^n$ paths.
+\end{itemize}
+
+\section{A/B testing}
+\begin{itemize}
+  \item \textbf{Randomisation unit} = analysis unit: user id (stable across
+        devices) > install id (resets on reinstall) > session.
+  \item \textbf{Bucketing}: \ct{hash(experimentKey + ":" + userId) mod 10000};
+        arm = range. Deterministic, sticky, stateless; the salt makes
+        experiments independent; ramping by widening a range keeps users in place.
+  \item \textbf{Exposure logging}: log \ct{experiment\_exposure} when the user
+        \emph{reaches} the changed code, not at assignment; analyse exposed users
+        only (otherwise the effect is diluted).
+  \item \textbf{SRM} (sample-ratio mismatch): 50/50 planned, 50.8/49.2 at large
+        $n$ $\to$ $\chi^2$ fails $\to$ assignment or logging bug; results void.
+  \item \textbf{Sample size} ($\alpha$ = 0.05 two-sided, power 80\,\%):
+        $n_{\mathrm{arm}} \approx 16\,\sigma^2/\delta^2$; conversion
+        $\sigma^2 = p(1-p)$. 10\,\% $\to$ 11\,\%: $16 \cdot 0.09/0.01^2 \approx
+        14\,400$ per arm. Smaller effect $\to$ quadratically more users.
+  \item \textbf{Peeking}: checking daily and stopping at the first $p<0.05$
+        inflates false positives far above 5\,\%. Fix the horizon (full weeks),
+        or use a sequential test built for it.
+  \item \textbf{Guardrails}: crash-free users, latency, revenue, uninstalls
+        must not regress even when the primary metric wins. Many metrics
+        $\to$ some ``win'' by chance.
+\end{itemize}
+
+\section{Analytics event design}
+\begin{itemize}
+  \item \textbf{Name} \ct{object\_action}, past tense, snake\_case:
+        \ct{checkout\_started}, \ct{item\_added}. A \textbf{tracking plan}
+        (schema registry) types every property; validate in debug and CI.
+  \item \textbf{Envelope}: \ct{event\_id} (UUID, server dedupe), client time +
+        server receive time (skewed clocks), anonymous/user id, session id, app
+        version + build, OS, device, active experiment arms.
+  \item \textbf{No PII}: no email, name, free text or precise location;
+        pseudonymous ids; honour consent (ATT for cross-app tracking). The
+        privacy manifest and App Store privacy label must match what you send.
+  \item \textbf{Transport}: buffer $\to$ persisted queue $\to$ batch flush by
+        count, time or app-backgrounding; gzip; retry with backoff; cap the queue
+        (drop oldest, \emph{count} drops); \ct{event\_id} makes retries idempotent.
+\end{itemize}
+
+\columnbreak
+
+\section{Example — flags, bucketing, exposure}
+\begin{lstlisting}[language=SwiftSheet]
+import CryptoKit
+struct Flags: Codable { var newCheckout = false }
+final class FlagStore {              // read once per session
+  private(set) var current: Flags
+  init(cached: Data?) {              // disk cache, else defaults
+    current = cached.flatMap { try? JSONDecoder()
+      .decode(Flags.self, from: $0) } ?? Flags() }
+  func refresh() async { /* fetch; save for NEXT launch */ }
+}
+func bucket(_ exp: String, _ user: String) -> Int { // 0..9999
+  let d = SHA256.hash(data: Data("\(exp):\(user)".utf8))
+  return Int(d.prefix(4).reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
+             % 10_000)               // NOT hashValue
+}
+let arm = bucket("checkout_v2", uid) < 5_000 ? "control" : "test"
+analytics.track("experiment_exposure",   // at the screen
+                ["experiment": "checkout_v2", "arm": arm])
+\end{lstlisting}
+
+\section{Mobile observability}
+\begin{itemize}
+  \item \textbf{Crash-free users} = users with no crash / active users;
+        \textbf{crash-free sessions} = sessions with no crash / sessions. Users
+        hides frequency, sessions hides breadth — watch both, per version.
+  \item Symbolication: upload dSYMs per build from CI, or stacks stay hex.
+        \textbf{Hangs} (iOS hang rate, s/hour) \textasciitilde{} Android
+        \textbf{ANR}. \textbf{Traces}: spans for cold start, screen load, API
+        calls, trace id propagated to the backend. \textbf{Breadcrumbs}: last N
+        screens, requests, logs attached to each crash; log non-fatal errors too.
+        (Crashlytics, Sentry, Datadog: examples.)
+  \item \textbf{Release gate}: compare the new version with the previous one
+        over the same days and a minimum sample; pause the phased release on a
+        regression; separate \emph{binary} rollout from \emph{feature} rollout.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Bucketing with Swift \ct{hashValue} — seeded per process: arms change every launch.}
+  \trap{Logging exposure at launch for every user — dilutes the effect.}
+  \trap{``Phased release lets me roll back'' — it only pauses; ship a fix or flip a flag.}
+  \trap{Stopping when p dips under 0.05 (peeking); ignoring SRM.}
+  \trap{Randomising a signed-in feature by device: one user sees both arms
+        on iPhone and iPad — pick the unit you analyse.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Default off, hash to bucket, log exposure, guard the rails, ramp in
+steps, delete the flag.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} signing-and-cicd (TestFlight,
+phased release) · crashes-symbolication (dSYMs) · logging-signposts-power
+(MetricKit, Organizer) · ab-testing-statistics · progressive-delivery · privacy \& ATT}
+
+\end{document}

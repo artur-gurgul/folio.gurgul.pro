@@ -1,0 +1,171 @@
+% large-migrations.tex — running a large migration without stopping delivery: the phases (drawn as a timeline
+% with progress + releases), coexistence layers, "stop the bleeding", flags, per-step rollback, metrics;
+% worked cases UIKit -> SwiftUI (UIHostingController, UIHostingConfiguration), React Native Old -> New
+% Architecture (0.81 / Expo SDK 54 as the last legacy-capable step, library audit), Swift 5 -> Swift 6
+% language mode per module. Strangler fig / branch by abstraction basics live in
+% design/code-smells-refactoring.tex; Sendable/isolation fixes in swift/swift6-strict-concurrency.tex.
+% Sources (checked 2026-09-25):
+% https://reactnative.dev/blog/2025/10/08/react-native-0.82 (New Architecture only; 0.81 / Expo SDK 54 last
+%   with Legacy; interop layers kept; newArchEnabled=false ignored)
+% https://docs.expo.dev/guides/new-architecture/ (SDK 52 default, SDK 54 last where it can be disabled,
+%   SDK 55+ always on; npx expo-doctor checks React Native Directory; interop layers since RN 0.74)
+% https://www.swift.org/migration/ (Swift 6 migration guide: stay in Swift 5 mode, enable checks/upcoming
+%   features incrementally, per-module language mode, "start with the outer-most root module")
+% https://developer.apple.com/documentation/swiftui/uihostingcontroller ·
+% https://developer.apple.com/documentation/swiftui/uihostingconfiguration (iOS 16)
+% https://martinfowler.com/bliki/StranglerFigApplication.html
+% @labels: area=engineering kind=process platform=cross-platform topic=architecture,ui,build discussion=131
+% @tags: migration, strangler-fig, incremental-migration, feature-flags, rollback-plan, uihostingcontroller, uihostingconfiguration, swiftui-migration, new-architecture, interop-layer, swift-6-language-mode, migration-metrics
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={final,class,struct,let,var,func,self,weak,in,true,false,import,init,return},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  ph/.style={box, font=\scriptsize, text width=28mm, minimum height=10mm, inner sep=2pt, anchor=north, align=left},
+  l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  rb/.style={font=\tiny, text=sheetRed, inner sep=1pt, align=left, anchor=north west},
+}
+
+\begin{document}
+
+\sheettitle{Large migrations — change the engine while the car is driving}{engineering · folio}
+
+\oneliner{A large migration (UIKit $\to$ SwiftUI, RN Old $\to$ New Architecture, Swift 5 $\to$ 6) succeeds
+when \textbf{old and new coexist} behind an adapter or interop layer, \textbf{new code is written only the new
+way} from day one, the work moves in \textbf{small shippable steps} (each behind a flag or per module, each with
+a rollback), progress and health are \textbf{measured}, and it \textbf{ends by deleting the old path}. Feature
+delivery never stops; a months-long rewrite branch is the failure mode.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.1,3.55) {Phases — each ships, each can be undone};
+  \foreach \i/\c/\t in {
+     0/sheetGrey/{\textbf{0 Decide}\\inventory, baseline metrics, ADR, pick a pilot, done $=$ old deleted},
+     1/sheetBlue/{\textbf{1 Coexist}\\interop / adapter layer, flags, lint: \emph{new code only new way}},
+     2/sheetOrange/{\textbf{2 Migrate}\\leaf first, then high-traffic; one screen / module per PR},
+     3/sheetGreen!70!black/{\textbf{3 Ramp + verify}\\flag 1 $\to$ 100\,\%, parity tests, guardrail metrics},
+     4/sheetRed/{\textbf{4 Delete old}\\legacy code, flags, interop, old deps; lint forbids return}}
+    \node[ph, draw=\c, fill=\c!7] (p\i) at (1.55+\i*3.32,3.3) {\t};
+  \foreach \i/\j in {0/1,1/2,2/3,3/4} \draw[flow] (p\i.east) -- (p\j.west);
+  % progress curve
+  \draw[->, sheetGrey] (0,0.35) -- (16.55,0.35) node[l, below left]{time};
+  \draw[sheetGrey!60] (0,1.55) -- (16.4,1.55); \node[l, anchor=east] at (0,1.55) {100\,\%};
+  \node[l, anchor=east] at (0,0.35) {0\,\%};
+  \draw[very thick, sheetOrange] (0,0.35) -- (3.3,0.35) -- (5.0,0.42) .. controls (7.5,0.6) and (9.5,1.3) .. (11.4,1.45)
+     -- (13.2,1.55) -- (16.4,1.55);
+  \node[l, text=sheetOrange!80!black, anchor=east] at (8.3,1.3) {\% migrated (screens, modules, warnings fixed)};
+  \draw[very thick, sheetRed, dashed] (13.2,1.55) -- (16.4,0.45);
+  \node[l, text=sheetRed, anchor=west] at (13.5,0.72) {legacy LOC $\to$ 0};
+  % releases continue
+  \foreach \x/\v in {1.0/5.10,2.8/5.11,4.6/5.12,6.4/5.13,8.2/5.14,10.0/5.15,11.8/5.16,13.6/5.17,15.4/5.18}
+    { \fill[sheetBlue] (\x,0.35) circle (1.3pt); \node[l, below] at (\x,0.3) {\v}; }
+  \node[l, text=sheetBlue, anchor=west] at (0.1,0.62) {every release still ships features};
+  % rollback per phase
+  \node[rb] at (3.35,2.1) {undo: flag off};
+  \node[rb] at (6.67,2.1) {undo: revert the PR};
+  \node[rb] at (9.99,2.1) {undo: flag $\to$ 0\,\%, halt rollout};
+  \node[rb] at (13.31,2.1) {only after old binaries age out};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Stop the bleeding} first: a lint rule / code-review rule that new code uses only the new way,
+        or the migration target keeps moving.
+  \item \textbf{Coexistence layer}: something that lets old and new run in one binary — a hosting controller,
+        RN's interop layers, per-module Swift language mode, a protocol with two implementations (branch by
+        abstraction). The layer is temporary: it is deleted in phase 4.
+  \item \textbf{Order}: a low-risk leaf to learn and write the playbook, then by value and risk; not the hardest
+        screen first, not ``alphabetical''. Parity first, redesign later (two hats).
+  \item \textbf{Rollback per step}: runtime flag $>$ revert $>$ new build. On mobile old binaries live for
+        months — keep the old path in the binary until the new one is proven, and the server compatible with both.
+  \item \textbf{Metrics}: \emph{progress} (\% screens/modules, legacy imports, compiler warnings) · \emph{health}
+        (crash-free users, hangs, startup, app size, build time) · \emph{delivery} (features still shipping). A
+        public burndown keeps it funded; a playbook + codemods make the new way the easy way.
+\end{itemize}
+
+\hd{Case 1 — UIKit $\to$ SwiftUI, screen by screen}
+\begin{itemize}
+  \item UIKit keeps the \textbf{shell and navigation} (coordinators); each migrated screen is a SwiftUI view in
+        a \ct{UIHostingController}. SwiftUI reports intent through closures — it never gets the
+        \ct{UINavigationController}.
+  \item List cells: \ct{UIHostingConfiguration} (iOS 16) inside the existing \ct{UICollectionView}. The other
+        way round: \ct{UIViewRepresentable} for UIKit-only pieces (a text view, a map).
+  \item Shared state: one \ct{@Observable} model (iOS 17) or \ct{ObservableObject} read by both sides.
+  \item Order: settings/about $\to$ all \emph{new} features $\to$ busy lists last; replace navigation with
+        \ct{NavigationStack} last, or never. Snapshot tests prove visual parity.
+\end{itemize}
+
+\begin{lstlisting}[language=SwiftSheet]
+final class ProfileCoordinator {
+  let nav: UINavigationController
+  func showProfile(_ user: User) {
+    let model = ProfileModel(user: user)       // @Observable
+    let view = ProfileView(model: model,
+      onEdit: { [weak self] in self?.showEdit(user) })
+    let vc = UIHostingController(rootView: view)
+    vc.title = user.name
+    nav.pushViewController(vc, animated: true)
+  }
+}
+// a SwiftUI row in an existing UIKit list (iOS 16+)
+cell.contentConfiguration = UIHostingConfiguration { RowView(item: item) }
+\end{lstlisting}
+
+\hd{Remember}
+\textbf{``Coexist, stop the bleeding, ship small reversible steps, measure — then delete the old.''}
+
+\columnbreak
+
+\hd{Case 2 — React Native Old $\to$ New Architecture}
+\begin{itemize}
+  \item \textbf{Facts}: interop layers since RN 0.74 let many old-architecture libraries run unchanged; New
+        Architecture is the default from Expo SDK 52; \textbf{RN 0.82 runs only the New Architecture}
+        (\ct{newArchEnabled=false} is ignored); \textbf{0.81 / Expo SDK 54} are the last versions that can
+        still turn it off; SDK 55+ always on.
+  \item \textbf{Path} (one variable at a time): upgrade to 0.81 / SDK 54 with the old architecture still on
+        $\to$ \textbf{audit native deps} (\ct{npx expo-doctor} against React Native Directory; replace
+        unmaintained ones) $\to$ enable the New Architecture on 0.81 $\to$ test native modules, custom views,
+        layout, timing $\to$ ship with a staged rollout $\to$ only then go to 0.82+.
+  \item Your own native code: Codegen specs $\to$ TurboModules / Fabric components; the interop layer carries
+        legacy modules meanwhile, but that is a bridge, not a destination.
+  \item \textbf{Rollback}: architecture is a \emph{build} setting, not a runtime flag — halt the rollout and ship
+        the previous branch; keep it buildable until the new build is proven.
+\end{itemize}
+
+\hd{Case 3 — Swift 5 $\to$ Swift 6 language mode}
+\begin{itemize}
+  \item The language mode is \textbf{per module}; a Swift 6 compiler builds Swift 5-mode and Swift 6-mode
+        modules side by side, so migrate target by target.
+  \item Per module: in Swift 5 mode turn on complete concurrency checking and the upcoming features one at a
+        time (\emph{warnings}, builds stay green) $\to$ fix $\to$ switch that target to Swift 6
+        (\ct{SWIFT\_VERSION = 6} or \ct{.swiftLanguageMode(.v6)}). The guide suggests starting from the
+        outer-most root module. \ct{@preconcurrency import} for unmigrated dependencies.
+  \item Metric: concurrency warnings per module, burned down. Each \ct{@unchecked Sendable} is logged debt.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{A long-lived ``v2'' branch: merge hell, nothing ships, the old code keeps changing under it.}
+  \trap{Migrating and redesigning in the same step — no parity baseline, no clean rollback.}
+  \trap{No phase 4: two systems forever (a ``lava layer''), double the upkeep.}
+  \trap{Treating the RN architecture switch as a runtime flag — it is a build.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} code-smells-refactoring (strangler fig) ·
+swiftui-uikit-interop · swift6-strict-concurrency · rn-architecture · tech-debt-and-decision-records · release-engineering}
+
+\end{document}

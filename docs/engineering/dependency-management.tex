@@ -1,0 +1,181 @@
+% dependency-management.tex — package managers for iOS + RN (SPM, CocoaPods incl. trunk going read-only,
+% Carthage, npm / Yarn / pnpm), semver and range operators, lockfiles, transitive + peer dependencies (a vulnerable
+% transitive dependency drawn with the fix ladder), choosing a library (maintenance signals, bus factor, size,
+% licence compatibility), vendoring vs depending, update strategy with Renovate / Dependabot, removing deps.
+% Attack side (npm incidents, install scripts, provenance, SBOM, cooldowns) lives in security/supply-chain-security.tex;
+% the weighted build-vs-buy scorecard in engineering/tech-debt-and-decision-records.tex — only pointed to.
+% Sources (checked 2026-10-06) — CocoaPods trunk date re-read; the rest are specs/docs:
+% https://semver.org/ · https://github.com/npm/node-semver#advanced-range-syntax (caret / tilde, 0.x rules)
+% https://docs.npmjs.com/cli/v10/configuring-npm/package-json#overrides · https://docs.npmjs.com/cli/v10/commands/npm-explain
+% https://docs.swift.org/package-manager/ (from: = up to next major, .upToNextMinor, Package.resolved)
+% https://blog.cocoapods.org/CocoaPods-Specs-Repo/ (trunk read-only from 2 Dec 2026; existing builds keep working)
+% https://pnpm.io/motivation (content-addressable store, strict node_modules)
+% https://www.apache.org/licenses/LICENSE-2.0 (patent grant, NOTICE) · https://www.gnu.org/licenses/license-list.html
+% https://docs.renovatebot.com/ · https://docs.github.com/en/code-security/dependabot
+% @labels: area=engineering kind=tooling platform=cross-platform topic=build,tooling discussion=128
+% @tags: swift-package-manager, cocoapods, npm, pnpm, semver, caret-and-tilde-ranges, lockfile, transitive-dependencies, peer-dependencies, npm-overrides, open-source-licences, renovate, dependabot, vendoring
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{DepSheet}{
+  morekeywords={dependencies,overrides,package,from,upToNextMinor,exact},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {>=}{{\hbox{>}\hbox{=}}}2 {<=}{{\hbox{<}\hbox{=}}}2
+           {..<}{{\hbox{.}\hbox{.}\hbox{<}}}3 {==}{{\hbox{=}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcommand\gee{\hbox{>}\hbox{=}}
+\newcommand\hrr{\hbox{.}\hbox{.}\hbox{<}}
+\newcommand\crt{\textasciicircum}
+\newcommand\tld{\textasciitilde}
+
+\tikzset{
+  pk/.style={box, font=\scriptsize, inner sep=2pt, minimum width=17mm, align=center},
+  bad/.style={pk, draw=sheetRed, fill=sheetRed!10, very thick},
+  l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  st/.style={font=\tiny, inner sep=2pt, align=left, text width=38mm, draw=#1, fill=#1!6, rounded corners=1pt, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Dependency management — versions, lockfiles, choosing, updating}{engineering · folio}
+
+\oneliner{Every dependency is code you ship, cannot fully read, and must keep updating. \textbf{Semver ranges}
+say what you \emph{accept}; the \textbf{lockfile} records what you \emph{got} (every transitive package, exact
+version + hash) so every machine and CI builds the same tree. Choose libraries by \textbf{maintenance, size,
+licence and exit cost}, update in \textbf{small automated steps}, and remember that most of your tree is
+\textbf{transitive} — you are responsible for packages you never chose.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.1,3.55) {A vulnerable transitive dependency — and the fix ladder};
+  \node[pk, draw=sheetBlue, fill=sheetBlue!15] (app) at (3.7,2.95) {\textbf{App}\\\ct{package.json}};
+  \node[pk] (a) at (1.2,1.85) {\ct{A} \ct{\crt2.1.0}\\$\to$ 2.3.0};
+  \node[pk] (b) at (3.7,1.85) {\ct{B} \ct{\tld1.4.0}\\$\to$ 1.4.7};
+  \node[pk] (e) at (6.2,1.85) {\ct{E} 3.0.1\\(exact)};
+  \node[bad] (c) at (2.45,0.55) {\ct{C} \textbf{1.4.2}\\CVE: fixed in 1.4.3};
+  \node[pk] (d) at (5.0,0.55) {\ct{D} 0.9.1};
+  \draw[flow] (app) -- node[l, left]{direct} (a); \draw[flow] (app) -- (b); \draw[flow] (app) -- (e);
+  \draw[flow] (a) -- node[l, left]{\ct{\crt1.4.0}} (c); \draw[flow] (b) -- node[l, right]{\ct{1.4.2} exact} (c);
+  \draw[flow] (b) -- (d); \draw[flow] (e) -- (d);
+  \node[l, text=sheetRed] at (2.45,-0.05) {transitive: you never chose it, you ship it};
+  \node[l, text=sheetGrey, align=left, anchor=west] at (6.9,0.55) {lockfile pins\\all 5, with\\integrity hashes};
+  \draw[sheetGrey!40] (8.35,3.7) -- (8.35,-0.2);
+  % fix ladder
+  \node[st=sheetBlue] at (8.55,3.05) {\textbf{1 find the path}: \ct{npm explain C} / \ct{npm ls C} · \ct{swift package show-dependencies}};
+  \node[st=sheetGreen!70!black] at (8.55,2.35) {\textbf{2 update the direct dep}: a B release that allows C $\geq$ 1.4.3 — best: upstream fixed};
+  \node[st=sheetOrange] at (8.55,1.65) {\textbf{3 override} the transitive: npm \ct{overrides}, Yarn \ct{resolutions}, pnpm \ct{overrides}; test, add a removal note};
+  \node[st=sheetBrown] at (8.55,0.95) {\textbf{4 patch / fork} (\ct{patch-package}, a pinned fork) — you now own it};
+  \node[st=sheetRed] at (8.55,0.3) {\textbf{5 remove} the feature or the dependency};
+  \node[l, text=sheetGrey, align=left, anchor=west] at (12.75,2.7) {not exploitable in your\\usage? record why, with\\an expiry — don't just\\silence the scanner};
+  \node[l, text=sheetBrown, align=left, anchor=west] at (12.75,1.3) {SPM: \emph{one} version of C per\\graph — incompatible ranges\\fail resolution. npm: may\\nest two copies side by side};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Package managers}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{41mm}@{}}
+\toprule
+\textbf{Tool} & \textbf{Lockfile} & \textbf{Model} \\ \midrule
+SPM & \ct{Package.resolved} & built into Xcode/\ct{swift}; source + \ct{binaryTarget} (XCFramework + checksum); one version per package \\
+CocoaPods & \ct{Podfile.lock} & Ruby; generates a workspace; trunk \textbf{read-only from 2 Dec 2026} (existing pods still install) — RN still uses it \\
+Carthage & \ct{Cartfile.resolved} & builds frameworks, you link them; decentralised, rarely chosen now \\
+npm & \ct{package-lock.json} & nested \ct{node\_modules}: two versions can coexist \\
+Yarn & \ct{yarn.lock} & Berry adds Plug'n'Play; RN projects use \ct{nodeLinker: node-modules} \\
+pnpm & \ct{pnpm-lock.yaml} & content-addressed store + symlinks; \textbf{strict}: undeclared (``phantom'') imports fail \\
+\bottomrule
+\end{tabular}}
+
+\hd{Semver and ranges}
+\begin{itemize}
+  \item \ct{MAJOR.MINOR.PATCH} $=$ breaking . feature . fix; \ct{0.y.z}: anything may change. A promise by
+        humans, not a guarantee — tests decide.
+  \item npm: \ct{\crt1.2.3} $=$ \ct{\gee1.2.3 <2.0.0} · \ct{\crt0.2.3} $=$ \ct{\gee0.2.3 <0.3.0} (caret treats the first
+        non-zero as major) · \ct{\tld1.2.3} $=$ \ct{\gee1.2.3 <1.3.0} · \ct{1.2.3} exact. Pre-releases
+        (\ct{2.0.0-beta.1}) are skipped by ranges unless asked for.
+  \item SPM: \ct{from: "1.2.3"} $=$ \ct{1.2.3\hrr2.0.0} · \ct{.upToNextMinor(from:)} $=$ \ct{1.2.3\hrr1.3.0} ·
+        \ct{exact:} · branch/revision (not for releases).
+  \item \textbf{Apps}: pin native-heavy deps exactly (RN, SDKs) and let the lockfile pin the rest.
+        \textbf{Libraries}: wide ranges, peers for shared singletons (\ct{react}, \ct{react-native}).
+\end{itemize}
+
+\hd{Lockfile rules}
+Commit it (apps); CI installs \emph{from} it (\ct{npm ci}, \ct{pod install}, resolved SPM) and fails if it
+drifts. Review lockfile diffs: a one-line change in \ct{package.json} can move 200 transitive versions.
+A library's lockfile is not published — consumers resolve its ranges themselves.
+
+\hd{Example — ranges, override, SPM}
+\begin{lstlisting}[language=DepSheet]
+// package.json (comments for the sheet only)
+"dependencies": {
+  "react-native": "0.81.0",      // exact: native, upgrade on purpose
+  "date-fns": "^4.1.0",          // >=4.1.0 <5.0.0
+  "@example/analytics": "~2.3.1" // >=2.3.1 <2.4.0
+},
+"overrides": { "semver": "7.5.4" } // force a patched transitive
+// Package.swift
+.package(url: "https://example.com/a.git", from: "1.1.0")
+                                        // 1.1.0..<2.0.0
+.package(url: "https://example.com/b.git",
+         .upToNextMinor(from: "0.9.2")) // 0.9.2..<0.10.0
+\end{lstlisting}
+
+\hd{Remember}
+\textbf{``Ranges say what you accept, the lockfile what you got; every dependency is yours to update — or remove.''}
+
+\columnbreak
+
+\hd{Choosing a library — the signals}
+\begin{itemize}
+  \item \textbf{Maintenance}: releases in the last months, issues and PRs answered, CI green, a changelog,
+        honest semver; supports the current OS, Swift 6 / RN New Architecture, ships types.
+  \item \textbf{Bus factor}: more than one active maintainer, or a company behind it; who fixes a CVE at 2 am?
+  \item \textbf{Size + cost}: binary size delta (App Thinning Size Report, JS bundle analyser), transitive
+        count, launch cost (dynamic frameworks), permissions and privacy manifest it brings.
+  \item \textbf{Need it?} 20 lines of your own beat a package for a helper; platform APIs (\ct{URLSession}
+        async/await, \ct{fetch}, \ct{Intl}) replace many classics. \textbf{Exit cost}: wrap it behind your interface.
+\end{itemize}
+
+\hd{Licences — what they cost an app}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{55mm}@{}}
+\toprule
+MIT, BSD & permissive: keep copyright + licence text (Acknowledgements screen) \\
+Apache-2.0 & permissive + \textbf{patent grant}; keep \ct{NOTICE}; not GPLv2-compatible \\
+MPL-2.0 & file-level copyleft: publish changes to \emph{its} files only \\
+LGPL & users must be able to relink a modified library — hard with static linking in a signed iOS app:
+       legal review \\
+GPL / AGPL & the combined app must ship as GPL source (AGPL: network use too) — a no for closed apps \\
+no licence & all rights reserved: you may not use it \\
+\bottomrule
+\end{tabular}}\par
+Gate it in CI: a licence scanner emits SPDX ids, checked against an allow-list.
+
+\hd{Vendor, update, remove}
+\begin{itemize}
+  \item \textbf{Vendor} (copy source/binary into the repo) for tiny, abandoned or patched code, or
+        offline builds — you now own its updates and CVEs. Middle ground: pinned fork, \ct{patch-package}.
+  \item \textbf{Update}: Renovate / Dependabot PRs on a schedule; group patch + minor, majors one by one with
+        the changelog read; automerge only low-risk groups on green CI. RN/Xcode upgrades are planned work.
+  \item \textbf{Remove}: find imports, swap in the platform API, delete, check the lockfile and binary
+        shrank; \ct{knip} / \ct{depcheck} find unused JS deps.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Two copies of \ct{react} in an RN monorepo $\to$ ``Invalid hook call'': dedupe; libraries declare it as a \textbf{peer}.}
+  \trap{``We pinned \ct{\crt1.2.3}'' — a caret range is not a pin; the lockfile is.}
+  \trap{Code relying on a transitive package it never declared — breaks under pnpm or the next update.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} supply-chain-security (incidents, provenance, SBOM) ·
+tech-debt-and-decision-records (scorecard) · modularization-spm · rn-tooling-release · large-migrations}
+
+\end{document}

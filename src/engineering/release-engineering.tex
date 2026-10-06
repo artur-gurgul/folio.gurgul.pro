@@ -1,0 +1,185 @@
+% release-engineering.tex — mobile release engineering: marketing version vs build number (iOS + Android rules),
+% release trains + cadence (drawn as a calendar), code freeze / branch cut, go/no-go, phased vs staged rollout,
+% backward compatibility with installed versions (API expand/contract, min supported version, forced vs soft
+% update), hotfix process, release notes, signing-key custody, why there is no rollback.
+% Not repeated: signing chain / fastlane / TestFlight limits (security-build/signing-and-cicd.tex), phased-release
+% percentages + kill switches (engineering/flags-experiments-observability.tex), RN OTA (react-native/rn-tooling-release.tex).
+% Sources (checked 2026-09-25):
+% https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleshortversionstring
+%   ("three period-separated integers") · .../cfbundleversion ("one to three period-separated integers")
+% https://developer.android.com/studio/publish/versioning (versionCode positive integer, max 2100000000,
+%   no reuse, system blocks downgrades; versionName is the only value shown to users)
+% https://developer.apple.com/distribute/app-review/ (90 % reviewed < 24 h, expedited review for critical bug fixes)
+% https://developer.android.com/guide/playcore/in-app-updates (immediate / flexible)
+% https://support.google.com/googleplay/android-developer/answer/9842756 (Play App Signing: Google holds the app
+%   signing key, you hold the upload key; lost upload key can be reset; new apps enrolled automatically)
+% @labels: area=engineering kind=process platform=cross-platform topic=build,system-design discussion=135
+% @tags: release-train, code-freeze, release-branch, cfbundleversion, versioncode, staged-rollout, phased-release, backward-compatibility, forced-update, min-supported-version, hotfix, play-app-signing
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={struct,enum,case,let,var,func,return,if,else,static,private,Decodable,String,Int},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2 {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  lane/.style={font=\scriptsize\bfseries, anchor=east, inner sep=1pt},
+  bar/.style={draw=#1, fill=#1!18, rounded corners=1pt, inner sep=0pt},
+}
+% a bar: \rb{colour}{x0}{x1}{y}{label}
+\newcommand\rb[5]{\draw[bar=#1] (#2,#4-0.17) rectangle (#3,#4+0.17);
+  \node[l, text=#1!60!black] at ({(#2+#3)/2},#4) {#5};}
+
+\begin{document}
+
+\sheettitle{Release engineering — trains, versions, compatibility, hotfixes}{engineering · folio}
+
+\oneliner{A mobile release cannot be undone: every build is \textbf{reviewed}, \textbf{signed}, rolled out
+\textbf{gradually}, and then lives on phones for months. So releases leave on a fixed \textbf{train} (date fixed,
+scope floats), each build gets a \textbf{strictly increasing build number}, the backend stays
+\textbf{compatible with every version still installed}, a \textbf{minimum-version switch} exists before it is
+needed, and ``rollback'' means \textbf{roll forward}: a flag flip or a hotfix build.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.1,3.55) {A two-week release train};
+  % week grid
+  \foreach \w in {0,...,5} {
+    \draw[sheetGrey!35] (1.3+\w*2.5,0.45) -- (1.3+\w*2.5,3.25);
+    \node[l, anchor=north] at (2.55+\w*2.5,0.42) {week \the\numexpr\w+1\relax};
+  }
+  \draw[sheetGrey!35] (16.3,0.45) -- (16.3,3.25);
+  % lanes
+  \node[lane] at (1.2,2.95) {main};
+  \node[lane] at (1.2,2.25) {5.12};
+  \node[lane] at (1.2,1.55) {5.13};
+  \node[lane] at (1.2,0.85) {5.14};
+  \rb{sheetBlue}{1.3}{16.3}{2.95}{trunk: features merge daily behind flags — never frozen};
+  % 5.12
+  \rb{sheetOrange}{1.3}{3.8}{2.25}{stabilise: fixes only, beta};
+  \rb{sheetBrown}{3.8}{4.2}{2.25}{rev};
+  \rb{sheetGreen}{4.2}{6.7}{2.25}{};
+  \node[l, text=sheetGreen!60!black] at (5.6,2.25) {phased 7 days};
+  % 5.13
+  \rb{sheetOrange}{6.3}{8.8}{1.55}{stabilise: fixes only, beta};
+  \rb{sheetBrown}{8.8}{9.2}{1.55}{rev};
+  \rb{sheetGreen}{9.2}{11.7}{1.55}{phased 7 days};
+  % 5.14
+  \rb{sheetOrange}{11.3}{13.8}{0.85}{stabilise: fixes only, beta};
+  \rb{sheetBrown}{13.8}{14.2}{0.85}{rev};
+  \rb{sheetGreen}{14.2}{16.3}{0.85}{phased $\to$};
+  % cuts
+  \foreach \x/\y in {1.3/2.25, 6.3/1.55, 11.3/0.85}
+    \draw[hot] (\x+0.05,2.78) -- (\x+0.05,\y+0.18);
+  \node[l, text=sheetOrange!80!black, anchor=west] at (6.5,2.58) {\textbf{branch cut} $=$ code freeze (Mon)};
+  % hotfix
+  \draw[hot, draw=sheetRed] (4.55,2.78) -- (4.7,2.42);
+  \node[diamond, draw=sheetRed, fill=white, inner sep=1.3pt, font=\tiny\bfseries, text=sheetRed] at (4.7,2.25) {!};
+  \node[l, text=sheetRed, anchor=east] at (4.6,1.93) {5.12.1 hotfix: fix on main, \ct{cherry-pick -x}};
+  \node[l, anchor=west, align=left] at (11.9,2.4) {miss the cut $\to$ next train,\\\textbf{not} a delayed train};
+  \node[l, anchor=west, align=left, text=sheetBrown] at (1.35,1.2) {rev $=$ store review\\(Apple: 90\,\% $<$ 24 h)};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Version vs build number}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{33mm}@{}}
+\toprule
+& \textbf{iOS} & \textbf{Android} \\ \midrule
+shown & \ct{CFBundleShortVersionString}: \emph{three} integers, \ct{5.12.1} & \ct{versionName}: any string; the only value users see \\
+build & \ct{CFBundleVersion}: 1–3 integers; unique per upload of a version & \ct{versionCode}: positive int, never reused, max 2\,100\,000\,000 \\
+order & build must rise for each upload of the same version & install refuses a \emph{lower} \ct{versionCode}: no downgrades \\
+\bottomrule
+\end{tabular}}\par
+Set the build number from CI (run number or timestamp), never by hand; tag every build
+(\ct{v5.12.1+4211}) so a crash's build maps to a commit.
+
+\hd{How a train runs}
+\begin{itemize}
+  \item \textbf{Fixed cadence} (1–2 weeks): the date is fixed, the scope floats; unfinished work ships
+        \emph{dark} behind a flag. Small batches $=$ small risk, predictable dates for product and QA.
+  \item \textbf{Branch cut / code freeze}: \ct{release/5.12} from main; only approved fixes land, each fixed on
+        main first and cherry-picked. Regression suite, beta (TestFlight / Play testing track), release notes.
+  \item \textbf{Go / no-go} by a rotating \textbf{release captain}: crash-free and hang rates of the beta, open
+        blockers, backend ready, store assets done. Then submit, release manually after approval.
+  \item \textbf{Rollout}: App Store phased release (automatic updates only, 7 days) · Play staged rollout
+        (you pick the \%, can \textbf{halt}). Gate each step on crash-free users vs the previous version.
+\end{itemize}
+
+\hd{Old versions never die — backward compatibility}
+\begin{itemize}
+  \item Every version since the \textbf{minimum supported} one is a client of your API: users with auto-update
+        off, devices stuck on an old OS. Send app version + build in a header and \emph{measure} them.
+  \item API changes are \textbf{additive} (expand $\to$ migrate $\to$ contract): add a field, never rename or
+        change its meaning; clients ignore unknown fields and map unknown enum cases to \ct{.unknown}.
+        Breaking change $=$ new endpoint / API version, old one kept until its traffic is negligible.
+  \item \textbf{Min supported version}: remote config returns \ct{minVersion} (below $\to$ \textbf{forced} update,
+        blocking screen $\to$ store) and \ct{recommendedVersion} (below $\to$ \textbf{soft} prompt). Android also
+        has Play \textbf{In-App Updates} (immediate / flexible); iOS has no system API — compare yourself.
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Trains leave on time, builds only go up, old apps never die — ship the min-version switch in v1.''}
+
+\columnbreak
+
+\hd{Example — forced vs soft update}
+\begin{lstlisting}[language=SwiftSheet]
+struct UpdatePolicy: Decodable {        // from remote config
+  let minVersion: String; let recommendedVersion: String }
+enum UpdateState { case ok, soft, forced }
+func parts(_ s: String) -> [Int] {      // "5.9" -> [5, 9, 0]
+  Array((s.split(separator: ".").map { Int($0) ?? 0 }
+         + [0, 0, 0]).prefix(3)) }
+func state(current: String, _ p: UpdatePolicy) -> UpdateState {
+  let c = parts(current)                 // numeric, not "5.9" > "5.12"
+  if c.lexicographicallyPrecedes(parts(p.minVersion)) { return .forced }
+  if c.lexicographicallyPrecedes(parts(p.recommendedVersion)) { return .soft }
+  return .ok }
+// current: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
+\end{lstlisting}
+
+\hd{There is no rollback}
+Neither store lets you push an older build: Android refuses a lower \ct{versionCode}, the App Store serves
+only the latest approved version. Halting a phased/staged rollout only protects users \emph{not yet updated}.
+The levers, fastest first: \textbf{server-side kill switch / flag} $\to$ backend fix $\to$ \textbf{hotfix build}
+(or the old code rebuilt with a \emph{higher} build number). RN: an OTA JS update if runtime-compatible.
+
+\hd{Hotfix process}
+Triage severity (crash rate, data loss, security, revenue) $\to$ mitigate server-side $\to$ fix on main with a
+test $\to$ cherry-pick to \ct{release/5.12} $\to$ \ct{5.12.1}, new build $\to$ Apple \textbf{expedited review}
+for a critical bug fix $\to$ faster rollout $\to$ postmortem.
+
+\hd{Keys and notes}
+\begin{itemize}
+  \item \textbf{Signing custody}: iOS distribution identity in an encrypted store (match) + CI secrets, few
+        humans. Android \textbf{Play App Signing}: Google holds the \emph{app signing key}, you hold the
+        \emph{upload key} (a lost one can be reset); new apps are enrolled automatically.
+  \item \textbf{Release notes}: user-facing ``What's New'' per locale, written for users; the internal
+        changelog comes from PR labels / conventional commits.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Adding the forced-update check \emph{after} you need it — the old binary doesn't have it.}
+  \trap{Comparing versions as strings: \ct{"5.9" > "5.12"}.}
+  \trap{Renaming a JSON field used by a version still on 8\,\% of devices.}
+  \trap{``Phased release lets us roll back'' — it pauses, it does not undo.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} signing-and-cicd (TestFlight) ·
+flags-experiments-observability (kill switch) · git-in-depth (release branches) ·
+store-policy-and-deadlines · rn-tooling-release (OTA) · api-design}
+
+\end{document}

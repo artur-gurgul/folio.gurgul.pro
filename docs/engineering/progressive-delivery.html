@@ -1,0 +1,90 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Progressive delivery — rolling, canary, shadow, rings, staged rollouts — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/engineering/progressive-delivery.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">129</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area current" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Progressive delivery — rolling, canary, shadow, rings, staged rollouts</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">engineering · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> <strong>Expose a new version to users in steps</strong>, measure each step <strong>against a baseline</strong>, and
+<strong>promote or abort automatically</strong> — so a bad release hurts 1–5 % of traffic for minutes instead of
+everyone for hours. <strong>Deploy <span class="math">≠</span> release</strong>: the binary can be everywhere while the feature is off.</p>
+<p class="sheet-tools"><a class="sheet-download" href="progressive-delivery.pdf" download>Download PDF</a> <a href="progressive-delivery.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/engineering/progressive-delivery.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="progressive-delivery-fig1.svg" width="597" height="178" class="wide" alt="Progressive delivery — rolling, canary, shadow, rings, staged rollouts — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">Rolling update — the default</span></h3>
+<ul>
+<li>K8s <code>RollingUpdate</code>: <code>maxSurge</code> (extra pods, % rounds <strong>up</strong>) and <code>maxUnavailable</code> (%  rounds <strong>down</strong>), both default <strong>25 %</strong>, not both 0. 10 replicas: <span class="math">≤</span> 13 pods, <span class="math">≥</span> 8  ready. <code>maxUnavailable: 0</code> = never below capacity.</li>
+<li>Only <strong>readiness</strong> gates progress (+ <code>minReadySeconds</code>); nothing looks at error rates.  <code>progressDeadlineSeconds</code> (600) only marks the rollout <em>failed</em> — <strong>no automatic rollback</strong>:  <code>kubectl rollout undo</code>.</li>
+<li>v1 and v2 serve <em>at the same time</em> <span class="math">⇒</span> API, schema and messages compatible both ways.</li>
+<li><strong>Recreate</strong> only when versions cannot coexist (singleton, exclusive lock).</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Canary + automated analysis</span></h3>
+<ul>
+<li>Route a <strong>small weight</strong> to v2 (mesh, ingress, Gateway API, ALB weights). No router  <span class="math">⇒</span> weight <span class="math">≈</span> replica ratio (1 of 10 pods = 10 %).</li>
+<li>Compare canary with a <strong>baseline</strong> of the <em>old</em> version deployed <em>at the same time, same
+ size</em> — not with the big, warm production fleet (caches, JIT, heap differ).</li>
+<li><strong>Golden signals</strong>: latency (p99, successes and errors separately), traffic, errors, saturation;  plus restarts/OOM and a business metric (checkout success).</li>
+<li><strong>Kayenta</strong> (Spinnaker): Mann–Whitney U per metric at 98 % confidence <span class="math">→</span> Pass/High/Low;  score = % of metrics passing vs <em>marginal</em> / <em>pass</em> thresholds; critical metric fails  <span class="math">→</span> 0. Needs <span class="math">≥</span> 50 data points per metric: steps last minutes–hours.</li>
+<li><strong>SLO burn rate</strong>: error budget used per unit time; 14.4<span class="math">×</span> over 1 h (and 5 min) = 2 % of a  30-day budget <span class="math">⇒</span> abort.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Abort criteria — write them before the rollout</span></h3>
+<p>Error rate or p99 worse than baseline beyond a set margin · burn rate over threshold · crash loops / OOMKilled · saturation (CPU, pool, queue depth) · business KPI drop · <strong>no data = fail</strong>, not pass. Abort = weight to 0, canary scaled down; investigate, don’t retry.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Sticky routing</span></h3>
+<p>Per-request % sends one user to v1 then v2: flickering UI, lost session, v2-written data read by v1. Route by <strong>user/device id hash</strong>, cookie or header (Flagger A/B mode; ALB target-group stickiness); send <em>internal</em> users via a header. Mobile: route by <code>App-Version</code>.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — Argo Rollouts canary</span></h3>
+<pre class="sheet-code"><code class="hljs language-yaml"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">argoproj.io/v1alpha1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Rollout</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">replicas:</span> <span class="hljs-number">10</span>
+  <span class="hljs-attr">strategy:</span>
+    <span class="hljs-attr">canary:</span>
+      <span class="hljs-attr">canaryService:</span> <span class="hljs-string">api-canary</span>     <span class="hljs-comment"># router splits by weight</span>
+      <span class="hljs-attr">stableService:</span> <span class="hljs-string">api-stable</span>
+      <span class="hljs-attr">trafficRouting:</span> { <span class="hljs-attr">nginx:</span> { <span class="hljs-attr">stableIngress:</span> <span class="hljs-string">api</span> } }
+      <span class="hljs-attr">analysis:</span>                     <span class="hljs-comment"># background: whole rollout</span>
+        <span class="hljs-attr">templates:</span> [{ <span class="hljs-attr">templateName:</span> <span class="hljs-string">success-rate</span> }]
+      <span class="hljs-attr">steps:</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-attr">setWeight:</span> <span class="hljs-number">5</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-attr">pause:</span> { <span class="hljs-attr">duration:</span> <span class="hljs-string">15m</span> }
+      <span class="hljs-bullet">-</span> <span class="hljs-attr">setWeight:</span> <span class="hljs-number">25</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-attr">pause:</span> {}                   <span class="hljs-comment"># waits for a human: promote</span>
+<span class="hljs-comment"># AnalysisTemplate: successCondition: result[0] &gt;= 0.99,</span>
+<span class="hljs-comment">#   interval: 5m, failureLimit: 2  -&gt; abort: weight 0, Degraded</span></code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">Tools</span></h3>
+<p><table class="sheet-table">
+<tbody>
+<tr><td>Argo Rollouts</td><td><code>Rollout</code> CRD: canary <code>steps</code> (<code>setWeight</code>, <code>pause</code>, <code>analysis</code>), blueGreen;
+ <code>AnalysisTemplate</code> (Prometheus, Datadog, web, job)</td></tr>
+<tr><td>Flagger</td><td>wraps a Deployment; <code>interval</code>, <code>threshold</code>, <code>stepWeight</code>, <code>maxWeight</code>; promote after
+ interval<span class="math">×</span>max/step, roll back after interval<span class="math">×</span>threshold; canary, A/B, B/G, mirroring</td></tr>
+<tr><td>Spinnaker</td><td>pipelines + <strong>Kayenta</strong> automated canary analysis</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Shadow, rings, flags</span></h3>
+<ul>
+<li><strong>Shadow / dark launch</strong>: mirror live requests to v2, compare responses offline. Great for rewrites  and load; dangerous with side effects (double charge, double email) — stub writes.</li>
+<li><strong>Rings</strong>: staff <span class="math">→</span> beta <span class="math">→</span> one region <span class="math">→</span> all, each baked.</li>
+<li><strong>Flags</strong>: deploy moves <em>code</em>, a flag releases <em>behaviour</em> — per user, reversible  in seconds. Canary the binary, flag the feature.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Mobile — the store is your rollout controller</span></h3>
+<p><table class="sheet-table">
+<tbody>
+<tr><td>App Store</td><td>phased 1/2/5/10/20/50/100 %, 7 days, auto-update users</td></tr>
+<tr><td>Google Play</td><td>staged: any %, <strong>halt</strong> (no new users), resume</td></tr>
+<tr><td>EAS Update</td><td><code>eas update --rollout-percentage=10</code> (JS only)</td></tr>
+<tr><td>server</td><td>flags / kill switch: the only lever on installed apps</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">“K8s rolls back a bad rollout” — it stops; undo is on you.</li>
+<li class="trap">Canary vs the whole prod fleet instead of a same-age baseline.</li>
+<li class="trap">5 % of a quiet hour = too few requests to judge anything.</li>
+<li class="trap">Shadowing a write path: every payment happens twice.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<h3 class="sheet-hd">Small step, same-age baseline, pre-written abort.</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> blue-green-deployments · zero-downtime-db-migrations ·
+flags-experiments-observability (bucketing, phased chart) · release-engineering · mobile-incident-playbook</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=engineering" title="area">engineering</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=process" title="kind">process</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=cross-platform" title="platform">cross-platform</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=system-design" title="topic">system-design</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=build" title="topic">build</a></li><li class="sheet-tag"><a href="/folios.html?tag=progressive-delivery">progressive-delivery</a></li><li class="sheet-tag"><a href="/folios.html?tag=rolling-update">rolling-update</a></li><li class="sheet-tag"><a href="/folios.html?tag=canary">canary</a></li><li class="sheet-tag"><a href="/folios.html?tag=canary-analysis">canary-analysis</a></li><li class="sheet-tag"><a href="/folios.html?tag=golden-signals">golden-signals</a></li><li class="sheet-tag"><a href="/folios.html?tag=burn-rate">burn-rate</a></li><li class="sheet-tag"><a href="/folios.html?tag=shadow-traffic">shadow-traffic</a></li><li class="sheet-tag"><a href="/folios.html?tag=ring-deployment">ring-deployment</a></li><li class="sheet-tag"><a href="/folios.html?tag=argo-rollouts">argo-rollouts</a></li><li class="sheet-tag"><a href="/folios.html?tag=flagger">flagger</a></li><li class="sheet-tag"><a href="/folios.html?tag=kayenta">kayenta</a></li><li class="sheet-tag"><a href="/folios.html?tag=staged-rollout">staged-rollout</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=engineering%2Fprogressive-delivery.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/134">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>
