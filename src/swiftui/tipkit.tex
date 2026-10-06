@@ -1,0 +1,203 @@
+% tipkit.tex — TipKit: the Tip protocol (title/message/image/actions/rules/options), Tips.configure
+% options (displayFrequency, datastoreLocation, cloudKitContainer), eligibility (parameter + event
+% rules, display frequency, MaxDisplayCount / MaxDisplayDuration / IgnoresDisplayFrequency),
+% status + invalidation, TipGroup, SwiftUI / UIKit / AppKit presentation, testing overrides, HIG
+% guidance on when a tip is appropriate.
+% Not repeated: App / Scene / init placement (swiftui-app-scenes-lifecycle), measuring feature
+% adoption with flags + experiments (flags-experiments-observability), hosting SwiftUI in UIKit
+% (swiftui-uikit-interop).
+% Sources (checked 2026-09-29):, developer.apple.com/documentation/tipkit:
+%   Tip (protocol: title, message, image, actions, rules, options, status, shouldDisplay,
+%   statusUpdates, shouldDisplayUpdates, invalidate(reason:), resetEligibility() — iOS 26);
+%   Tips.configure(_:) (must be called before tips display; default .immediate + default location);
+%   Tips.ConfigurationOption.displayFrequency(_:) (immediate/hourly/daily/weekly/monthly; minimum gap
+%   after one tip shows before ANOTHER becomes eligible; only applies to tips that have not appeared);
+%   DatastoreLocation (applicationDefault, groupContainer(identifier:) throws, url(_:));
+%   cloudKitContainer(_:) (iOS 18; separate container recommended; iCloud + Background Modes);
+%   Tips.Rule / #Rule, Tips.Parameter (@Parameter persisted; .transient), Tips.Event (donate() async,
+%   sendDonation; most recent 1000 donations queried by default), DonationTimeRange (minute, hour,
+%   day, week, minutes(_:) … weeks(_:)), DonationLimit (iOS 26); Tips.Status (.pending, .available,
+%   .invalidated); InvalidationReason (actionPerformed, tipClosed, displayCountExceeded,
+%   displayDurationExceeded); MaxDisplayCount (no default max), MaxDisplayDuration (iOS 18,
+%   cumulative, 60 s minimum on screen), IgnoresDisplayFrequency; TipGroup (iOS 18, .ordered /
+%   .firstAvailable default, currentTip); TipView, View.popoverTip(_:arrowEdge:action:), TipUIView,
+%   TipUIPopoverViewController (present/dismiss from shouldDisplayUpdates), TipUICollectionViewCell;
+%   testing: showTipsForTesting / hideTipsForTesting / showAllTipsForTesting / hideAllTipsForTesting
+%   (precedence in that order, call before configure), resetDatastore() (before configure; launch arg
+%   -com.apple.TipKit.ResetDatastore 1). developer.apple.com/documentation/updates/tipkit (June 2024:
+%   CloudKit, MaxDisplayDuration, TipViewStyle, sequential tips). HIG "Offering help" — Creating tips.
+%   WWDC23 10229 "Make features discoverable with TipKit" (rules narrow the audience; donatedWithin).
+% @labels: area=swiftui kind=api platform=apple topic=ui,platform-apis discussion=187
+% @tags: tipkit, tip-protocol, tips-configure, display-frequency, tip-rules, tip-parameter, tip-event, max-display-count, invalidate-tip, popover-tip, tipgroup, cloudkit-sync
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={import,struct,class,final,var,let,func,return,static,init,try,await,async,
+    some,any,self,Self,true,false,if,in,@Parameter,@main},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {>=}{{\hbox{>}\hbox{=}}}2 {<=}{{\hbox{<}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  st/.style={box, font=\scriptsize, text width=25mm, minimum height=12mm, inner sep=2pt},
+  l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{TipKit — rules, pacing, invalidation}{swiftui · folio}
+
+\oneliner{A \textbf{tip} is a small, transient view that teaches \emph{one} non-obvious feature.
+You declare \textbf{content} + \textbf{eligibility} on a \ct{Tip}; TipKit (iOS 17) keeps state in a
+persistent \textbf{datastore}, evaluates \textbf{rules} (\ct{@Parameter} values, counted
+\ct{Tips.Event} donations), spaces tips by a global \textbf{display frequency}, and retires a tip for
+good once \textbf{invalidated} — user acted, closed it, or it hit its cap.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.05,1.25) {Eligibility pipeline — one tip, per evaluation};
+  \node[st, draw=sheetGrey, fill=black!5] (cfg) at (1.3,0) {\textbf{\ct{Tips.configure}}\\in \ct{App.init}, once\\loads the datastore};
+  \node[st] (rules) at (4.6,0) {\textbf{rules} — all must pass\\\ct{\#Rule(Self.\$param)}\\\ct{\#Rule(event)\{donations\}}};
+  \node[st] (freq) at (7.9,0) {\textbf{display frequency}\\global gap after \emph{any} tip\\only for never-shown tips};
+  \node[st] (grp) at (11.2,0) {\textbf{\ct{TipGroup}} (iOS 18)\\\ct{.ordered} · \ct{.firstAvailable}\\\ct{currentTip}};
+  \node[st, draw=sheetGreen, fill=sheetGreen!10] (shown) at (14.5,0) {\textbf{\ct{.available}} $\to$ shown\\\ct{TipView} · \ct{.popoverTip}\\\ct{TipUIView} · popover VC};
+  \draw[flow] (cfg) -- node[l, above]{eval} (rules);
+  \draw[flow] (rules) -- node[l, above]{true} (freq);
+  \draw[flow] (freq) -- node[l, above]{gap ok} (grp);
+  \draw[flow] (grp) -- node[l, above]{its turn} (shown);
+  \draw[hot, dashed] (rules.north) to[bend left=14] node[l, above, text=sheetOrange!80!black]{\ct{IgnoresDisplayFrequency(true)} skips the gap} (grp.north);
+  % pending
+  \node[box, draw=sheetOrange, fill=sheetOrange!8, font=\scriptsize, text width=33mm] (pend) at (6.25,-1.85)
+     {\textbf{\ct{.pending}} — not eligible yet\\re-evaluated when a \ct{@Parameter}\\changes or an event is donated};
+  \draw[flow, draw=sheetOrange] (rules.south) -- node[l, left]{false} (rules.south |- pend.north);
+  \draw[flow, draw=sheetOrange] (freq.south) -- node[l, right]{too soon} (freq.south |- pend.north);
+  % invalidated
+  \node[box, draw=sheetRed, fill=sheetRed!7, font=\scriptsize, text width=51mm, align=left, inner sep=2pt] (inv) at (13.35,-1.95)
+     {\textbf{\ct{.invalidated(reason)}} — permanent, persisted\\
+      \ct{.actionPerformed} — \emph{you} call \ct{invalidate(reason:)}\\
+      \ct{.tipClosed} — user taps the close button\\
+      \ct{.displayCountExceeded} — \ct{MaxDisplayCount(n)}\\
+      \ct{.displayDurationExceeded} — \ct{MaxDisplayDuration} (18)};
+  \draw[flow, draw=sheetRed] (shown.south) -- (shown.south |- inv.north);
+  \draw[hot, dashed, draw=sheetGreen!70!black] (inv.west |- pend.east) -- node[l, above, text=sheetGreen!40!black]{\ct{resetEligibility()} (26)} node[l, below]{debug: \ct{resetDatastore()}} (pend.east);
+  % datastore
+  \node[box, draw=sheetBrown, fill=sheetBrown!8, font=\scriptsize, text width=33mm, align=left] (ds) at (1.65,-1.85)
+     {\textbf{datastore}: status, params, events\\\ct{.applicationDefault} · \ct{.url(\_:)}\\\ct{.groupContainer(identifier:)}\\\ct{.cloudKitContainer} sync (iOS 18)};
+  \draw[sheetBrown, thick, dotted] (ds.north) -- (ds.north |- cfg.south);
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{\ct{Tip}} (\ct{Identifiable, Sendable}): \ct{title}, \ct{message?}, \ct{image?},
+        \ct{actions}, \ct{rules}, \ct{options} — the last three are result builders.
+  \item \textbf{\ct{Tips.configure(\_:)}} (throws) \emph{must} run before any tip displays.
+        Frequency \ct{.immediate} (default) · \ct{.hourly} · \ct{.daily} · \ct{.weekly} · \ct{.monthly}.
+  \item \textbf{Parameter rule} = app state. \ct{@Parameter} values are \textbf{persisted} across
+        launches (\ct{.transient} resets); assigning one re-evaluates the rules that read it.
+  \item \textbf{Event rule} = repeated behaviour: \ct{await event.donate()} (\ct{sendDonation()} from
+        sync code); predicate over \ct{\$0.donations}: \ct{.donatedWithin(.days(5))}, \ct{.count},
+        \ct{largestSubset(groupedBy:)}. \ct{Event<Info: Codable>} donations carry data to filter on.
+        Queries see the latest \textbf{1000} donations; iOS 26: \ct{DonationLimit(maximumCount:maximumAge:)}.
+  \item \textbf{Display frequency} = minimum gap after a tip shows before \emph{another, never-shown}
+        tip may appear. A tip already shown still reappears while its rules pass.
+  \item \textbf{Options}: \ct{MaxDisplayCount(3)} (no default cap) · \ct{MaxDisplayDuration(300)}
+        (iOS 18, cumulative, $\geq$ 60 s) · \ct{IgnoresDisplayFrequency(true)}.
+  \item \textbf{Observe}: \ct{status} · \ct{shouldDisplay} · \ct{statusUpdates} ·
+        \ct{shouldDisplayUpdates}. SwiftUI views observe for you; UIKit code must.
+\end{itemize}
+
+\hd{Example — the tip}
+\begin{lstlisting}[language=SwiftSheet]
+import TipKit
+struct ShareTip: Tip {
+  @Parameter static var isLoggedIn: Bool = false        // persisted
+  static let openedDoc = Tips.Event(id: "openedDoc")    // counted
+  var title: Text { Text("Share with one tap") }
+  var message: Text? { Text("Send this document to a teammate.") }
+  var image: Image? { Image(systemName: "square.and.arrow.up.fill") }
+  var actions: [Action] { Action(id: "how", title: "Show me") }
+  var rules: [Rule] {                                   // AND: each narrows
+    #Rule(Self.$isLoggedIn) { $0 == true }
+    #Rule(Self.openedDoc) { $0.donations.donatedWithin(.week).count >= 3 }
+  }
+  var options: [any TipOption] { MaxDisplayCount(3) }
+}
+\end{lstlisting}
+
+\hd{Example — configure, feed, present, retire}
+\begin{lstlisting}[language=SwiftSheet]
+@main struct DocsApp: App {
+  init() {
+    #if DEBUG
+    try? Tips.resetDatastore()                  // BEFORE configure
+    #endif
+    try? Tips.configure([.displayFrequency(.daily)])
+  }
+  var body: some Scene { WindowGroup { EditorView() } } }
+// login:  ShareTip.isLoggedIn = true           -> rules re-evaluate
+// editor: .task { await ShareTip.openedDoc.donate() }
+Button("Share", systemImage: "square.and.arrow.up") {
+  tip.invalidate(reason: .actionPerformed)      // they found it
+  share()
+}
+.popoverTip(tip) { action in if action.id == "how" { showHelp() } }
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Presentation}
+{\footnotesize
+\begin{tabular}{@{}L{25mm}L{48mm}@{}}
+\toprule
+\textbf{API} & \textbf{Behaviour} \\ \midrule
+\ct{TipView(tip)} & inline, \textbf{takes layout space}; keeps context visible \\
+\ct{.popoverTip(tip)} & anchored to a control, keeps content flow \\
+\ct{TipUIView} & UIKit inline — \emph{you} add / remove it \\
+\ct{TipUIPopover}\newline\ct{ViewController} & UIKit popover on a \ct{sourceItem}; \emph{you} \ct{present} / \ct{dismiss} it \\
+\ct{TipUICollection}\newline\ct{ViewCell} & a tip as a list cell · AppKit: \ct{TipNSView}, \ct{TipNSPopover} \\
+\ct{.tipViewStyle(\_:)} & custom look; built-in \ct{MiniTipViewStyle} \\
+\bottomrule
+\end{tabular}}
+
+\hd{Testing}
+All run \textbf{before} \ct{configure}; precedence \ct{showTipsForTesting([A.self])} >
+\ct{hideTipsForTesting} > \ct{showAllTipsForTesting()} > \ct{hideAllTipsForTesting()}.
+\ct{resetDatastore()} = first-launch state. Launch args: \ct{-com.apple.TipKit.ResetDatastore 1},
+\ct{-com.apple.TipKit.ShowTips A,B}.
+
+\hd{When a tip is the right tool (HIG)}
+Simple features (\textbf{$\leq$ 3 actions}), \textbf{1--2 sentences}, actionable. Not for tours,
+promotion or critical info — a tip can be missed. Rule it to the people who benefit; pace several
+(e.g.\ once per 24 h). Filled SF Symbol; don't repeat the image the tip points at.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{No \ct{Tips.configure} $\to$ no tip and \textbf{no error}.}
+  \trap{Invalidation is \textbf{persisted}: closed once in a test run, gone next run — reset the store.}
+  \trap{Forgetting \ct{invalidate(reason: .actionPerformed)} nags people who already use the feature.}
+  \trap{Frequency never throttles an already-shown tip: \ct{MaxDisplayCount}.}
+  \trap{UIKit: observe in a \ct{Task}, cancel it in \ct{viewWillDisappear}.}
+  \trap{CloudKit sync (iOS 18): a \textbf{separate} container; iCloud + Background Modes (remote notifications).}
+  \trap{\ct{TipGroup} is iOS 18 (announced as TipSequence); \ct{.ordered} waits for each earlier tip's invalidation.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Configure once · rule who · pace when · cap how often · invalidate when learned.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} swiftui-app-scenes-lifecycle · flags-experiments-observability ·
+swiftui-uikit-interop · swiftui-async-task-data-flow · testing-viewmodels-ui-snapshot}
+
+\end{document}

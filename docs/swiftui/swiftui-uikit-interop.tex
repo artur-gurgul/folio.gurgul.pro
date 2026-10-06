@@ -1,0 +1,146 @@
+% swiftui-uikit-interop.tex — UIViewRepresentable / UIViewControllerRepresentable lifecycle, Coordinator,
+% data both ways, sizeThatFits (16), UIHostingController (sizingOptions, child VC), UIHostingConfiguration,
+% environment bridging, update-loop bugs.
+% Sources (checked 2026-10-06):
+%   developer.apple.com/documentation/swiftui/uiviewrepresentable (a Coordinator forwards
+%     target-action and delegate messages; SwiftUI owns center/bounds/frame/transform) ·
+%     /updateuiview(_:context:) (called for any change affecting the view) ·
+%     /dismantleuiview(_:coordinator:) · /sizethatfits(_:uiview:context:) (iOS 16; nil = default
+%     sizing; may be called several times per layout pass)
+%   developer.apple.com/documentation/swiftui/uihostingcontroller/sizingoptions (iOS 16; default
+%     empty) · /uihostingconfiguration (iOS 16; collection and table cells) ·
+%     /uitraitbridgedenvironmentkey (iOS 17)
+% @labels: area=swiftui kind=api platform=ios topic=ui discussion=186
+% @tags: uiviewrepresentable, uiviewcontrollerrepresentable, coordinator, makeuiview, updateuiview, sizethatfits, uihostingcontroller, uihostingconfiguration, sizingoptions, child-view-controller, update-loop, environment-bridging
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,protocol,extension,return,if,else,
+    guard,case,switch,self,some,any,where,init,in,private,static,override,
+    @State,@Binding,@objc,@Observable,@MainActor},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\begin{document}
+
+\sheettitle{SwiftUI $\leftrightarrow$ UIKit interop}{swiftui · folio}
+
+\oneliner{A \textbf{representable} struct wraps a long-lived UIKit object: \texttt{make} runs \textbf{once per
+identity}, \texttt{update} \textbf{on every change}, a \textbf{Coordinator} carries callbacks back.
+The other way, \textbf{\texttt{UIHostingController}} is a real view controller showing a SwiftUI view.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{\texttt{UIViewRepresentable}} (\texttt{UIViewControllerRepresentable} when you need VC
+        lifecycle — pickers, \texttt{SFSafariViewController}). Order: \texttt{makeCoordinator()} →
+        \texttt{makeUIView(context:)} → \texttt{updateUIView(\_:context:)} ×\,N →
+        \texttt{static dismantleUIView(\_:coordinator:)} when the identity goes away.
+  \item \textbf{\texttt{make}} = one-time setup (view, delegates, targets, gestures, observers).
+        \textbf{\texttt{update}} = \textbf{idempotent sync} of SwiftUI values onto the view, only when they
+        differ — it runs whenever inputs or anything it reads change.
+  \item \textbf{\texttt{Context}}: \texttt{coordinator}, \texttt{environment} (apply \texttt{colorScheme},
+        \texttt{isEnabled}\ldots), \texttt{transaction} (\texttt{.animation != nil} ⇒ animate the UIKit change).
+  \item \textbf{Coordinator} — \texttt{NSObject} subclass: delegate, data source, \texttt{@objc} target.
+        \emph{Down}: properties / \texttt{@Binding} applied in \texttt{update}; \emph{up}: the coordinator
+        writes the binding or calls a closure. Made once, but the struct is new each update ⇒ refresh
+        \texttt{context.coordinator.parent = self}.
+  \item \textbf{Sizing} (16): \texttt{sizeThatFits(\_:uiView:context:) -> CGSize?} answers the
+        \texttt{ProposedViewSize}; \texttt{nil} = default (intrinsic size + hugging/compression
+        priorities, which is all you had before 16).
+  \item \textbf{\texttt{UIHostingController(rootView:)}} — push, present, or embed as a \textbf{child VC}:
+        \texttt{addChild} → add \texttt{host.view} + constraints → \texttt{didMove(toParent:)}.
+        \texttt{sizingOptions} (16): \texttt{.intrinsicContentSize} / \texttt{.preferredContentSize}.
+        Update via an observable model (or \texttt{host.rootView = …}).
+  \item \textbf{\texttt{UIHostingConfiguration}} (16) — SwiftUI in a collection/table cell:
+        \texttt{cell.contentConfiguration = UIHostingConfiguration \{ Row(item) \}}; self-sizing,
+        \texttt{.margins}, no host VC per cell.
+  \item \textbf{Environment}: a hosting controller starts a \emph{new} environment — traits (colour scheme,
+        Dynamic Type) flow in, your \texttt{.environment(model)} / \texttt{.environmentObject} do
+        \textbf{not}: re-inject on \texttt{rootView}. \texttt{UITraitBridgedEnvironmentKey} (17) bridges
+        custom traits.
+\end{itemize}
+
+\section{Example — two-way text field}
+\begin{lstlisting}[language=SwiftSheet]
+struct Field: UIViewRepresentable {
+  @Binding var text: String
+  func makeCoordinator() -> Coordinator { Coordinator(self) }
+  func makeUIView(context: Context) -> UITextField {
+    let tf = UITextField()              // once per identity
+    tf.delegate = context.coordinator; return tf }
+  func updateUIView(_ tf: UITextField, context: Context) {
+    context.coordinator.parent = self   // fresh binding
+    if tf.text != text { tf.text = text } }  // guard: no echo
+  final class Coordinator: NSObject, UITextFieldDelegate {
+    var parent: Field
+    init(_ p: Field) { parent = p }
+    func textFieldDidChangeSelection(_ tf: UITextField) {
+      parent.text = tf.text ?? "" } } }  // up: UIKit -> binding
+\end{lstlisting}
+
+\columnbreak
+
+\section{Lifecycle and the update loop}
+\begin{tikzpicture}[sheet]
+  \tikzset{lc/.style={box, font=\scriptsize, minimum height=6mm, inner sep=2pt}}
+  % lifecycle strip
+  \node[lc] (mc) at (0,0) {\texttt{makeCoordinator}};
+  \node[lc] (mu) at (2.3,0) {\texttt{makeUIView}};
+  \node[lc, draw=sheetOrange, fill=sheetOrange!10, very thick] (uu) at (4.3,0) {\texttt{updateUIView}};
+  \node[lc, draw=sheetGrey, fill=black!4] (dm) at (6.45,0) {\texttt{dismantle…}};
+  \draw[flow] (mc) -- (mu); \draw[flow] (mu) -- (uu); \draw[flow] (uu) -- (dm);
+  \draw[hot] (uu.north east) to[out=60, in=120, looseness=1.4] node[above, note, text=sheetOrange]{×\,N, every change} (uu.north west);
+  \node[note] at (1.15,-0.55) {\scriptsize once per identity};
+  \node[note] at (6.45,-0.55) {\scriptsize identity gone};
+  % the loop
+  \node[box, draw=sheetBlue, text width=22mm] (st) at (0,-2.2) {\textbf{SwiftUI state}\\\scriptsize\texttt{@State text}};
+  \node[box, draw=sheetOrange, fill=sheetOrange!8, text width=22mm] (up) at (5.4,-2.2) {\texttt{updateUIView}\\\scriptsize\texttt{tf.text = text}};
+  \node[box, draw=sheetGreen, fill=sheetGreen!8, text width=22mm] (ui) at (5.4,-4.1) {\textbf{UIKit view}\\\scriptsize fires a callback};
+  \node[box, draw=sheetBrown, fill=sheetBrown!8, text width=22mm] (co) at (0,-4.1) {\textbf{Coordinator}\\\scriptsize\texttt{parent.text = …}};
+  \draw[flow] (st) -- node[above, note]{re-render} node[below, note]{\scriptsize down: values} (up);
+  \draw[flow] (up) -- node[right, note]{sets property} (ui);
+  \draw[flow] (ui) -- node[above, note]{delegate / target} node[below, note]{\scriptsize up: events} (co);
+  \draw[flow] (co) -- node[left, note]{writes binding} (st);
+  \node[draw=sheetRed, thick, rounded corners=2pt, fill=sheetRed!5, font=\scriptsize, align=center, text=sheetRed]
+       (g) at (2.7,-3.15) {\textbf{break the loop}\\\texttt{if tf.text != text}\\only user-driven events up};
+  \draw[->, thick, sheetRed, dashed] (g.east) -- ([yshift=-1mm]up.south west);
+  \node[note, anchor=west, text width=78mm] at (-1.25,-5.05)
+       {Unguarded, each hop re-triggers the next: \emph{``Modifying state during view update''}
+        warnings, cursor jumps, endless re-render. Never write SwiftUI state synchronously in \texttt{update}.};
+\end{tikzpicture}
+
+\textbf{The other direction} — SwiftUI as a child VC inside a \texttt{UIViewController}:
+\begin{lstlisting}[language=SwiftSheet]
+let host = UIHostingController(rootView: Card().environment(model))
+host.sizingOptions = .intrinsicContentSize      // iOS 16
+addChild(host); view.addSubview(host.view)      // 1. contain
+host.view.translatesAutoresizingMaskIntoConstraints = false
+NSLayoutConstraint.activate([ /* pin edges */ ]) // 2. lay out
+host.didMove(toParent: self)                    // 3. finish
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Setup in \texttt{updateUIView} (adding gestures, subviews, observers) — duplicated on every
+        update. \texttt{make} sets up, \texttt{update} syncs.}
+  \trap{Representable behind a changing \texttt{.id} or unstable \texttt{ForEach} id — \texttt{makeUIView}
+        runs again: scroll position, first responder, player state lost.}
+  \trap{\texttt{UIHostingController} in a cell — wrong/zero height; use
+        \texttt{UIHostingConfiguration}, or \texttt{sizingOptions = .intrinsicContentSize} + pinned edges.}
+  \trap{Retain cycles: a closure stored on a long-lived UIKit object capturing the coordinator (and it the
+        view). UIKit \texttt{delegate} properties are \texttt{weak}, so plain delegation is safe.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Make once, update often, coordinate back.''} \texttt{update} must be safe to call 100 times in a row.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} VC lifecycle \& containment · delegation /
+target-action · Auto Layout priorities · \texttt{MKMapView} / \texttt{WKWebView} wrappers · swiftui-performance-identity}
+
+\end{document}

@@ -1,0 +1,81 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Animations — SwiftUI &amp; UIKit — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/swiftui/animations.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">173</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area current" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Animations — SwiftUI &amp; UIKit</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">swiftui · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> You never animate frame by frame: you <strong>change state</strong> (SwiftUI)
+or set the <strong>final value</strong> (UIKit) <em>inside an animation context</em>, and
+the framework interpolates every <strong>animatable</strong> property old <span class="math">→</span> new.
+The questions are always: <em>which</em> change is in the context, and <em>can</em>
+it be interpolated?</p>
+<p class="sheet-tools"><a class="sheet-download" href="animations.pdf" download>Download PDF</a> <a href="animations.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/swiftui/animations.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<h2>SwiftUI</h2>
+<ul>
+<li><strong>Explicit</strong> <code>withAnimation(.spring) { open.toggle() }</code>:  animates <em>every</em> view depending on state changed in the block  (mutation site decides). <strong>Implicit</strong>  <code>.animation(.easeIn, value: s)</code>: only changes of <code>s</code>, only  in that subtree (view decides). <code>.animation(_:)</code> without  <code>value:</code> is deprecated — it animated <em>any</em> change.</li>
+<li><strong>Transaction</strong> carries the animation through one update:  <code>withTransaction</code> is the general form;  <code>.transaction { $0.animation = nil }</code> strips an inherited one;  <code>disablesAnimations = true</code> forces a snap.</li>
+<li><strong>Animatable</strong>: built-in modifiers interpolate (opacity, offset,  scale, frame, colour). A custom <code>Shape</code>/modifier must expose  <code>animatableData: VectorArithmetic</code> (two values <span class="math">→</span>  <code>AnimatablePair</code>) — otherwise it <em>jumps</em>.</li>
+<li><strong>Transition</strong> (<code>.opacity</code>, <code>.move(edge:)</code>, <br>  <code>.asymmetric(insertion:removal:)</code>) = entering or leaving the tree:  needs an <strong>identity change</strong> (<code>if</code>, new <code>.id</code>) <em>and</em>  an animation context, and sits on the conditional view.</li>
+<li><strong>matchedGeometryEffect(id:in:)</strong>: same id, same  <code>@Namespace</code>, views mounted <em>exclusively</em>, inside  <code>withAnimation</code> <span class="math">→</span> hero morph.</li>
+<li><strong>Springs</strong> (default since iOS 17): <code>.spring(duration: 0.5,
+ bounce: 0.2)</code>, <code>.smooth</code>/<code>.snappy</code>/<code>.bouncy</code>.  Interruptible, re-target <em>keeping velocity</em>; curves have fixed duration.</li>
+<li><strong>iOS 17</strong>: <code>PhaseAnimator</code> steps through discrete phases  (loop or <code>trigger:</code>); <code>KeyframeAnimator</code> = timed  per-property <code>KeyframeTrack</code>s (Linear/Spring/CubicKeyframe).</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">struct</span> <span class="hljs-title class_">Ring</span>: <span class="hljs-title class_ inherited__">Shape</span> {
+  <span class="hljs-keyword">var</span> p: <span class="hljs-type">CGFloat</span>                              <span class="hljs-comment">// 0...1</span>
+  <span class="hljs-keyword">var</span> animatableData: <span class="hljs-type">CGFloat</span> { <span class="hljs-keyword">get</span> { p } <span class="hljs-keyword">set</span> { p <span class="hljs-operator">=</span> newValue } }
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">path</span>(<span class="hljs-params">in</span> <span class="hljs-params">r</span>: <span class="hljs-type">CGRect</span>) -&gt; <span class="hljs-type">Path</span> { <span class="hljs-type">Path</span>() }  <span class="hljs-comment">// arc to p</span>
+}
+<span class="hljs-keyword">struct</span> <span class="hljs-title class_">Card</span>: <span class="hljs-title class_ inherited__">View</span> {
+  <span class="hljs-meta">@State</span> <span class="hljs-keyword">private</span> <span class="hljs-keyword">var</span> <span class="hljs-keyword">open</span> <span class="hljs-operator">=</span> <span class="hljs-literal">false</span>
+  <span class="hljs-meta">@Namespace</span> <span class="hljs-keyword">private</span> <span class="hljs-keyword">var</span> ns
+  <span class="hljs-keyword">var</span> body: <span class="hljs-keyword">some</span> <span class="hljs-type">View</span> {
+    <span class="hljs-keyword">if</span> <span class="hljs-keyword">open</span> { <span class="hljs-type">Big</span>().matchedGeometryEffect(id: <span class="hljs-string">&quot;c&quot;</span>, in: ns) }
+    <span class="hljs-keyword">else</span>    { <span class="hljs-type">Small</span>().matchedGeometryEffect(id: <span class="hljs-string">&quot;c&quot;</span>, in: ns) }
+    <span class="hljs-type">Button</span>(<span class="hljs-string">&quot;Go&quot;</span>) { withAnimation(.snappy) { <span class="hljs-keyword">open</span>.toggle() } }
+  }
+}</code></pre>
+</section>
+<section class="sheet-section">
+<h2>UIKit</h2>
+<ul>
+<li><code>UIView.animate(withDuration:…)</code>: set <em>final</em> values in the  block. Animatable: <code>frame</code>, <code>bounds</code>, <code>center</code>,  <code>transform</code>, <code>alpha</code>, <code>backgroundColor</code>;  <code>text</code>/<code>isHidden</code> snap. Springs:  <code>usingSpringWithDamping:</code> (&lt;1 bounces); iOS 17  <code>animate(springDuration:bounce:)</code>.</li>
+<li><strong>UIViewPropertyAnimator</strong> is an <em>object</em>:  <code>startAnimation()</code>, <code>pauseAnimation()</code>, scrub  <code>fractionComplete</code>, <code>isReversed</code>,  finish with <code>continueAnimation(withTimingParameters:…)</code> —  interruptible gesture-driven UI.</li>
+<li><strong>Auto Layout</strong>: change <code>constant</code>, then  <code>layoutIfNeeded()</code> <em>inside</em> the block (flush once before).</li>
+<li><code>UIView.transition(with:…)</code> + <code>.transitionCrossDissolve</code>;  custom VC transitions must call <code>completeTransition(_:)</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Model vs presentation</h2>
+<figure class="sheet-figure"><img src="animations-fig1.svg" width="284" height="89" alt="Animations — SwiftUI &amp; UIKit — figure 1" loading="lazy"></figure>
+<p>UIView animations set the model for you. A raw
+<code>CABasicAnimation</code> drives only the presentation <span class="math">⇒</span> it
+<strong>snaps back</strong> unless you also set the model value.</p>
+</section>
+<section class="sheet-section">
+<h2>When does a transition run?</h2>
+<figure class="sheet-figure"><img src="animations-fig2.svg" width="248" height="67" alt="Animations — SwiftUI &amp; UIKit — figure 2" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><code>withAnimation</code> animates <em>all</em> dependent views — scope  with <code>.animation(_:value:)</code> or strip with <code>.transaction</code>.</li>
+<li class="trap"><code>.transition</code> without an animation = instant; on a stable  ancestor = never runs.</li>
+<li class="trap">Custom <code>Shape</code> jumps <span class="math">→</span> no <code>animatableData</code>.  matchedGeometry glitch <span class="math">→</span> both views mounted / two namespaces.</li>
+<li class="trap">Layer animation snaps back <span class="math">→</span> model never set  (<code>fillMode = .forwards</code> + <code>isRemovedOnCompletion = false</code>  only hides it).</li>
+<li class="trap">Constraint change jumps <span class="math">→</span> no <code>layoutIfNeeded()</code> inside the block.</li>
+<li class="trap">Scrubbing a spring: <code>pauseAnimation()</code> first;  <code>fractionComplete</code> maps through the curve.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>“State in the block, value in the modifier, identity for
+transitions.”</strong> UIKit: <em>final value in — the model is already there.</em> Cheapest to animate: <code>transform</code>, <code>opacity</code>.</p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> SwiftUI identity &amp; state · rendering pipeline · Core Animation layers · Auto Layout · custom VC transitions · <code>CADisplayLink</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=swiftui" title="area">swiftui</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=ios" title="platform">ios</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=ui" title="topic">ui</a></li><li class="sheet-tag"><a href="/folios.html?tag=withanimation">withanimation</a></li><li class="sheet-tag"><a href="/folios.html?tag=implicit-animation">implicit-animation</a></li><li class="sheet-tag"><a href="/folios.html?tag=transaction">transaction</a></li><li class="sheet-tag"><a href="/folios.html?tag=animatabledata">animatabledata</a></li><li class="sheet-tag"><a href="/folios.html?tag=transitions">transitions</a></li><li class="sheet-tag"><a href="/folios.html?tag=matchedgeometryeffect">matchedgeometryeffect</a></li><li class="sheet-tag"><a href="/folios.html?tag=spring-animation">spring-animation</a></li><li class="sheet-tag"><a href="/folios.html?tag=phaseanimator">phaseanimator</a></li><li class="sheet-tag"><a href="/folios.html?tag=keyframeanimator">keyframeanimator</a></li><li class="sheet-tag"><a href="/folios.html?tag=uiview-animate">uiview-animate</a></li><li class="sheet-tag"><a href="/folios.html?tag=uiviewpropertyanimator">uiviewpropertyanimator</a></li><li class="sheet-tag"><a href="/folios.html?tag=presentation-layer">presentation-layer</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=swiftui%2Fanimations.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/172">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

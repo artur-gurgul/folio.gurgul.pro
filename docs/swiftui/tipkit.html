@@ -1,0 +1,90 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>TipKit — rules, pacing, invalidation — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/swiftui/tipkit.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">173</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area current" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">TipKit — rules, pacing, invalidation</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">swiftui · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A <strong>tip</strong> is a small, transient view that teaches <em>one</em> non-obvious feature.
+You declare <strong>content</strong> + <strong>eligibility</strong> on a <code>Tip</code>; TipKit (iOS 17) keeps state in a
+persistent <strong>datastore</strong>, evaluates <strong>rules</strong> (<code>@Parameter</code> values, counted
+<code>Tips.Event</code> donations), spaces tips by a global <strong>display frequency</strong>, and retires a tip for
+good once <strong>invalidated</strong> — user acted, closed it, or it hit its cap.</p>
+<p class="sheet-tools"><a class="sheet-download" href="tipkit.pdf" download>Download PDF</a> <a href="tipkit.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/swiftui/tipkit.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="tipkit-fig1.svg" width="614" height="158" class="wide" alt="TipKit — rules, pacing, invalidation — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">How it works</span></h3>
+<ul>
+<li><strong><code>Tip</code></strong> (<code>Identifiable, Sendable</code>): <code>title</code>, <code>message?</code>, <code>image?</code>,  <code>actions</code>, <code>rules</code>, <code>options</code> — the last three are result builders.</li>
+<li><strong><code>Tips.configure(_:)</code></strong> (throws) <em>must</em> run before any tip displays.  Frequency <code>.immediate</code> (default) · <code>.hourly</code> · <code>.daily</code> · <code>.weekly</code> · <code>.monthly</code>.</li>
+<li><strong>Parameter rule</strong> = app state. <code>@Parameter</code> values are <strong>persisted</strong> across  launches (<code>.transient</code> resets); assigning one re-evaluates the rules that read it.</li>
+<li><strong>Event rule</strong> = repeated behaviour: <code>await event.donate()</code> (<code>sendDonation()</code> from  sync code); predicate over <code>$0.donations</code>: <code>.donatedWithin(.days(5))</code>, <code>.count</code>,  <code>largestSubset(groupedBy:)</code>. <code>Event&lt;Info: Codable&gt;</code> donations carry data to filter on.  Queries see the latest <strong>1000</strong> donations; iOS 26: <code>DonationLimit(maximumCount:maximumAge:)</code>.</li>
+<li><strong>Display frequency</strong> = minimum gap after a tip shows before <em>another, never-shown</em>  tip may appear. A tip already shown still reappears while its rules pass.</li>
+<li><strong>Options</strong>: <code>MaxDisplayCount(3)</code> (no default cap) · <code>MaxDisplayDuration(300)</code>  (iOS 18, cumulative, <span class="math">≥</span> 60 s) · <code>IgnoresDisplayFrequency(true)</code>.</li>
+<li><strong>Observe</strong>: <code>status</code> · <code>shouldDisplay</code> · <code>statusUpdates</code> ·  <code>shouldDisplayUpdates</code>. SwiftUI views observe for you; UIKit code must.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — the tip</span></h3>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">import</span> TipKit
+<span class="hljs-keyword">struct</span> <span class="hljs-title class_">ShareTip</span>: <span class="hljs-title class_ inherited__">Tip</span> {
+  <span class="hljs-meta">@Parameter</span> <span class="hljs-keyword">static</span> <span class="hljs-keyword">var</span> isLoggedIn: <span class="hljs-type">Bool</span> <span class="hljs-operator">=</span> <span class="hljs-literal">false</span>        <span class="hljs-comment">// persisted</span>
+  <span class="hljs-keyword">static</span> <span class="hljs-keyword">let</span> openedDoc <span class="hljs-operator">=</span> <span class="hljs-type">Tips</span>.<span class="hljs-type">Event</span>(id: <span class="hljs-string">&quot;openedDoc&quot;</span>)    <span class="hljs-comment">// counted</span>
+  <span class="hljs-keyword">var</span> title: <span class="hljs-type">Text</span> { <span class="hljs-type">Text</span>(<span class="hljs-string">&quot;Share with one tap&quot;</span>) }
+  <span class="hljs-keyword">var</span> message: <span class="hljs-type">Text</span>? { <span class="hljs-type">Text</span>(<span class="hljs-string">&quot;Send this document to a teammate.&quot;</span>) }
+  <span class="hljs-keyword">var</span> image: <span class="hljs-type">Image</span>? { <span class="hljs-type">Image</span>(systemName: <span class="hljs-string">&quot;square.and.arrow.up.fill&quot;</span>) }
+  <span class="hljs-keyword">var</span> actions: [<span class="hljs-type">Action</span>] { <span class="hljs-type">Action</span>(id: <span class="hljs-string">&quot;how&quot;</span>, title: <span class="hljs-string">&quot;Show me&quot;</span>) }
+  <span class="hljs-keyword">var</span> rules: [<span class="hljs-type">Rule</span>] {                                   <span class="hljs-comment">// AND: each narrows</span>
+    #<span class="hljs-type">Rule</span>(<span class="hljs-keyword">Self</span>.<span class="hljs-variable">$isLoggedIn</span>) { <span class="hljs-variable">$0</span> <span class="hljs-operator">==</span> <span class="hljs-literal">true</span> }
+    #<span class="hljs-type">Rule</span>(<span class="hljs-keyword">Self</span>.openedDoc) { <span class="hljs-variable">$0</span>.donations.donatedWithin(.week).count <span class="hljs-operator">&gt;=</span> <span class="hljs-number">3</span> }
+  }
+  <span class="hljs-keyword">var</span> options: [<span class="hljs-keyword">any</span> <span class="hljs-type">TipOption</span>] { <span class="hljs-type">MaxDisplayCount</span>(<span class="hljs-number">3</span>) }
+}</code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — configure, feed, present, retire</span></h3>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">@main</span> <span class="hljs-keyword">struct</span> <span class="hljs-title class_">DocsApp</span>: <span class="hljs-title class_ inherited__">App</span> {
+  <span class="hljs-keyword">init</span>() {
+    <span class="hljs-keyword">#if</span> <span class="hljs-type">DEBUG</span>
+    <span class="hljs-keyword">try?</span> <span class="hljs-type">Tips</span>.resetDatastore()                  <span class="hljs-comment">// BEFORE configure</span>
+    <span class="hljs-keyword">#endif</span>
+    <span class="hljs-keyword">try?</span> <span class="hljs-type">Tips</span>.configure([.displayFrequency(.daily)])
+  }
+  <span class="hljs-keyword">var</span> body: <span class="hljs-keyword">some</span> <span class="hljs-type">Scene</span> { <span class="hljs-type">WindowGroup</span> { <span class="hljs-type">EditorView</span>() } } }
+<span class="hljs-comment">// login:  ShareTip.isLoggedIn = true           -&gt; rules re-evaluate</span>
+<span class="hljs-comment">// editor: .task { await ShareTip.openedDoc.donate() }</span>
+<span class="hljs-type">Button</span>(<span class="hljs-string">&quot;Share&quot;</span>, systemImage: <span class="hljs-string">&quot;square.and.arrow.up&quot;</span>) {
+  tip.invalidate(reason: .actionPerformed)      <span class="hljs-comment">// they found it</span>
+  share()
+}
+.popoverTip(tip) { action <span class="hljs-keyword">in</span> <span class="hljs-keyword">if</span> action.id <span class="hljs-operator">==</span> <span class="hljs-string">&quot;how&quot;</span> { showHelp() } }</code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">Presentation</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>API</strong></th><th><strong>Behaviour</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>TipView(tip)</code></td><td>inline, <strong>takes layout space</strong>; keeps context visible</td></tr>
+<tr><td><code>.popoverTip(tip)</code></td><td>anchored to a control, keeps content flow</td></tr>
+<tr><td><code>TipUIView</code></td><td>UIKit inline — <em>you</em> add / remove it</td></tr>
+<tr><td><code>TipUIPopover</code><br><code>ViewController</code></td><td>UIKit popover on a <code>sourceItem</code>; <em>you</em> <code>present</code> / <code>dismiss</code> it</td></tr>
+<tr><td><code>TipUICollection</code><br><code>ViewCell</code></td><td>a tip as a list cell · AppKit: <code>TipNSView</code>, <code>TipNSPopover</code></td></tr>
+<tr><td><code>.tipViewStyle(_:)</code></td><td>custom look; built-in <code>MiniTipViewStyle</code></td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Testing</span></h3>
+<p>All run <strong>before</strong> <code>configure</code>; precedence <code>showTipsForTesting([A.self])</code> &gt; <code>hideTipsForTesting</code> &gt; <code>showAllTipsForTesting()</code> &gt; <code>hideAllTipsForTesting()</code>. <code>resetDatastore()</code> = first-launch state. Launch args: <code>-com.apple.TipKit.ResetDatastore 1</code>, <code>-com.apple.TipKit.ShowTips A,B</code>.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">When a tip is the right tool (HIG)</span></h3>
+<p>Simple features (<strong><span class="math">≤</span> 3 actions</strong>), <strong>1–2 sentences</strong>, actionable. Not for tours, promotion or critical info — a tip can be missed. Rule it to the people who benefit; pace several (e.g. once per 24 h). Filled SF Symbol; don’t repeat the image the tip points at.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">No <code>Tips.configure</code> <span class="math">→</span> no tip and <strong>no error</strong>.</li>
+<li class="trap">Invalidation is <strong>persisted</strong>: closed once in a test run, gone next run — reset the store.</li>
+<li class="trap">Forgetting <code>invalidate(reason: .actionPerformed)</code> nags people who already use the feature.</li>
+<li class="trap">Frequency never throttles an already-shown tip: <code>MaxDisplayCount</code>.</li>
+<li class="trap">UIKit: observe in a <code>Task</code>, cancel it in <code>viewWillDisappear</code>.</li>
+<li class="trap">CloudKit sync (iOS 18): a <strong>separate</strong> container; iCloud + Background Modes (remote notifications).</li>
+<li class="trap"><code>TipGroup</code> is iOS 18 (announced as TipSequence); <code>.ordered</code> waits for each earlier tip’s invalidation.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<h3 class="sheet-hd">“Configure once · rule who · pace when · cap how often · invalidate when learned.”</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> swiftui-app-scenes-lifecycle · flags-experiments-observability ·
+swiftui-uikit-interop · swiftui-async-task-data-flow · testing-viewmodels-ui-snapshot</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=swiftui" title="area">swiftui</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=ui" title="topic">ui</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=platform-apis" title="topic">platform-apis</a></li><li class="sheet-tag"><a href="/folios.html?tag=tipkit">tipkit</a></li><li class="sheet-tag"><a href="/folios.html?tag=tip-protocol">tip-protocol</a></li><li class="sheet-tag"><a href="/folios.html?tag=tips-configure">tips-configure</a></li><li class="sheet-tag"><a href="/folios.html?tag=display-frequency">display-frequency</a></li><li class="sheet-tag"><a href="/folios.html?tag=tip-rules">tip-rules</a></li><li class="sheet-tag"><a href="/folios.html?tag=tip-parameter">tip-parameter</a></li><li class="sheet-tag"><a href="/folios.html?tag=tip-event">tip-event</a></li><li class="sheet-tag"><a href="/folios.html?tag=max-display-count">max-display-count</a></li><li class="sheet-tag"><a href="/folios.html?tag=invalidate-tip">invalidate-tip</a></li><li class="sheet-tag"><a href="/folios.html?tag=popover-tip">popover-tip</a></li><li class="sheet-tag"><a href="/folios.html?tag=tipgroup">tipgroup</a></li><li class="sheet-tag"><a href="/folios.html?tag=cloudkit-sync">cloudkit-sync</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=swiftui%2Ftipkit.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/187">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

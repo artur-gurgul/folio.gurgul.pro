@@ -1,0 +1,172 @@
+% swiftui-custom-modifiers-containers.tex — ViewModifier + View extension, @ViewBuilder params and
+% stored content, custom styles (ButtonStyle / PrimitiveButtonStyle / ToggleStyle / LabelStyle,
+% environment propagation, static-member sugar), iOS 18 custom containers (ForEach(subviews:),
+% Group(subviews:), Subview, SubviewsCollection, ForEach(sections:), ContainerValues + @Entry),
+% @Entry for Environment/Transaction/Focused values, AnyView vs generics vs some View, the
+% conditional-modifier (.if) identity trap, EquatableView.
+% Not repeated: identity + invalidation rules (swiftui-performance-identity), modifier ORDER and
+% layout (swiftui-layout-system), Environment/PreferenceKey mechanics (swiftui-environment-preferences),
+% result-builder internals (macros-and-result-builders).
+% Sources (checked 2026-09-26): developer.apple.com/documentation/swiftui — ForEach
+% init(subviews:content:), Group init(subviews:transform:), Subview, ContainerValues, Entry() macro
+% (EnvironmentValues / Transaction / ContainerValues / FocusedValues; FocusedValues entries Optional;
+% listed back to iOS 13), ForEach init(sections:content:), ButtonStyleConfiguration (label, isPressed,
+% role), PrimitiveButtonStyle (custom interaction, configuration.trigger()), Toggle (toggleStyle on a
+% container). WWDC24 "Demystify SwiftUI containers" for the pattern.
+% @labels: area=swiftui kind=api platform=apple topic=ui,patterns discussion=178
+% @tags: viewmodifier, modifiedcontent, viewbuilder, buttonstyle, primitivebuttonstyle, togglestyle, custom-container, foreach-subviews, group-subviews, containervalues, entry-macro, conditional-modifier
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,protocol,extension,return,if,else,guard,
+    case,self,Self,some,any,where,in,private,static,for,true,false,nil,
+    @State,@Environment,@ViewBuilder,@Entry,@MainActor},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {...}{{\hbox{.}\hbox{.}\hbox{.}}}3}
+\newcommand\arr{\texttt{\hbox{-}\hbox{>}}}
+\newcommand\eqeq{\texttt{\hbox{=}\hbox{=}}}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!80, inner sep=1pt, align=center},
+  ty/.style={draw, rounded corners=2pt, font=\scriptsize\ttfamily, inner sep=2pt, align=left},
+  slot/.style={draw, rounded corners=2pt, font=\scriptsize\ttfamily, inner sep=1.5pt, minimum width=19mm,
+               minimum height=4.6mm},
+  ttl/.style={font=\bfseries\footnotesize, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Custom modifiers, styles \& containers}{swiftui · folio}
+
+\oneliner{A modifier \textbf{wraps} the view in a generic type (\texttt{ModifiedContent<Content, M>}) —
+static structure, so the wrap keeps identity. Reuse has three shapes: a \textbf{\texttt{ViewModifier}}
+(a look that may own state), a \textbf{style} (a control's look \emph{without} losing its behaviour,
+inherited through the environment) and, since iOS 18, a \textbf{custom container} that lays out the
+\emph{resolved subviews} of its content.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{\texttt{ViewModifier}}: \texttt{body(content:)}; may hold \texttt{@State} /
+        \texttt{@Environment} like a view. Publish via \texttt{extension View \{ func card() \arr\ some View
+        \{ modifier(Card()) \} \}}. A stateless helper can just be the extension.
+  \item \textbf{Content parameters}: \texttt{struct Board<Content: View>} + \texttt{@ViewBuilder var
+        content: Content} (or \texttt{init(@ViewBuilder content:)} that calls it). Store the \emph{built view},
+        not the closure — closures never compare equal, so the child always re-runs.
+  \item \textbf{Styles}: \texttt{ButtonStyle.makeBody(configuration:)} gets \texttt{label},
+        \texttt{isPressed}, \texttt{role} — tap, disabled state and accessibility stay the system's.
+        \textbf{\texttt{PrimitiveButtonStyle}}: \emph{you} own the interaction, call
+        \texttt{configuration.trigger()}. Also \texttt{ToggleStyle} (\texttt{\$configuration.isOn}),
+        \texttt{LabelStyle} (\texttt{title}, \texttt{icon}).
+  \item \textbf{Propagation}: \texttt{.buttonStyle(.pill)} / \texttt{.toggleStyle(.switch)} on a
+        \emph{container} styles every control below (environment; nearest wins). Sugar:
+        \texttt{extension ButtonStyle where Self \eqeq\ Pill \{ static var pill: Pill \{ .init() \} \}}.
+  \item \textbf{Custom containers (18)}: \texttt{ForEach(subviews: content)} or
+        \texttt{Group(subviews: content) \{ subs in \}} — a \texttt{SubviewsCollection} (\texttt{count},
+        \texttt{[i]}, slices; built on demand). Content is \textbf{resolved}: a \texttt{ForEach} of 5 = 5
+        subviews, \texttt{Group}s flattened. \texttt{Subview} = \texttt{Identifiable} \texttt{View} proxy,
+        resolved in the \emph{container's} environment; the child's own modifiers apply first.
+        \texttt{ForEach(sections:)} $\to$ \texttt{SectionConfiguration} (header / content / footer).
+  \item \textbf{Container values (18)}: \texttt{@Entry} in \texttt{extension ContainerValues}; child
+        \texttt{.containerValue(\textbackslash.isPinned, true)}; container reads
+        \texttt{sub.containerValues.isPinned}. \textbf{Direct} container only, no merge, never escapes
+        (unlike preferences).
+  \item \textbf{\texttt{@Entry}} (Xcode 16 macro, back-deploys): key boilerplate for
+        \texttt{EnvironmentValues}, \texttt{Transaction}, \texttt{ContainerValues}, \texttt{FocusedValues}
+        (focused: \texttt{Optional}, no default).
+  \item \textbf{Type shapes}: \texttt{some View} / generic \texttt{Content} = one static type the diff can
+        see through; \texttt{AnyView} = runtime box, a new wrapped type replaces the subtree.
+        \texttt{.equatable()} lets your \eqeq\ skip \texttt{body}.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{The popular \texttt{.if(cond) \{ \$0.mod() \}} extension = \texttt{\_ConditionalContent}: identity
+        flips with the flag — lost state, broken animations. Vary \emph{arguments}.}
+  \trap{\texttt{onTapGesture} on a styled \texttt{Text} instead of a \texttt{Button} — no button trait, no
+        disabled state, no keyboard / pointer. Restyle with \texttt{ButtonStyle}.}
+  \trap{Own gesture inside a \texttt{ButtonStyle} label fights the system tap —
+        \texttt{PrimitiveButtonStyle} + \texttt{trigger()}.}
+  \trap{A style on a \texttt{Subview} may do nothing: it can already be a styled leaf.}
+  \trap{\texttt{AnyView} from a protocol so ``types line up'' — use \texttt{associatedtype Body: View} /
+        \texttt{@ViewBuilder}.}
+  \trap{Pre-18 containers via \texttt{\_VariadicView} — underscored, unsupported.}
+\end{itemize}
+
+\columnbreak
+
+\section{Wrap vs branch}
+\begin{tikzpicture}[sheet]
+  % left: wrapping
+  \node[ttl] at (-0.2,0.3) {\texttt{Text("Hi").padding().card()}};
+  \node[ty, draw=sheetBlue, fill=sheetBlue!5, minimum width=41.5mm, minimum height=15mm, anchor=north west]
+       at (-0.2,0.0) {};
+  \node[font=\tiny\ttfamily, anchor=north west, text=sheetBlue] at (-0.15,-0.02) {ModifiedContent<\ldots, Card>};
+  \node[ty, draw=sheetGreen!70!black, fill=sheetGreen!8, minimum width=39mm, minimum height=8.5mm, anchor=north west]
+       at (-0.05,-0.3) {};
+  \node[font=\tiny\ttfamily, anchor=north west, text=sheetGreen!50!black] at (0.0,-0.32) {ModifiedContent<Text, \_PaddingLayout>};
+  \node[ty, draw=sheetGrey, fill=white, minimum width=12mm, anchor=north west] at (0.2,-0.65) {Text};
+  \node[lbl, anchor=north west, align=left] at (-0.2,-1.55)
+       {static nesting = one slot, one identity;\\\texttt{Card}'s \texttt{@State} lives there};
+  % right: .if
+  \node[ttl] at (4.2,0.3) {\texttt{.if(flag) \{ \$0.card() \}}};
+  \node[slot, draw=sheetGrey, fill=black!4] (c) at (5.85,-0.15) {\_ConditionalContent};
+  \node[slot, draw=sheetGreen!70!black, fill=sheetGreen!8] (a) at (5.05,-0.95) {Card(Text)};
+  \node[slot, minimum width=11mm, draw=sheetRed, fill=sheetRed!6, dashed] (b) at (6.95,-0.95) {Text};
+  \draw[flow] (c) -- node[lbl, left, pos=0.45]{true} (a);
+  \draw[flow] (c) -- node[lbl, right, pos=0.45]{false} (b);
+  \node[lbl, text=sheetRed, anchor=north west, align=left] at (4.2,-1.3)
+       {flag flips $\Rightarrow$ \textbf{other slot}:\\state reset, \texttt{onAppear} again,\\transition instead of animation};
+  \node[lbl, anchor=west, align=left, text width=79mm] at (-0.2,-2.45)
+       {\textbf{Fix}: one slot, vary the \emph{argument} — \texttt{.opacity(flag ? 1 : 0.4)},
+        \texttt{Card(on: flag)}, \texttt{.disabled(flag)}.};
+  \draw[sheetGrey!40] (-0.2,-2.8) -- (7.9,-2.8);
+  % container resolution strip
+  \node[ttl] at (-0.2,-3.1) {\texttt{ForEach(subviews:)} sees \emph{resolved} children};
+  \node[ty, draw=sheetBrown, fill=sheetBrown!6, anchor=west] (src) at (-0.2,-4.15)
+       {Board \{\\\ \ Text("A")\\\ \ ForEach(notes) \{\ldots\}\\\ \ Text("B")\\\ \ \ \ .containerValue(\ldots)\\\}};
+  \foreach \i/\n in {0/A, 1/note 1, 2/note 2, 3/note 3, 4/{B \color{sheetOrange}pin}} {
+    \node[slot, minimum width=15mm, draw=sheetBlue, fill=sheetBlue!6] (s\i) at (4.6,-3.45-0.38*\i) {\n};
+  }
+  \draw[hot] (src.east) -- node[lbl, above, text=sheetOrange]{flatten} (s2.west);
+  \node[lbl, anchor=west, align=left] at (5.5,-3.85) {5 \texttt{Subview}s:\\stable \texttt{id}s,\\each a \texttt{View}};
+  \node[lbl, anchor=west, align=left, text=sheetOrange] at (5.5,-4.95) {\texttt{containerValues}\\read here only};
+\end{tikzpicture}
+
+\section{Example — modifier, style, container}
+\begin{lstlisting}[language=SwiftSheet]
+struct Card: ViewModifier {
+  @Environment(\.colorScheme) private var scheme
+  func body(content: Content) -> some View {
+    content.padding(12)
+      .background(.background, in: .rect(cornerRadius: 12))
+      .shadow(radius: scheme == .dark ? 0 : 4) } }
+extension View { func card() -> some View { modifier(Card()) } }
+struct Pill: ButtonStyle {                   // look only
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label.padding(8).background(.tint, in: .capsule)
+      .opacity(configuration.isPressed ? 0.6 : 1) } }
+extension ContainerValues { @Entry var isPinned = false }
+struct Board<Content: View>: View {          // iOS 18
+  @ViewBuilder var content: Content          // built view
+  var body: some View {
+    VStack { ForEach(subviews: content) { sub in
+      sub.card().overlay(alignment: .topTrailing) {
+        if sub.containerValues.isPinned { PinBadge() } }
+    } } } }
+\end{lstlisting}
+
+\section{Remember}
+\textbf{``Wrap, don't branch. A style keeps behaviour. A container reads resolved children.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} swiftui-performance-identity · swiftui-layout-system
+(modifier order) · swiftui-environment-preferences · macros-and-result-builders}
+
+\end{document}

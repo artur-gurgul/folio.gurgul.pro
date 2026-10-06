@@ -1,0 +1,167 @@
+% swiftui-environment-preferences.tex — Environment flows down (EnvironmentValues, EnvironmentKey,
+% @Entry, @Observable in the environment), preferences flow up (PreferenceKey, reduce,
+% onPreferenceChange), anchor preferences, traps.
+% Sources (checked 2026-10-06):
+%   developer.apple.com/documentation/swiftui/entry() (EnvironmentValues / Transaction /
+%     ContainerValues / FocusedValues entries) · /swiftui/view/environment(_:) (an Observable
+%     object, iOS 17; one object per type) · "Managing model data in your app" (reading a
+%     missing object by type throws; the optional form returns nil) · /environmentobject ·
+%     /view/environmentobject(_:)
+%   developer.apple.com/documentation/swiftui/preferencekey/defaultvalue (reduce with the
+%     default must not change the value) · /preferencekey/reduce(value:nextvalue:) (view-tree
+%     order) · /view/onpreferencechange(_:perform:) (Value: Equatable) ·
+%     /view/ongeometrychange(for:of:action:) (iOS 16) · /swiftui/dismissaction (no effect on
+%     a view that is not presented)
+% @labels: area=swiftui kind=api platform=apple topic=ui,architecture discussion=179
+% @tags: environmentvalues, environmentkey, entry-macro, environmentobject, preferencekey, onpreferencechange, anchorpreference, overlaypreferencevalue, geometryreader, dependency-injection, preference-loop, observable
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,protocol,extension,return,if,else,
+    guard,case,switch,self,some,any,where,init,in,private,static,inout,get,set,nil,
+    @State,@Environment,@Entry,@Observable,@MainActor,@EnvironmentObject},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\begin{document}
+
+\sheettitle{SwiftUI Environment \& Preferences}{swiftui · folio}
+
+\oneliner{Two \textbf{implicit} channels through the view tree: the \textbf{environment flows down}
+(an ancestor sets a value, every descendant can read it), \textbf{preferences flow up} (descendants
+emit values, SwiftUI \textbf{\texttt{reduce}}s them, an ancestor reads the result). Explicit
+\texttt{init} parameters remain the default for a view's own data.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \tikzset{v/.style={box, font=\scriptsize, minimum width=17mm, minimum height=5.5mm, inner sep=1.5pt},
+           dn/.style={->, very thick, draw=sheetBlue}, upp/.style={->, very thick, draw=sheetOrange},
+           lb/.style={font=\tiny, inner sep=1pt, align=center}}
+  % --- the tree ---
+  \node[v] (root) at (3.2,3.1) {\texttt{App root}};
+  \node[v] (nav) at (3.2,2.05) {\texttt{NavigationStack}};
+  \node[v] (a) at (1.2,0.95) {\texttt{HStack}};
+  \node[v, draw=sheetGreen, fill=sheetGreen!8] (b) at (5.2,0.95) {\texttt{.sheet} content};
+  \node[v] (c1) at (0.2,-0.15) {\texttt{Tab "Home"}};
+  \node[v] (c2) at (2.2,-0.15) {\texttt{Tab "Settings"}};
+  \node[v] (c3) at (5.2,-0.15) {\texttt{Editor}};
+  \draw[sheetGrey] (root)--(nav) (nav)--(a) (nav)--(b) (a)--(c1) (a)--(c2) (b)--(c3);
+  % environment down (left margin)
+  \draw[dn] (-1.3,3.1) -- (-1.3,-0.2);
+  \node[lb, text=sheetBlue, anchor=north west, align=left] at (-1.2,3.2) {\textbf{environment} copied\\down; nearest ancestor\\wins};
+  \node[lb, text=sheetBlue, anchor=west] at (4.1,3.1) {\texttt{.environment(\textbackslash.theme, .dark)}\\\texttt{.environment(session)}};
+  \node[lb, text=sheetBlue, anchor=west] at (6.25,0.95) {sheets inherit the\\presenter's environment};
+  % preferences up
+  \draw[upp] (c1.north) to[bend left=10] (a.south west);
+  \draw[upp] (c2.north) to[bend right=10] (a.south east);
+  \node[lb, draw=sheetOrange, fill=sheetOrange!8, rounded corners=1pt] (red) at (1.2,0.35) {\texttt{reduce}: max, +, append};
+  \node[lb, text=sheetOrange, anchor=south west, align=left] at (-1.2,1.3) {\textbf{preferences} read on the\\ancestor: \texttt{onPreferenceChange}};
+  \node[lb, text=sheetOrange] at (1.2,-0.75) {each tab emits its width /\\\texttt{Anchor<CGRect>} (\texttt{.preference})};
+  % anchor panel
+  \begin{scope}[xshift=9.1cm]
+    \node[font=\scriptsize\bfseries, anchor=west] at (-0.2,3.15) {Anchor preference — a custom tab bar underline};
+    \draw[sheetGrey, rounded corners=2pt] (0,2.8) rectangle (6.8,1.25);
+    \node[font=\tiny, anchor=north west, text=sheetGrey] at (0,2.8) {ancestor (\texttt{overlayPreferenceValue} + \texttt{GeometryReader}) coordinate space};
+    \node[v] (t1) at (1.1,2.05) {Home};
+    \node[v, draw=sheetOrange, very thick] (t2) at (3.4,2.05) {Search};
+    \node[v] (t3) at (5.7,2.05) {Profile};
+    \draw[line width=2pt, sheetOrange] (2.55,1.55) -- (4.25,1.55);
+    \node[lb, text=sheetOrange] at (3.4,1.38) {\texttt{proxy[anchor]} = rect \emph{in the ancestor's space}};
+    \node[lb, anchor=west, text width=66mm, align=left] at (-0.2,0.7)
+      {1.\,child: \texttt{.anchorPreference(key: K.self, value: .bounds) \{ [id: \$0] \}} — opaque,
+       \emph{not yet resolved}.\\
+       2.\,SwiftUI \texttt{reduce}s \texttt{[ID: Anchor<CGRect>]} up the tree.\\
+       3.\,ancestor: \texttt{GeometryReader \{ proxy in \} } resolves it after all offsets, paddings,
+       scroll — no global frames, no stale coordinates.};
+    \node[lb, anchor=west, text width=66mm, align=left, text=sheetRed] at (-0.2,-0.4)
+      {No \texttt{.frame(rect:)} modifier exists: use \texttt{.frame(width: r.width, height: r.height)}
+       \texttt{.offset(x: r.minX, y: r.minY)} inside a top-leading \texttt{ZStack}/\texttt{GeometryReader}.};
+  \end{scope}
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Down}
+\begin{itemize}
+  \item \textbf{\texttt{EnvironmentValues}} — value-typed bag keyed by \texttt{EnvironmentKey} types. Read
+        \texttt{@Environment(\textbackslash.colorScheme)}; set \texttt{.environment(\textbackslash.key, v)};
+        augment the inherited value with \texttt{.transformEnvironment}.
+  \item \textbf{Custom key}: type with \texttt{static let defaultValue} + computed property on
+        \texttt{EnvironmentValues} over \texttt{self[Key.self]}. \textbf{\texttt{@Entry}} (Xcode 16) writes both.
+        A keyed read \textbf{never crashes} — it falls back to \texttt{defaultValue}.
+  \item \textbf{Objects}: \texttt{ObservableObject} → \texttt{.environmentObject(o)} + \texttt{@EnvironmentObject}
+        (any \texttt{@Published} invalidates every reader). \texttt{@Observable} (iOS 17) →
+        \texttt{.environment(o)} + \texttt{@Environment(Session.self)}: per-property tracking.
+        Missing object = \textbf{runtime crash}; type it \texttt{Session?} to make it optional.
+  \item \textbf{Re-render}: only views whose \texttt{body} \emph{reads} the changed value — read churny values low.
+  \item \textbf{DI}: \texttt{@Entry var api: APIClient = .live}; previews/tests inject \texttt{.mock}. Ambient
+        concerns only; the item a view shows stays in \texttt{init}.
+\end{itemize}
+
+\section{Up}
+\begin{itemize}
+  \item \textbf{\texttt{PreferenceKey}}: \texttt{defaultValue} + \texttt{reduce(value: inout V, nextValue: ()\,\hbox{-}\hbox{>}\,V)}.
+        Emit \texttt{.preference(key:value:)}; read \texttt{.onPreferenceChange} (\texttt{Equatable}), or build UI
+        with \texttt{overlayPreferenceValue} / \texttt{backgroundPreferenceValue}.
+  \item \texttt{reduce} folds siblings \textbf{in tree order}; non-emitting views may contribute
+        \texttt{defaultValue}, so it \textbf{must be the identity of \texttt{reduce}} (0 for max, \texttt{[]} for append).
+        Only descendants \emph{below the reader} are aggregated.
+  \item Uses: equal-width labels, child size (\texttt{GeometryReader} in \texttt{.background} — no layout
+        effect), scroll offset, custom tab bars, tooltips, connector lines.
+\end{itemize}
+
+\section{Example — custom key + child-size preference}
+\begin{lstlisting}[language=SwiftSheet]
+extension EnvironmentValues { @Entry var theme: Theme = .light }
+struct MaxWidth: PreferenceKey {
+  static let defaultValue: CGFloat = 0     // identity of max
+  static func reduce(value: inout CGFloat,
+                     nextValue: () -> CGFloat) {
+    value = max(value, nextValue()) } }
+Text(label).background(GeometryReader { g in Color.clear
+  .preference(key: MaxWidth.self, value: g.size.width) })
+.onPreferenceChange(MaxWidth.self) { w in   // on the ancestor
+  if w != labelWidth { labelWidth = w } }  // only on change
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{Not injected}: \texttt{@EnvironmentObject} / non-optional \texttt{@Environment(T.self)} compiles, then
+        crashes at render. Culprits: \texttt{\#Preview}, a new \texttt{UIHostingController} (fresh environment),
+        injecting on a sibling branch or inside a \texttt{NavigationLink} destination.}
+  \trap{\textbf{Down only} — a modifier \emph{below} the reader is invisible to it; inject at a common ancestor.}
+  \trap{\textbf{Reference type in an \texttt{EnvironmentKey}}: mutating its insides invalidates nobody. Keys =
+        immutable config (theme, formatter, flags, clients); mutable shared state = \texttt{@Observable}.}
+  \trap{\textbf{Preference loop}: size $\to$ \texttt{@State} $\to$ child resizes $\to$ new size\ldots\
+        \emph{``Bound preference \ldots tried to update multiple times per frame''}\unverified. Store only on change, measure in
+        \texttt{.background}; newer SDKs: \texttt{onGeometryChange}.}
+  \trap{\texttt{reduce} that overwrites (\texttt{value = nextValue()}) or ignores \texttt{nextValue()} keeps one child.}
+  \trap{\textbf{Swift 6}: \texttt{static var defaultValue} is global mutable state — use \texttt{static let}.}
+  \trap{\texttt{\textbackslash.dismiss} in a root with no presenter is a silent no-op.}
+\end{itemize}
+
+\section{Choosing the channel}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{48mm}@{}}
+\toprule
+the view's own data & \texttt{init} param / \texttt{@Binding} \\
+ambient config, services & \texttt{EnvironmentKey} / \texttt{@Entry} \\
+shared mutable model & \texttt{@Observable} + \texttt{.environment(obj)} \\
+child $\to$ parent value & \texttt{PreferenceKey} + \texttt{onPreferenceChange} \\
+child rect for drawing & \texttt{anchorPreference} + \texttt{overlayPreferenceValue} \\
+\bottomrule
+\end{tabular}}
+
+\section{Remember}
+\textbf{``Config rains down, measurements bubble up — and the default is the identity.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{ios-swift/swiftui-state} · \texttt{swiftui-layout-system}
+(GeometryReader) · \texttt{swiftui-performance-identity} (what invalidates body) · \texttt{swiftui-uikit-interop}
+(re-inject into hosting controllers) · \texttt{coordinator-repository-di-clean}}
+
+\end{document}
