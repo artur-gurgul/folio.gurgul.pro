@@ -1,0 +1,101 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ZFS — pools, copy-on-write, checksums, snapshots — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/os/zfs.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">129</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area current" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">ZFS — pools, copy-on-write, checksums, snapshots</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">os · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> ZFS is a volume manager and a filesystem in one: disks form <strong>vdevs</strong>, vdevs form a
+<strong>pool</strong>, and every <strong>dataset</strong> draws space from the whole pool. Nothing is overwritten in
+place — every change is written to <strong>new blocks</strong> and the tree of <strong>checksummed</strong> block
+pointers is re-rooted atomically, so a crash leaves the old or the new state, a <strong>snapshot</strong>
+is free, and silent corruption is <em>detected</em> and, given redundancy, <em>repaired</em>.</p>
+<p class="sheet-tools"><a class="sheet-download" href="zfs.pdf" download>Download PDF</a> <a href="zfs.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/os/zfs.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="zfs-fig1.svg" width="665" height="146" class="wide" alt="ZFS — pools, copy-on-write, checksums, snapshots — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Vdevs — what each survives</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>vdev</strong></th><th><strong>survives</strong></th><th><strong>notes</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>mirror</td><td>all but 1 disk</td><td>fastest resilver (sequential resilver, 2.0); removable</td></tr>
+<tr><td>raidz1/2/3</td><td>1 / 2 / 3 disks</td><td>distributed parity; widen by <strong>expansion</strong> (2.3)</td></tr>
+<tr><td>draid1/2/3</td><td>1 / 2 / 3</td><td>raidz + <strong>distributed</strong> hot spare — fast rebuild (2.1)</td></tr>
+<tr><td>special</td><td>= its own redundancy</td><td>metadata (+ small blocks); <strong>lose it, lose the pool</strong> — mirror it</td></tr>
+<tr><td>log (SLOG)</td><td>ZIL content</td><td>low-latency SSD for sync writes; mirroring allowed</td></tr>
+<tr><td>cache</td><td>—</td><td>L2ARC; persistent since 2.0; can’t be mirrored</td></tr>
+<tr><td>spare</td><td>—</td><td>hot spare taken over on a failure</td></tr>
+</tbody>
+</table>
+ <strong>Removal</strong>: spare, cache, log, mirror, single disk, special, dedup — only if <strong>no
+raidz/draid</strong> top-level vdev exists and all <code>ashift</code>s match. A raidz vdev can never be removed.</p>
+</section>
+<section class="sheet-section">
+<h2>Integrity</h2>
+<ul>
+<li>The checksum of every block lives in its <strong>parent’s</strong> block pointer — a Merkle tree up  to the uberblock, so a disk returning wrong data (bit rot, misdirected write) is caught on  read. Default <code>fletcher4</code>; <code>sha256</code>, <code>sha512</code>, <code>skein</code>, <code>edonr</code>,  <code>blake3</code> (2.2).</li>
+<li>With redundancy the bad copy is <strong>rewritten from a good one</strong> (self-healing).  <code>zpool scrub</code> reads everything to find it before you need it.</li>
+<li><code>copies=2|3</code> keeps extra copies even on one disk (charged to the dataset).</li>
+<li><code>zpool status</code>: per-device <strong>READ / WRITE / CKSUM</strong> counters; files with permanent  errors are listed by name.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Caching</h2>
+<p><strong>ARC</strong> in RAM (adaptive: recently + frequently used). Default cap: the larger of <strong>RAM <span class="math">-</span> 1 GiB</strong> and <strong>5/8 of RAM</strong>. <strong>L2ARC</strong> on SSD extends it but needs RAM for its headers. Dirty data is capped at RAM/10 by default.</p>
+</section>
+<section class="sheet-section">
+<h2>Timeline</h2>
+<p>Sun starts ZFS 2001 · CDDL source in OpenSolaris 2005 · illumos fork 2010 ·
+<strong>OpenZFS</strong> 2013 · 0.8 (2019) encryption, raw send, TRIM, device removal · <strong>2.0</strong>
+(2020) one codebase for Linux + FreeBSD, zstd · 2.1 (2021) dRAID · 2.2 (2023) block cloning,
+BLAKE3 · <strong>2.3</strong> (Jan 2025) RAIDZ expansion, fast dedup, Direct IO · 2.4 (Dec 2025).
+CDDL is held incompatible with the GPL, so on Linux ZFS ships as an out-of-tree module.</p>
+</section>
+<section class="sheet-section">
+<h2>Datasets &amp; properties (defaults)</h2>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><code>recordsize</code></td><td>128 KiB (512 B–16 MiB); a <em>maximum</em> per block; new files only</td></tr>
+<tr><td><code>volblocksize</code></td><td>zvols: 16 KiB since 2.2; fixed at creation</td></tr>
+<tr><td><code>compression</code></td><td><code>on</code> = lz4, default <em>on</em> since 2.2; also zstd (2.0), gzip</td></tr>
+<tr><td><code>checksum</code></td><td><code>on</code> = fletcher4</td></tr>
+<tr><td><code>encryption</code></td><td>off; <code>on</code> = aes-256-gcm, per dataset, since 0.8</td></tr>
+<tr><td><code>sync</code></td><td><code>standard</code> · <code>always</code> · <code>disabled</code> (loses acknowledged writes)</td></tr>
+<tr><td><code>atime</code></td><td>on, with <code>relatime</code> — set <code>off</code> for busy reads</td></tr>
+<tr><td><code>dedup</code></td><td>off — every block’s hash in a table that must stay hot</td></tr>
+</tbody>
+</table>
+ Workload advice (OpenZFS docs): InnoDB <code>recordsize=16K</code>, PostgreSQL 32K–128K, large sequential files <code>1M</code>. <strong>ashift</strong> (sector size, <span class="math">2<sup>n</sup></span>) is fixed per vdev at creation — <code>ashift=12</code> for 4K disks, 12 or 13 for flash.</p>
+</section>
+<section class="sheet-section">
+<h2>Snapshots, clones, replication</h2>
+<pre class="sheet-code"><code class="hljs language-plaintext">zpool create tank raidz2 sda sdb sdc sdd sde sdf
+zfs create -o recordsize=1M tank/media
+zfs snapshot tank/db@daily-1
+zfs rollback tank/db@daily-1     # -r if newer snaps
+zfs clone tank/db@daily-1 tank/t # writable, shared
+zfs send -i @daily-1 tank/db@daily-2 |
+  ssh backup zfs receive -u pool/db   # delta only
+zfs send -w tank/secret@s | ...  # raw: still encrypted
+zpool scrub tank; zpool status -x</code></pre>
+<p>Incremental send walks block birth times, not files — cost <span class="math">∝</span> change, not size.</p>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">A snapshot is not a backup: same pool, same disks — <code>send</code> it elsewhere.</li>
+<li class="trap">Adding a single disk as a top-level vdev to a raidz pool makes it the pool’s weak point.</li>
+<li class="trap">RAIDZ expansion keeps old blocks at the old data:parity ratio until rewritten.</li>
+<li class="trap">A SLOG does nothing for async writes; L2ARC is no substitute for RAM.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<h3 class="sheet-hd">Pool of vdevs · never overwrite · checksum in the parent · snapshot = old root · redundancy is per vdev.</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> git-in-depth (a Merkle DAG too) ·
+zero-downtime-db-migrations · sqlite-grdb-internals (WAL vs ZIL)</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=os" title="area">os</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=general" title="platform">general</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=storage" title="topic">storage</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=data" title="topic">data</a></li><li class="sheet-tag"><a href="/folios.html?tag=zfs">zfs</a></li><li class="sheet-tag"><a href="/folios.html?tag=openzfs">openzfs</a></li><li class="sheet-tag"><a href="/folios.html?tag=copy-on-write">copy-on-write</a></li><li class="sheet-tag"><a href="/folios.html?tag=merkle-tree">merkle-tree</a></li><li class="sheet-tag"><a href="/folios.html?tag=raidz">raidz</a></li><li class="sheet-tag"><a href="/folios.html?tag=draid">draid</a></li><li class="sheet-tag"><a href="/folios.html?tag=mirror">mirror</a></li><li class="sheet-tag"><a href="/folios.html?tag=zil">zil</a></li><li class="sheet-tag"><a href="/folios.html?tag=slog">slog</a></li><li class="sheet-tag"><a href="/folios.html?tag=arc">arc</a></li><li class="sheet-tag"><a href="/folios.html?tag=l2arc">l2arc</a></li><li class="sheet-tag"><a href="/folios.html?tag=snapshots">snapshots</a></li><li class="sheet-tag"><a href="/folios.html?tag=send-receive">send-receive</a></li><li class="sheet-tag"><a href="/folios.html?tag=checksums">checksums</a></li><li class="sheet-tag"><a href="/folios.html?tag=scrub">scrub</a></li><li class="sheet-tag"><a href="/folios.html?tag=compression">compression</a></li><li class="sheet-tag"><a href="/folios.html?tag=ashift">ashift</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=os%2Fzfs.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/141">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>
