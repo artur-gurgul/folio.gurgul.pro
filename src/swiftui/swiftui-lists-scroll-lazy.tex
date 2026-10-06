@@ -1,0 +1,173 @@
+% swiftui-lists-scroll-lazy.tex — VStack vs LazyVStack vs List (what is created when), ForEach
+% identity traps, lazy-row lifecycle (onAppear / task / visibility), the iOS 17/18 ScrollView APIs
+% (scrollPosition, ScrollPosition, scrollTargetLayout + scrollTargetBehavior, onScrollGeometryChange,
+% onScrollVisibilityChange, onScrollPhaseChange, contentMargins, scrollTransition, visualEffect),
+% sentinel pagination, row-performance traps.
+% Not repeated: structural vs explicit identity basics + AnyView (swiftui-performance-identity),
+% propose/choose/place (swiftui-layout-system), transitions (animations).
+% Sources (checked 2026-09-26): developer.apple.com/documentation/swiftui —
+% scrollPosition(id:anchor:), ScrollPosition, scrollTargetBehavior(_:), onScrollGeometryChange(for:of:action:),
+% onScrollVisibilityChange(threshold:_:), onScrollPhaseChange(_:), contentMargins(_:_:for:),
+% scrollTransition(_:axis:transition:), visualEffect(_:), LazyVStack, "Creating performant scrollable
+% stacks"; WWDC23 10160 "Demystify SwiftUI performance" (List gathers all ids eagerly; rows = elements x
+% views per element; if / AnyView in ForEach forces every row to be built).
+% @labels: area=swiftui kind=api platform=apple topic=ui,performance discussion=182
+% @tags: lazyvstack, list, foreach-identity, scrollposition, scrolltargetlayout, scrolltargetbehavior, onscrollgeometrychange, onscrollvisibilitychange, contentmargins, scrolltransition, visualeffect, pagination
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,return,if,else,guard,await,async,
+    case,self,some,in,private,for,true,false,nil,@State,@Observable,@MainActor},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {>=}{{\hbox{>}\hbox{=}}}2 {<=}{{\hbox{<}\hbox{=}}}2
+           {&&}{{\hbox{\&}\hbox{\&}}}2 {...}{{\hbox{.}\hbox{.}\hbox{.}}}3}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!80, inner sep=1pt, align=left},
+  row/.style={draw, minimum width=19mm, minimum height=4.3mm, font=\scriptsize\ttfamily, inner sep=1pt},
+  live/.style={row, draw=sheetGreen!70!black, fill=sheetGreen!14},
+  pre/.style={row, draw=sheetGreen!70!black, fill=sheetGreen!5, dashed},
+  old/.style={row, draw=sheetGrey, fill=black!5, text=black!55},
+  none/.style={row, draw=sheetGrey!60, dashed, text=black!40},
+}
+
+\begin{document}
+
+\sheettitle{Lists, lazy stacks \& scrolling}{swiftui · folio}
+
+\oneliner{\texttt{VStack} builds \emph{every} child now; \texttt{LazyVStack} builds a row only as it nears
+the viewport (\textbf{no reuse}); \texttt{List} reuses platform cells but collects \textbf{all ids up front}.
+\textbf{\texttt{ForEach} ids} decide which state, animation and callbacks belong to which datum — and since
+iOS 17/18 the scroll view \emph{reports} position, snapping, geometry and visibility declaratively.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Creation}: \texttt{VStack} = exact layout, all children loaded at once. \texttt{LazyV/HStack},
+        \texttt{LazyV/HGrid} (14) create rows on demand; unseen rows' sizes are \emph{estimated}. Apple:
+        plain stack first, lazy when profiling says so.
+  \item \textbf{\texttt{List}} visits the whole collection first: \emph{rows = elements $\times$ views per
+        element} (WWDC23). A variable count (\texttt{if} in \texttt{ForEach}) or \texttt{AnyView} forces it to
+        \textbf{build every row} just to count them — filter the \emph{data}, not the views.
+  \item \textbf{Ids}: \texttt{Identifiable} or \texttt{id: \textbackslash.key}. \texttt{id: \textbackslash.self}
+        hashes the whole value $\Rightarrow$ editing a field = new id = row destroyed + re-inserted.
+        Indices shift on insert/delete $\Rightarrow$ state lands on the wrong row. Duplicate ids = undefined.
+  \item \textbf{Row lifecycle}: \texttt{onAppear} / \texttt{.task} run when a row is shown;
+        \texttt{onDisappear} + \emph{task cancelled} when it leaves; \textbf{again on every scroll-back}.
+        Keeping an off-screen row's \texttt{@State} is an implementation detail — durable row state
+        lives in the model, keyed by id.
+  \item \textbf{Position} (17): \texttt{.scrollPosition(id: \$topID, anchor:)} — two-way: reads the
+        top-most target's id, write it to scroll; \textbf{needs \texttt{.scrollTargetLayout()}} on the stack.
+        18: \texttt{ScrollPosition} value + \texttt{.scrollPosition(\$pos)}: \texttt{scrollTo(id:)},
+        \texttt{scrollTo(edge: .bottom)}, \texttt{viewID(type:)}. Older: \texttt{ScrollViewReader}.
+  \item \textbf{Snapping} (17): \texttt{.scrollTargetBehavior(.paging)} = container-sized pages;
+        \texttt{.viewAligned} = settle on views of the \texttt{scrollTargetLayout}; or your own
+        \texttt{ScrollTargetBehavior}.
+  \item \textbf{Observing} (18): \texttt{onScrollGeometryChange(for:of:action:)} maps
+        \texttt{ScrollGeometry} (\texttt{contentOffset}, \texttt{contentSize}, \texttt{contentInsets},
+        \texttt{containerSize}, \texttt{visibleRect}) to an \texttt{Equatable}; \texttt{action(old, new)} fires
+        \textbf{only when that value changes}. \texttt{onScrollVisibilityChange(threshold: 0.5)} per view;
+        \texttt{onScrollPhaseChange}: \texttt{idle / interacting / decelerating / animating}.
+  \item \textbf{Look} (17): \texttt{contentMargins(\_:\_:for: .scrollContent | .scrollIndicators)} insets
+        content inside the scroll area (still scrolls edge to edge); \texttt{scrollTransition \{ c, phase in \}}
+        (\texttt{.topLeading / .identity / .bottomTrailing}); \texttt{visualEffect \{ c, proxy in \}} —
+        both return a \texttt{VisualEffect}: \textbf{no layout pass}, no \texttt{GeometryReader}.
+\end{itemize}
+
+\section{Example — snapping, paged feed}
+\begin{lstlisting}[language=SwiftSheet]
+ScrollView {
+  LazyVStack(spacing: 8) {
+    ForEach(feed.items) { item in          // stable entity id
+      Row(item: item)
+        .onScrollVisibilityChange { seen in  // 18, > 50 %
+          if seen { log.impression(item.id) } }
+    }
+    if feed.hasMore {                      // sentinel row
+      ProgressView()
+        .task(id: feed.items.count) { await feed.loadNext() }
+    }
+  }
+  .scrollTargetLayout()                    // rows = targets
+}
+.scrollPosition(id: $topID)                // 17, read + write
+.scrollTargetBehavior(.viewAligned)
+.contentMargins(.horizontal, 16, for: .scrollContent)
+.onScrollGeometryChange(for: Bool.self) { g in
+  g.contentOffset.y > 800 } action: { _, far in showTop = far }
+\end{lstlisting}
+
+\columnbreak
+
+\section{The lazy window}
+\begin{tikzpicture}[sheet]
+  % rows
+  \foreach \i/\s/\t in {0/old/row 0, 1/old/row 1, 2/pre/row 2, 3/live/row 3, 4/live/row 4,
+                        5/live/row 5, 6/live/row 6, 7/pre/row 7, 8/none/row 8, 9/none/{\ldots\ 999}} {
+    \node[\s] (r\i) at (0,-0.5*\i) {\t};
+  }
+  % viewport
+  \draw[sheetBlue, very thick, rounded corners=2pt] (-1.25,-1.28) rectangle (1.25,-3.22);
+  \node[lbl, text=sheetBlue, anchor=east, align=right] at (-1.35,-2.25) {\textbf{viewport}\\visible rows};
+  \node[lbl, anchor=east, align=right, text=black!60] at (-1.35,-0.25) {scrolled past:\\view kept or freed —\\\emph{not your contract}};
+  \node[lbl, anchor=east, align=right, text=sheetGreen!55!black] at (-1.35,-3.55) {built just outside\\(estimate zone)};
+  \node[lbl, anchor=east, align=right, text=black!50] at (-1.35,-4.35) {never built yet};
+  % callbacks, right side
+  \draw[hot] (1.3,-1.0) -- (1.9,-1.0) node[lbl, right, text=sheetOrange]
+       {\texttt{onAppear}, \texttt{.task} start};
+  \draw[hot] (1.3,-3.5) -- (1.9,-3.5) node[lbl, right, text=sheetOrange]
+       {enters: \texttt{onAppear} again};
+  \draw[->, thick, sheetRed] (1.3,-0.5) -- (1.9,-0.5) node[lbl, right, text=sheetRed]
+       {left: \texttt{onDisappear}, task \textbf{cancelled}};
+  \draw[->, thick, sheetGreen!60!black] (1.3,-2.25) -- (1.9,-2.25) node[lbl, right, text=sheetGreen!50!black]
+       {\texttt{onScrollVisibilityChange}\\\texttt{(true)} once $>$ 50\,\% in};
+  \draw[->, thick, sheetBlue] (1.3,-1.5) -- (1.9,-1.5) node[lbl, right, text=sheetBlue]
+       {\texttt{scrollPosition} id = 3};
+  \draw[->, thick, sheetBrown] (1.3,-4.5) -- (1.9,-4.5) node[lbl, right, text=sheetBrown]
+       {sentinel shown $\to$ \texttt{loadNext()}};
+  \draw[->, sheetGrey, thick] (0,-5.0) -- (0,-5.35) node[lbl, below, text=sheetGrey]{scroll $\downarrow$: window slides, callbacks re-fire};
+  % comparison strip
+  \node[lbl, anchor=west] at (-3.1,-6.15) {\textbf{created at first render}, 1\,000 items, 7 visible:};
+  \node[lbl, anchor=west] at (-3.1,-6.55) {\texttt{VStack}};
+  \fill[sheetRed!55] (-1.6,-6.65) rectangle (4.3,-6.45);
+  \node[lbl, anchor=west] at (4.35,-6.55) {1\,000};
+  \node[lbl, anchor=west] at (-3.1,-6.95) {\texttt{LazyVStack}};
+  \fill[sheetGreen!60] (-1.6,-7.05) rectangle (-1.3,-6.85);
+  \node[lbl, anchor=west] at (-1.2,-6.95) {$\approx$ visible + margin; \textbf{no reuse}};
+  \node[lbl, anchor=west] at (-3.1,-7.35) {\texttt{List}};
+  \fill[sheetGreen!60] (-1.6,-7.45) rectangle (-1.3,-7.25);
+  \fill[sheetOrange!35] (-1.3,-7.45) rectangle (4.3,-7.25);
+  \node[lbl, anchor=west] at (-1.2,-7.35) {cells reused; \textbf{all 1\,000 ids} read first};
+\end{tikzpicture}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{ForEach(items, id: \textbackslash.self)} on editable structs, \texttt{UUID()} created in \texttt{body},
+        or \texttt{indices} — lost row state, wrong row animates, duplicate-id warnings.}
+  \trap{\texttt{if item.visible \{ Row \}} inside a \texttt{List}'s \texttt{ForEach}, or \texttt{AnyView} rows —
+        every row built to learn the count. Filter the array.}
+  \trap{\texttt{.onAppear \{ load() \}} on rows = duplicate requests on scroll-back; guard
+        \texttt{isLoading} + cursor, dedupe appended ids.}
+  \trap{Sentinel with plain \texttt{.task} may stay mounted after a page lands — no re-fire;
+        \texttt{.task(id: items.count)}.}
+  \trap{\texttt{scrollPosition(id:)} without \texttt{scrollTargetLayout()} — binding never updates.}
+  \trap{A \texttt{GeometryReader} per row to read offsets — a layout pass each; use
+        \texttt{onScrollGeometryChange} / \texttt{visualEffect}. \texttt{onScrollGeometryChange} watches the
+        \emph{first} scroll view only.}
+  \trap{Transform returns raw \texttt{contentOffset} $\Rightarrow$ \texttt{action} every frame; map to a \texttt{Bool} / page.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Lazy builds late, List counts early; ask the scroll view, don't measure it.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} swiftui-performance-identity · swiftui-layout-system ·
+animations · swiftui-async-task-data-flow · image-loading-pipeline · collectionview-compositional (UIKit)}
+
+\end{document}

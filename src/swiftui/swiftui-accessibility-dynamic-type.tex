@@ -1,0 +1,190 @@
+% swiftui-accessibility-dynamic-type.tex — how SwiftUI builds the accessibility tree,
+% accessibilityElement(children: .ignore/.combine/.contain) (default .ignore), label/value/hint/traits/
+% identifier/inputLabels, custom actions + magic tap + escape, accessibilityRepresentation, rotors,
+% sort priority, hidden, custom content, AccessibilityFocusState, Dynamic Type (sizes, text styles,
+% relativeTo, @ScaledMetric, dynamicTypeSize clamping + large content viewer, ViewThatFits / AnyLayout),
+% reduce motion / transparency / contrast / differentiate-without-color, testing (Accessibility Inspector,
+% performAccessibilityAudit + audit types, iOS 27 XCUIVoiceOverService).
+% Not repeated: L-V-T-H basics, UIKit UIFontMetrics, localization (ios-platform/accessibility-localization),
+% React Native side (react-native/rn-accessibility).
+% Sources (checked 2026-09-26): developer.apple.com/documentation/swiftui —
+% accessibilityElement(children:) (default .ignore; .ignore hides children, .combine merges, .contain keeps),
+% AccessibilityChildBehavior.combine ("not all traits are merged and a default action may become a named
+% action"), accessibilityRepresentation(representation:) (15; representation hidden, non-interactive),
+% accessibilityRotor(_:entries:) (16 for the LocalizedStringResource form), accessibilitySortPriority(_:)
+% (14; higher first, default 0), ScaledMetric (14; relativeTo:), dynamicTypeSize(_:) range form (15;
+% consider accessibilityShowsLargeContentViewer()); XCUIAutomation — performAccessibilityAudit(for:_:)
+% (iOS 17; handler returns true to ignore), XCUIAccessibilityAuditType (action, contrast, dynamicType,
+% elementDetection, hitRegion, parentChild, sufficientElementDescription, textClipped, trait),
+% XCUIVoiceOverService (iOS 27; XCUIDevice.voiceOverService; moveForward(), currentSpeech()).
+% @labels: area=swiftui kind=api platform=ios topic=ui,testing discussion=175
+% @tags: accessibility-tree, accessibilityelement, voiceover, accessibilityaction, accessibilityrepresentation, accessibilityrotor, dynamic-type, scaledmetric, dynamictypesize, viewthatfits, reduce-motion, performaccessibilityaudit
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,return,if,else,guard,await,async,try,
+    case,self,some,in,private,for,true,false,nil,
+    @State,@Binding,@Environment,@ScaledMetric,@AccessibilityFocusState,@MainActor},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {...}{{\hbox{.}\hbox{.}\hbox{.}}}3}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!80, inner sep=1pt, align=center},
+  card/.style={draw=sheetGrey, rounded corners=3pt, fill=white, minimum width=36mm, minimum height=15mm},
+  fr/.style={draw=sheetOrange, very thick, rounded corners=1.5pt},
+  num/.style={circle, fill=sheetOrange, text=white, font=\tiny\bfseries, inner sep=0.8pt},
+  ring/.style={draw=sheetBlue, line width=1.6pt, rounded corners=4pt},
+}
+\newcommand\cardbody[1]{%
+  \begin{scope}[shift={#1}]
+    \node[card] at (1.8,0) {};
+    \fill[sheetGreen!35] (0.25,-0.45) rectangle (1.05,0.35);
+    \node[font=\tiny, text=sheetGreen!40!black] at (0.65,-0.05) {photo};
+    \node[font=\scriptsize\bfseries, anchor=west] at (1.15,0.33) {Lisbon trip};
+    \node[font=\tiny, anchor=west, text=black!65] at (1.15,0.03) {3 nights · 420 EUR};
+    \node[font=\scriptsize, anchor=west, text=sheetOrange] at (1.15,-0.3) {$\star\star\star\star$\textcolor{black!30}{$\star$}};
+    \node[font=\small, text=sheetRed] at (3.3,-0.3) {$\heartsuit$};
+  \end{scope}}
+
+\begin{document}
+
+\sheettitle{SwiftUI accessibility \& Dynamic Type}{swiftui · folio}
+
+\oneliner{SwiftUI derives an \textbf{accessibility tree} from the view tree: every \texttt{Text}, \texttt{Image} and
+control becomes an element, stacks are transparent. Your job is to \textbf{shape} that tree — one stop per
+idea (group, label, value, actions) — and let \textbf{text grow} (Dynamic Type) while the layout \textbf{reflows}
+and motion respects user settings.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{The tree}
+\begin{itemize}
+  \item \textbf{\texttt{accessibilityElement(children:)}} — default \textbf{\texttt{.ignore}}: new element,
+        children hidden, \emph{you} label it. \texttt{.combine}: children merged into one (``not all traits are
+        merged; a default action may become a named action''). \texttt{.contain}: children kept, grouped
+        (scope for order and rotors).
+  \item \textbf{Describe}: \texttt{accessibilityLabel}, \texttt{Value} (changing state), \texttt{Hint},
+        \texttt{accessibilityAddTraits(.isButton / .isHeader / .isSelected)}, \texttt{accessibilityInputLabels}
+        (Voice Control names), \texttt{accessibilityIdentifier} (tests). Decorative:
+        \texttt{Image(decorative:)} or \texttt{.accessibilityHidden(true)}.
+  \item \textbf{Actions}: \texttt{.accessibilityAction(named: "Favorite") \{ \}} = the Actions rotor (swipe
+        up/down) — the VoiceOver way to reach swipe / long-press features. Kinds: \texttt{.magicTap}
+        (two-finger double tap: play/pause, answer), \texttt{.escape} (Z-scrub: close);
+        \texttt{accessibilityAdjustableAction} for increment/decrement.
+  \item \textbf{Custom controls}: \texttt{accessibilityRepresentation \{ Slider(\ldots) \}} (15) — SwiftUI
+        hides the stand-in and takes its elements, traits and actions. A custom \texttt{ToggleStyle} keeps
+        \texttt{Toggle}'s semantics for free.
+  \item \textbf{Navigation}: \texttt{accessibilityRotor("Unread") \{ \ldots\ AccessibilityRotorEntry \}} —
+        jump lists; \texttt{accessibilitySortPriority(n)} — higher first, default 0;
+        \texttt{@AccessibilityFocusState} moves focus (to an error). \texttt{accessibilityCustomContent}:
+        secondary facts on demand; \texttt{accessibilityChildren \{ \}}: synthetic elements for a \texttt{Canvas}.
+\end{itemize}
+
+\section{Dynamic Type \& settings}
+\begin{itemize}
+  \item \textbf{12 sizes}: \texttt{xSmall} … \texttt{large} (default) … \texttt{xxxLarge} +
+        \texttt{accessibility1}–\texttt{5}; \texttt{isAccessibilitySize}. \textbf{11 text styles}
+        (\texttt{largeTitle} … \texttt{caption2}); \texttt{.body} is 17 pt at \texttt{large}.
+        Custom font: \texttt{.custom("Inter", size: 17, relativeTo: .body)}.
+  \item \textbf{\texttt{@ScaledMetric(relativeTo: .body) var s = 24}} (14) scales \emph{numbers}: icon size,
+        padding, spacing.
+  \item \textbf{Clamp} with \texttt{.dynamicTypeSize(...DynamicTypeSize.xxxLarge)} (15) only for chrome that
+        cannot grow — and add \texttt{.accessibilityShowsLargeContentViewer()}.
+  \item \textbf{Reflow}: \texttt{ViewThatFits \{ HStack; VStack \}} (16) or
+        \texttt{isAccessibilitySize ? AnyLayout(VStackLayout()) : AnyLayout(HStackLayout())} (keeps identity);
+        no fixed heights, let text wrap, allow scrolling.
+  \item \textbf{Settings} (environment): \texttt{accessibilityReduceMotion} (fade instead of move),
+        \texttt{accessibilityReduceTransparency}, \texttt{colorSchemeContrast}, \texttt{accessibility\-DifferentiateWithoutColor},
+        \texttt{legibilityWeight}, \texttt{accessibilityVoiceOverEnabled}.
+\end{itemize}
+
+\section{Test it}
+{\footnotesize
+\begin{tabular}{@{}L{25mm}L{52mm}@{}}
+\toprule
+Accessibility Inspector & inspect elements, run an audit, flip settings live \\
+Xcode previews & Dynamic Type / colour-scheme variants side by side \\
+\texttt{performAccessibility\-Audit()} & XCUITest, iOS 17; 9 types incl. \texttt{contrast},
+  \texttt{dynamicType}, \texttt{textClipped}, \texttt{hitRegion}; handler \texttt{true} = ignore \\
+\texttt{voiceOverService} & iOS 27 XCUITest: \texttt{moveForward()}, \texttt{currentSpeech()} \\
+real VoiceOver & triple-click shortcut; listen to order and wording \\
+\bottomrule
+\end{tabular}\par}
+
+\columnbreak
+
+\section{What VoiceOver visits}
+\begin{tikzpicture}[sheet]
+  % left: default
+  \node[font=\bfseries\footnotesize, anchor=west] at (-0.1,1.05) {default: 5 stops};
+  \cardbody{(0,0)}
+  \draw[fr] (0.2,-0.5) rectangle (1.1,0.4);          \node[num] at (0.2,0.4) {1};
+  \draw[fr] (1.12,0.2) rectangle (2.45,0.46);        \node[num] at (1.12,0.46) {2};
+  \draw[fr] (1.12,-0.1) rectangle (2.85,0.16);       \node[num] at (2.85,0.16) {3};
+  \draw[fr] (1.12,-0.44) rectangle (2.0,-0.15);      \node[num] at (2.0,-0.15) {4};
+  \draw[fr] (3.1,-0.5) rectangle (3.5,-0.1);         \node[num] at (3.5,-0.1) {5};
+  \node[lbl, anchor=north west, align=left, text width=37mm] at (-0.1,-0.85)
+       {``photo'' · ``Lisbon trip'' · ``3 nights\ldots'' · ``star, star, \ldots'' · ``heart, button'' —
+        five swipes, no meaning of the whole};
+  % right: shaped
+  \node[font=\bfseries\footnotesize, anchor=west] at (4.1,1.05) {\texttt{.ignore} + label/value/action};
+  \cardbody{(4.2,0)}
+  \draw[ring] (4.3,-0.62) rectangle (7.7,0.62);
+  \node[num, fill=sheetBlue] at (4.3,0.62) {1};
+  \node[lbl, anchor=north west, align=left, text width=37mm, text=sheetBlue] at (4.1,-0.85)
+       {``Lisbon trip, 3 nights, 420 euros. 4 of 5 stars. Button.'' Swipe up/down: \textbf{Favorite}};
+  % legend row
+  \node[lbl, anchor=west, align=left, text width=78mm] at (-0.1,-2.05)
+       {label = \emph{what} (title + subtitle) · value = \emph{state} (rating) · trait = \emph{role} (button) ·
+        named action = the heart. \texttt{.combine} merges what the children \emph{already} say — decide the
+        wording yourself with \texttt{.ignore}.};
+\end{tikzpicture}
+
+\section{Example — one card, one stop}
+\begin{lstlisting}[language=SwiftSheet]
+struct TripCard: View {
+  let trip: Trip; @Binding var fav: Bool
+  @ScaledMetric(relativeTo: .body) private var thumb = 56
+  @Environment(\.dynamicTypeSize) private var size
+  var body: some View {
+    let layout = size.isAccessibilitySize  // reflow, keep identity
+      ? AnyLayout(VStackLayout()) : AnyLayout(HStackLayout())
+    layout {
+      Photo(trip).frame(width: thumb, height: thumb)
+      Details(trip); FavButton(isOn: $fav) }  // stars, heart
+    .accessibilityElement(children: .ignore)     // one stop
+    .accessibilityLabel("\(trip.title), \(trip.subtitle)")
+    .accessibilityValue("\(trip.rating) of 5 stars")
+    .accessibilityAddTraits(.isButton)
+    .accessibilityAction(named: fav ? "Unfavorite" : "Favorite") {
+      fav.toggle() }
+  } }
+// UI test: try XCUIApplication().performAccessibilityAudit()
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{.accessibilityElement()} with no argument = \texttt{.ignore}: children vanish — an unlabelled,
+        silent element.}
+  \trap{\texttt{.onTapGesture} card: no \texttt{.isButton} trait — VoiceOver users can't tell it acts.}
+  \trap{\texttt{.frame(height: 44)} / \texttt{lineLimit(1)} on text — clipped at AX sizes (\texttt{textClipped}).}
+  \trap{Clamping Dynamic Type app-wide to dodge layout work; state shown only by colour or motion.}
+  \trap{A green audit $\neq$ accessible: it can't judge order, wording or task flow — listen with VoiceOver.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``One stop per idea: group, label, value, action. Text grows, layout reflows, motion calms.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} accessibility-localization (L-V-T-H, UIKit, localization) ·
+rn-accessibility · swiftui-layout-system (\texttt{ViewThatFits}) · swiftui-custom-modifiers-containers (styles) ·
+testing-viewmodels-ui-snapshot (XCUITest)}
+
+\end{document}

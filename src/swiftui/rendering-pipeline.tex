@@ -1,0 +1,212 @@
+% rendering-pipeline.tex — UIView/CALayer, model/presentation/render trees, the
+% render loop (commit vs render hitches), frame budgets, offscreen rendering,
+% rasterization, CATransaction + implicit animations, image decoding and
+% downsampling.
+% Instruments tools live on ios-swift/instruments-performance.tex — not repeated.
+% Sources (checked 2026-10-06):
+%   developer.apple.com tech talk 10855 "Explore UI animation hitches and the render loop"
+%     (five phases; commit vs render hitch; 16.67 ms at 60 Hz, 8.33 ms at 120 Hz) ·
+%     tech talk 10857 "Demystify and eliminate hitches in the render phase" (offscreen pass:
+%     shadows, masks, rounded rectangles, visual effects; shadowPath removes the shadow pass)
+%   developer.apple.com/documentation/quartzcore/catransaction (implicit transaction committed
+%     when the run loop next iterates) · /calayer/presentation() · /calayer/shadowpath ·
+%     /calayer/cornerradius (radius applies to background + border; content only with
+%     masksToBounds) · /calayer/allowsgroupopacity · /calayer/shouldrasterize ·
+%     /calayer/rasterizationscale (default 1.0)
+%   Core Animation Programming Guide, "Creating Basic Animations" (UIView disables layer
+%     animations outside animation blocks)
+%   developer.apple.com/documentation/uikit/uiimage/preparingfordisplay() ·
+%     /prepareThumbnail(of:completionHandler:) (iOS 15) · imageio/kCGImageSource* keys
+%     (ShouldCacheImmediately decodes at creation; ThumbnailMaxPixelSize is in pixels)
+% @labels: area=swiftui kind=concept platform=ios topic=performance,ui discussion=173
+% @tags: calayer, core-animation, render-server, commit-hitch, render-hitch, frame-budget, catransaction, offscreen-rendering, shouldrasterize, shadowpath, image-decoding, downsampling
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,guard,else,return,as,await,true,false,nil,max,
+    URL,CGSize,CGFloat,UIImage,CFDictionary,CFURL},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  ph/.style={draw=sheetBlue, fill=sheetBlue!14, thick, rounded corners=1pt},
+  phr/.style={draw=sheetGreen, fill=sheetGreen!14, thick, rounded corners=1pt},
+  bad/.style={draw=sheetRed, fill=sheetRed!15, thick, rounded corners=1pt},
+  dsp/.style={draw=sheetGrey, fill=black!6, thick},
+  tn/.style={circle, draw=sheetBlue, fill=sheetBlue!10, minimum size=3.2mm,
+             inner sep=0pt, font=\tiny},
+}
+
+\begin{document}
+
+\sheettitle{Rendering pipeline — layers, frames, hitches}{swiftui · folio}
+
+\oneliner{Your app never draws the screen: it edits a \textbf{layer tree} and
+\textbf{commits} it once per frame to the out-of-process \textbf{render server},
+which renders it on the GPU for the next vsync. Every frame has a deadline —
+\textbf{16.67~ms at 60~Hz, 8.33~ms at 120~Hz (ProMotion)}. Miss it in \emph{your}
+process $\to$ \textbf{commit hitch}; miss it in the render server $\to$
+\textbf{render hitch}. Either way the old frame stays on screen.}
+
+\medskip
+\noindent\begin{tikzpicture}[sheet, x=1cm, y=1cm]
+  \def\v{1.75}
+  \foreach \k in {0,...,5} {
+    \draw[sheetGrey!60, dashed] ({1.9+\k*\v},-0.95) -- ({1.9+\k*\v},1.55);
+    \node[lbl, text=sheetGrey] at ({1.9+\k*\v},1.72) {vsync};
+  }
+  \node[lbl, anchor=east, align=right] at (1.8,1.1) {\textbf{app}\\main thread};
+  \node[lbl, anchor=east, align=right] at (1.8,0.3) {\textbf{render server}\\GPU};
+  \node[lbl, anchor=east] at (1.8,-0.55) {\textbf{display}};
+  % frame A: on time
+  \draw[ph] (1.95,0.9) rectangle (2.35,1.3);  \node[lbl] at (2.15,1.1) {ev};
+  \draw[ph] (2.35,0.9) rectangle (3.4,1.3);   \node[lbl] at (2.87,1.1) {commit A};
+  \draw[phr] (3.7,0.1) rectangle (4.9,0.5);   \node[lbl] at (4.3,0.3) {render A};
+  \draw[dsp] (5.4,-0.75) rectangle (7.15,-0.35); \node[lbl] at (6.27,-0.55) {A};
+  \draw[flow] (3.4,1.0) -- (3.7,0.4);
+  \draw[flow] (4.9,0.2) -- (5.4,-0.45);
+  % frame B: commit overruns
+  \draw[ph] (3.7,0.9) rectangle (4.05,1.3);   \node[lbl] at (3.87,1.1) {ev};
+  \draw[bad] (4.05,0.9) rectangle (6.3,1.3);
+  \node[lbl, text=sheetRed] at (4.72,1.1) {commit B};
+  \node[lbl, text=sheetRed] at (5.85,1.1) {overrun};
+  \draw[sheetRed, very thick] (5.4,0.85) -- (5.4,1.35);
+  \node[lbl, text=sheetRed, fill=white, anchor=south] at (5.4,1.36) {deadline};
+  \draw[phr] (7.2,0.1) rectangle (8.2,0.5);   \node[lbl] at (7.7,0.3) {render B};
+  \draw[bad] (7.15,-0.75) rectangle (8.9,-0.35);
+  \node[lbl, text=sheetRed] at (8.02,-0.55) {A again = \textbf{hitch}};
+  \draw[dsp] (8.9,-0.75) rectangle (10.65,-0.35); \node[lbl] at (9.77,-0.55) {B (late)};
+  \draw[hot] (6.3,1.0) -- (7.2,0.4);
+  \draw[flow] (8.2,0.2) -- (8.9,-0.45);
+  % legend / explanation
+  \node[note, anchor=north west, text width=5.2cm] at (11.0,1.75)
+    {\textbf{commit} = layout $\to$ display (\texttt{draw}) $\to$ prepare
+     (image decode) $\to$ commit, all on main.\\[2pt]
+     Each stage waits for the \textbf{next vsync}: commit in frame $n$,
+     render in $n{+}1$, on glass in $n{+}2$.\\[2pt]
+     \textbf{render hitch}: same picture, but the green box overruns
+     (offscreen passes, blending, huge trees).};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item Every \texttt{UIView} is backed by a \texttt{CALayer}
+        (\texttt{view.layer}; the view is the layer's \emph{delegate}; swap the
+        type with \texttt{override class var layerClass}). View = events,
+        responder chain, Auto Layout; layer = contents, geometry, animation.
+  \item \textbf{Three trees}: the \textbf{model} tree (what you set — target
+        values), the \textbf{presentation} tree (\texttt{layer.presentation()},
+        in-flight values), the \textbf{render} tree (private, in the render
+        server). Animations run in the render server — they keep going while
+        your main thread is briefly busy.
+  \item \textbf{CATransaction} batches layer changes; the run loop opens an
+        \emph{implicit} one and commits it at the end of the turn. Explicit:
+        \texttt{begin()} / \texttt{setDisableActions(true)} /
+        \texttt{setAnimationDuration(\_:)} / \texttt{setCompletionBlock} /
+        \texttt{commit()}.
+  \item \textbf{Implicit animations}: setting an animatable property on a
+        \emph{standalone} layer animates (default action, default timing). A
+        view's backing layer does \emph{not} — UIView disables layer actions
+        outside an animation block, so \texttt{view.layer.opacity = 0} snaps.
+  \item \textbf{Offscreen rendering} = GPU renders into an extra buffer, then
+        composites it back (buffer switch per pass). Triggers:
+        \textbf{shadow without \texttt{shadowPath}} (shape from alpha),
+        \textbf{\texttt{mask}}, \textbf{\texttt{cornerRadius} +
+        \texttt{masksToBounds}} over \emph{content} (plain background +
+        radius is fine), \textbf{group opacity} (\texttt{alpha} \textless 1
+        on a layer with sublayers), \texttt{shouldRasterize}.
+  \item \textbf{Rasterization} (\texttt{shouldRasterize = true}) caches the
+        subtree as a bitmap: wins only for \emph{static} complex content; if it
+        changes each frame it re-renders offscreen every time. Set
+        \texttt{rasterizationScale} to the screen scale
+        (\texttt{traitCollection.displayScale}) or it blurs.
+  \item \textbf{Images decode lazily}, on \emph{first display}, on the main
+        thread (prepare phase). Memory = \textbf{px width × px height × 4}, not
+        file size: 4000×3000 $\approx$ 48~MB even in a 100~pt cell.
+        Fix: \textbf{downsample} with ImageIO, or iOS 15
+        \texttt{preparingForDisplay()} (sync, call off main) /
+        \texttt{prepareThumbnail(of:completionHandler:)} (background) — assign on main.
+\end{itemize}
+
+\section{Example — downsample off the main thread}
+\begin{lstlisting}[language=SwiftSheet]
+// maxPx = max(w, h) in points * displayScale  -> PIXELS
+func downsample(_ url: URL, maxPx: CGFloat) -> UIImage? {
+  let noCache = [kCGImageSourceShouldCache: false] as CFDictionary
+  guard let src = CGImageSourceCreateWithURL(url as CFURL, noCache)
+  else { return nil }
+  let opts = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+              kCGImageSourceShouldCacheImmediately: true,
+              kCGImageSourceCreateThumbnailWithTransform: true,
+              kCGImageSourceThumbnailMaxPixelSize: maxPx]
+              as CFDictionary
+  guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts)
+  else { return nil }      // decoded NOW, at thumbnail size only
+  return UIImage(cgImage: cg)
+}
+\end{lstlisting}
+
+\columnbreak
+
+\section{One layer, three trees}
+\begin{tikzpicture}[sheet]
+  \foreach \x/\t/\c/\i in {0/model/sheetBlue/1, 2.45/presentation/sheetOrange/2,
+                        4.9/render/sheetGreen/3} {
+    \node[tn, draw=\c, fill=\c!12] (r\i) at (\x+0.9,0.9) {};
+    \node[tn, draw=\c, fill=\c!12] (a\i) at (\x+0.45,0.3) {};
+    \node[tn, draw=\c, fill=\c!12] (b\i) at (\x+1.35,0.3) {};
+    \draw[\c] (r\i) -- (a\i); \draw[\c] (r\i) -- (b\i);
+    \node[font=\bfseries\scriptsize, text=\c] at (\x+0.9,1.3) {\t};
+  }
+  \node[lbl, align=center] at (0.9,-0.25) {you set it\\\texttt{pos = 100}};
+  \node[lbl, align=center] at (3.35,-0.25) {on screen now\\\texttt{pos = 37}};
+  \node[lbl, align=center] at (5.8,-0.25) {render server\\private};
+  \draw[dashed, sheetGrey] (4.6,1.45) -- (4.6,-0.6);
+  \node[lbl, text=sheetGrey, rotate=90] at (4.45,0.45) {process};
+  \draw[hot] (1.55,1.05) to[bend left=25] node[lbl, above]{commit} (5.35,1.2);
+\end{tikzpicture}
+
+\section{Offscreen triggers $\to$ fix}
+{\footnotesize
+\begin{tabular}{@{}p{2.8cm}p{4.45cm}@{}}
+\toprule
+shadow, no path & \texttt{layer.shadowPath = UIBezierPath(…).cgPath} \\
+radius + clip on an image & pre-round once when downsampling \\
+\texttt{mask} layer & bake into the image / avoid in cells \\
+\texttt{alpha} on a container & fade the leaves, or flatten \\
+changing rasterized layer & turn \texttt{shouldRasterize} off \\
+\bottomrule
+\end{tabular}}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``I have 16~ms'' — not on ProMotion: 8.33~ms at 120~Hz.}
+  \trap{\texttt{cellForRow} fast but still hitching $\to$ the cost is in
+        commit (decode, \texttt{draw}) or \emph{render} (offscreen), not your code.}
+  \trap{\texttt{cornerRadius} alone is not the problem — radius \emph{plus
+        clipping content} is.}
+  \trap{\texttt{shouldRasterize} on animating content = worse, not better.}
+  \trap{Downsample to \emph{points} $\to$ blurry: \texttt{MaxPixelSize}
+        is pixels (× \texttt{displayScale}).}
+  \trap{Decode off main, but set \texttt{imageView.image} on main — UIKit is
+        not thread-safe.}
+  \trap{Overriding \texttt{draw(\_:)} allocates a backing store
+        (w × h × scale\textsuperscript{2} × 4~B) and draws on the CPU; use
+        layer properties.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Set $\to$ commit $\to$ render $\to$ glass, one vsync each.''}
+Main thread late = commit hitch; GPU late = render hitch.
+Images: \textbf{pixels × 4}, decode once, small, off main.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Instruments \& performance (Animation Hitches, Time Profiler) · animations · scroll performance \& prefetching · \texttt{NSCache} image caches · run loop}
+
+\end{document}

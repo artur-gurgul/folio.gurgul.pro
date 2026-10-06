@@ -1,0 +1,157 @@
+% swiftui-layout-system.tex — propose / choose / place, ProposedViewSize, frames, priority,
+% fixedSize, stack distribution, alignment guides, GeometryReader, ViewThatFits, Layout protocol.
+% Sources (checked 2026-10-06):
+%   developer.apple.com/documentation/swiftui/proposedviewsize (iOS 16; zero = minimum,
+%     infinity = maximum, unspecified = ideal) · /view/fixedsize() (ideal size; a counter
+%     proposal) · /view/layoutpriority(_:) (default 0; highest priority gets the space minus
+%     lower-priority minimums) · /viewthatfits (iOS 16; first child whose ideal size fits) ·
+%     /layout/updatecache(_:subviews:) (default rebuilds on layout or subview change) ·
+%     /view/containerrelativeframe(_:alignment:) (iOS 17) · /geometryreader (flexible size)
+%   iOS & iPadOS 14 release notes, SwiftUI (59722992: GeometryReader reliably top-leading)
+%   Not in Apple's docs, marked \unverified on the page: HStack's within-group order, Color's
+%     ideal size of 10.
+% @labels: area=swiftui kind=concept platform=apple topic=ui discussion=181
+% @tags: proposedviewsize, propose-choose-place, frame, fixedsize, layoutpriority, alignmentguide, geometryreader, viewthatfits, layout-protocol, containerrelativeframe, modifier-order, flow-layout
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,protocol,extension,return,if,else,
+    guard,for,in,case,switch,self,some,any,where,init,private,static,inout,
+    @State,@Binding,@ViewBuilder},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\begin{document}
+
+\sheettitle{SwiftUI layout system}{swiftui · folio}
+
+\oneliner{Layout is a \textbf{negotiation}, not a constraint solver: the \textbf{parent proposes} a size,
+the \textbf{child chooses} its own size (it may ignore the offer), the \textbf{parent places} the child.
+Every modifier is a new parent in that chain — so \textbf{order matters}.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Three steps}, top-down proposal then bottom-up answer: (1) parent proposes a
+        \texttt{ProposedViewSize}; (2) child returns a \texttt{CGSize} — its decision, never forced;
+        (3) parent positions the child in its own coordinate space. One pass, no Auto Layout solver.
+  \item \textbf{\texttt{ProposedViewSize}} — each axis is \texttt{CGFloat?}:
+        \texttt{nil} = ``your \emph{ideal}'' (\texttt{.unspecified}); \texttt{0} = ``your \emph{minimum}''
+        (\texttt{.zero}); \texttt{.infinity} = ``your \emph{maximum}'' (\texttt{.infinity}); a number = a real offer.
+  \item \textbf{Fixed vs flexible}: \texttt{Text}/\texttt{Image} hug content (\texttt{Text} wraps then
+        truncates when offered less); \texttt{Color}, \texttt{Shape}, \texttt{Spacer}, \texttt{GeometryReader}
+        are greedy — they take whatever is offered.
+  \item \textbf{\texttt{.frame(width: 100)}} proposes exactly 100 and \emph{reports} 100, whatever the child
+        does (it may overflow). \textbf{\texttt{.frame(maxWidth: .infinity)}} is a negotiating frame: it clamps
+        the offer to \texttt{[min, max]} — fills \emph{what the parent offered}, not the screen.
+  \item \textbf{\texttt{fixedSize()}} replaces the incoming proposal with \texttt{nil} → child takes its ideal
+        size. \texttt{fixedSize(horizontal: false, vertical: true)} = wrap, never truncate.
+  \item \textbf{Stack distribution} (\texttt{HStack}): subtract spacing; probe each child's min/max to get
+        its \emph{flexibility}; highest \texttt{layoutPriority} group first (lower groups reserved at
+        their min); within a group, least flexible child first, each offered
+        \emph{remaining ÷ children left}\unverified. Default priority \texttt{0}.
+  \item \textbf{Alignment}: the stack's \texttt{alignment:} picks the guide all children share
+        (\texttt{.leading}, \texttt{.firstTextBaseline}); \texttt{.alignmentGuide(\_:computeValue:)} lets
+        \emph{one} child move its own guide; a custom \texttt{AlignmentID} aligns views across containers.
+  \item \textbf{\texttt{GeometryReader}} takes \emph{all} proposed space, proposes it to its child and
+        places the child \textbf{top-leading} (iOS 14+). Prefer \texttt{containerRelativeFrame} (17),
+        \texttt{onGeometryChange} or \texttt{.background \{ GeometryReader… \}} to \emph{read} size.
+  \item \textbf{\texttt{ViewThatFits}} (16): tries children in order, shows the first whose \emph{ideal}
+        size fits the proposal (\texttt{in: .horizontal} to limit the axis).
+  \item \textbf{\texttt{Layout} protocol} (16): \texttt{sizeThatFits(proposal:subviews:cache:)} +
+        \texttt{placeSubviews(in:proposal:subviews:cache:)}; measure with
+        \texttt{subview.sizeThatFits(\_:)}, place with \texttt{subview.place(at:anchor:proposal:)}.
+\end{itemize}
+
+\section{Example — a flow (wrap) layout}
+\begin{lstlisting}[language=SwiftSheet]
+struct Flow: Layout {
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews,
+                    cache: inout ()) -> CGSize {
+    let w = proposal.replacingUnspecifiedDimensions().width
+    var x = 0.0, y = 0.0, row = 0.0
+    for s in subviews {
+      let d = s.sizeThatFits(.unspecified)          // ideal size
+      if x + d.width > w { x = 0; y += row; row = 0 }
+      x += d.width; row = max(row, d.height)
+    }
+    return CGSize(width: w, height: y + row)
+  }
+  func placeSubviews(in b: CGRect, proposal: ProposedViewSize,
+                     subviews: Subviews, cache: inout ()) {
+    // same walk; s.place(at: CGPoint(x: b.minX+x, y: b.minY+y))
+  } }
+\end{lstlisting}
+
+\columnbreak
+
+\section{One negotiation, three probes}
+\begin{tikzpicture}[sheet]
+  \node[box, minimum width=22mm] (P) at (0,0) {\textbf{parent}\\\footnotesize\texttt{HStack} / frame};
+  \node[box, minimum width=22mm, draw=sheetGreen, fill=sheetGreen!8] (C) at (5.2,0) {\textbf{child}\\\footnotesize\texttt{Text("Hello")}};
+  \draw[hot] ([yshift=3mm]P.east) -- node[above, note, text=sheetOrange]{\textbf{1} propose \texttt{(200, nil)}} ([yshift=3mm]C.west);
+  \draw[->, thick, sheetGreen] ([yshift=-3mm]C.west) -- node[below, note, text=sheetGreen]{\textbf{2} ``I am \texttt{42×17}''} ([yshift=-3mm]P.west-|P.east);
+  % step 3: placement
+  \draw[sheetGrey, thick, rounded corners=2pt] (-1.1,-1.15) rectangle (6.3,-2.05);
+  \node[note, anchor=north west] at (-1.1,-2.08) {\textbf{3} parent places child in \emph{its} space (here: centred)};
+  \node[cell, fill=sheetGreen!15, draw=sheetGreen, minimum width=14mm] at (2.6,-1.6) {Hello};
+  \draw[<->, sheetGrey] (-1.0,-1.3) -- node[fill=white, inner sep=1pt, font=\scriptsize]{offered 200} (1.6,-1.3);
+  \draw[<->, sheetGrey] (3.6,-1.3) -- (6.2,-1.3);
+  \draw[<->, sheetGreen] (1.9,-1.95) -- node[fill=white, inner sep=1pt, font=\scriptsize]{42} (3.3,-1.95);
+  % probes
+  \node[font=\bfseries\small, anchor=west] at (-1.1,-2.75) {Probing a view with proposals};
+  \foreach \p/\lbl [count=\i] in {0/{\texttt{0} → min}, 1/{\texttt{nil} → ideal}, 2/{$\infty$ → max}} {
+    \node[font=\footnotesize, anchor=west] at (-1.1,-3.05-0.5*\i) {\lbl};
+  }
+  \node[font=\scriptsize\bfseries] at (1.9,-3.2) {\texttt{Text}};
+  \node[font=\scriptsize\bfseries] at (4.6,-3.2) {\texttt{Color}};
+  % Text: min=truncated, ideal=one line, max=ideal
+  \node[cell, minimum width=6mm, fill=sheetBlue!10] at (1.9,-3.55) {H…};
+  \node[cell, minimum width=16mm, fill=sheetBlue!10] at (1.9,-4.05) {Hello};
+  \node[cell, minimum width=16mm, fill=sheetBlue!10] at (1.9,-4.55) {Hello};
+  % Color: 0, 10 (ideal), inf
+  \node[cell, minimum width=1mm, fill=sheetOrange!40] at (4.6,-3.55) {};
+  \node[cell, minimum width=5mm, fill=sheetOrange!40] at (4.6,-4.05) {\scriptsize 10};
+  \node[cell, minimum width=26mm, fill=sheetOrange!40] at (4.6,-4.55) {\scriptsize $\infty$ (all)};
+  \node[note, anchor=west, text width=74mm] at (-1.1,-5.15)
+       {\texttt{Text} is \emph{fixed}: ideal = max. \texttt{Color} is \emph{flexible}: 0 … $\infty$ (ideal 10\unverified).
+        Stacks probe exactly like this to decide who gets the leftover space.};
+\end{tikzpicture}
+
+\vspace{2pt}
+\textbf{Modifier order} — each modifier wraps the view below it, so it is a new \emph{parent}:
+\begin{lstlisting}[language=SwiftSheet]
+Text("A").padding().background(.red)  // red incl. padding
+Text("A").background(.red).padding()  // red behind text only
+Text("A").frame(width: 80).border(.blue)  // border = 80pt box
+Text("A").border(.blue).frame(width: 80)  // border hugs the text
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``\texttt{nil} proposal means zero / fill'' — it means \textbf{ideal}.}
+  \trap{\texttt{maxWidth: .infinity} not filling — an ancestor (\texttt{fixedSize}, an \texttt{overlay},
+        a greedy sibling) never \emph{offered} the width. Spacers cannot create space either.}
+  \trap{\texttt{GeometryReader} around a small view balloons it and pins content top-leading;
+        one per \texttt{List} row costs a layout pass each.}
+  \trap{\texttt{Color.red.frame(height: 200).ignoresSafeArea()} — the frame, not the colour, touches
+        the edge; use \texttt{.background(Color.red.ignoresSafeArea())}.}
+  \trap{\texttt{Layout} \texttt{cache}: the default \texttt{updateCache} rebuilds it whenever the layout or a
+        subview changes — it pays only with an incremental \texttt{updateCache}; keep \texttt{()} unless measured.}
+  \trap{\texttt{placeSubviews} points are in the \emph{parent's} space — offset by \texttt{bounds.minX/minY},
+        never assume the origin is \texttt{(0,0)}.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Parent proposes, child disposes, parent places.''} \texttt{0}\,/\,\texttt{nil}\,/\,$\infty$ = min\,/\,ideal\,/\,max.
+Read modifiers \emph{bottom-up} as parents wrapping children.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{safeAreaInset(edge:)} · \texttt{containerRelativeFrame} ·
+\texttt{PreferenceKey} · \texttt{LayoutValueKey} · \texttt{AnyLayout} (animate HStack↔VStack) · Auto Layout (UIKit)}
+
+\end{document}
