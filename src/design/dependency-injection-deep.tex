@@ -1,0 +1,217 @@
+% dependency-injection-deep.tex — DI beyond "pass it in the init": composition root, pure DI vs
+% container vs service locator, scopes + captive dependencies, cycles, SwiftUI Environment as DI
+% (@Entry), pointfree swift-dependencies, Swinject / Factory / Resolver.
+% Sources (checked 2026-10-06):
+%   github.com/pointfreeco/swift-dependencies Documentation.docc LivePreviewTest.md (previewValue
+%     defaults to liveValue, testValue to previewValue; "If a live dependency is used in a test
+%     context, the test case will fail") + DesigningDependencies.md (@DependencyClient)
+%   developer.apple.com/documentation/swiftui/entry() (macro; availability iOS 13.0+ = back-deploys)
+%   github.com/Swinject/Swinject Documentation/ObjectScopes.md (transient · graph = default ·
+%     container · weak) + CircularDependencies.md (initCompleted; init-to-init cycles unsupported)
+%   github.com/hmlongco/Factory README ("If no scope is specified the default scope is unique";
+%     extension Container { var x: Factory<T> { self { … } } }; @Injected(\.x)) + release notes (graph)
+%   github.com/hmlongco/Resolver README ("officially deprecated and replaced by … Factory")
+%   blog.ploeh.dk (Seemann: Composition Root 2011, Service Locator is an Anti-Pattern 2010,
+%     Pure DI 2014) · Seemann + van Deursen, Dependency Injection (2019: captive dependency)
+%   swift-evolution 0412-strict-concurrency-for-global-variables.md
+% @labels: area=design kind=pattern platform=apple topic=architecture,testing discussion=95
+% @tags: dependency-injection, composition-root, pure-di, service-locator, di-scopes, captive-dependency, swiftui-environment, entry-macro, swift-dependencies, swinject, factory-container, constructor-injection
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,case,switch,lazy,
+    if,else,return,guard,self,Self,nil,try,await,async,throws,private,static,override,
+    true,false,Void,String,Bool,Int,Date,extension,where,some,any,get,set,newValue},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.4mm},
+  app/.style={sb, draw=sheetBlue, fill=sheetBlue!10},
+  ses/.style={sb, draw=sheetOrange, fill=sheetOrange!10},
+  scr/.style={sb, draw=sheetGreen!70!black, fill=sheetGreen!10},
+  bad/.style={sb, draw=sheetRed, fill=sheetRed!7},
+  dep/.style={->, thick, draw=black!60},
+  lane/.style={font=\tiny\bfseries, anchor=west, align=left},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small, text=sheetBlue},
+}
+
+\begin{document}
+
+\sheettitle{Dependency injection — roots, scopes, locators}{design · folio}
+
+\oneliner{DI = a type \textbf{receives} its collaborators instead of creating or finding them. The
+substance: \emph{where} the graph is built (one \textbf{composition root}), \emph{how long} each object
+lives (\textbf{scopes}; never long-lived holding short-lived), \emph{who} may ask a container (only the
+root — anywhere else it is a \textbf{service locator}). \texttt{Environment} and \texttt{@Dependency}
+are \emph{ambient} DI: handy, but the dependency leaves the \texttt{init}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % lanes
+  \fill[sheetBlue!4]  (1.55,1.95) rectangle (10.4,2.75);
+  \fill[sheetOrange!5] (1.55,1.0) rectangle (10.4,1.85);
+  \fill[sheetGreen!5] (1.55,0.05) rectangle (10.4,0.9);
+  \node[lane, text=sheetBlue] at (0,2.35) {app scope\\\textmd{process lifetime}};
+  \node[lane, text=sheetOrange] at (0,1.42) {session scope\\\textmd{login $\to$ logout}};
+  \node[lane, text=sheetGreen!50!black] at (0,0.47) {screen scope\\\textmd{per push / sheet}};
+  % root
+  \node[box, fill=black!5, draw=black!60, minimum width=88mm, font=\scriptsize] (root) at (5.95,3.25)
+      {\textbf{Composition root} — \texttt{@main App.init} / \texttt{SceneDelegate}: the only code that calls concrete \texttt{init}s, then injects};
+  % app lane
+  \node[app] (http) at (2.6,2.35) {HTTPClient};
+  \node[app] (db) at (4.6,2.35) {Database};
+  \node[app] (img) at (7.1,2.35) {ImageCache};
+  \node[app] (clk) at (9.3,2.35) {Clock};
+  % session lane
+  \node[ses] (us) at (2.6,1.42) {UserSession};
+  \node[ses] (aapi) at (4.6,1.42) {AuthedAPI};
+  % screen lane
+  \node[scr] (vw) at (2.6,0.47) {FeedView};
+  \node[scr] (vm) at (4.6,0.47) {FeedViewModel};
+  \node[scr] (rp) at (7.1,0.47) {FeedRepository};
+  % depends-on edges (consumer -> dependency)
+  \draw[dep] (vw) -- (vm);
+  \draw[dep] (vm) -- (rp);
+  \draw[dep] (rp) -- (aapi);
+  \draw[dep] (rp) -- (db);
+  \draw[dep] (aapi) -- (http);
+  \draw[dep] (aapi) -- (us);
+  \draw[dep] (vm.north east) -- (clk.south west);
+  % captive
+  \draw[->, thick, dashed, draw=sheetRed] (img.south east) to[out=-60,in=60] (rp.north east);
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (8.2,1.3) {\textbf{$\times$ captive}: app-scope\\cache holds a screen object};
+  % root injects
+  \draw[hot, very thick] (1.45,3.05) -- (1.45,0.1);
+  \node[lbl, anchor=north, text=black!70] at (5.95,0.0) {arrows = ``depends on'': only ever to the \textbf{same or a longer} lifetime};
+  % service locator panel
+  \draw[sheetGrey!40] (10.65,3.5) -- (10.65,0.0);
+  \node[ttl, text=sheetRed] at (13.55,3.3) {Service locator (anti-pattern)};
+  \node[bad, minimum width=30mm] (loc) at (13.55,2.55) {\texttt{Locator.shared} · \texttt{[key: Any]}};
+  \node[sb] (a) at (11.5,1.3) {FeedVM};
+  \node[sb] (b) at (13.55,1.3) {Repo};
+  \node[sb] (c) at (15.55,1.3) {Settings};
+  \foreach \n in {a,b,c} \draw[->, thick, dashed, draw=sheetRed] (\n) -- (loc);
+  \node[lbl, text=sheetRed] at (15.65,2.12) {\texttt{resolve(X.self)}};
+  \node[lbl, align=left, anchor=north west] at (10.8,0.95) {\texttt{init()} says nothing — needs are hidden in bodies\\
+     missing registration = \textbf{runtime} crash, not a compile error\\
+     global state shared across tests · every type couples to the locator\\
+     \textbf{same container, called only at the root = DI}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Constructor} — default: required, \texttt{let}, never half-built.
+        \textbf{Property} — optional/late (storyboard VCs); risk: used before set.
+        \textbf{Method} — varies per call. \textbf{Ambient} — looked up from an implicit scope
+        (\texttt{@Environment}, \texttt{@Dependency}, \texttt{@TaskLocal}).
+  \item \textbf{Composition root} (Seemann): \emph{one} place near the entry point where the
+        graph is composed. Coordinators/factories are \emph{sub-roots} handed what they need.
+  \item \textbf{Pure DI} = hand-wired, no library, compile-checked; a \textbf{container}
+        automates wiring + lifetimes. Container vs locator depends on \emph{where it is
+        called}, not on the library.
+  \item \textbf{Scopes}: app · session (rebuild on logout) · screen/flow (owned by its
+        coordinator) · transient. \textbf{Captive dependency}: a longer-lived object holding a
+        shorter-lived one keeps it alive past its scope.
+  \item \textbf{Cycles}: usually a smell — extract the shared part into C, or let one side emit
+        events. Else break one edge: \texttt{weak} property or a lazy provider closure. Swinject:
+        \texttt{initCompleted} + a property; init$\leftrightarrow$init cycles unsupported.
+\end{itemize}
+
+\section{Example — Pure DI at the root}
+\begin{lstlisting}[language=SwiftSheet]
+@MainActor final class AppContainer {   // built ONCE, App.init
+  let http = HTTPClient(session: .shared)   // app scope
+  let db = Database(file: "app.sqlite")
+  var session: UserSession?                 // session scope
+  func logout() { session = nil }           // drop that scope
+  func makeFeed() -> FeedViewModel {        // screen: new each
+    FeedViewModel(repo: FeedRepository(http: http, db: db),
+                  now: { Date() }) } }      // closure dependency
+\end{lstlisting}
+
+\section{Remember}
+\textbf{One root builds, everyone else receives. Arrows point to longer lives. A container asked
+from inside a type is a locator.}
+
+
+\columnbreak
+
+\section{SwiftUI Environment = DI by tree position}
+\begin{lstlisting}[language=SwiftSheet]
+extension EnvironmentValues {
+  @Entry var api: APIClient = .live }  // Xcode 16 macro
+struct FeedView: View {
+  @Environment(\.api) private var api            // absent: default
+  @Environment(Session.self) private var session // absent: CRASH
+  var body: some View { Text(session.name) } }
+FeedView().environment(\.api, .mock).environment(Session())
+\end{lstlisting}
+{\footnotesize \texttt{@Entry} (Xcode 16) back-deploys: it only generates the key. A keyed value
+always has a \textbf{default}; an \texttt{@Observable} object via \texttt{.environment(obj)} (iOS 17)
+or \texttt{.environmentObject} has none — missing $\Rightarrow$ runtime crash. Flows \textbf{down}
+the tree only; read it in \texttt{body}, not \texttt{init}.\par}
+
+\section{pointfree swift-dependencies}
+\begin{lstlisting}[language=SwiftSheet]
+extension APIClient: DependencyKey {
+  static let liveValue = APIClient.live }
+extension DependencyValues {
+  var api: APIClient {
+    get { self[APIClient.self] }
+    set { self[APIClient.self] = newValue } } }
+@Observable @MainActor final class FeedModel {
+  @ObservationIgnored @Dependency(\.api) var api
+  @ObservationIgnored @Dependency(\.date.now) var now }
+let model = withDependencies {                 // in a test
+  $0.api.fetchFeed = { [] }                    // ONE endpoint
+} operation: { FeedModel() }
+\end{lstlisting}
+{\footnotesize Three values per key: \texttt{liveValue} · \texttt{previewValue} (defaults to live)
+· \texttt{testValue} (defaults to preview); a \textbf{live} value reached in a test
+\textbf{fails the test}. \texttt{@DependencyClient} (\texttt{import DependenciesMacros}) makes every
+endpoint \emph{unimplemented} by default. Captured when the object is created inside
+\texttt{withDependencies}.\par}
+
+\section{Containers — only what they document}
+{\footnotesize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}L{12mm}L{66mm}@{}}
+\toprule
+Swinject & \texttt{c.register(API.self) \{ \_ in LiveAPI() \}}, \texttt{c.resolve(API.self)!};
+scopes \texttt{.transient} · \textbf{\texttt{.graph} (default)} · \texttt{.container} (singleton) ·
+\texttt{.weak} \\
+Factory & \texttt{extension Container \{ var api: Factory<API> \{ self \{ LiveAPI() \}.singleton \} \}};
+\texttt{@Injected(\textbackslash.api)}; test: \texttt{Container.shared.api.register \{ Mock() \}};
+scopes \textbf{\texttt{unique} (default)} · \texttt{cached} · \texttt{shared} (weak) ·
+\texttt{singleton} · \texttt{graph} \\
+Resolver & same author; \textbf{officially deprecated}, replaced by Factory \\
+\bottomrule
+\end{tabular}}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{@Injected}/\texttt{@Dependency} are \emph{lookups} (locator-shaped): a
+        default removes the missing-registration crash, not the hiding.}
+  \trap{Hand-rolled \texttt{@Injected} over \texttt{static var currentValue} = a global
+        mutable registry: overrides leak between tests; Swift 6 rejects the nonisolated
+        \texttt{static var} (SE-0412).}
+  \trap{Logout without rebuilding the session scope = the next user sees old data.}
+  \trap{Singleton holding a per-screen object = captive dependency.}
+  \trap{\texttt{@Environment} read in \texttt{init}: not installed yet $\to$ the default.}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} coordinator-repository-di-clean · testable-design-seams ·
+swift-idiom-patterns · SOLID (DIP) · ios-idioms-antipatterns · data-access-patterns}
+
+\end{document}

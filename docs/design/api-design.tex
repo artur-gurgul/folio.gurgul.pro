@@ -1,0 +1,212 @@
+% api-design.tex — HTTP API design + Swift library API design.
+% Sources (checked 2026-10-06):
+%   RFC 9110 HTTP Semantics (safe / idempotent methods; 202, 303, 304, 412 + If-Match / If-None-Match)
+%   RFC 6585 (428 Precondition Required, 429 + Retry-After) · RFC 9457 Problem Details (obsoletes
+%     7807; "type" defaults to about:blank) · RFC 7396 JSON Merge Patch · RFC 6902 JSON Patch ·
+%     RFC 8288 Web Linking · RFC 8594 Sunset header
+%   datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header (draft-07, 2025-10-15,
+%     expired): missing key 400 · same key + different payload 422 · original still in flight 409
+%   swift.org/documentation/api-design-guidelines ("Clarity at the point of use is your most
+%     important goal") · swift.org/blog/abi-stability-and-more (ABI 5.0, module stability 5.1)
+%   martinfowler.com/bliki/TolerantReader.html · samnewman.io/patterns/architectural/bff
+% @labels: area=design kind=concept platform=general topic=networking,architecture discussion=91
+% @tags: rest, http-status-codes, idempotency-key, etag, if-match, problem-details, rfc-9457, cursor-pagination, api-versioning, tolerant-reader, bff, swift-api-design-guidelines
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,case,
+    if,else,return,guard,self,Self,nil,try,await,async,throws,private,public,some,any,
+    true,false,AnyObject,Void,String,Bool,Int,Data,URL,extension,static,default,
+    mutating,switch},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  lane/.style={draw=sheetGrey!60, thick},
+  who/.style={font=\scriptsize\bfseries, text=sheetGrey},
+  req/.style={->, thick, draw=sheetBlue},
+  res/.style={->, thick, draw=sheetGreen!70!black},
+  bad/.style={->, thick, draw=sheetRed},
+  m/.style={font=\tiny\ttfamily, inner sep=1pt},
+  mn/.style={font=\tiny, inner sep=1pt, text=sheetBrown, align=center},
+  pt/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{API design — HTTP resources and Swift APIs}{design · folio}
+
+\oneliner{An API is a \textbf{contract you can never fully take back}: model
+\textbf{resources} (nouns) and let \textbf{methods} carry the verbs, make every write
+\textbf{safe to retry}, make every change \textbf{additive}, and judge a Swift API by
+\textbf{clarity at the point of use}. Old app versions live for years.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {5.55,11.1} \draw[sheetGrey!40] (\x,3.55) -- (\x,-0.05);
+  % ── panel 1: ETag / optimistic concurrency ──
+  \node[pt] at (0,3.4) {ETag: cache + optimistic lock};
+  \draw[lane] (0.3,3.0) -- (0.3,0.15); \draw[lane] (5.1,3.0) -- (5.1,0.15);
+  \node[who] at (0.3,3.1) {app}; \node[who] at (5.1,3.1) {API};
+  \draw[req] (0.3,2.75) -- node[m,above]{GET /docs/7} (5.1,2.75);
+  \draw[res] (5.1,2.4) -- node[m,above]{200 \ ETag: "v7"} (0.3,2.4);
+  \draw[req] (0.3,2.05) -- node[m,above]{PUT /docs/7 \ If-Match: "v7"} (5.1,2.05);
+  \draw[res] (5.1,1.7) -- node[m,above]{200 \ ETag: "v8"} (0.3,1.7);
+  \draw[req] (0.3,1.35) -- node[m,above]{PUT \ If-Match: "v7" (stale copy)} (5.1,1.35);
+  \draw[bad] (5.1,1.0) -- node[m,above,text=sheetRed]{412 Precondition Failed} (0.3,1.0);
+  \draw[req] (0.3,0.65) -- node[m,above]{GET \ If-None-Match: "v8"} (5.1,0.65);
+  \draw[res] (5.1,0.3) -- node[m,above]{304 Not Modified (no body)} (0.3,0.3);
+  \node[mn] at (2.7,0.02) {412 $\to$ re-GET, merge, retry · no If-Match at all $\to$ 428};
+  % ── panel 2: idempotency key ──
+  \node[pt] at (5.6,3.4) {Idempotency-Key: retry a POST};
+  \draw[lane] (5.9,3.0) -- (5.9,0.45); \draw[lane] (10.65,3.0) -- (10.65,0.45);
+  \node[who] at (5.9,3.1) {app}; \node[who] at (10.65,3.1) {API};
+  \draw[req] (5.9,2.75) -- node[m,above]{POST /payments \ Idempotency-Key: k1} (10.65,2.75);
+  \node[mn, anchor=east] at (10.6,2.45) {charge + store k1 $\to$ 201};
+  \draw[bad, dashed] (10.65,2.2) -- node[m,below,text=sheetRed]{response lost (timeout)} (7.6,2.2);
+  \node[font=\small\bfseries, text=sheetRed] at (7.45,2.2) {×};
+  \draw[req] (5.9,1.7) -- node[m,above]{retry: same body, same k1} (10.65,1.7);
+  \draw[res] (10.65,1.35) -- node[m,above]{201 replayed — ONE charge} (5.9,1.35);
+  \draw[req] (5.9,1.0) -- node[m,above]{k1 + a DIFFERENT body} (10.65,1.0);
+  \draw[bad] (10.65,0.65) -- node[m,above,text=sheetRed]{422 (409 if k1 still in flight)} (5.9,0.65);
+  \node[mn] at (8.27,0.18) {key = client UUID per \emph{intent}, reused on retry;\\server stores key $\to$ response for a TTL · IETF draft-07 (expired)};
+  % ── panel 3: long-running operation ──
+  \node[pt] at (11.15,3.4) {Long-running: 202 + status};
+  \draw[lane] (11.45,3.0) -- (11.45,0.45); \draw[lane] (16.4,3.0) -- (16.4,0.45);
+  \node[who] at (11.45,3.1) {app}; \node[who] at (16.4,3.1) {API};
+  \draw[req] (11.45,2.75) -- node[m,above]{POST /exports} (16.4,2.75);
+  \draw[res] (16.4,2.4) -- node[m,above]{202 Accepted \ Location: /operations/42} (11.45,2.4);
+  \draw[req] (11.45,2.05) -- node[m,above]{GET /operations/42} (16.4,2.05);
+  \draw[res] (16.4,1.7) -- node[m,above]{200 \{"status":"running"\} \ Retry-After: 5} (11.45,1.7);
+  \draw[req] (11.45,1.35) -- node[m,above]{GET /operations/42} (16.4,1.35);
+  \draw[res] (16.4,1.0) -- node[m,above]{303 See Other \ Location: /exports/9} (11.45,1.0);
+  \draw[req] (11.45,0.65) -- node[m,above]{GET /exports/9} (16.4,0.65);
+  \node[mn] at (13.92,0.18) {the operation is a resource: status, progress, error,\\cancel via \texttt{DELETE}; or push/webhook instead of polling};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{HTTP: resources, methods, status}
+\textbf{Nouns, plural, shallow}: \texttt{/users/7/orders}, not \texttt{/getUserOrders?id=7}
+(RPC-in-URL, Richardson L0); past $\sim$2 levels go flat + filter (\texttt{/orders?user=7}).
+Non-CRUD action: \texttt{POST /orders/9/cancel} (or a \texttt{cancellation} sub-resource).
+Root is always an \textbf{object}, never a bare array (no room for \texttt{next}/meta later).
+
+{\footnotesize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}L{11mm}L{6mm}L{7mm}L{51mm}@{}}
+\toprule
+\textbf{Method} & \textbf{Safe} & \textbf{Idem.} & \textbf{Use} \\
+\midrule
+GET/HEAD & yes & yes & read; cacheable \\
+PUT & no & \textbf{yes} & full replace at a known URI (client picks id) \\
+DELETE & no & \textbf{yes} & 2nd call may 404 — the \emph{state} is the same \\
+POST & no & \textbf{no} & create / action $\to$ needs an Idempotency-Key \\
+PATCH & no & no & Merge Patch (RFC 7396, \texttt{null} = remove) / JSON Patch (6902) \\
+\bottomrule
+\end{tabular}}
+
+{\footnotesize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}L{6mm}L{72mm}@{}}
+\textbf{2xx} & \textbf{200} body · \textbf{201} + \texttt{Location} · \textbf{202} accepted, not done · \textbf{204} no body \\
+\textbf{4xx} & \textbf{400} malformed · \textbf{401} \emph{who are you?} · \textbf{403} known, not allowed · \textbf{404} (or hide existence) · \textbf{409} state conflict · \textbf{412} If-Match failed · \textbf{422} valid JSON, invalid values · \textbf{429} + \texttt{Retry-After} \\
+\textbf{5xx} & \textbf{500} bug · \textbf{502} bad upstream reply · \textbf{503} overloaded + \texttt{Retry-After} · \textbf{504} upstream timeout \\
+\end{tabular}}
+\textbf{Retry} only idempotent requests on 5xx/429/timeout, exponential backoff + jitter.
+
+\textbf{Errors — RFC 9457 problem details} (2023, obsoletes 7807):
+\begin{lstlisting}
+422 Unprocessable Content   Content-Type: application/problem+json
+{"type":"https://api.example.com/probs/validation","status":422,
+ "title":"Invalid request","detail":"email is not an address",
+ "instance":"/signups/81","errors":[{"field":"email"}]}
+\end{lstlisting}
+Clients branch on \texttt{type} (a URI; default \texttt{about:blank}), never on
+\texttt{detail} text; extra members allowed; never leak stack traces.
+
+\textbf{Pagination}. \emph{Offset} (\texttt{?offset=40\&limit=20}): page jumps, but
+\textbf{drifts} (insert $\to$ duplicate row, delete $\to$ skipped row) and costs O(offset).
+\emph{Cursor/keyset} (\texttt{?after=<opaque>}): stable under writes, index-fast, no jumps;
+needs a \textbf{total order} — sort key + unique tie-breaker (\texttt{created\_at, id}),
+the cursor encodes the last pair. Feeds $\to$ cursor. Filters/sort as query params
+(\texttt{?status=open\&sort=created}), cap \texttt{limit}, next link in the body or
+\texttt{Link: rel="next"} (RFC 8288).
+
+\textbf{Mobile}: latency, not bandwidth, dominates — \textbf{chunky beats chatty} (one call
+per screen, not 1 + N). \textbf{BFF} (Backends for Frontends, Sam Newman): a per-client
+backend that aggregates and shapes; plus gzip/br, field selection, delta sync
+(\texttt{?since=}), ETags.
+
+{\footnotesize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}L{11mm}L{20mm}L{24mm}L{21mm}@{}}
+\toprule
+ & \textbf{REST} & \textbf{GraphQL} & \textbf{gRPC} \\
+\midrule
+Wire & HTTP + JSON & one POST endpoint & HTTP/2 + protobuf \\
+Contract & OpenAPI (opt.) & typed schema & \texttt{.proto} + codegen \\
+Caching & HTTP/CDN, free & hard: persisted queries & none built in \\
+Stream & SSE / WebSocket & subscriptions & 4 kinds incl. bidi \\
+Cost & chatty screens & N+1 resolvers, query cost & no browser (gRPC-Web) \\
+Fits & public, cacheable & many shapes per client & service-to-service \\
+\bottomrule
+\end{tabular}}
+
+\columnbreak
+
+\section{Evolution — versions + compatibility}
+\begin{itemize}
+  \item \textbf{URI} \texttt{/v2/} (visible, routable) · \textbf{media type}
+        (\texttt{vnd.x.v2+json}) · \textbf{date-pinned} header (Stripe) · \textbf{none},
+        additive only (GraphQL \texttt{@deprecated}, protobuf).
+  \item \textbf{Safe}: new endpoint, optional request field, response field.
+        \textbf{Breaking}: remove/rename, change type/unit, newly required, newly
+        nullable, \textbf{a new enum value}, a changed default.
+  \item \textbf{Never repurpose a field} (protobuf: never reuse a tag). \textbf{Tolerant
+        reader} (Fowler): ignore unknown fields, unknown values $\to$ \texttt{.unknown}.
+        Retire: \texttt{Sunset} (RFC 8594) + a min-app-version gate.
+\end{itemize}
+
+\section{Swift library API}
+\begin{lstlisting}[language=SwiftSheet]
+public enum Status: String, Decodable, Sendable {
+  case active, suspended, unknown          // tolerant reader
+  public init(from d: Decoder) throws {
+    let raw = try d.singleValueContainer().decode(String.self)
+    self = Status(rawValue: raw) ?? .unknown }
+}
+// items.remove(at: i) · a.sort() mutates, a.sorted() returns
+\end{lstlisting}
+\begin{itemize}
+  \item \textbf{Swift API Design Guidelines}: \emph{``Clarity at the point of use is your most
+        important goal''}, over brevity; \textbf{omit needless words}; name by \textbf{role};
+        factories \texttt{make…}; Bools as assertions (\texttt{isEmpty}); conversions
+        unlabeled (\texttt{Int64(x)}).
+  \item \textbf{Progressive disclosure}: common case in one line
+        (\texttt{URLSession.shared.data(from:)}), power via default arguments.
+  \item Return \texttt{some P} to keep the concrete type changeable; every \texttt{public}
+        is forever — widen later, never narrow.
+  \item \textbf{SemVer} MAJOR for a protocol requirement without a default or a new public
+        enum case. ABI stable Swift 5.0, module stability 5.1 (\texttt{.swiftinterface},
+        \texttt{BUILD\_LIBRARY\_FOR\_DISTRIBUTION}: non-\texttt{@frozen} enums need
+        \texttt{@unknown default}). Rename: \texttt{@available(*, deprecated, renamed:)}.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{If-Match} mismatch is \textbf{412}, not 409. An ETag is opaque, not a hash.}
+  \trap{A new enum case breaks JSON decoders and Swift \texttt{switch}es alike.}
+  \trap{\texttt{no-cache} = store but revalidate; \texttt{no-store} = never store.}
+  \trap{A missing Idempotency-Key where one is required is \textbf{400}, not 422.}
+\end{itemize}
+\textbf{Remember: nouns + HTTP verbs · retry-safe writes · add, never change · cursor
+for feeds · clarity at the point of use.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} urlsession-networking · ts-type-system
+(unions on the wire) · protocols-generics · error-handling · modularization-spm · functional-design}
+
+\end{document}

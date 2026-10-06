@@ -1,0 +1,165 @@
+% gof-prototype-composite-bridge-flyweight.tex — the four GoF patterns not covered by
+% gof-creational-structural / gof-behavioural: Prototype, Composite, Bridge, Flyweight.
+% Sources (checked 2026-10-06):
+%   Gamma, Helm, Johnson, Vlissides, Design Patterns (1994): intents quoted verbatim; Composite's
+%     transparency-vs-safety discussion; Bridge vs Adapter ("Adapter … after they're designed;
+%     Bridge … up-front")
+%   developer.apple.com/documentation/uikit/uiimage/init(named:) (system cache) vs
+%     init(contentsOfFile:) ("This method does not cache the image object")
+%   developer.apple.com/documentation/foundation/nscopying (zone ignored) · Collections
+%     Programming Topics, "Copying Collections" (shallow by default; initWithArray:copyItems: is
+%     one level deep; archiving for a true deep copy) · documentation/foundation/nscache
+%     (thread-safe without locking) · documentation/swift/isknownuniquelyreferenced(_:)
+% @labels: area=design kind=pattern platform=general topic=patterns discussion=98
+% @tags: gof, prototype, composite, bridge, flyweight, shallow-copy, deep-copy, nscopying, copy-on-write, intrinsic-state, extrinsic-state
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,case,switch,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false,AnyObject,Void,String,Bool,Int,Float,Character,UInt8},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+% A pattern mini-box: \pat[colour]{Name}{body}
+\newcommand\pat[3][sheetBlue]{\par\noindent\fcolorbox{#1}{#1!5}{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{\raggedright{\bfseries\color{#1}#2}\enspace #3}}\par\vspace{2pt}}
+\newcommand\swift{\textcolor{sheetGreen}{\textbf{Swift:}}~}
+\newcommand\vs{\textcolor{sheetRed}{\textbf{vs}}~}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.2mm},
+  abs/.style={sb, dashed, font=\scriptsize\itshape, fill=sheetGreen!12, draw=sheetGreen!70!black},
+  bad/.style={sb, draw=sheetRed, fill=sheetRed!7},
+  good/.style={sb, draw=sheetGreen, fill=sheetGreen!10},
+  conf/.style={-{Latex[open,length=4pt]}, thick, draw=sheetGreen!70!black},
+  agg/.style={{Diamond[open,length=6pt,width=4pt]}-{Stealth[length=4pt]}, thick, draw=sheetBlue},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small, text=sheetBlue},
+}
+
+\begin{document}
+
+\sheettitle{GoF: Prototype · Composite · Bridge · Flyweight}{design · folio}
+
+\oneliner{\textbf{Prototype} (creational) — make a new object by \emph{copying a configured
+instance}. \textbf{Composite} — leaf and group behind \emph{one interface}, a tree the client walks
+uniformly. \textbf{Bridge} — split \emph{abstraction} from \emph{implementation} so two axes vary
+independently ($M{\times}N \to M{+}N$). \textbf{Flyweight} — share immutable \emph{intrinsic}
+state, pass \emph{extrinsic} state in. In Swift, value types + CoW \emph{are} Prototype, and an
+\texttt{enum} holding \texttt{[Self]} \emph{is} Composite.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {3.95,8.2,12.75} \draw[sheetGrey!40] (\x,3.45) -- (\x,0.1);
+  % ───────── Prototype
+  \node[ttl] at (1.9,3.3) {Prototype: shallow vs deep};
+  \node[sb] (a) at (0.45,2.65) {a};
+  \node[good, minimum width=14mm] (t) at (2.4,2.65) {tags (class)};
+  \draw[flow] (a) -- (t);
+  \node[bad] (b) at (0.45,1.85) {b};
+  \draw[hot, draw=sheetRed] (b) -- node[lbl, below right, text=sheetRed]{shallow: SAME object} (t);
+  \node[good] (c) at (0.45,1.05) {c};
+  \node[good, minimum width=14mm] (t2) at (2.4,1.05) {tags copy};
+  \draw[flow, draw=sheetGreen] (c) -- (t2);
+  \node[lbl, text=sheetGreen!60!black] at (1.2,0.8) {deep: own graph};
+  \node[lbl, text=sheetBrown] at (1.9,0.35) {\texttt{struct}: \texttt{var b = a} IS the clone;\\CoW shares the buffer until a write};
+  % ───────── Composite
+  \node[ttl] at (6.05,3.3) {Composite: uniform tree};
+  \node[abs, minimum width=20mm] (cp) at (5.7,2.65) {Component\\\texttt{operation()}};
+  \node[good, minimum width=13mm] (lf) at (4.8,1.55) {Leaf};
+  \node[sb, minimum width=15mm] (co) at (6.6,1.55) {Composite\\\texttt{children}};
+  \draw[conf] (lf) -- (cp); \draw[conf] (co) -- (cp);
+  \draw[agg] (co.east) -- ++(0.55,0) |- node[lbl, pos=0.25, right]{0..*} (cp.east);
+  \node[lbl] at (6.05,0.8) {leaf does it · composite:\\\texttt{for c in children \{ c.op() \}}};
+  \node[lbl, text=sheetBrown] at (6.05,0.3) {UIView · CALayer · SwiftUI \texttt{View} · \texttt{UIMenu}};
+  % ───────── Bridge
+  \node[ttl] at (10.45,3.3) {Bridge: $M{\times}N \to M{+}N$};
+  \node[sb, minimum width=12mm] (sh) at (9.3,2.55) {Shape};
+  \node[sb] (ci) at (8.85,1.75) {Circle};
+  \node[sb] (sq) at (9.75,1.75) {Square};
+  \draw[conf] (ci) -- (sh); \draw[conf] (sq) -- (sh);
+  \node[abs, minimum width=14mm] (re) at (11.6,2.55) {Renderer};
+  \node[good] (ve) at (11.15,1.75) {Vector};
+  \node[good] (ra) at (12.1,1.75) {Raster};
+  \draw[conf] (ve) -- (re); \draw[conf] (ra) -- (re);
+  \draw[agg] (sh) -- (re);
+  \node[lbl, text=sheetBlue] at (10.45,2.98) {\texttt{impl}: the bridge};
+  \node[lbl, text=sheetBlue] at (9.3,1.25) {abstraction};
+  \node[lbl, text=sheetGreen!60!black] at (11.6,1.25) {implementor};
+  \node[lbl, text=sheetRed] at (10.45,0.75) {inheritance: VectorCircle, RasterCircle,\\VectorSquare … = $M{\times}N$ classes};
+  \node[lbl, text=sheetGreen!60!black] at (10.45,0.3) {bridge: 3 shapes + 3 renderers = 6, not 9};
+  % ───────── Flyweight
+  \node[ttl] at (14.8,3.3) {Flyweight: share the immutable};
+  \node[sb, minimum width=13mm] (fa) at (13.55,2.65) {GlyphFactory\\\texttt{pool[key]}};
+  \node[good, circle, minimum size=5mm] (ge) at (15.05,2.65) {e};
+  \node[good, circle, minimum size=5mm] (ga) at (16.2,2.65) {a};
+  \draw[flow] (fa) -- (ge);
+  \draw[flow] (ge) -- (ga);
+  \node[lbl, text=sheetGreen!60!black] at (15.65,3.05) {intrinsic: shared};
+  \foreach \i/\x/\t/\g in {1/13.35/{e (0,0)}/ge, 2/14.25/{a (1,0)}/ga, 3/15.15/{e (2,0)}/ge, 4/16.05/{e (0,1)}/ge}
+    { \node[cell, font=\tiny\ttfamily, minimum width=8mm, minimum height=3.5mm] (x\i) at (\x,1.65) {\t};
+      \draw[->, draw=sheetOrange] (x\i) -- (\g); }
+  \node[lbl, text=sheetOrange] at (14.7,1.2) {extrinsic: position, colour — PASSED IN};
+  \node[lbl] at (14.8,0.55) {$10^6$ chars × own 1 KB bitmap = \textbf{1 GB}\\shared: 100 glyphs × 1 KB + $10^6$ × 16 B\\(ref + \texttt{x,y}) $\approx$ \textbf{16 MB}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\pat{Prototype (creational)}{GoF: \emph{``specify the kinds of objects to create using a prototypical instance, and create new objects by copying this prototype''}. Use when construction is expensive, configured at runtime, or the type is hidden behind a protocol (``another like \emph{this}''). Roles: Prototype (\texttt{clone}) · ConcretePrototype · Client; optional \textbf{prototype registry} (key $\to$ prototype).\par
+\textbf{Shallow} = new top object, \emph{shared} referenced objects; \textbf{deep} = the whole graph copied.\par
+\textbf{Foundation:} \texttt{NSCopying.copy(with:)} (zone ignored) · \texttt{mutableCopy()}. Foundation copies are \textbf{SHALLOW}; \texttt{copy()} of an \emph{immutable} \texttt{NSArray} may return \textbf{the same instance}. Deeper: \texttt{NSArray(array:copyItems: true)} (one level), \texttt{NSKeyedArchiver} or Codable encode$\to$decode (whole graph).\par
+\swift \texttt{struct}/\texttt{enum} copy on assignment; \texttt{Array}/\texttt{Dictionary}/\texttt{Set}/\texttt{String} are \textbf{copy-on-write} (custom: \texttt{isKnownUniquelyReferenced}). Prototype \textbf{dissolves into value semantics}; write \texttt{clone()} only for class graphs.
+\vs Factory: builds from scratch by choosing a type; Prototype copies a \emph{configured instance}.}
+
+\pat{Composite (structural)}{GoF: \emph{``compose objects into tree structures to represent part-whole hierarchies; lets clients treat individual objects and compositions uniformly''}. Roles: Component · Leaf · Composite (holds \texttt{[Component]}, implements \texttt{operation} by recursing) · Client.
+\textbf{iOS:} \texttt{UIView}/\texttt{CALayer} trees; SwiftUI \texttt{View} (\texttt{Text} leaf, \texttt{VStack} container, both \texttt{View}); \texttt{UIMenu(children:)} of \texttt{UIMenuElement} (\texttt{UIAction} leaves + nested \texttt{UIMenu}); file systems.\par
+\textbf{Where do \texttt{add}/\texttt{remove} go? — transparency vs safety.} On \textbf{Component} = \emph{transparent}: uniform, but a leaf must no-op/throw (\textbf{LSP} smell); GoF favours it, and UIKit does it (any \texttt{UIView} accepts subviews). On \textbf{Composite} only = \emph{safe}: type-checked, but clients downcast.
+\swift \texttt{enum Node \{ case file(Int), folder([Node]) \}} + an exhaustive \texttt{switch} — no downcast, no no-op.
+\vs Decorator: \textbf{one} child, \emph{adds} behaviour vs \textbf{many} children, \emph{aggregates}.}
+
+\begin{lstlisting}[language=SwiftSheet]
+// Composite: the enum IS the pattern
+enum Node { case file(bytes: Int), folder([Node]) }
+func size(_ n: Node) -> Int { switch n {
+  case .file(let b): b
+  case .folder(let kids): kids.map(size).reduce(0, +) } }
+// Flyweight: shared immutable glyphs, extrinsic x,y
+final class Glyph { let bitmap: [UInt8] = [] }  // expensive
+final class GlyphFactory {                  // lock/actor if shared
+  private var pool: [Character: Glyph] = [:]
+  func glyph(_ c: Character) -> Glyph {
+    if let g = pool[c] { return g }
+    let g = Glyph(); pool[c] = g; return g } }
+struct Char { let glyph: Glyph; let x, y: Float }
+\end{lstlisting}
+
+\columnbreak
+
+\pat{Bridge (structural)}{GoF: \emph{``decouple an abstraction from its implementation so that the two can vary independently''}. Roles: \textbf{Abstraction} (holds \texttt{impl}) · RefinedAbstraction · \textbf{Implementor} (primitive ops) · ConcreteImplementor. The abstraction's high-level ops are built from the implementor's primitives.
+Use when there are \textbf{two independent axes}: notification kind × channel (push/email/SMS), shape × renderer, player UI × playback engine. Swift: a protocol-typed stored property, or generic \texttt{Shape<R: Renderer>} (a static bridge, specialised).\par
+\vs \textbf{Adapter}: Bridge is designed \textbf{UP FRONT} so both sides can grow; Adapter is \textbf{RETROFITTED} to make an existing interface fit (GoF's own distinction).
+\vs \textbf{Strategy}: same shape (holds a protocol). Strategy = \emph{one algorithm} the client swaps (behavioural); Bridge = a whole implementation \emph{platform}, and \textbf{both sides are hierarchies}.}
+
+\pat{Flyweight (structural)}{GoF: \emph{``use sharing to support large numbers of fine-grained objects efficiently''}.
+\textbf{Intrinsic} = stored in the flyweight, context-free, \textbf{immutable}, shared (glyph shape, tree mesh, icon). \textbf{Extrinsic} = per use, kept by the client and \textbf{passed in} (position, colour). A \textbf{FlyweightFactory} caches by key — clients never \texttt{init} one.
+\textbf{iOS:} \texttt{UIImage(named:)} returns from a \textbf{system cache} (\texttt{UIImage(contentsOfFile:)} does not cache); icon/tile/glyph caches; string interning.
+\textbf{Cell reuse is an object POOL, not textbook Flyweight}: pool = \emph{exclusive} checkout of \emph{mutable} objects; flyweight = \emph{simultaneous} sharing of \emph{immutable} ones.
+\vs Singleton: many shared instances, keyed. Cost: extrinsic state threads through every call; the factory must be thread-safe (\texttt{NSCache} is, a \texttt{Dictionary} is not $\to$ actor/lock).}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{NSArray.copy()} is \textbf{shallow}; a \textbf{class in a struct} stays shared.}
+  \trap{Composite's real decision is \textbf{transparency vs safety}, not ``a tree''.}
+  \trap{Bridge $\ne$ Adapter (up front vs retrofit) $\ne$ Strategy (2 hierarchies).}
+  \trap{Flyweight shared state must be \textbf{immutable} — else a race.}
+\end{itemize}
+
+\pat[sheetOrange]{Remember}{\textbf{Prototype copies · Composite nests · Bridge splits two axes · Flyweight shares the immutable.}}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} gof-creational-structural (Factory, Adapter, Decorator) · gof-behavioural (Strategy) · gof-visitor-memento-interpreter · value-vs-reference (CoW) · SOLID (LSP) · tableview-diffable}
+
+\end{document}

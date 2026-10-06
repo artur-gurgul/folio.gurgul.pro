@@ -1,0 +1,189 @@
+% ios-idioms-antipatterns.tex — Cocoa communication idioms + the anti-patterns.
+% Sources (checked 2026-10-06):
+%   developer.apple.com/documentation/foundation/notificationcenter ("delivers notifications to
+%     observers synchronously"; on the thread that posted) · /uikit/uicontrol/addtarget(_:action:for:)
+%     ("The control does not retain the object in the target parameter") · /uikit/uiaction (iOS 14)
+%   developer.apple.com/documentation/swift/using-key-value-observing-in-swift (NSObject +
+%     @objc dynamic; observe(_:options:changeHandler:) -> NSKeyValueObservation)
+%   developer.apple.com/documentation/observation (@Observable, iOS 17) ·
+%     /uikit/uiresponder (next, responder chain) · /uikit/uiviewcontroller/addchild(_:)
+%   blog.ploeh.dk/2010/02/03/ServiceLocatorisanAnti-Pattern ·
+%     sandimetz.com/blog/2016/1/20/the-wrong-abstraction
+% @labels: area=design kind=pattern platform=ios topic=patterns,architecture discussion=101
+% @tags: delegate, data-source, target-action, notificationcenter, kvo, responder-chain, weak-delegate, massive-view-controller, anti-patterns, god-object, service-locator, stringly-typed
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,case,
+    if,else,return,guard,self,Self,nil,try,await,async,throws,private,public,some,any,
+    true,false,AnyObject,Void,String,Bool,Int,extension,static,default,switch},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  pt/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  q/.style={box, draw=sheetOrange, fill=sheetOrange!8, font=\tiny, inner sep=1.5pt, align=center},
+  a/.style={box, draw=sheetGreen!70!black, fill=sheetGreen!10, font=\tiny, inner sep=1.5pt, align=center},
+  bad/.style={box, draw=sheetRed, fill=sheetRed!7, font=\tiny, inner sep=2pt, align=left},
+  e/.style={font=\tiny, text=sheetGrey, inner sep=1pt},
+}
+
+\begin{document}
+
+\sheettitle{iOS idioms and anti-patterns}{design · folio}
+
+\oneliner{Cocoa gives you a small set of \textbf{communication idioms} — delegate, data source,
+target–action, closure, NotificationCenter, KVO, responder chain — and choosing one is a
+question of \textbf{how many listeners}, \textbf{whether the sender needs an answer}, and
+\textbf{who owns whom}. Most iOS anti-patterns are one mistake: \textbf{responsibilities and
+dependencies that nobody can see}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \draw[sheetGrey!40] (8.55,3.5) -- (8.55,-0.1);
+  % ── decision tree ──
+  \node[pt] at (0,3.35) {Which idiom? — ask three questions};
+  \node[q] (q1) at (1.0,2.45) {sender needs\\an \textbf{answer}?};
+  \node[a] (del) at (3.55,2.95) {\textbf{delegate / data source}\\1:1, \texttt{weak}, returns values};
+  \draw[flow] (q1) -- node[e, above, pos=0.4]{yes} (del.west);
+  \node[q] (q2) at (1.0,1.2) {receiver\\\textbf{known}?};
+  \draw[flow] (q1) -- node[e, right]{no} (q2);
+  \node[a] (rc) at (1.0,0.2) {\textbf{responder chain}\\\texttt{nil} target};
+  \draw[flow] (q2) -- node[e, right]{no} (rc);
+  \node[q] (q3) at (3.55,1.2) {how many\\\textbf{listeners}?};
+  \draw[flow] (q2) -- node[e, above]{yes} (q3);
+  \node[a] (one) at (3.55,0.2) {\textbf{closure / target–action}\\fire-and-forget, 1 owner};
+  \draw[flow] (q3) -- node[e, right]{one} (one);
+  \node[a, anchor=west] (obs) at (6.0,1.95) {\textbf{Combine /}\\\textbf{\texttt{@Observable}}\\typed, in-app};
+  \node[a, anchor=west] (nc) at (6.0,1.05) {\textbf{NotificationCenter}\\system / app-wide};
+  \node[a, anchor=west] (kvo) at (6.0,0.2) {\textbf{KVO}\\an \texttt{NSObject}\\property};
+  \draw[flow] (q3.east) -- node[e, above, pos=0.35]{many} (obs.west);
+  \draw[flow] (q3.east) -- (nc.west);
+  \draw[flow] (q3.east) -- (kvo.west);
+  \node[e, anchor=west, text=sheetBrown] at (5.25,2.95) {\textcolor{sheetRed}{weak} or a cycle};
+  % ── Massive VC extraction ──
+  \node[pt] at (8.65,3.35) {Massive View Controller $\to$ extract};
+  \node[bad, minimum width=26mm] (mvc) at (12.55,1.75) {\textbf{FeedViewController}\\2\,000 lines:\\fetch · decode · cache\\format · table data\\navigation · layout};
+  \node[a] (ds) at (9.75,2.75) {\textbf{1} data source\\(Diffable)};
+  \node[a] (vm) at (9.75,1.75) {\textbf{2} ViewModel\\state + formatting};
+  \node[a] (rp) at (9.75,0.6) {\textbf{3} Repository\\network, cache};
+  \node[a] (co) at (15.5,2.75) {\textbf{4} Coordinator\\navigation};
+  \node[a] (vw) at (15.5,1.75) {\textbf{5} custom \texttt{UIView}\\in \texttt{loadView}};
+  \node[a] (ch) at (15.5,0.6) {\textbf{6} child VCs\\sub-screens};
+  \foreach \t in {ds,vm,rp} \draw[hot] (mvc.west) -- (\t.east);
+  \foreach \t in {co,vw,ch} \draw[hot] (mvc.east) -- (\t.west);
+  \node[font=\tiny, text=sheetGreen!40!black, align=center] at (12.55,0.25) {left: the VC = \textbf{glue}\\binds VM $\to$ views, forwards events};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{The idioms}
+{\footnotesize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}L{15mm}L{7mm}L{55mm}@{}}
+\toprule
+\textbf{Idiom} & \textbf{Shape} & \textbf{Mechanism · rule} \\
+\midrule
+Delegate & 1:1 & protocol \texttt{: AnyObject}, \texttt{weak var delegate}; can answer
+(\texttt{shouldSelect}), \texttt{did/will/should} names, sender first \\
+Data source & 1:1 & delegate that \emph{supplies data} (\texttt{numberOfRows}); UIKit holds
+both \texttt{weak} \\
+Target–action & 1:N & \texttt{addTarget(\_:action:for:)} + \texttt{@objc} selector; the control
+does \textbf{not} retain the target; \texttt{UIAction} closure (iOS 14) \\
+Closure & 1:1 & \texttt{onSelect: (Item) -> Void}; stored $\to$ \texttt{[weak self]}; best
+for one event \\
+Notification\-Center & 1:N & broadcast by name, untyped \texttt{userInfo};
+\textbf{synchronous, on the posting thread} \\
+KVO & 1:N & \texttt{observe(\textbackslash.x, options:)} $\to$
+\texttt{NSKeyValueObservation}; needs \texttt{NSObject} + \texttt{@objc dynamic} \\
+Responder chain & 1:? & \texttt{sendAction(\_:to: nil, …)}: first responder up via
+\texttt{next} (see gof-behavioural) \\
+Combine / \texttt{@Observable} & 1:N & typed streams / per-property tracking (iOS 17);
+the modern default in-app \\
+\bottomrule
+\end{tabular}}
+
+\begin{lstlisting}[language=SwiftSheet]
+protocol PickerDelegate: AnyObject {        // so it can be weak
+  func picker(_ p: Picker, didPick item: String)
+  func pickerShouldClose(_ p: Picker) -> Bool   // answer back
+}
+final class Picker {
+  weak var delegate: PickerDelegate?        // Picker never owns it
+  func pick(_ item: String) {
+    delegate?.picker(self, didPick: item)
+    if delegate?.pickerShouldClose(self) ?? true { /* close */ }
+  }
+}
+// load(true, false) -- what? Name the choice instead:
+enum CachePolicy { case useCache, reload }
+func load(_ policy: CachePolicy) {}         // load(.reload)
+\end{lstlisting}
+
+\columnbreak
+
+\section{Massive VC — the recipe}
+Characterisation/snapshot tests first, then steps 1–6 as drawn, one safe move at a time
+(child VCs: \texttt{addChild} + \texttt{didMove(toParent:)}). It is an \textbf{SRP} problem,
+not an MVC one — moving the mass into the model or a \texttt{Manager} only relocates it.
+
+\section{Traps}
+\begin{itemize}
+  \trap{``Singletons are always bad'' — no (\texttt{FileManager.default}). The damage is
+        \textbf{hidden lookup} (\texttt{.shared} inside logic) + \textbf{global mutable
+        state}: keep one instance, \textbf{inject} it.}
+  \trap{A service locator still hides dependencies — a missing registration fails at run
+        time, not compile time (Mark Seemann).}
+  \trap{NotificationCenter for a 1:1 flow = invisible coupling: no contract, no ``who
+        listens?''.}
+  \trap{``Duplication is far cheaper than the wrong abstraction'' (Sandi Metz).}
+  \trap{\texttt{UIAction}/\texttt{sink}/timer closures are \emph{stored}: \texttt{[weak self]};
+        \texttt{unowned} only when the lifetime is guaranteed.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Answer back $\to$ delegate · one $\to$ closure · many $\to$ Combine/Notification ·
+unknown $\to$ responder chain. Make responsibilities and dependencies visible.}
+
+
+\end{multicols}
+
+\vspace{-4pt}
+{\footnotesize\setlength\tabcolsep{3pt}
+\noindent\begin{tabular}{@{}L{24mm}L{42mm}L{38mm}L{58mm}@{}}
+\toprule
+\textbf{Anti-pattern} & \textbf{Symptom} & \textbf{Damage} & \textbf{Fix} \\
+\midrule
+Massive VC & 1\,000+ lines, everything in \texttt{viewDidLoad} & untestable, merge conflicts &
+the recipe above; VC becomes glue \\
+God object & \texttt{AppManager}, \texttt{Utils}; everyone imports it & every
+change ripples & split by responsibility; inject small collaborators \\
+Singleton / locator & \texttt{.shared} / \texttt{resolve()} inside logic & hidden deps,
+order-dependent tests & init injection; \texttt{.shared} only at the composition root \\
+Stringly-typed & segue ids, \texttt{userInfo["k"]}, \texttt{[String: Any]} & typos crash at run
+time & enums, \texttt{Notification.Name} constants, \texttt{Codable} \\
+Boolean flags & \texttt{load(true, false)} & unreadable calls, $2^n$ branches & two functions,
+an \texttt{enum}, or an \texttt{OptionSet} \\
+Deep inheritance & \texttt{BaseViewController} with 30 hooks & fragile base class, LSP
+breaks & protocols + extensions, composition, child VCs \\
+Copy-paste reuse & the same fix needed in 5 places & shotgun surgery, drift & extract once it
+repeats 3× \\
+Premature abstraction & a protocol with one conformer & indirection, harder
+to read & YAGNI; abstract at the 2nd–3rd case (a test seam counts) \\
+Callback pyramid & nested completions; a path never calls back & lost errors, hangs &
+\texttt{async}/\texttt{await}, structured concurrency \\
+UIKit in models & \texttt{UIColor}/\texttt{UIImage} in domain types & no widget/test
+reuse, main-thread ties & Foundation-only domain; map in the ViewModel \\
+Over-modularization & 60 modules, one file each & build graph + API churn cost &
+module by feature/team, measure build times \\
+\bottomrule
+\end{tabular}}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} gof-behavioural (responder chain,
+Observer) · observation-and-combine · arc-ownership · solid · mvc-mvp-mvvm ·
+coordinator-repository-di-clean · testable-design-seams · modularization-spm}
+
+\end{document}

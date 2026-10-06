@@ -1,0 +1,165 @@
+% gof-visitor-memento-interpreter.tex — Visitor, Memento, Interpreter (GoF behavioural)
+% + Null Object (Woolf, not GoF): structure, discriminators, the Swift form.
+% Sources (checked 2026-10-06):
+%   Gamma et al., Design Patterns (1994): intents quoted verbatim; Interpreter applicability
+%     ("the grammar is simple", "efficiency is not a critical concern"); Memento's wide/narrow
+%     interfaces; Command + Memento for undo
+%   Wadler, "The Expression Problem" (java-genericity list, 1998-11-12)
+%   Woolf, "Null Object", Pattern Languages of Program Design 3 (1998)
+%   swiftpackageindex.com/swiftlang/swift-syntax documentation (SyntaxVisitor.visit returns
+%     SyntaxVisitorContinueKind; SyntaxRewriter)
+%   developer.apple.com/documentation/foundation/undomanager/registerundo(withtarget:handler:) ·
+%     /nspredicate/evaluate(with:)
+% @labels: area=design kind=pattern platform=general topic=patterns discussion=99
+% @tags: gof, visitor, double-dispatch, expression-problem, memento, interpreter, ast, null-object, indirect-enum, nspredicate
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,case,switch,
+    indirect,inout,mutating,if,else,return,guard,self,nil,try,private,some,
+    true,false,AnyObject,Void,String,Bool,Int,Double},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\newcommand\pat[3][sheetBlue]{\par\noindent\fcolorbox{#1}{#1!5}{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{\raggedright{\bfseries\color{#1}#2}\enspace #3}}\par\vspace{2pt}}
+\newcommand\swift{\textcolor{sheetGreen}{\textbf{Swift:}}~}
+\newcommand\vs{\textcolor{sheetRed}{\textbf{vs}}~}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.2mm},
+  abs/.style={sb, dashed, font=\scriptsize\itshape, fill=sheetGreen!12, draw=sheetGreen!70!black},
+  good/.style={sb, draw=sheetGreen, fill=sheetGreen!10},
+  bad/.style={sb, draw=sheetRed, fill=sheetRed!7},
+  conf/.style={-{Latex[open,length=4pt]}, thick, draw=sheetGreen!70!black},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small, text=sheetBlue},
+  gc/.style={draw=sheetGrey, font=\tiny, minimum height=3.6mm, inner sep=1pt, align=center},
+  nd/.style={circle, draw=sheetBlue, fill=sheetBlue!6, font=\scriptsize\ttfamily, inner sep=1pt, minimum size=4.6mm},
+}
+
+\begin{document}
+
+\sheettitle{GoF: Visitor · Memento · Interpreter (+ Null Object)}{design · folio}
+
+\oneliner{\textbf{Visitor} — add \emph{operations} over a \emph{stable} set of element types
+without editing them, via \textbf{double dispatch}. \textbf{Memento} — capture an object's state
+in an \emph{opaque} snapshot so it can be restored (undo) without breaking encapsulation.
+\textbf{Interpreter} — one class per grammar rule; evaluate the \textbf{AST}. \textbf{Null Object} —
+a do-nothing implementation instead of \texttt{nil} checks. In Swift the first three usually
+become \texttt{enum} + exhaustive \texttt{switch}, value snapshots, and an \texttt{indirect enum}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {5.35,9.3,13.05} \draw[sheetGrey!40] (\x,3.45) -- (\x,0.0);
+  % ───────── Visitor: double dispatch + expression problem
+  \node[ttl] at (2.6,3.3) {Visitor: double dispatch};
+  \node[sb] (cl) at (0.3,2.65) {client};
+  \node[sb] (el) at (2.15,2.65) {Circle};
+  \node[good] (vi) at (4.6,2.65) {AreaVisitor};
+  \draw[hot] (cl) -- node[lbl, above]{\texttt{s.accept(v)}} node[lbl, below, text=sheetOrange]{\textbf{1} on element} (el);
+  \draw[hot] (el) -- node[lbl, above]{\texttt{v.visit(self)}} node[lbl, below, text=sheetOrange]{\textbf{2} on visitor} (vi);
+  \node[lbl] at (2.6,1.95) {\texttt{self} is statically \texttt{Circle} $\Rightarrow$ overload \texttt{visit(\_: Circle)}};
+  % expression-problem grid
+  \node[gc, minimum width=16mm, draw=none] at (0.85,1.45) {\textbf{expression problem}};
+  \node[gc, minimum width=17mm, fill=black!4] at (2.55,1.45) {add a TYPE};
+  \node[gc, minimum width=17mm, fill=black!4] at (4.3,1.45) {add an OPERATION};
+  \node[gc, minimum width=16mm, fill=black!4] at (0.85,1.05) {methods on classes};
+  \node[gc, minimum width=17mm, fill=sheetGreen!12] at (2.55,1.05) {1 new class};
+  \node[gc, minimum width=17mm, fill=sheetRed!10] at (4.3,1.05) {edit EVERY class};
+  \node[gc, minimum width=16mm, fill=black!4] at (0.85,0.65) {Visitor / \texttt{enum}};
+  \node[gc, minimum width=17mm, fill=sheetRed!10] at (2.55,0.65) {edit EVERY visitor};
+  \node[gc, minimum width=17mm, fill=sheetGreen!12] at (4.3,0.65) {1 new visitor / func};
+  \node[lbl, text=sheetBrown] at (2.6,0.2) {Visitor pays only when TYPES are stable and OPERATIONS grow};
+  % ───────── Memento
+  \node[ttl] at (7.3,3.3) {Memento: opaque snapshot};
+  \node[sb, minimum width=15mm] (or) at (6.35,2.6) {Originator\\\texttt{Editor}};
+  \node[good, minimum width=13mm] (me) at (8.45,2.6) {Memento\\\textit{opaque}};
+  \draw[hot] (or) -- node[lbl, above]{\texttt{save()}} (me);
+  \node[lbl] at (8.55,1.7) {Caretaker\\(undo stack)};
+  \foreach \i/\t in {0/m1, 1/m2, 2/m3}
+    \node[gc, minimum width=9mm, fill=sheetGreen!8, font=\tiny\ttfamily] at (7.3,1.35+0.36*\i) {\t};
+  \draw[flow] (me) -- (7.3,2.18);
+  \draw[flow, draw=sheetBlue] (6.85,2.07) -| (or.south);
+  \node[lbl, text=sheetBlue, anchor=north] at (6.2,1.95) {pop $\to$\\\texttt{restore(m)}};
+  \node[lbl, text=sheetRed] at (7.3,0.75) {caretaker STORES, never LOOKS inside};
+  \node[lbl, text=sheetBrown] at (7.3,0.3) {Swift: state is a \texttt{struct} $\Rightarrow$\\\texttt{let snap = state} IS the memento (CoW)};
+  % ───────── Interpreter: AST
+  \node[ttl] at (11.2,3.3) {Interpreter: \texttt{1 + 2 * x}};
+  \node[nd] (add) at (11.2,2.75) {+};
+  \node[nd] (one) at (10.35,2.05) {1};
+  \node[nd] (mul) at (12.05,2.05) {*};
+  \node[nd] (two) at (11.55,1.35) {2};
+  \node[nd] (x)   at (12.55,1.35) {x};
+  \draw[thick, sheetGrey] (add) -- (one); \draw[thick, sheetGrey] (add) -- (mul);
+  \draw[thick, sheetGrey] (mul) -- (two); \draw[thick, sheetGrey] (mul) -- (x);
+  \node[lbl, text=sheetBlue, anchor=west] at (9.45,2.75) {nonterminal};
+  \node[lbl, text=sheetGreen!60!black] at (10.35,1.6) {terminal};
+  \node[lbl] at (11.2,0.8) {\texttt{eval(ctx: x = 3)} $\to$ 1 + 2·3 = \textbf{7}};
+  \node[lbl, text=sheetRed] at (11.2,0.35) {building the tree = PARSING,\\\emph{not} part of the pattern};
+  % ───────── Null Object
+  \node[ttl] at (14.95,3.3) {Null Object};
+  \node[abs, minimum width=14mm] (lg) at (14.95,2.65) {Logger};
+  \node[good] (cs) at (14.3,1.8) {Console};
+  \node[good, dashed] (nl) at (15.6,1.8) {NoopLogger};
+  \draw[conf] (cs) -- (lg); \draw[conf] (nl) -- (lg);
+  \node[lbl] at (15.6,1.35) {\texttt{log(\_:) \{\}}};
+  \node[lbl] at (14.95,0.85) {client: \texttt{logger.log(e)} — no nil check};
+  \node[lbl, text=sheetBrown] at (14.95,0.35) {Swift alternative: \texttt{logger?.log(e)}\\absence stays VISIBLE};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\pat{Visitor (behavioural)}{GoF: \emph{``represent an operation to be performed on the elements of an object structure; lets you define a new operation without changing the classes of the elements''}. Roles: \textbf{Visitor} (one \texttt{visit} per ConcreteElement) · ConcreteVisitor · \textbf{Element} (\texttt{accept(v)}) · ConcreteElement · ObjectStructure.\par
+\textbf{Double dispatch}: the code run depends on \emph{two} runtime types; Swift/Java dispatch on the receiver only, so Visitor chains two calls: \texttt{accept} dispatches on the element, \texttt{visit(self)} on the visitor (overload picked statically).\par
+\textbf{Costs}: adding an element type breaks every visitor (the \textbf{expression problem}, Wadler's name); elements must expose enough state for visitors (weaker encapsulation).\par
+\swift \texttt{enum} + associated values + a \textbf{function with an exhaustive \texttt{switch}} = a visitor with no boilerplate; a new \texttt{case} makes the \emph{compiler} list every switch to fix — unless \texttt{default:} swallowed it.
+\textbf{Protocol visitor still pays} for a big node hierarchy with default traversal, where each visitor overrides only a few nodes and keeps state across the walk: SwiftSyntax \texttt{SyntaxVisitor} (\texttt{visit(\_:) \hbox{-}\hbox{>} SyntaxVisitorContinueKind}), \texttt{SyntaxRewriter}.}
+
+\pat{Memento (behavioural)}{GoF: \emph{``without violating encapsulation, capture and externalize an object's internal state so that the object can be restored to this state later''}. Roles: \textbf{Originator} (makes + restores) · \textbf{Memento} (wide interface to the originator, \emph{narrow} to everyone else) · \textbf{Caretaker} (keeps them, never inspects).\par
+\swift state as a \texttt{struct}: the snapshot is a copy (CoW: cheap until a write); \texttt{fileprivate} fields keep it opaque; \texttt{Codable} persists it. iOS: state restoration (\texttt{NSUserActivity}, \texttt{@SceneStorage}).\par
+\vs \textbf{Command undo}: Memento stores \textbf{state} (always correct, memory-heavy $\to$ cap the depth, store diffs); Command stores the \textbf{operation + its inverse} (small, but the inverse must be exact). GoF combines them: a command keeps a memento of the before-state — as a \texttt{registerUndo(withTarget:handler:)} closure capturing the old value does.}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{Double dispatch} is \emph{both} hops; element types must be \textbf{closed + stable}.}
+  \trap{\texttt{default:} kills the exhaustiveness that replaced Visitor.}
+  \trap{Public getters/setters are not a Memento — it is \textbf{opaque}.}
+  \trap{Memento undo = \textbf{state}; Command undo = \textbf{operation + inverse}.}
+  \trap{Interpreter does not include the parser.}
+\end{itemize}
+
+\columnbreak
+
+\pat{Interpreter (behavioural)}{GoF: \emph{``given a language, define a representation for its grammar along with an interpreter that uses the representation to interpret sentences''}. Roles: AbstractExpression (\texttt{interpret(context)}) · \textbf{TerminalExpression} (literals, variables) · \textbf{NonterminalExpression} (one class per rule, recurses) · Context · Client (\emph{builds} the AST — parsing is outside the pattern).\par
+Fits a \textbf{small grammar where speed is not critical} (GoF's own condition). Larger or hot: a real parser + compile to closures/bytecode. \swift an \texttt{indirect enum} AST + a recursive \texttt{eval}.
+\textbf{iOS you consume}: \texttt{NSPredicate} (format string $\to$ predicate tree, \texttt{evaluate(with:)}), \texttt{NSExpression}, \texttt{\#Predicate} (a typed expression tree), \texttt{Regex}. Result builders are a \emph{compile-time} DSL — related, not Interpreter.}
+
+\pat{Null Object (Woolf, 1998 — not GoF)}{A do-nothing implementation of the protocol so clients call it unconditionally: \texttt{NoopLogger}, \texttt{EmptyAnalytics}, SwiftUI \texttt{EmptyView}, Combine \texttt{Empty}. \swift Optionals already force the absence check at compile time; prefer \texttt{?.} when absence \emph{means} something, Null Object when ``absent = do nothing''. Danger: it hides a missing dependency.}
+
+\begin{lstlisting}[language=SwiftSheet]
+// Visitor as enum + switch; Interpreter as indirect enum
+indirect enum Expr { case num(Double), variable(String)
+  case add(Expr, Expr), mul(Expr, Expr) }
+func eval(_ e: Expr, _ env: [String: Double]) -> Double {
+  switch e {                     // no default: exhaustive
+  case .num(let v): v
+  case .variable(let n): env[n] ?? 0
+  case .add(let a, let b): eval(a, env) + eval(b, env)
+  case .mul(let a, let b): eval(a, env) * eval(b, env) } }
+// Memento: value snapshots on two stacks
+struct History<S> { private var undo: [S] = [], redo: [S] = []
+  mutating func save(_ s: S) { undo.append(s); redo.removeAll() }
+  mutating func undoLast(_ cur: S) -> S? {
+    guard let s = undo.popLast() else { return nil }
+    redo.append(cur); return s } }
+\end{lstlisting}
+
+\pat[sheetOrange]{Remember}{\textbf{Visitor: types fixed, ops grow, two hops · Memento: snapshot you can't read · Interpreter: a class per rule · Null Object: \texttt{nil} that answers.}}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} gof-behavioural (Command, two stacks) · gof-prototype-composite-bridge-flyweight (Composite) · value-vs-reference (CoW) · macros-and-result-builders}
+
+\end{document}

@@ -1,0 +1,211 @@
+% functional-design.tex — functional design in Swift.
+% Sources (checked 2026-10-06):
+%   destroyallsoftware.com/talks/boundaries (Bernhardt, 2012: functional core, imperative shell)
+%   lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate (Alexis King)
+%   blog.janestreet.com/effective-ml-revisited (Minsky: make illegal states unrepresentable)
+%   swift-evolution 0187 (compactMap, Swift 4.1) · 0249 (key path expressions as functions,
+%     Swift 5.2) · 0171 (reduce(into:), Swift 4) · docs.swift.org/swift-book (value types,
+%     structures and enumerations are value types; Array/Dictionary/String copy-on-write)
+%   pointfree.co/collections/protocol-witnesses (structs of closures as dependencies)
+% @labels: area=design kind=concept platform=apple topic=language,patterns discussion=97
+% @tags: functional-core-imperative-shell, pure-functions, referential-transparency, value-semantics, algebraic-data-types, illegal-states-unrepresentable, total-functions, parse-dont-validate, smart-constructor, flatmap, monad, protocol-witnesses
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,case,
+    if,else,return,guard,self,Self,nil,try,await,async,throws,private,public,some,any,
+    true,false,AnyObject,Void,String,Bool,Int,Error,extension,static,default,
+    mutating,switch,inout},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  pt/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.5mm},
+  ok/.style={font=\tiny\ttfamily, text=sheetGreen!60!black, inner sep=0.5pt},
+  no/.style={font=\tiny\ttfamily, text=sheetRed, inner sep=0.5pt},
+}
+
+\begin{document}
+
+\sheettitle{Functional design in Swift}{design · folio}
+
+\oneliner{Push decisions into \textbf{pure functions over immutable values}, push effects to a
+\textbf{thin imperative shell}, and use the \textbf{type system} (enums, smart
+constructors) so that \textbf{illegal states cannot be written down}. In Swift FP is a
+strong \emph{default}, not a religion: local mutation of values is fine; the frameworks
+are object-oriented.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {6.15,11.15} \draw[sheetGrey!40] (\x,3.45) -- (\x,-0.1);
+  % ── panel A: functional core, imperative shell ──
+  \node[pt] at (0,3.3) {Functional core, imperative shell};
+  \draw[thick, draw=sheetOrange, fill=sheetOrange!6, rounded corners=4pt] (0.9,0.05) rectangle (5.2,2.95);
+  \node[font=\scriptsize\bfseries, text=sheetOrange, anchor=north west] at (0.95,2.93) {SHELL: I/O, time, UIKit};
+  \node[font=\tiny, text=sheetOrange, anchor=south west, align=left] at (0.95,0.08) {thin, few \texttt{if}s $\to$ integration tests};
+  \draw[thick, draw=sheetGreen!70!black, fill=sheetGreen!12, rounded corners=4pt] (1.75,0.7) rectangle (4.35,2.25);
+  \node[font=\scriptsize\bfseries, text=sheetGreen!50!black] at (3.05,2.05) {CORE: pure};
+  \node[font=\tiny\ttfamily, align=center] at (3.05,1.55) {reduce(state, event)\\-> (state', [Effect])};
+  \node[font=\tiny, text=sheetGreen!40!black, align=center] at (3.05,0.95) {values in, decisions out\\unit tests, no mocks};
+  \node[lbl, anchor=east] (w1) at (0.8,2.3) {tap};
+  \node[lbl, anchor=east] (w2) at (0.8,1.6) {HTTP reply};
+  \node[lbl, anchor=east] (w3) at (0.8,0.9) {\texttt{Date()}};
+  \foreach \w in {w1,w2,w3} \draw[flow] (\w.east) -- (1.75,1.6);
+  \node[lbl, anchor=west] (o1) at (5.3,2.3) {fetch};
+  \node[lbl, anchor=west] (o2) at (5.3,1.6) {save};
+  \node[lbl, anchor=west] (o3) at (5.3,0.9) {render};
+  \foreach \o in {o1,o2,o3} \draw[hot] (4.35,1.6) -- (\o.west);
+  \node[lbl] at (3.05,-0.12) {Gary Bernhardt, ``Boundaries'' · TCA/Elm reducers are this shape};
+  % ── panel B: illegal states ──
+  \node[pt] at (6.2,3.3) {Make illegal states unrepresentable};
+  \foreach \x/\h in {6.6/loading, 7.35/items?, 8.1/error?}
+    \node[font=\tiny\bfseries] at (\x,2.95) {\h};
+  \foreach \i/\a/\b/\c/\s in {0/F/nil/nil/ok, 1/T/nil/nil/ok, 2/F/[x]/nil/ok, 3/F/nil/e/ok,
+                              4/T/[x]/nil/no, 5/T/nil/e/no, 6/F/[x]/e/no, 7/T/[x]/e/no}
+    { \node[\s] at (6.6,2.65-0.29*\i) {\a}; \node[\s] at (7.35,2.65-0.29*\i) {\b};
+      \node[\s] at (8.1,2.65-0.29*\i) {\c}; }
+  \foreach \i in {0,...,3} \node[ok] at (8.6,2.65-0.29*\i) {\checkmark};
+  \foreach \i in {4,...,7} \node[no] at (8.6,2.65-0.29*\i) {×};
+  \node[lbl, text=sheetRed] at (7.55,0.25) {$2\times2\times2 = 8$ states, 4 legal};
+  \draw[hot] (8.8,1.65) -- (9.15,1.65);
+  \node[sb, draw=sheetGreen, fill=sheetGreen!10, align=left, font=\tiny\ttfamily, anchor=west] at (9.15,1.65)
+    {enum Loadable<V>\\ \ case idle\\ \ case loading\\ \ case loaded(V)\\ \ case failed(E)};
+  \node[lbl, text=sheetGreen!50!black] at (10.0,0.55) {$1+1+V+E$:\\every value legal};
+  \node[lbl] at (8.65,-0.12) {product = multiply (struct) · sum = add (enum)};
+  % ── panel C: map / flatMap ──
+  \node[pt] at (11.2,3.3) {map / flatMap: one shape};
+  \node[sb, minimum width=10mm, font=\tiny\ttfamily] (a1) at (11.9,2.6) {F<A>};
+  \node[sb, minimum width=10mm, font=\tiny\ttfamily] (b1) at (15.9,2.6) {F<B>};
+  \draw[flow] (a1) -- node[above, font=\tiny\ttfamily]{map(f: A -> B)} (b1);
+  \node[sb, minimum width=10mm, font=\tiny\ttfamily] (a2) at (11.9,1.85) {F<A>};
+  \node[sb, minimum width=10mm, font=\tiny\ttfamily, draw=sheetGreen, fill=sheetGreen!10] (b2) at (15.9,1.85) {F<B>};
+  \draw[hot] (a2) -- node[above, font=\tiny\ttfamily]{flatMap(g: A -> F<B>)} (b2);
+  \node[lbl, text=sheetRed] at (13.9,1.52) {not \texttt{F<F<B>{}>} — flattened};
+  \node[font=\tiny, align=left, anchor=north west] at (11.35,1.25)
+    {\textbf{Optional}: \texttt{nil} short-circuits (\texttt{a?.b?.c})\\
+     \textbf{Result}: first \texttt{.failure} short-circuits\\
+     \textbf{Array}: map each, concatenate\\
+     \textbf{Publisher}: \texttt{flatMap} to an inner stream\\
+     \textbf{async}: each \texttt{try await} line is the bind};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Pure function}: same input $\to$ same output, \textbf{no side effects}
+        (I/O, shared mutation, logging). \textbf{Referential transparency}: a call can be
+        replaced by its value. Hidden inputs break it: \texttt{Date()}, \texttt{random},
+        \texttt{.shared}, globals — pass them in.
+  \item \textbf{Value semantics}: \texttt{struct}/\texttt{enum} copy on assignment;
+        \texttt{Array}/\texttt{Dictionary}/\texttt{String} are \textbf{copy-on-write}. A
+        \texttt{mutating} method on a local value is \emph{not} impure — nobody else can see
+        it. A struct holding a class reference has lost value semantics.
+  \item \textbf{Algebraic data types}: product (\texttt{struct}, tuple: states multiply) and
+        sum (\texttt{enum} with associated values: states add). Exhaustive \texttt{switch}
+        makes the compiler find every site when a case is added.
+  \item \textbf{Total function}: defined for every input. Partial ones trap:
+        \texttt{a[i]}, \texttt{first!}, \texttt{Int(d)} on \texttt{.nan}. Fix by widening
+        the output (\texttt{Optional}/\texttt{Result}) or narrowing the input (a
+        \texttt{NonEmpty} type).
+  \item \textbf{Parse, don't validate} (Alexis King): a validator returns
+        \texttt{Bool} and keeps the raw \texttt{String} — every layer re-checks or forgets.
+        A \textbf{parser/smart constructor} returns a \emph{more precise type} that is the
+        proof: \texttt{init?}/\texttt{throws init}, then the rest of the code takes
+        \texttt{Email}, not \texttt{String}.
+  \item \textbf{Higher-order functions} take or return functions: \texttt{map},
+        \texttt{filter}, \texttt{reduce}, \texttt{compactMap}, key paths as functions
+        (\texttt{users.map(\textbackslash.name)}, Swift 5.2), retry/memoize wrappers.
+        \textbf{Composition}: \texttt{g(f(x))}; custom operators cost readability.
+  \item \textbf{Functor / monad in plain words}: \texttt{map} transforms inside the box
+        and keeps its shape (\texttt{map(id)} changes nothing; two maps = one map of the
+        composition); \texttt{flatMap} chains a step that returns its own box and
+        flattens; a way to put a value in the box (\texttt{.some}, \texttt{.success},
+        \texttt{[x]}, \texttt{Just}) completes the monad.
+\end{itemize}
+
+\section{Example — states and parsing}
+\begin{lstlisting}[language=SwiftSheet]
+enum Loadable<Value> {
+  case idle, loading
+  case loaded(Value)
+  case failed(any Error)
+}
+func title(_ s: Loadable<[String]>) -> String {   // total
+  switch s {
+  case .idle:              return "Pull to refresh"
+  case .loading:           return "Loading..."
+  case .loaded(let xs):    return "\(xs.count) items"
+  case .failed(let e):     return e.localizedDescription
+  }
+}
+struct Email: Hashable {            // smart constructor
+  let value: String
+  init?(_ raw: String) {
+    let s = raw.lowercased()
+    guard s.split(separator: "@").count == 2 else { return nil }
+    value = s }
+}
+func invite(_ to: Email) {}         // no raw String gets in
+\end{lstlisting}
+
+\columnbreak
+
+\section{Dependencies as functions}
+\begin{lstlisting}[language=SwiftSheet]
+struct UserClient {                     // a struct of closures
+  var fetchName: (Int) async throws -> String
+}
+extension UserClient {
+  static let mock = UserClient(fetchName: { _ in "Ada" })
+}
+final class ProfileModel {
+  let client: UserClient
+  init(client: UserClient) { self.client = client }
+}
+let model = ProfileModel(client: .mock)  // no mock class
+\end{lstlisting}
+Swap one closure per test — no protocol + mock class (Point-Free ``protocol witness''
+style). Cost: no conformance checking, weaker discoverability, closures may capture
+\texttt{self}. Partial application pre-binds arguments.
+
+\section{Where FP stops paying in Swift}
+\begin{itemize}
+  \item \textbf{Copies}: writing to a \emph{shared} CoW buffer copies all of it — O(n).
+  \item \textbf{Intermediates}: \texttt{map.filter.map} on \texttt{Array} allocates per step
+        — \texttt{.lazy} or a loop; appending in \texttt{reduce} is O(n²), use
+        \texttt{reduce(into:)}.
+  \item \textbf{No guaranteed tail calls} — deep recursion overflows; loop instead.
+  \item \textbf{Readability} (operator soup) and \textbf{OO frameworks} (\texttt{UIView},
+        delegates, \texttt{NSManagedObject}) — keep FP in the core.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{compactMap} drops \texttt{nil}s; sequence \texttt{flatMap} flattens (split
+        in Swift 4.1, SE-0187); on \texttt{Optional}/\texttt{Result} \texttt{flatMap} is the bind.}
+  \trap{Pure $\neq$ no \texttt{var}: invisible local mutation is fine; a closure
+        mutating a captured \texttt{var} is not.}
+  \trap{\texttt{let} on a class reference freezes the pointer, not the object.}
+  \trap{``Loading \emph{with} old items'' can be a real state (pull-to-refresh) — model it
+        (\texttt{case loading(previous: V?)}), don't reopen the optionals.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Values in, decisions out, effects at the edge; enums for ``one of'', smart
+constructors for ``checked''.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} value-vs-reference (CoW) ·
+error-handling · ts-type-system (discriminated unions) · testable-design-seams ·
+gof-behavioural · api-design}
+
+\end{document}

@@ -1,0 +1,232 @@
+% concurrency-patterns.tex — language-independent concurrency patterns, each
+% with its Swift form: producer-consumer + bounded buffer, thread pool,
+% futures vs async/await, actor model, pipeline / fan-out / fan-in, map-reduce,
+% read-write lock, message passing vs shared memory, double-checked locking,
+% lock ordering, CAS, reactive streams + demand, structured concurrency.
+% Not repeated (neighbours): concurrency (GCD, actors, reentrancy timeline),
+% swift6-strict-concurrency (Sendable, isolation).
+% Sources (checked 2026-10-06):
+%   github.com/swiftlang/swift-evolution 0314-async-stream.md (default .unbounded; yield
+%     "returns to the caller immediately"; "concurrent iteration is considered a programmer error")
+%   github.com/apple/swift-async-algorithms Guides/Channel.md (send "suspends after enqueuing the
+%     event and is resumed when the next call to next() … is made")
+%   swift-evolution 0306-actors.md (actor reentrancy) · 0433-mutex.md · 0410-atomics.md
+%     (Synchronization: Mutex, Atomic, wrappingAdd(_:ordering:); iOS 18) · 0304 structured concurrency
+%   developer.apple.com/documentation/combine (Future runs at creation; Subscribers.Demand;
+%     flatMap(maxPublishers:); buffer(size:prefetch:whenFull:))
+%   erlang.org/doc/apps/stdlib/gen_server.html (call: "calling_self: A call to self/0 would hang
+%     indefinitely")
+%   Hewitt, Bishop, Steiger, IJCAI 1973 (actor model) · Coffman, Elphick, Shoshani, ACM Computing
+%     Surveys 1971 (four deadlock conditions)
+% @labels: area=design kind=pattern platform=general topic=concurrency,patterns discussion=93
+% @tags: producer-consumer, bounded-buffer, thread-pool, actor-model, fan-out-fan-in, taskgroup, asyncstream, read-write-lock, double-checked-locking, deadlock, lock-ordering, structured-concurrency
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false,AnyObject,Void,String,Bool,Decimal,for,in,of,Task,Int},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\eqeq{\hbox{=}\hbox{=}}   % 0xProto would ligate a literal ==
+\tikzset{
+  s/.style={box, font=\scriptsize, minimum height=5mm, inner sep=1.5pt},
+  g/.style={s, draw=sheetGreen, fill=sheetGreen!10},
+  r/.style={s, draw=sheetRed, fill=sheetRed!7},
+  o/.style={s, draw=sheetOrange, fill=sheetOrange!10},
+  buf/.style={cell, minimum width=4.5mm, minimum height=4.5mm, fill=sheetBlue!15, font=\tiny},
+  l/.style={font=\tiny, text=black!75, align=center, inner sep=1pt},
+  hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Concurrency patterns — the shapes, and their Swift form}{design · folio}
+
+\oneliner{Every concurrent design answers two questions: \textbf{who may touch
+this state} (one owner + messages, or many + a lock) and \textbf{what happens
+when one side is faster} (a bounded buffer, backpressure, or dropping). The
+named patterns — producer–consumer, pool, actor, pipeline, fan-out/fan-in,
+reader–writer — are stock answers; Swift gives most of them a
+compiler-checked form (\ct{actor}, \ct{TaskGroup}, \ct{AsyncStream},
+\ct{Sendable}).}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ============ producer-consumer
+  \node[hd] at (-0.2,1.75) {Producer–consumer, bounded buffer};
+  \node[s] (p1) at (0.25,1.0) {P1}; \node[s] (p2) at (0.25,0.1) {P2};
+  \foreach \i in {0,...,4} \node[buf] (b\i) at (1.35+\i*0.45,0.55) {};
+  \foreach \i in {2,3,4} \node[buf, fill=sheetBlue!45] at (1.35+\i*0.45,0.55) {};
+  \node[l, anchor=south] at (2.25,0.85) {capacity $n$ = 5};
+  \draw[hot] (p1) -- (b0.north west); \draw[hot] (p2) -- (b0.south west);
+  \node[g] (c1) at (4.25,0.55) {consumer};
+  \draw[hot] (b4.east) -- (c1);
+  \node[l, anchor=north west, align=left, text=sheetRed] at (0.9,0.2) {full? 1 \textbf{suspend} producer (backpressure)\\2 drop \textbf{oldest} (\ct{.bufferingNewest})\\3 drop \textbf{newest} (\ct{.bufferingOldest})\\4 fail / 429};
+  \draw[sheetGrey!50] (5.1,1.95) -- (5.1,-1.2);
+  % ============ fan-out / fan-in pipeline
+  \node[hd] at (5.2,1.75) {Pipeline → fan-out → fan-in (TaskGroup)};
+  \node[s] (src) at (5.75,0.55) {source};
+  \node[o] (st) at (7.05,0.55) {decode};
+  \foreach \i/\y in {1/1.2,2/0.55,3/-0.1} \node[g] (w\i) at (8.55,\y) {worker \i};
+  \node[o] (mg) at (10.0,0.55) {merge};
+  \node[s] (sk) at (11.05,0.55) {sink};
+  \draw[hot] (src) -- (st);
+  \foreach \i in {1,2,3} { \draw[hot] (st.east) -- (w\i.west); \draw[hot] (w\i.east) -- (mg.west); }
+  \draw[hot] (mg) -- (sk);
+  \node[l, align=left, anchor=north west] at (5.25,-0.45) {each stage its own task; bounded queues between;\\
+    fan-in = completion order → carry the index to restore order;\\
+    cancel the parent → every stage stops (structured)};
+  \draw[sheetGrey!50] (11.65,1.95) -- (11.65,-1.2);
+  % ============ deadlock + lock ordering
+  \node[hd] at (11.75,1.75) {Deadlock → lock ordering};
+  \node[r] (t1) at (12.35,1.0) {T1}; \node[r] (t2) at (12.35,-0.1) {T2};
+  \node[s, draw=sheetBrown, fill=sheetBrown!10] (la) at (14.1,1.0) {lock A};
+  \node[s, draw=sheetBrown, fill=sheetBrown!10] (lb) at (14.1,-0.1) {lock B};
+  \draw[very thick, sheetGreen!60!black] (t1) -- node[l, above]{holds} (la);
+  \draw[very thick, sheetGreen!60!black] (t2) -- node[l, below]{holds} (lb);
+  \draw[->, thick, sheetRed, dashed] (t1.south east) -- (lb.north west);
+  \draw[->, thick, sheetRed, dashed] (t2.north east) -- (la.south west);
+  \node[l, anchor=west, align=left] at (14.75,0.45) {\textcolor{sheetRed}{dashed = waits for}\\cycle = circular\\wait: stuck forever};
+  \node[l, anchor=north west, align=left, text=sheetGreen!45!black] at (11.75,-0.45) {fix: everyone takes \textbf{A before B}\\(global order) → no cycle possible;\\or try-lock + timeout, or one owner};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Producer–consumer + thread pool}
+\begin{itemize}
+  \item A \textbf{bounded} buffer decouples rates. Unbounded = the slow side's
+        problem becomes a memory problem. \ct{AsyncStream}'s default policy is
+        \textbf{unbounded}; its \ct{yield} never suspends, so it can only
+        \emph{drop}. Real backpressure (producer waits) = \ct{AsyncChannel}
+        (swift-async-algorithms), whose \ct{send} suspends until consumed.
+  \item \ct{AsyncStream} has \textbf{one} consumer — concurrent iteration is a
+        programmer error (SE-0314), never a broadcast. Fan-out to many = Combine
+        subject or one stream per listener.
+  \item \textbf{Thread pool / executor}: a fixed set of workers pulls jobs from a
+        queue — no per-job thread cost, no oversubscription. GCD: blocked workers
+        make it spawn more (\textbf{thread explosion}). Swift's cooperative pool has
+        $\approx$ one thread per core and \textbf{must never be blocked}
+        (\ct{DispatchSemaphore.wait}, sync I/O) — it cannot grow, so it starves.
+\end{itemize}
+
+\section{Example — fan-out/fan-in, buffered stream}
+\begin{lstlisting}[language=SwiftSheet]
+func thumbs(_ urls: [URL]) async throws -> [UIImage] {
+  try await withThrowingTaskGroup(of: (Int, UIImage).self) { g in
+    var out = [UIImage?](repeating: nil, count: urls.count)
+    for (i, url) in urls.enumerated() {
+      if i > 3, let r = try await g.next() { out[r.0] = r.1 } // max 4 in flight
+      g.addTask { (i, try await load(url)) }                // fan-out
+    }
+    for try await r in g { out[r.0] = r.1 }  // fan-in; a throw cancels the rest
+    return out.map { $0! }                     // input order restored
+  }
+}
+let (events, cont) = AsyncStream.makeStream(of: Event.self,
+                       bufferingPolicy: .bufferingNewest(100)) // drops OLDEST
+mqtt.onMessage = { cont.yield($0) }           // producer never blocks
+Task { for await e in events { await store.apply(e) } }       // one consumer
+\end{lstlisting}
+
+\section{Futures/promises vs async/await}
+A \textbf{future} is a read-only handle to a value that arrives later; the
+\textbf{promise} is its write side. Chained with \ct{then}/combinators —
+control flow and errors move into closures. \textbf{async/await} is the same
+thing written as straight-line code: \ct{try}/\ct{catch}, loops, \ct{defer}
+work again; a \ct{Task} \emph{is} a future (\ct{await task.value}). Combine's
+\ct{Future} runs its closure \textbf{at creation} (eager) and emits once —
+wrap in \ct{Deferred} to make it lazy.
+
+\section{Actor model}
+Hewitt 1973, Erlang, Akka: an actor owns its state, has a \textbf{mailbox},
+handles \textbf{one message at a time}, and talks only by messages → no locks,
+no shared state. Swift \ct{actor}: same isolation, compiler-enforced, but
+\textbf{not FIFO} (jobs run by priority) and \textbf{reentrant}: at each
+\ct{await} inside it the next message runs, so re-check state after
+suspension (timeline on \emph{concurrency}). An Erlang process is not
+reentrant — a synchronous call to itself would hang forever, so OTP's
+\ct{gen\_server:call} exits with \ct{calling\_self} instead.
+
+\section{Read–write lock}
+Many readers \emph{or} one writer (\ct{pthread\_rwlock}; GCD concurrent queue +
+\ct{.barrier} writes). Pays off only for long, contended reads; else it costs
+more than a mutex, and writers can \textbf{starve}. Replaced by a serial queue /
+actor (simple), \ct{os\_unfair\_lock}/\ct{Mutex} (fast), or
+\textbf{copy-on-write} snapshots (readers take a value, the writer swaps it).
+
+\section{Double-checked locking}
+\ct{if x \eqeq{} nil \{ lock; if x \eqeq{} nil \{ x = make() \} \}} — the
+unlocked read races: without acquire/release ordering a reader can see the
+pointer before the object's fields. Swift: \ct{static let} / global \ct{let}
+run \textbf{exactly once}, thread-safe (\ct{swift\_once}); \ct{lazy var} is
+\textbf{not} thread-safe.
+
+\columnbreak
+
+\section{Shared memory + locks vs messages}
+{\scriptsize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{27mm}@{}}
+\toprule
+& \textbf{shared memory + locks} & \textbf{immutability + messages}\\
+\midrule
+correctness & every access must remember the lock & ownership makes races impossible\\
+failure mode & data race, deadlock, inversion & mailbox growth, stale copies\\
+cost & uncontended lock is cheap & copies (CoW), actor hops\\
+Swift & \ct{Mutex} (iOS 18), \ct{os\_unfair\_lock}, \ct{NSLock} & \ct{actor}, \ct{Sendable} values, \ct{AsyncStream}\\
+\bottomrule
+\end{tabular}}
+Default to ownership + messages; keep a lock for a tiny hot critical section
+with no \ct{await} inside (never hold a lock across a suspension).
+
+\section{Deadlock rules}
+Needs all four Coffman conditions: mutual exclusion, hold-and-wait, no
+preemption, \textbf{circular wait}. Break one: global lock order; try-lock
+with timeout; take everything at once; one owner. Never call out
+(delegate, callback, \ct{main.sync}) while holding a lock.
+
+\section{Lock-free / CAS}
+Read, compute, \ct{compareExchange(expected:desired:)}; retry if someone got
+there first — no blocking, but livelock under contention and the
+\textbf{ABA} problem. Swift 6: \ct{Atomic<Int>} in \ct{Synchronization}
+(iOS 18), e.g. \ct{wrappingAdd(1, ordering: .relaxed)}. Use for counters and
+flags; not for data structures.
+
+\section{Reactive streams + backpressure}
+Subscriber \emph{pulls}: it signals \textbf{demand} (\ct{Subscribers.Demand.max(n)})
+and the publisher may send no more than that. \ct{sink}/\ct{assign} request
+\ct{.unlimited} — no backpressure. Bound it with
+\ct{flatMap(maxPublishers: .max(3))}, \ct{buffer(size:prefetch:whenFull:)},
+or a custom subscriber.
+
+\section{Structured concurrency}
+Child tasks (\ct{async let}, \ct{TaskGroup}) \textbf{cannot outlive} their
+scope: the parent waits, \textbf{cancellation flows down}, \textbf{errors flow up},
+task-locals are inherited. Cancellation is cooperative (\ct{checkCancellation},
+\ct{withTaskCancellationHandler} for callbacks). SwiftUI \ct{.task} ties a task to
+a view's lifetime. \ct{Task \{\}} / \ct{Task.detached} are escape hatches that leak.
+
+\section{Traps}
+\begin{itemize}
+  \trap{\ct{DispatchSemaphore.wait()} in async code — blocks a pool thread; can deadlock the pool.}
+  \trap{``Actors make it atomic'' — only between \ct{await}s.}
+  \trap{\ct{AsyncStream} is not a broadcast, and unbounded by default.}
+  \trap{A task group returns in \emph{completion} order, not input order.}
+\end{itemize}
+
+\section{Remember}
+\textbf{One owner or one lock. Bound every buffer. Children die with the parent.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} concurrency (GCD, actors,
+reentrancy) · swift6-strict-concurrency · Combine}
+
+\end{document}
