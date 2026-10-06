@@ -1,0 +1,199 @@
+% persistence.tex — which store for what, Keychain classes, the Core Data stack and its
+% context-confinement rule, merges, faulting, migrations, SwiftData.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/coredata/nsmanagedobjectcontext (queue confinement, perform /
+%     performAndWait, automaticallyMergesChangesFromParent, mergeChanges(fromContextDidSave:))
+%   developer.apple.com/documentation/coredata/nspersistentcontainer · .../nsmergepolicy
+%   developer.apple.com/documentation/security/ksecattraccessible (WhenUnlocked is the default;
+%     AfterFirstUnlock; ThisDeviceOnly) · .../security/item-class-keys-and-values (item classes)
+%   developer.apple.com/documentation/foundation/optimizing-your-app-s-data-for-icloud-backup
+%   developer.apple.com/documentation/swiftdata (Model, ModelContainer, ModelContext, Query, ModelActor)
+% Keychain items surviving uninstall: observed behaviour, not a documented guarantee (said on the page).
+% @labels: area=ios-swift kind=api platform=apple topic=data,concurrency discussion=68
+% @tags: userdefaults, keychain, core-data, nsmanagedobjectcontext, nspersistentcontainer, nsmanagedobjectid, faulting, lightweight-migration, swiftdata, modelactor, sandbox-directories, nscache
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false,AnyObject,Void,String,Bool},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  ctx/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=9mm, text width=25mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  dir/.style={draw=sheetGrey, font=\scriptsize\ttfamily, inner sep=1.5pt, anchor=west,
+              minimum height=4.4mm, rounded corners=1pt},
+  ok/.style={font=\tiny, text=sheetGreen!60!black, anchor=west, inner sep=1pt},
+  no/.style={font=\tiny, text=sheetRed, anchor=west, inner sep=1pt},
+}
+\newcommand\cross{\ensuremath{\times}}
+
+\begin{document}
+
+\sheettitle{Persistence — pick the store, respect the context}{ios-swift · folio}
+
+\oneliner{Secrets → \textbf{Keychain}; small settings → \textbf{UserDefaults}; blobs →
+\textbf{files} in the right sandbox directory; a queryable object graph →
+\textbf{Core Data} / \textbf{SwiftData}; recomputable in-memory → \textbf{NSCache}. In Core
+Data every \texttt{NSManagedObjectContext} is \textbf{bound to one queue}: touch it and its
+objects only inside \texttt{perform}, and hand \texttt{NSManagedObjectID}s — never objects —
+across queues.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── Core Data stack ──
+  \node[font=\bfseries\small, anchor=west] at (-0.1,3.45) {Core Data — \texttt{NSPersistentContainer}};
+  \node[ctx, draw=sheetGreen!70!black, fill=sheetGreen!10] (vc) at (1.3,2.45)
+    {\textbf{viewContext}\\main queue · UI reads\\\emph{touch only on main}};
+  \node[ctx, draw=sheetOrange, fill=sheetOrange!10] (bg) at (7.3,2.45)
+    {\textbf{background context}\\private queue · imports\\\emph{touch only in \texttt{perform}}};
+  \node[box, minimum width=86mm, draw=sheetBrown, fill=sheetBrown!10, font=\scriptsize] (psc) at (4.3,0.85)
+    {\texttt{NSPersistentStoreCoordinator} + \texttt{NSManagedObjectModel} (\texttt{.momd})};
+  \node[box, minimum width=44mm, draw=sheetGrey, fill=black!5, font=\scriptsize] (db) at (4.3,0.0)
+    {SQLite file in Application Support};
+  \draw[flow, <->] (psc) -- (db);
+  % saves
+  \draw[hot] ([xshift=6mm]bg.south) -- node[lbl, right]{\texttt{save()}} ([xshift=6mm]bg.south |- psc.north);
+  \draw[flow] ([xshift=-6mm]vc.south) -- node[lbl, left]{save} ([xshift=-6mm]vc.south |- psc.north);
+  % merge
+  \draw[->, thick, sheetGreen!70!black] ([xshift=6mm]vc.south |- psc.north) --
+    node[lbl, right, text=sheetGreen!60!black, align=left]{merge: \texttt{automatically}\\\texttt{MergesChangesFromParent}} ([xshift=6mm]vc.south);
+  % hand-off
+  \draw[->, thick, sheetBlue, dashed] ([yshift=2mm]bg.west) -- node[lbl, above, text=sheetBlue]{\texttt{objectID} ✓ thread-safe} ([yshift=2mm]vc.east);
+  \draw[->, thick, sheetRed] ([yshift=-2.5mm]bg.west) -- node[lbl, below, text=sheetRed]{\texttt{NSManagedObject} \cross{} crash / corrupt} ([yshift=-2.5mm]vc.east);
+  % separator
+  \draw[sheetGrey!40] (9.5,3.6) -- (9.5,-0.3);
+  % ── sandbox ──
+  \node[font=\bfseries\small, anchor=west] at (9.7,3.45) {App sandbox (deleted on uninstall)};
+  \node[dir] (d1) at (9.8,2.85) {Documents/};
+  \node[dir] (d2) at (9.8,2.25) {Library/Application Support/};
+  \node[dir] (d3) at (9.8,1.65) {Library/Caches/};
+  \node[dir] (d4) at (9.8,1.05) {Library/Preferences/};
+  \node[dir] (d5) at (9.8,0.45) {tmp/};
+  \node[ok] at (d1.east) {\ backed up · user files (Files app)};
+  \node[ok] at (d2.east) {\ backed up · app data, DB};
+  \node[no] at (d3.east) {\ \textbf{not} backed up · OS may purge};
+  \node[ok] at (d4.east) {\ backed up · UserDefaults plist};
+  \node[no] at (d5.east) {\ \textbf{not} backed up · purged when not running};
+  \node[lbl, anchor=west] at (9.7,-0.1) {Keychain lives \emph{outside} the sandbox → can outlive the app};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Decision table}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{29mm}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{10mm}>{\raggedright\arraybackslash}p{11mm}@{}}
+\toprule
+\textbf{Store} & \textbf{For} & \textbf{Secrets} & \textbf{Backup} & \textbf{Uninstall} \\
+\midrule
+UserDefaults & small prefs, flags (whole plist read into RAM) & no & yes & deleted \\
+Keychain & tokens, passwords, keys & \textbf{yes} & encrypted backups & \textbf{survives}* \\
+Files & images, downloads, any size & no & per dir & deleted \\
+Core Data & 10k+ related, queried records & no & yes & deleted \\
+SwiftData & same, iOS 17+, SwiftUI-first & no & yes & deleted \\
+NSCache & recomputable; RAM, self-evicting & no & — & on quit \\
+\bottomrule
+\end{tabular}}
+{\footnotesize *in practice, not a documented guarantee. Files get Data Protection
+(\texttt{.completeFileProtection}), but that is not app-level secret storage.
+\texttt{NSCache}: thread-safe, evicts under memory pressure, does not copy keys;
+limits are hints.}
+
+\section{Core Data}
+\begin{itemize}
+  \item \texttt{viewContext} = \textbf{main queue}. \texttt{newBackgroundContext()} /
+        \texttt{performBackgroundTask \{ ctx in \}} = \textbf{private queue}.
+  \item \texttt{perform} (async; \texttt{await}-able iOS 15) / \texttt{performAndWait}
+        (blocks caller) run the block \emph{on the context's queue} — the only legal
+        access, even a read or a relationship (fires a fault).
+  \item \texttt{objectID} is \emph{temporary} until save; \texttt{object(with:)} returns a
+        fault, \texttt{existingObject(with:)} throws if the row is gone.
+  \item \textbf{Merge}: contexts do not see each other's saves.
+        \texttt{viewContext.automaticallyMergesChangesFromParent = true} (picks up sibling
+        saves via the coordinator) or \texttt{mergeChanges(fromContextDidSave:)} inside the
+        target's \texttt{perform}. FRC / \texttt{@FetchRequest} watch only their own context.
+  \item Conflict policy default = \textbf{error} (save throws); usual choice: \\
+        \texttt{NSMergeByPropertyObjectTrumpMergePolicy}.
+  \item \textbf{Parent/child}: \texttt{child.parent = viewContext}; child \texttt{save()}
+        only pushes up \emph{in memory} — disk needs the parent's save.
+  \item \textbf{Faulting}: fetched objects are placeholders filled on access. N+1 fix:
+        \texttt{relationshipKeyPathsForPrefetching}, \texttt{fetchBatchSize}.
+  \item \textbf{Batch} requests bypass contexts → merge returned IDs.
+  \item \textbf{Migration}: \emph{lightweight} = inferred (add/remove, optional/default,
+        rename via \textbf{Renaming ID}), on by default; \emph{heavyweight} =
+        \texttt{NSMappingModel} + \texttt{NSEntityMigrationPolicy}.
+\end{itemize}
+
+\section{Keychain — \texttt{kSecAttrAccessible…}}
+\texttt{WhenUnlocked} = \textbf{default}, only while unlocked ·
+\texttt{AfterFirstUnlock} = after first unlock since boot — needed for \textbf{background}
+work · \texttt{WhenPasscodeSetThisDeviceOnly} = needs a passcode · suffix
+\texttt{ThisDeviceOnly} = never restored to another device. \texttt{SecItemAdd} twice →
+\texttt{errSecDuplicateItem} (use \texttt{SecItemUpdate}).
+
+\columnbreak
+
+\section{Example — import off main, show on main}
+\begin{lstlisting}[language=SwiftSheet]
+let c = NSPersistentContainer(name: "Model")
+c.loadPersistentStores { _, e in precondition(e == nil) }
+c.viewContext.automaticallyMergesChangesFromParent = true
+
+func importItem(_ dto: ItemDTO) async throws -> NSManagedObjectID {
+  let bg = c.newBackgroundContext()      // private queue
+  return try await bg.perform {           // on bg's queue
+    let item = Item(context: bg); item.title = dto.title
+    try bg.save()                         // -> coordinator
+    return item.objectID }                // ID leaves, not item
+}
+// on the main actor:
+let id = try await importItem(dto)
+let item = try c.viewContext.existingObject(with: id) as! Item
+\end{lstlisting}
+
+\section{SwiftData (iOS 17+)}
+\texttt{@Model} class ≈ entity · \texttt{ModelContainer} ≈ container ·
+\texttt{ModelContext} ≈ context (\texttt{mainContext} is \texttt{@MainActor}, autosaves) ·
+\texttt{@Query(sort: \textbackslash Trip.date)} ≈ live FRC in a view. Background: a
+\texttt{@ModelActor} owns its context; pass \texttt{PersistentIdentifier}, never the
+\texttt{@Model}. Migrations: \texttt{VersionedSchema} + \texttt{SchemaMigrationPlan}.
+
+\section{Traps}
+\begin{itemize}
+  \trap{A managed object on the wrong queue ``works'' until it crashes. Launch arg
+        \texttt{-com.apple.CoreData.ConcurrencyDebug 1} traps the first violation.}
+  \trap{Background save, UI stale → not merged into \texttt{viewContext}.}
+  \trap{Rename without a Renaming ID = drop + add → data lost.}
+  \trap{Token in UserDefaults = readable from a backup. In Keychain with
+        \texttt{WhenUnlocked} = unreadable during background refresh.}
+  \trap{Keychain survives reinstall: clear stale tokens on first run.}
+  \trap{Re-downloadable files in Documents bloat iCloud backup → Caches.}
+\end{itemize}
+
+\section{Keychain item classes (\texttt{kSecClass…})}
+{\footnotesize
+\begin{tabular}{@{}l l@{}}
+\toprule
+\texttt{GenericPassword} & token, API key — keyed by service + account \\
+\texttt{InternetPassword} & password for a server — keyed by server, protocol, port \\
+\texttt{Certificate} · \texttt{Key} & X.509 certificate · private/public key \\
+\texttt{Identity} & certificate + its private key (client TLS) \\
+\bottomrule
+\end{tabular}}
+
+\section{Remember}
+\textbf{Secret → Keychain, setting → UserDefaults, blob → file, graph → Core Data /
+SwiftData, rebuildable → NSCache.} One context, one queue; pass IDs, not objects.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} concurrency \& actors ·
+Sendable · Repository pattern · offline-first sync · app lifecycle (save on background) ·
+Data Protection}
+
+\end{document}

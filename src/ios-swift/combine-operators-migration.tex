@@ -1,0 +1,223 @@
+% combine-operators-migration.tex — the Combine operator catalogue by behaviour (values, demand,
+% completion), combining (merge / combineLatest / zip) and flattening (flatMap, maxPublishers,
+% switchToLatest) as marble diagrams, error operators (catch, retry, replaceError, mapError,
+% setFailureType), type erasure, share / multicast / connectable publishers, moving from Combine to
+% async/await (.values, Future.value, .task(id:), swift-async-algorithms) and testing Combine.
+% Extends observation-and-combine.tex (debounce vs throttle, the typeahead pipeline, the sink
+% cycle) and combine-publishers-demand.tex (protocols, demand, schedulers) — not repeated here.
+% Sources (checked 2026-09-29) — primary: developer.apple.com/documentation/combine — Publisher
+% (declared Publisher<Output, Failure>), Publisher/flatMap(maxPublishers:_:),
+% Publisher/switchToLatest(), Publisher/zip(_:), Publisher/combineLatest(_:), Publisher/retry(_:),
+% Publisher/share(), Publisher/values (iOS 15), Future (value property), PassthroughSubject;
+% developer.apple.com/documentation/observation/observations (iOS 26).
+% @labels: area=ios-swift kind=api platform=apple topic=concurrency,patterns,testing discussion=61
+% @tags: combine-operators, flatmap, switchtolatest, combinelatest, zip, merge, share, multicast, catch, retry, erasetoanypublisher, async-migration
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,in,
+    true,false,Task,Just},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  mb/.style={circle, draw=sheetBlue, fill=sheetBlue!12, inner sep=0pt, minimum size=4.2mm,
+             font=\ttfamily\tiny},
+  mo/.style={mb, draw=sheetOrange, fill=sheetOrange!15},
+  mg/.style={mb, draw=sheetGreen!70!black, fill=sheetGreen!12},
+  tp/.style={rounded corners=1.5pt, draw=sheetBrown, fill=sheetBrown!10, inner sep=1pt,
+             minimum height=4.2mm, font=\ttfamily\tiny},
+  rl/.style={font=\ttfamily\scriptsize, anchor=east, inner sep=1pt},
+  tl/.style={->, draw=sheetGrey!70},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=left},
+  ttl/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  endb/.style={draw=black!70, thick},
+  xx/.style={font=\bfseries\small, text=sheetRed},
+}
+
+\begin{document}
+
+\sheettitle{Combine operators · errors · sharing · moving to async/await}{ios-swift · folio}
+
+\oneliner{Every operator is a \textbf{struct} deciding \textbf{which values} it emits, \textbf{how it
+passes demand} upstream and \textbf{when it ends}. One \textbf{failure ends the whole chain} unless
+caught \emph{inside} a \ct{flatMap}; \ct{share()} gives one upstream many subscribers. Migrating keeps
+Combine at the edges: \ct{.values} / \ct{Future.value} in, a cancellable \ct{Task} for the token.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ================= combining =================
+  \node[ttl] at (-0.2,3.55) {Combining two publishers (time $\to$)};
+  \foreach \y/\n in {3.05/a, 2.6/b, 2.05/merge, 1.55/combineLatest, 1.05/zip}
+     { \node[rl] at (1.85,\y) {\n}; \draw[tl] (1.95,\y) -- (7.3,\y); }
+  \node[mb] at (2.3,3.05) {1}; \node[mb] at (3.9,3.05) {2}; \node[mb] at (6.5,3.05) {3};
+  \node[mo] at (3.1,2.6) {A};  \node[mo] at (5.3,2.6) {B};
+  \draw[sheetGrey!50] (1.95,2.33) -- (7.3,2.33);
+  % merge
+  \node[mb] at (2.3,2.05) {1}; \node[mo] at (3.1,2.05) {A}; \node[mb] at (3.9,2.05) {2};
+  \node[mo] at (5.3,2.05) {B}; \node[mb] at (6.5,2.05) {3};
+  % combineLatest
+  \node[tp] at (3.1,1.55) {1A}; \node[tp] at (3.9,1.55) {2A}; \node[tp] at (5.3,1.55) {2B};
+  \node[tp] at (6.5,1.55) {3B};
+  \node[lbl, text=sheetRed] at (2.3,1.3) {silent};
+  % zip
+  \node[tp] at (3.1,1.05) {1A}; \node[tp] at (5.3,1.05) {2B};
+  \node[lbl, text=sheetRed] at (6.5,0.8) {3 waits};
+  \node[lbl, anchor=north west] at (-0.2,0.6)
+    {\textbf{merge}: interleave (same type), ends when \emph{all} end. \textbf{combineLatest}: silent until
+     \emph{each}\\has emitted, then latest of each; never finishes if one never emits. \textbf{zip}: pairs the
+     oldest\\unconsumed of each; ends when \emph{either} ends. Any upstream failure fails the result.};
+
+  \draw[sheetGrey!40] (7.75,3.7) -- (7.75,-0.55);
+
+  % ================= flattening =================
+  \node[ttl] at (7.85,3.55) {Flattening: each outer value starts an inner publisher};
+  \foreach \y/\n in {3.05/outer, 2.6/inner(1), 2.2/inner(2), 1.65/flatMap, 1.15/{max(1), subject}, 0.65/switchToLatest}
+     { \node[rl] at (10.75,\y) {\n}; \draw[tl] (10.85,\y) -- (16.4,\y); }
+  \node[mb] at (11.1,3.05) {1}; \node[mb] at (12.6,3.05) {2};
+  \draw[sheetGrey, densely dotted] (11.1,2.83) -- (11.1,2.6); \draw[sheetGrey, densely dotted] (12.6,2.83) -- (12.6,2.2);
+  \node[mg] at (12.0,2.6) {1a}; \node[mg] at (14.1,2.6) {1b}; \draw[endb] (14.45,2.47) -- (14.45,2.73);
+  \node[mo] at (13.5,2.2) {2a}; \node[mo] at (15.6,2.2) {2b}; \draw[endb] (15.95,2.07) -- (15.95,2.33);
+  \draw[sheetGrey!50] (10.85,1.93) -- (16.4,1.93);
+  % flatMap unlimited
+  \node[mg] at (12.0,1.65) {1a}; \node[mo] at (13.5,1.65) {2a}; \node[mg] at (14.1,1.65) {1b};
+  \node[mo] at (15.6,1.65) {2b};
+  % maxPublishers 1 with a subject upstream
+  \node[mg] at (12.0,1.15) {1a}; \node[xx] at (12.6,1.15) {$\times$}; \node[mg] at (14.1,1.15) {1b};
+  \node[lbl, text=sheetRed, anchor=west, fill=white] at (14.5,1.15) {\ct{2} was dropped};
+  % switchToLatest
+  \node[mg] at (12.0,0.65) {1a}; \node[xx] at (12.6,0.65) {$\times$};
+  \node[mo] at (13.5,0.65) {2a}; \node[mo] at (15.6,0.65) {2b};
+  \node[lbl, anchor=north west] at (7.85,0.4)
+    {\textbf{flatMap} (\ct{.unlimited}): all inners live, outputs interleave. \textbf{\ct{maxPublishers: .max(1)}}:
+     requests\\1 outer value, the next only when the inner ends; a subject's \ct{2} arrives at demand 0 and is
+     \textbf{dropped}\\(from a cold or \ct{buffer}ed upstream it waits: \ct{1a 1b 2a 2b}, concat). \textbf{switchToLatest}:
+     \ct{2} \textbf{cancels} inner(1).};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item The chain's type is the nesting: \ct{Publishers.Map<Publishers.Filter<\ldots>, T>}.
+        At an API boundary hide it: \ct{eraseToAnyPublisher()} (a box, dynamic dispatch)
+        or \ct{some Publisher<Feed, Never>} (\ct{Publisher} has primary associated types, Swift 5.7).
+  \item \ct{flatMap} needs \ct{Self.Failure \hbox{=}\hbox{=} P.Failure}: align with
+        \ct{setFailureType(to:)} or \ct{mapError}. An inner \emph{finishing} does not end
+        the stream; an inner \emph{failing} does (Apple docs).
+  \item \ct{try}-operators (\ct{tryMap}, \ct{tryFilter}, \ct{tryCatch}\ldots) widen
+        \ct{Failure} to \ct{any Error}; \ct{mapError} gets your type back.
+  \item \textbf{Errors}: \ct{catch} = swap in a fallback \emph{publisher};
+        \ct{replaceError(with:)} = a value; \ct{retry(n)} \textbf{re-subscribes} upstream
+        up to n times (cold: the request runs again, no delay); \ct{assertNoFailure()} traps.
+\end{itemize}
+
+\hd{Catalogue — by job}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{12mm}L{61mm}@{}}
+\toprule
+transform & \ct{map tryMap compactMap scan reduce collect(n) removeDuplicates replaceNil} \\
+limit & \ct{filter first(where:) prefix(n) prefix(untilOutputFrom:) dropFirst drop(untilOutputFrom:) output(at:)} \\
+combine & \ct{merge(with:)} ($\leq$8; \ct{MergeMany}) · \ct{combineLatest} ($\leq$4) · \ct{zip} ($\leq$4) · \ct{append} · \ct{prepend} \\
+flatten & \ct{flatMap(maxPublishers:)} · \ct{switchToLatest} \\
+time & \ct{debounce throttle delay timeout measureInterval} \\
+errors & \ct{catch tryCatch retry replaceError mapError setFailureType assertNoFailure} \\
+share & \ct{share multicast makeConnectable autoconnect} \\
+debug & \ct{print handleEvents breakpoint breakpointOnError} \\
+\bottomrule
+\end{tabular}}
+
+\hd{Example — refresh: one load at a time, errors stay inside}
+\begin{lstlisting}[language=SwiftSheet]
+refreshTaps                               // PassthroughSubject<Void, Never>
+  .flatMap(maxPublishers: .max(1)) { _ in // taps while loading: dropped
+    api.feedPublisher()                   // AnyPublisher<Feed, APIError>
+      .retry(2)                           // GET re-sent up to 2 more times
+      .map(State.loaded)
+      .catch { Just(State.failed($0)) }   // INSIDE: outer stream lives on
+  }
+  .receive(on: DispatchQueue.main)
+  .assign(to: &$state)                    // no token, no self capture
+\end{lstlisting}
+
+\hd{Sharing}
+\begin{itemize}
+  \item Cold publishers run \textbf{per subscriber}: two sinks on one \ct{dataTaskPublisher} = two requests.
+  \item \ct{share()} = \ct{multicast} + \ct{PassthroughSubject} + implicit \ct{autoconnect()}
+        (docs); \ct{Share} is a \textbf{class}. No replay: a late subscriber misses values; on a
+        synchronous upstream (\ct{Just}, an array) the first subscriber drains it all.
+  \item \ct{multicast(subject: CurrentValueSubject(\ldots))} replays the latest;
+        \ct{makeConnectable()} + \ct{connect()} starts work after \emph{all} subscribed.
+        \ct{Timer.publish(every:on:in:)} is connectable: no \ct{.autoconnect()} = no ticks.
+\end{itemize}
+
+\columnbreak
+
+\hd{Combine $\to$ Swift concurrency}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{27mm}L{46mm}@{}}
+\toprule
+\textbf{Combine} & \textbf{async/await} \\ \midrule
+\ct{Future}, one-shot & \ct{async} func · \ct{try await future.value} (iOS 15) \\
+many values & \ct{for await v in pub.values} (iOS 15) \\
+\ct{AnyCancellable} & a \ct{Task} you \ct{cancel()}; SwiftUI \ct{.task} \\
+\ct{receive(on: .main)} & \ct{@MainActor} \\
+\ct{PassthroughSubject} & \ct{AsyncStream} — \textbf{one} consumer (loops split) \\
+\ct{share()} & nothing built in: one stream per consumer \\
+\ct{@Published} & \ct{@Observable} (iOS 17) · \ct{Observations} (iOS 26) \\
+\ct{switchToLatest} & cancel the old \ct{Task} · \ct{.task(id:)} \\
+\ct{flatMap(\ldots .max(1))} & \ct{await} inside \ct{for await} (serial) \\
+\ct{debounce merge zip} & swift-async-algorithms package \\
+\ct{retry(n)} · scheduler & loop + \ct{Task.sleep} backoff · inject a \ct{Clock} \\
+\bottomrule
+\end{tabular}}
+
+\hd{Example — typeahead, the async way}
+\begin{lstlisting}[language=SwiftSheet]
+// Combine: $query.debounce(...).map(search).switchToLatest()
+TextField("Search", text: $query)
+  .task(id: query) {                      // new id: old task cancelled
+    try? await Task.sleep(for: .milliseconds(300))   // = debounce
+    guard !Task.isCancelled else { return }          // = switchToLatest
+    results = (try? await api.search(query)) ?? []   // main actor
+  }
+\end{lstlisting}
+
+\hd{Testing Combine}
+\begin{itemize}
+  \item \ct{sink} into an array, keep the token, fulfil an expectation on completion
+        (\ct{.collect()} = all at once) — or \ct{for await} over \ct{.values}: \textbf{start
+        iterating before you trigger}, a subject's earlier value is dropped.
+  \item Inject the scheduler; a test scheduler you \ct{advance(by:)} makes \ct{debounce}
+        instant. Cancel: \ct{handleEvents(receiveCancel:)}.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{\ct{retry} on a POST re-sends it; on a hot subject it only re-subscribes — nothing is replayed.}
+  \trap{\ct{flatMap(maxPublishers: .max(1))} behind a subject \emph{drops}, not queues — add \ct{buffer}.}
+  \trap{\ct{combineLatest} stays silent while one input never emitted: \ct{prepend(initial)}.}
+  \trap{\ct{Deferred \{ Future \{ Task \{\ldots\} \} \}}: cancelling the subscription does \textbf{not}
+        cancel the \ct{Task}. \ct{Future} alone runs at creation, even with no subscriber.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Values, demand, ending — ask all three of every operator.} Catch inside the \ct{flatMap};
+\ct{share} = subject + autoconnect; migrate at the edges: \ct{.values} in, \ct{Task} for the token.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} combine-publishers-demand · observation-and-combine
+(debounce vs throttle) · async-sequences-streams · observation-deep · concurrency · async-and-network-testing}
+
+\end{document}

@@ -1,0 +1,194 @@
+% locks-and-synchronization.tex — locks and synchronisation primitives on Apple platforms:
+% Mutex (Synchronization), OSAllocatedUnfairLock, os_unfair_lock, NSLock / NSRecursiveLock,
+% pthread_mutex, DispatchSemaphore, barrier on a concurrent queue, concurrentPerform; which to
+% use when; priority inversion; CPU- vs I/O-bound pool sizing; RunLoop basics; Thread/pthread.
+% OperationQueue is the operationqueue-deep folio and not repeated here.
+% Sources (checked 2026-09-25) — primary: os/lock.h (libplatform: owner info used to resolve
+% priority inversion; unlock from another thread aborts; `&` in Swift may copy/move the lock);
+% libdispatch queue.h (barrier on a global/serial queue = plain async/sync; dispatch_apply waits);
+% libdispatch semaphore.c ("Semaphore object deallocated while in use" when value < original);
+% SE-0433 (Mutex: ~Copyable, Sendable, os_unfair_lock on Darwin, recursion undefined);
+% Apple docs JSON: Mutex iOS 18 / macOS 15, OSAllocatedUnfairLock iOS 16 / macOS 13, NSLock
+% (same-thread unlock, second lock() on the same thread hangs forever); Apple "Run Loop
+% Management" archive (secondary threads run it explicitly, no source = exits, modes).
+% @labels: area=ios-swift kind=api platform=apple topic=concurrency,performance discussion=65
+% @tags: mutex, os-unfair-lock, osallocatedunfairlock, nslock, nsrecursivelock, pthread-mutex, dispatchsemaphore, barrier, priority-inversion, runloop, thread-pool-sizing, concurrentperform
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,import,defer,
+    if,else,return,guard,self,nil,private,true,false,in,for,Int,String,Sendable},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {+=}{{\hbox{+}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcommand\ct[1]{\texttt{#1}}
+\tikzset{
+  q/.style={draw=sheetBlue, fill=sheetBlue!8, rounded corners=2pt, font=\scriptsize,
+            inner sep=1.5pt, align=center},
+  a/.style={draw=sheetGreen!70!black, fill=sheetGreen!10, rounded corners=2pt,
+            font=\scriptsize, inner sep=1.5pt, align=center},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  lane/.style={font=\bfseries\scriptsize, anchor=east, inner sep=1pt},
+  run/.style={draw=#1, fill=#1!18, minimum height=3.6mm, inner sep=0pt},
+  ttl/.style={font=\bfseries\small, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Locks \& synchronisation primitives — Apple platforms}{ios-swift · folio}
+
+\oneliner{A \textbf{lock} makes a critical section mutually exclusive and has an
+\textbf{owner} (the thread that took it, which must release it); a \textbf{semaphore} is a
+\textbf{counter} with no owner; a \textbf{serial queue} or \textbf{actor} serialises by
+\emph{ownership} instead. Pick by: is there an \texttt{await} inside? how short is it? do you
+need a count? Then: never block the cooperative pool, never hold a lock across a call-out.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── decision tree ──
+  \node[ttl] at (-0.2,2.95) {Which primitive?};
+  \node[q] (q1) at (1.2,2.4) {\ct{await} inside the\\critical section?};
+  \node[a] (act) at (-0.1,1.55) {\ct{actor} {\tiny (or serial}\\{\tiny queue for callbacks)}};
+  \node[q] (q2) at (2.6,1.55) {count / limit N\\or signal?};
+  \node[a] (sem) at (1.35,0.7) {\ct{DispatchSemaphore}\\{\tiny not a lock}};
+  \node[q] (q3) at (4.05,0.7) {many readers,\\rare writes?};
+  \node[a] (bar) at (2.95,-0.15) {concurrent queue\\+ \ct{.barrier} writes};
+  \node[q] (q4) at (5.4,-0.15) {deployment\\target?};
+  \node[a] (mx) at (3.85,-1.0) {iOS 18: \ct{Mutex<T>}};
+  \node[a] (ou) at (6.1,-1.0) {iOS 16: \ct{OSAllocatedUnfairLock}};
+  \node[a] (nl) at (7.7,-0.15) {older / ObjC:\\\ct{NSLock}};
+  \draw[flow] (q1) -- node[lbl, left]{yes} (act);
+  \draw[flow] (q1) -- node[lbl, right]{no} (q2);
+  \draw[flow] (q2) -- node[lbl, left]{yes} (sem);
+  \draw[flow] (q2) -- node[lbl, right]{no} (q3);
+  \draw[flow] (q3) -- node[lbl, left]{yes} (bar);
+  \draw[flow] (q3) -- node[lbl, right]{no} (q4);
+  \draw[flow] (q4) -- (mx); \draw[flow] (q4) -- (ou); \draw[flow] (q4) -- (nl);
+  \node[lbl, anchor=west, align=left, text=sheetBrown] at (5.3,1.55)
+    {re-enters on the same thread?\\\ct{NSRecursiveLock} (or restructure)};
+  % ── priority inversion ──
+  \draw[sheetGrey!40] (8.75,3.1) -- (8.75,-1.35);
+  \node[ttl] at (8.85,2.95) {Priority inversion — and why the lock's \emph{owner} matters};
+  \foreach \y/\n in {2.2/high, 1.55/medium, 0.9/low}
+    { \node[lane] at (10.05,\y) {\n}; \draw[sheetGrey!45] (10.1,\y) -- (16.6,\y); }
+  \node[run=sheetBrown, minimum width=9mm, anchor=west] at (10.15,0.9) {};
+  \node[lbl, anchor=south] at (10.6,1.02) {takes L};
+  \node[run=sheetRed, minimum width=39mm, anchor=west, dashed, fill=white] at (11.2,2.2) {};
+  \node[lbl, text=sheetRed] at (13.15,2.2) {blocked on L — waits for \emph{low}};
+  \node[run=sheetOrange, minimum width=30mm, anchor=west] at (11.55,1.55) {};
+  \node[lbl] at (13.05,1.55) {CPU-bound, preempts low};
+  \node[run=sheetBrown, minimum width=6mm, anchor=west] at (14.6,0.9) {};
+  \node[lbl, anchor=west] at (15.25,0.9) {frees L};
+  \node[run=sheetBlue, minimum width=9mm, anchor=west] at (15.15,2.2) {};
+  \node[lbl, anchor=north west, align=left] at (8.85,0.6)
+    {\textbf{Owner-aware} lock (\ct{os\_unfair\_lock}, \ct{Mutex}, \ct{pthread\_mutex}): the lock
+     records its owner, so the\\kernel can \textbf{boost low} to high's priority → it
+     finishes, frees L, high runs. A \ct{DispatchSemaphore}\\has \textbf{no owner} — nothing
+     to boost\unverified; Xcode's Thread Performance Checker flags that\unverified.};
+  \node[lbl, anchor=north west, align=left, text=sheetGreen!45!black] at (8.85,-0.15)
+    {Same trap on iOS: a \ct{.userInteractive} main thread waiting on a semaphore signalled
+     from\\a \ct{.background} queue — the UI waits at background priority.};
+  \node[lbl, anchor=north west, align=left] at (8.85,-0.75)
+    {\textbf{Deadlock} is different: a \emph{cycle} of waits (T1 holds A wants B, T2 holds B
+     wants A)\\— fix with a global lock order (design/concurrency-patterns).
+     \textbf{Inversion} ends; deadlock never does.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\raggedcolumns
+
+\section{The primitives}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{16mm}L{7mm}L{10mm}L{42mm}@{}}
+\toprule
+\textbf{Primitive} & \textbf{since} & \textbf{recursive} & \textbf{Know this} \\ \midrule
+\ct{Mutex<State>} & iOS 18 & no & \ct{Synchronization}; \ct{\textasciitilde Copyable}, \ct{Sendable}; \ct{withLock} closure is sync $\Rightarrow$ no \ct{await} inside \\
+\ct{OSAllocated-} \ct{UnfairLock} & iOS 16 & no & \ct{import os}; heap-allocated = stable address; \ct{withLock}, \ct{lockIfAvailable} \\
+\ct{os\_unfair\_lock} & iOS 10 & no & fastest; unlock on another thread \textbf{aborts}; Swift \ct{\&lock} may copy/move it \\
+\ct{NSLock} & iOS 2 & \textbf{no} & 2nd \ct{lock()} on the same thread hangs forever; unlock on the locking thread \\
+\ct{NSRecursive-} \ct{Lock} & iOS 2 & yes & same thread may re-take it; unlock as often \\
+\ct{pthread\_} \ct{mutex\_t} & POSIX & attribute & \ct{init}/\ct{destroy}; heap-allocate it in Swift \\
+\ct{Dispatch-} \ct{Semaphore} & GCD & — & counter, \textbf{no owner}, any thread signals; freed while value $<$ initial $\Rightarrow$ crash \\
+serial queue, \ct{actor} & — & — & ownership, not a lock; \ct{q.sync} onto itself deadlocks \\
+\bottomrule
+\end{tabular}}
+
+\section{How it works}
+\begin{itemize}
+  \item Uncontended locks are cheap; \textbf{contention} costs — copy out, work outside.
+  \item \textbf{Barrier} (\ct{async(flags: .barrier)}) waits for earlier blocks, runs alone,
+        then lets reads resume — only on a \textbf{private concurrent} queue: on a global or
+        serial queue it is a plain \ct{async}/\ct{sync}.
+  \item \ct{DispatchQueue.concurrentPerform(iterations:)} = parallel \ct{for}, returns when
+        all iterations are done; give each iteration its own slot, never \ct{append}.
+  \item \ct{Thread \{…\}.start()}; selectors are \ct{\#selector(job(\_:))}, not ObjC's
+        \ct{job:}; raw \ct{pthread\_create} takes its context via \ct{Unmanaged}. Rarely
+        worth it over GCD / tasks.
+\end{itemize}
+
+\section{Sizing: CPU- vs I/O-bound}
+\textbf{CPU-bound}: threads $\approx$ cores; more only adds context switches.
+\textbf{I/O-bound}: $\mathrm{threads} = \mathrm{cores} / (1 - b)$, $b$ = fraction of time blocked
+(8 cores, $b = 0.9$ $\to$ 80). On Apple
+you size \emph{concurrency}, not threads: GCD and the cooperative pool
+($\approx$ one thread per core, never grows) own the threads — set
+\ct{maxConcurrentOperationCount}, a task-group width, or
+\ct{httpMaximumConnectionsPerHost}; do I/O with \ct{async} APIs.
+
+\columnbreak
+
+\section{RunLoop — sleeps when idle, wakes for work}
+Every thread has one; the \textbf{main} run loop is started by \ct{UIApplicationMain}, a
+\textbf{secondary} thread must run its own — and with no source or timer it exits at once. A
+GCD worker never runs it, so a \ct{Timer.scheduledTimer} made there never
+fires\unverified. \textbf{Modes} filter sources: a scroll switches main to
+\emph{tracking} mode, so a timer in \ct{.default} stalls — add it for \ct{.common}.
+Touch a \ct{RunLoop} only from its own thread.
+
+\section{Example — the three you will write}
+\begin{lstlisting}[language=SwiftSheet]
+import Synchronization                      // iOS 18
+final class Counter: Sendable {             // no @unchecked
+  private let n = Mutex(0)
+  func next() -> Int { n.withLock { $0 += 1; return $0 } } }
+final class Store {                         // reader-writer
+  private let q = DispatchQueue(label: "store",
+                                attributes: .concurrent)
+  private var d: [String: Int] = [:]
+  func get(_ k: String) -> Int? { q.sync { d[k] } }
+  func set(_ k: String, _ v: Int) {
+    q.async(flags: .barrier) { self.d[k] = v } } }
+let sem = DispatchSemaphore(value: 3)       // max 3 at once
+for job in jobs {                           // bg thread, not main
+  sem.wait()                                // wait BEFORE dispatch
+  work.async { defer { sem.signal() }; run(job) } }
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``Semaphore(1) = mutex'' — no owner: any thread signals, no priority boost.}
+  \trap{\ct{sem.wait()} \emph{inside} 15 queued blocks parks up to 12 workers → GCD
+        spawns more (thread explosion). On main: hang → watchdog.}
+  \trap{\ct{\&m} on a \ct{var m = pthread\_mutex\_t()}: valid for that call only — the lock
+        can move. Use \ct{OSAllocatedUnfairLock} / \ct{Mutex}.}
+  \trap{Appending to one array from concurrent blocks = data race (crash, lost items).}
+  \trap{A lock or semaphore held across \ct{await}: the task may resume on another thread.}
+  \trap{\ct{sleep(2)} blocks the thread; \ct{Task.sleep(for:)} suspends the task.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Short and sync $\to$ Mutex. Has \texttt{await} $\to$ actor. Counting $\to$ semaphore.
+Many readers $\to$ barrier. Owners beat inversion.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} concurrency · actors-reentrancy-isolation
+(actor vs Mutex) · concurrency-patterns (deadlock, CAS) · operationqueue-deep · swift-time-clock}
+
+\end{document}

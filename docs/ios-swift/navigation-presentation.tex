@@ -1,0 +1,191 @@
+% navigation-presentation.tex — push (navigation stack) vs present (modal chain), styles,
+% dismissal rules, sheets, SwiftUI NavigationStack, deep links.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/uikit/uiviewcontroller/dismiss(animated:completion:) (the
+%     presenting VC is responsible; dismissing lower in the chain removes everything above)
+%   developer.apple.com/documentation/uikit/uimodalpresentationstyle (.automatic → .pageSheet, iOS 13)
+%   developer.apple.com/documentation/uikit/uisheetpresentationcontroller (iOS 15; custom detents iOS 16)
+%   developer.apple.com/documentation/uikit/uiadaptivepresentationcontrollerdelegate (DidDismiss: user only)
+%   developer.apple.com/documentation/swiftui/navigationstack (iOS 16) · navigationdestination(item:)
+%     (iOS 17) · presentationdetents (iOS 16) · navigationtransition (zoom, iOS 18)
+% @labels: area=ios-swift kind=api platform=ios topic=ui discussion=66
+% @tags: uinavigationcontroller, push-vs-present, dismiss, presentation-chain, modalpresentationstyle, pagesheet, sheetpresentationcontroller, detents, ismodalinpresentation, navigationstack, navigationpath, deep-links
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,override,super,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false,AnyObject,Void,String,Bool},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  vc/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5.5mm, minimum width=17mm},
+  navc/.style={draw=sheetBlue, thick, dashed, rounded corners=3pt, inner sep=4pt},
+  modc/.style={draw=sheetOrange, thick, dashed, rounded corners=3pt, inner sep=4pt},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  rel/.style={->, thick, draw=sheetOrange},
+  back/.style={->, thin, dashed, draw=sheetGrey},
+  pt/.style={font=\bfseries\small, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Navigation \& presentation — push vs present}{ios-swift · folio}
+
+\oneliner{\textbf{Push} adds a VC to a \texttt{UINavigationController}'s
+\texttt{viewControllers} array (drill-down, back button, pop). \textbf{Present} starts a
+separate \textbf{presentation chain} linked by \texttt{presentedViewController} /
+\texttt{presentingViewController} (a modal task you finish with \texttt{dismiss}). The
+\texttt{modalPresentationStyle} decides whether the presenter's view leaves the screen —
+and so whether it gets \texttt{viewWillDisappear}/\texttt{viewWillAppear}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── navigation stack ──
+  \node[pt] at (-0.2,3.35) {\textcolor{sheetBlue}{push}: one nav controller, an array};
+  \node[vc] (r) at (1,0.4) {[0] InboxVC (root)};
+  \node[vc] (l) at (1,1.05) {[1] ThreadVC};
+  \node[vc, draw=sheetGreen!70!black, fill=sheetGreen!12] (d) at (1,1.7) {[2] MessageVC};
+  \node[vc, dashed, draw=sheetGrey, fill=white] (n) at (1,2.55) {DetailVC};
+  \node[navc, fit=(r)(l)(d), label={[lbl, text=sheetBlue]below:\texttt{viewControllers}; last = \texttt{topViewController}}] {};
+  \draw[hot] (n.east) to[out=0, in=0, looseness=1.8] node[lbl, right]{push} (d.east);
+  \draw[back] (d.west) to[out=180, in=180, looseness=1.8] node[lbl, left=2pt]{pop /\\swipe\\back} (n.west);
+  \node[lbl, anchor=west, text width=33mm, align=left] at (2.95,1.3)
+    {\texttt{popToRootViewController}\\\texttt{popToViewController(\_:)}\\\texttt{setViewControllers(\_:animated:)}\\ = deep link in one step.\\
+     Same bar, back button free;\\VC below stays \emph{in} the stack\\(its view is removed → it gets\\Will/DidDisappear).};
+  % separator
+  \draw[sheetGrey!40] (6.6,3.5) -- (6.6,-0.35);
+  % ── presentation chain ──
+  \node[pt] at (6.8,3.35) {\textcolor{sheetOrange}{present}: a chain of presenters};
+  \node[vc, minimum width=19mm] (a) at (7.9,1.3) {Nav(InboxVC…)};
+  \node[lbl] at (7.9,0.25) {\textbf{A} presenting\\(tab/nav root that\\\emph{owns} the context)};
+  \node[vc, minimum width=19mm] (b1) at (11.0,1.0) {EditVC};
+  \node[vc, minimum width=19mm] (b2) at (11.0,1.65) {PickerVC};
+  \node[modc, fit=(b1)(b2), label={[lbl, text=sheetOrange]below:\textbf{B} = modal nav with its OWN stack}] (b) {};
+  \node[vc, minimum width=15mm, draw=sheetRed, fill=sheetRed!8] (c) at (14.2,1.3) {\textbf{C} alert};
+  \draw[rel] (a.north) to[out=45,in=150] node[lbl, above]{\texttt{presentedViewController}} (b.north west);
+  \draw[back] (b.west) -- node[lbl, below=3pt, pos=0.5]{\texttt{presenting…}} (a.east);
+  \draw[rel] (b.north east) to[out=30,in=120] node[lbl, above]{presented} (c.north);
+  \draw[back] (c.west) -- (b.east);
+  \node[lbl, anchor=west, text width=40mm, align=left, text=sheetRed] at (12.6,0.2)
+    {\texttt{A.dismiss} → B \textbf{and} C go\\\texttt{C.dismiss} → only C (forwarded\\to its presenter B)};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Push} needs a container: \texttt{navigationController} is \texttt{nil} in a
+        bare modal — present a \texttt{UINavigationController} wrapping it.
+  \item \textbf{Who presents?} UIKit walks up to the context-defining VC: from a child, the
+        modal's \texttt{presentingViewController} is the nav/tab controller, not the child.
+  \item \textbf{Dismiss rule} (Apple): the \emph{presenting} VC is responsible. Calling
+        \texttt{dismiss} on the presented VC forwards to its presenter; calling it lower in
+        the chain dismisses its presented child \emph{and everything above}.
+  \item One presented VC per presenter, presenter in the window — else a warning and
+        \textbf{nothing} shows. \texttt{visibleViewController} includes a modal.
+  \item \textbf{Sheets} (iOS 15+): \texttt{sheetPresentationController} ·
+        \texttt{.detents = [.medium(), .large()]} (\texttt{.custom} iOS 16) ·
+        \texttt{prefersGrabberVisible}; \\ \texttt{largestUndimmedDetentIdentifier} keeps the
+        presenter usable.
+  \item \textbf{Swipe-down}: \texttt{isModalInPresentation = true} blocks it →
+        \texttt{presentationControllerDidAttemptToDismiss}. \texttt{presentationController\-DidDismiss}
+        fires only for \emph{user} (swipe) dismissal, never for your \texttt{dismiss()}.
+\end{itemize}
+
+\section{modalPresentationStyle}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{21mm}>{\raggedright\arraybackslash}p{33mm}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{9mm}@{}}
+\toprule
+\textbf{Style} & \textbf{Looks like} & \textbf{pres. dis\-appears} & \textbf{swipe close} \\
+\midrule
+\texttt{.automatic} & iOS 13+ default; → \texttt{.pageSheet} & no & yes \\
+\texttt{.pageSheet} & card; presenter shrinks behind & no & yes \\
+\texttt{.formSheet} & centred box (iPad) & no & yes \\
+\texttt{.fullScreen} & presenter view \emph{removed} & \textbf{yes} & no \\
+\texttt{.overFullScreen} & covers all, presenter stays & no & no \\
+\texttt{.overCurrentCtx} & over a context-defining VC & no & no \\
+\texttt{.popover} & iPad bubble; sheet on iPhone & no & tap out \\
+\bottomrule
+\end{tabular}}
+
+\section{Example — push, present, delegate back}
+\begin{lstlisting}[language=SwiftSheet]
+protocol EditDelegate: AnyObject { func didSave(_ i: Item) }
+class EditVC: UIViewController { weak var delegate: EditDelegate? }
+class ListVC: UIViewController, EditDelegate {
+  func open(_ i: Item) {                   // push: same stack
+    navigationController?
+      .pushViewController(DetailVC(i), animated: true) }
+  func edit(_ i: Item) {                   // present: new chain
+    let e = EditVC(i); e.delegate = self
+    let nav = UINavigationController(rootViewController: e)
+    nav.sheetPresentationController?.detents = [.medium()]
+    nav.isModalInPresentation = true       // no swipe-close
+    present(nav, animated: true) }
+  func didSave(_ i: Item) {                // presenter closes it
+    dismiss(animated: true); reload() } }  // no viewWillAppear!
+\end{lstlisting}
+
+\columnbreak
+
+\section{SwiftUI}
+\begin{itemize}
+  \item \texttt{NavigationStack(path: \$path)} (iOS 16, replaces \texttt{NavigationView}):
+        \texttt{NavigationLink(value:)} pushes a \emph{value};
+        \texttt{.navigationDestination(for: T.self)} maps it — \textbf{once per type}, on a
+        persistent ancestor (not inside a lazy \texttt{List} row).
+  \item \texttt{NavigationPath} = type-erased \texttt{Hashable} list (mixed types);
+        \texttt{[Route]} if one type. Push \texttt{append}, pop-to-root
+        \texttt{removeLast(path.count)}, deep link = assign the whole path.
+        \texttt{Codable} routes → \texttt{path.codable} → \texttt{@SceneStorage}.
+  \item Modals: \texttt{.sheet(item:)} (prefer over \texttt{isPresented} + separate state —
+        stale item race), \texttt{.fullScreenCover}, \texttt{.presentationDetents}.
+        \texttt{@Environment(\textbackslash.dismiss)} closes the \emph{nearest} context:
+        inside a pushed view it \textbf{pops}, it does not close the sheet. One
+        \texttt{NavigationStack} per tab; never nest stacks.
+\end{itemize}
+
+\section{Deep links}
+URL scheme → \texttt{scene(\_:openURLContexts:)}; universal link →
+\texttt{scene(\_:continue:)}; on a \textbf{cold launch} both arrive in
+\texttt{willConnectTo}'s \texttt{connectionOptions} instead. Parse to a route enum, then
+\texttt{setViewControllers} / assign \texttt{path} (SwiftUI: \texttt{.onOpenURL}).
+
+\section{Traps}
+\begin{itemize}
+  \trap{iOS 13 \texttt{.pageSheet} default: the list under a sheet gets \textbf{no}
+        \texttt{viewWillAppear} on dismiss — refresh via delegate/closure.}
+  \trap{\texttt{push} from a VC presented without a nav → \texttt{nil} optional chain, silent no-op.}
+  \trap{Delegate: \texttt{weak var} + \texttt{protocol: AnyObject} (weak needs a class type,
+        and is \texttt{Optional} because it auto-nils). Closures: \texttt{[weak self]}.}
+  \trap{Coordinator must drop its child coordinator on the \emph{back-swipe} pop too —
+        detect it in \texttt{UINavigationControllerDelegate.didShow}.}
+\end{itemize}
+
+\section{Timeline}
+\begin{tikzpicture}[sheet]
+  \tikzset{yr/.style={font=\bfseries\scriptsize, text=sheetBlue},
+           ev/.style={font=\tiny, align=center, text=black!85, text width=15mm, anchor=north}}
+  \draw[thick, sheetGrey, ->] (0,0) -- (8.3,0);
+  \foreach \x/\y/\t in {
+      0.8/iOS 13/{\texttt{.automatic}\\= card sheet,\\swipe to close},
+      2.45/iOS 15/{sheet\\detents (UIKit)},
+      4.1/iOS 16/{\texttt{NavigationStack}\\\texttt{.presentation-}\\\texttt{Detents}},
+      5.75/iOS 17/{\texttt{navigation-}\\\texttt{Destination(item:)}},
+      7.4/iOS 18/{zoom\\transition}}{
+    \fill[sheetBlue] (\x,0) circle (0.6mm);
+    \node[yr, above=1pt] at (\x,0) {\y};
+    \node[ev] at (\x,-0.12) {\t};
+  }
+\end{tikzpicture}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} app \& VC lifecycle · Coordinator ·
+retain cycles \& \texttt{weak} · delegation vs closures · SwiftUI state · state restoration}
+
+\end{document}
