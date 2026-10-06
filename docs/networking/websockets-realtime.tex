@@ -1,0 +1,201 @@
+% websockets-realtime.tex — polling / long polling / SSE / WebSocket / push compared, the WebSocket
+% handshake + frame layout (drawn), heartbeats, URLSessionWebSocketTask, reconnect + resubscribe +
+% gap fill, ordering + dedup, iOS backgrounding, server fan-out, MQTT over WebSocket.
+% Sources (checked 2026-10-06):
+%   RFC 6455 (rfc-editor.org): handshake example key/accept values; client MUST mask; control
+%     frames ≤ 125 bytes; opcodes (%x9 ping, %xA pong, %x8 close); 1006 reserved, never sent
+%   developer.apple.com/documentation/foundation/urlsessionwebsockettask (iOS 13; follows RFC
+%     6455; delegate auth before the handshake) · /maximummessagesize (receive fails past it)
+%   developer.apple.com/documentation/usernotifications/sending-notification-requests-to-apns
+%     (payload max 4 KB; best-effort, may reorder, one stored per bundle ID)
+%   Not in those sources, marked \unverified: maximumMessageSize's 1 MB default.
+% @labels: area=networking kind=concept platform=general topic=networking,protocols,system-design discussion=233
+% @tags: websocket, sse, long-polling, heartbeat, reconnect-backoff, jitter, gap-fill, dedup, urlsessionwebsockettask, pub-sub-backplane, mqtt-over-websocket
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,while,switch,case,default,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{WebSockets \& realtime on iOS}{networking · folio}
+
+\oneliner{A \textbf{WebSocket} (RFC 6455) is an HTTP/1.1 request that \textbf{upgrades} (101) into a
+full-duplex stream of small \textbf{frames} on the same TCP connection. It gives foreground realtime;
+it does \emph{not} give delivery across reconnects, ordering across connections, or life in the
+background — you build \textbf{heartbeats}, \textbf{resubscribe}, \textbf{gap fill} and \textbf{dedup},
+and use \textbf{APNs} when the app is not running.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    m/.style={font=\tiny, inner sep=1pt, align=left, fill=white},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    bit/.style={draw=sheetGrey, minimum height=5mm, font=\tiny, inner sep=0pt, align=center, fill=sheetBlue!6},
+    sq/.style={draw=sheetGrey, minimum width=5.5mm, minimum height=4mm, font=\tiny, inner sep=0pt}]
+  % ---------- handshake ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.3,3.75) {Opening handshake, then frames};
+  \node[box, font=\scriptsize, minimum width=12mm] at (0.3,3.3) {client};
+  \node[box, font=\scriptsize, minimum width=12mm] at (6.7,3.3) {server};
+  \draw[sheetGrey, thick] (0.3,3.05) -- (0.3,-0.2);
+  \draw[sheetGrey, thick] (6.7,3.05) -- (6.7,-0.2);
+  \draw[hot, draw=sheetBlue] (0.3,2.25) -- (6.7,2.25);
+  \node[m, anchor=south west, font=\tiny\ttfamily] at (0.45,2.27)
+    {GET /chat HTTP/1.1\\Upgrade: websocket · Connection: Upgrade\\Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ\hbox{=}\hbox{=}\\Sec-WebSocket-Version: 13 · Authorization: Bearer …};
+  \draw[hot, draw=sheetGreen] (6.7,1.6) -- (0.3,1.6);
+  \node[m, anchor=south east, font=\tiny\ttfamily, align=right] at (6.55,1.62)
+    {HTTP/1.1 101 Switching Protocols\\Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo\hbox{=}};
+  \node[l, text=sheetGreen!50!black, anchor=west, align=left] at (0.4,1.38)
+    {Accept = base64(SHA-1(Key + fixed GUID)): a WS server answered — \emph{not} auth};
+  \draw[hot] (0.3,1.05) -- node[m, above, pos=0.3]{text frame (masked)} (6.7,1.05);
+  \draw[hot] (6.7,0.78) -- node[m, above, pos=0.3]{binary frame (unmasked)} (0.3,0.78);
+  \draw[hot, draw=sheetOrange] (0.3,0.51) -- node[m, above, pos=0.7]{ping} (6.7,0.51);
+  \draw[hot, draw=sheetOrange] (6.7,0.26) -- node[m, above, pos=0.7]{pong} (0.3,0.26);
+  \draw[hot, draw=sheetRed] (0.3,0.0) -- node[m, below, pos=0.5]{close 1000 $\leftrightarrow$ close echo, then TCP FIN} (6.7,0.0);
+  \node[l, text=sheetGrey, rotate=90] at (0.05,2.1) {HTTP};
+  \node[l, text=sheetGrey, rotate=90] at (0.05,0.55) {WebSocket};
+
+  \draw[sheetGrey!40] (7.2,3.9) -- (7.2,-0.45);
+
+  % ---------- frame layout ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (7.35,3.75) {Frame header (2–14 bytes)};
+  \node[bit, minimum width=3mm] (fin) at (7.55,3.15) {F\\I\\N};
+  \node[bit, minimum width=7mm, anchor=west] (rsv) at (fin.east) {RSV\\1–3};
+  \node[bit, minimum width=10mm, anchor=west, fill=sheetOrange!15] (op) at (rsv.east) {opcode\\4 bit};
+  \node[bit, minimum width=6mm, anchor=west] (mk) at (op.east) {MASK\\1};
+  \node[bit, minimum width=13mm, anchor=west] (len) at (mk.east) {payload len\\7 bit};
+  \node[bit, minimum width=14mm, anchor=west, fill=black!4] (ext) at (len.east) {ext. len\\0 / 16 / 64};
+  \node[bit, minimum width=14mm, anchor=west, fill=sheetRed!8] (key) at (ext.east) {masking key\\0 / 32 bit};
+  \node[bit, minimum width=13mm, anchor=west, fill=sheetGreen!10] (pl) at (key.east) {payload …};
+  \node[l, anchor=north west, align=left, text width=90mm] at (7.35,2.8)
+    {opcode: \ct{0x1} text (UTF-8) · \ct{0x2} binary · \ct{0x0} continuation · \ct{0x8} close ·
+     \ct{0x9} ping · \ct{0xA} pong. Length 0–125 inline · 126 $\to$ 16-bit · 127 $\to$ 64-bit.
+     Client$\to$server frames \textbf{must} be masked (against proxy-cache poisoning); control frames
+     $\leq$ 125 B, never fragmented. Close codes: 1000 normal · 1001 going away · 1006 abnormal
+     (local only, never on the wire).};
+
+  % ---------- gap fill ----------
+  \begin{scope}[yshift=-1.8mm]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (7.35,1.75) {Reconnect $\to$ resubscribe $\to$ gap fill $\to$ dedup};
+  \foreach \s/\x in {41/7.65, 42/8.25} \node[sq, fill=sheetGreen!15] at (\x,1.15) {\s};
+  \node[l, text=sheetRed] at (8.95,1.15) {\textbf{drop}};
+  \foreach \s/\x in {43/9.65, 44/10.25} \node[sq, draw=sheetRed, dashed] at (\x,1.15) {\s};
+  \node[l, text=sheetRed] at (9.95,0.85) {missed};
+  \node[box, font=\tiny, anchor=west, inner sep=1.5pt, draw=sheetOrange, fill=sheetOrange!10] (rc) at (10.75,1.15)
+     {open · auth · \textbf{resubscribe}\\\ct{since: 42}};
+  \foreach \s/\x in {43/13.75, 44/14.35, 45/14.95} \node[sq, fill=sheetOrange!15] at (\x,1.15) {\s};
+  \node[sq, fill=sheetGrey!25] at (15.55,1.15) {45};
+  \node[sq, fill=sheetGreen!15] at (16.15,1.15) {46};
+  \node[l, text=sheetOrange!80!black] at (14.35,0.85) {replayed from the log};
+  \node[l, text=sheetGrey] at (15.55,1.47) {dup: drop};
+  \node[l, text=sheetGreen!50!black] at (16.15,0.85) {live};
+  \node[l, anchor=north west, align=left, text width=90mm] at (7.35,0.62)
+    {The server assigns a \textbf{seq per channel}; the client persists \ct{lastSeq}. seq $=$ last + 1
+     $\to$ apply · seq $\leq$ last $\to$ \textbf{drop} (duplicate) · seq $>$ last + 1 $\to$ \textbf{gap}:
+     fetch the range over REST, or re-snapshot if the log no longer has it. SSE has it built in:
+     \ct{id:} lines + the \ct{Last-Event-ID} header on reconnect.};
+  \end{scope}
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Choosing the transport}
+{\footnotesize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{23mm}@{}}
+\toprule
+& \textbf{direction} & \textbf{latency} & \textbf{battery} & \textbf{infra / catch} \\ \midrule
+polling & pull & = interval & worst: radio per poll & plain HTTP, cacheable \\
+long poll & pull, held & near real-time & a request per batch & held requests, timeouts \\
+SSE & down only & real-time & one stream & auto-resume; proxies buffer \\
+WebSocket & \textbf{duplex} & lowest & foreground only & LB: Upgrade + long idle \\
+APNs & down & seconds, best-effort & best (system link) & throttled; 4 KB payload \\
+\bottomrule
+\end{tabular}}\par
+Pick the simplest that meets latency: a feed $\to$ SSE or polling; chat, collaboration, games
+$\to$ WebSocket; ``tell me while I'm not running'' $\to$ APNs.
+
+\hd{How it works}
+\begin{itemize}
+  \item Auth happens at the \textbf{handshake}: \ct{URLSessionWebSocketTask} takes a
+        \ct{URLRequest}, so set \ct{Authorization} (browsers can't — they use a query token or a
+        first message). After 101 there are no headers: an expired token needs an in-band
+        re-auth or a reconnect.
+  \item \textbf{Heartbeats}: NATs silently drop idle mappings; a half-open socket looks
+        \emph{open} until a write fails, minutes later. \ct{sendPing} every $\sim$20–30\,s; no pong
+        in time $\to$ dead, reconnect. App-level heartbeats also prove the server \emph{app} lives.
+  \item \textbf{Reconnect}: exponential backoff + \textbf{full jitter}, reset after a stable period;
+        also on \ct{NWPathMonitor} ``satisfied'' and on foreground. On open: auth $\to$
+        \textbf{resubscribe} (the new server knows nothing) $\to$ gap fill $\to$ flush outbox.
+  \item \textbf{Ordering}: TCP orders one connection only; across reconnects, servers and
+        backplanes you need the server seq. Delivery is at-least-once $\to$ idempotent handlers,
+        dedupe by message id.
+  \item \textbf{Background}: iOS suspends the app seconds after it leaves; the socket dies with it.
+        Close cleanly inside \ct{beginBackgroundTask}; deliver via \textbf{APNs}; reconnect + gap
+        fill on foreground. (PushKit VoIP is for calls only.)
+\end{itemize}
+
+\hd{Example — URLSessionWebSocketTask (iOS 13)}
+\begin{lstlisting}[language=SwiftSheet]
+var req = URLRequest(url: URL(string: "wss://api.example.com/ws")!)
+req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+let ws = session.webSocketTask(with: req)
+ws.resume()
+try await ws.send(.string(#"{"op":"sub","ch":"room.7","since":42}"#))
+while true {                             // receive() = ONE message
+  switch try await ws.receive() {        // throws when it closes
+  case .string(let s): handle(s)
+  case .data(let d):   handle(d)
+  @unknown default:    break
+  }
+}
+// heartbeat timer: ws.sendPing { error in /* nil = pong */ }
+// leaving: ws.cancel(with: .goingAway, reason: nil)
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Server side — fan-out}
+Sockets are \textbf{stateful}: each gateway holds its connections in memory. A message published
+anywhere must reach sockets on \emph{every} gateway $\to$ a \textbf{pub/sub backplane} (Redis
+pub/sub, NATS, Kafka, an MQTT broker): gateways subscribe to the channels their clients want and push
+down the sockets. The WebSocket itself pins to one gateway, so stickiness only matters for
+multi-request fallbacks (long polling). Budget per-connection memory; bound each client's send
+buffer — a slow consumer gets dropped, not buffered forever. A deploy closes thousands of sockets
+at once: send close 1001, drain, and rely on client jitter to avoid a reconnect storm.
+
+\hd{MQTT over WebSocket}
+MQTT packets carried in binary frames (\ct{Sec-WebSocket-Protocol: mqtt}): browsers can't open raw
+TCP, and some networks allow only 443. You get topics + wildcards, QoS 0/1/2 (QoS 1 $=$ duplicates
+$\to$ idempotent), retained last value, Last Will — the reconnect/state problems above, already
+solved by the broker. A native iOS client can use MQTT over TLS directly.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Not re-arming \ct{receive()} (completion API): one message, then silence.}
+  \trap{``The socket is open, so the peer is alive'' — half-open TCP. Heartbeat with a timeout.}
+  \trap{Reconnect without \textbf{resubscribe} + \ct{since}: connected, and silently missing messages.}
+  \trap{Fixed-delay reconnect: every client returns in the same second after a server blip.}
+  \trap{Keeping a socket in the background ``with a background mode'': not allowed for this — push.}
+  \trap{\ct{Sec-WebSocket-Accept} is not security; auth the handshake, use \ct{wss://} (TLS).}
+  \trap{Default \ct{maximumMessageSize} is 1\,MB\unverified{} — a bigger message fails the receive.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Upgrade, heartbeat, backoff with jitter, resubscribe, fill the gap, drop the dup — and
+push when you're asleep.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} poor-network-engineering (outbox, backoff) ·
+push-notifications · background-execution · sync-engines · http-deep}
+
+\end{document}

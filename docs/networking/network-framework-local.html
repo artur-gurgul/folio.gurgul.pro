@@ -1,0 +1,88 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Network.framework on the LAN — Bonjour, Local Network — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/networking/network-framework-local.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">190</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area current" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Network.framework on the LAN — Bonjour, Local Network</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">networking · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> <strong>Network.framework</strong> (iOS 12) is Apple’s socket API: an <code>NWConnection</code> is one
+flow driven by a <strong>state machine</strong> on your queue, an <code>NWListener</code> accepts flows and can
+<strong>advertise</strong> a Bonjour service, an <code>NWBrowser</code> <strong>discovers</strong> services as endpoints the
+connection resolves later. Local-network traffic is gated by the <strong>Local Network</strong> privacy
+alert (iOS 14) — with <strong>no API to read its state</strong>. iOS 26 adds async
+<code>NetworkConnection</code> / <code>NetworkListener</code> / <code>NetworkBrowser</code>.</p>
+<p class="sheet-tools"><a class="sheet-download" href="network-framework-local.pdf" download>Download PDF</a> <a href="network-framework-local.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/networking/network-framework-local.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="network-framework-local-fig1.svg" width="653" height="189" class="wide" alt="Network.framework on the LAN — Bonjour, Local Network — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">The classic API (iOS 12+)</span></h3>
+<ul>
+<li><strong><code>NWConnection</code></strong>: one flow to an <code>NWEndpoint</code> (<code>.hostPort</code>, Bonjour <code>.service</code>,  <code>.url</code>); inert until <code>start(queue:)</code>, every handler on that queue. TCP <code>receive</code>  returns <em>arbitrary chunks</em> — re-arm it after each; <code>receiveMessage</code> for UDP / framed.</li>
+<li><strong><code>NWParameters</code></strong>: <code>.tcp .udp .tls .dtls</code>, <code>.quic(alpn:)</code> (iOS 15). LAN knobs:  <code>requiredInterfaceType = .wifi</code>, <code>includePeerToPeer</code> (AWDL: peers with no shared AP),  <code>acceptLocalOnly</code> (listener).</li>
+<li><strong><code>NWListener</code></strong>: port <code>.any</code> <span class="math">→</span> <code>listener.port</code> once ready. Setting  <code>service</code> advertises it (a rename shows in <code>serviceRegistrationUpdateHandler</code>);  <code>newConnectionHandler</code> must <code>start</code> or <code>cancel</code> <em>each</em> connection.</li>
+<li><strong><code>NWBrowser</code></strong>: <code>.bonjour(type:domain:)</code> / <code>.bonjourWithTXTRecord</code>;  changes <code>.added</code> / <code>.removed</code> / <code>.changed</code> (TXT). A result is a <em>name</em>, not an IP.</li>
+<li><strong><code>NWProtocolFramer</code></strong> (iOS 13): your framing inside the stack (<code>handleInput</code> /  <code>handleOutput</code>, at <code>applicationProtocols[0]</code>). <strong>Multicast</strong>:  <code>NWConnectionGroup</code> + <code>NWMulticastGroup</code> (iOS 14).</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — advertise, discover, connect</span></h3>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">let</span> p <span class="hljs-operator">=</span> <span class="hljs-type">NWParameters</span>.tcp; p.includePeerToPeer <span class="hljs-operator">=</span> <span class="hljs-literal">true</span>
+<span class="hljs-keyword">let</span> listener <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> <span class="hljs-type">NWListener</span>(using: p)        <span class="hljs-comment">// port: .any</span>
+listener.service <span class="hljs-operator">=</span> .<span class="hljs-keyword">init</span>(name: <span class="hljs-string">&quot;Kitchen&quot;</span>, type: <span class="hljs-string">&quot;_demo._tcp&quot;</span>,
+                         txtRecord: <span class="hljs-type">NWTXTRecord</span>([<span class="hljs-string">&quot;model&quot;</span>: <span class="hljs-string">&quot;K1&quot;</span>]))
+listener.newConnectionHandler <span class="hljs-operator">=</span> { c <span class="hljs-keyword">in</span> c.start(queue: .main) }
+listener.start(queue: .main)                    <span class="hljs-comment">// registers + announces</span>
+<span class="hljs-keyword">let</span> browser <span class="hljs-operator">=</span> <span class="hljs-type">NWBrowser</span>(for: .bonjourWithTXTRecord(
+                  type: <span class="hljs-string">&quot;_demo._tcp&quot;</span>, domain: <span class="hljs-literal">nil</span>), using: p)
+browser.browseResultsChangedHandler <span class="hljs-operator">=</span> { results, <span class="hljs-keyword">_</span> <span class="hljs-keyword">in</span>
+  <span class="hljs-keyword">guard</span> <span class="hljs-keyword">let</span> r <span class="hljs-operator">=</span> results.first <span class="hljs-keyword">else</span> { <span class="hljs-keyword">return</span> }   <span class="hljs-comment">// r.metadata = TXT</span>
+  <span class="hljs-keyword">let</span> c <span class="hljs-operator">=</span> <span class="hljs-type">NWConnection</span>(to: r.endpoint, using: p) <span class="hljs-comment">// resolves later</span>
+  c.stateUpdateHandler <span class="hljs-operator">=</span> { <span class="hljs-keyword">if</span> <span class="hljs-keyword">case</span> .waiting(<span class="hljs-keyword">let</span> e) <span class="hljs-operator">=</span> <span class="hljs-variable">$0</span> { <span class="hljs-built_in">print</span>(e) } }
+  c.start(queue: .main) }
+browser.start(queue: .main)</code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">iOS 26 — structured concurrency (WWDC25 session 250)</span></h3>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">enum</span> <span class="hljs-title class_">Msg</span>: <span class="hljs-title class_ inherited__">Codable</span> { <span class="hljs-keyword">case</span> hello(<span class="hljs-type">String</span>), move(<span class="hljs-type">Int</span>) }
+<span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> <span class="hljs-type">NetworkListener</span> {                <span class="hljs-comment">// result-builder stack</span>
+  <span class="hljs-type">Coder</span>(<span class="hljs-type">Msg</span>.<span class="hljs-keyword">self</span>, using: .json) { <span class="hljs-type">TLS</span>() }  <span class="hljs-comment">// Codable framing</span>
+}.run { conn <span class="hljs-keyword">in</span>                            <span class="hljs-comment">// child task per peer</span>
+  <span class="hljs-keyword">for</span> <span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> (msg, <span class="hljs-keyword">_</span>) <span class="hljs-keyword">in</span> conn.messages { handle(msg) } }
+<span class="hljs-keyword">let</span> c <span class="hljs-operator">=</span> <span class="hljs-type">NetworkConnection</span>(to: .hostPort(host: <span class="hljs-string">&quot;printer.local&quot;</span>,
+          port: <span class="hljs-number">1029</span>)) { <span class="hljs-type">TLV</span> { <span class="hljs-type">TLS</span>() } }   <span class="hljs-comment">// type-length-value</span>
+<span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> c.send(data, type: <span class="hljs-number">1</span>)            <span class="hljs-comment">// waits for .ready</span></code></pre>
+<p>Cancelled with its task. <code>NetworkBrowser</code> returns endpoints for <strong>Bonjour</strong> or <strong>Wi-Fi
+Aware</strong> descriptors. The old API keeps working.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Wi-Fi Aware (iOS 26)</span></h3>
+<p>Peer-to-peer Wi-Fi, no access point, encrypted at the Wi-Fi layer. <code>WiFiAware</code>: <strong>pair once</strong> (DeviceDiscoveryUI / AccessorySetupKit), then <code>NetworkListener</code> / <code>NetworkBrowser</code> <code>.wifiAware(...)</code>; Info.plist <code>WiFiAwareServices</code>; entitlement <code>com.apple.developer.wifi-aware</code>.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Local Network privacy (iOS 14, macOS 15)</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>needs permission</strong></th><th><strong>does not</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>outgoing TCP to a LAN address</td><td>listen + <strong>accept</strong> TCP</td></tr>
+<tr><td>send UDP unicast / connect UDP</td><td>receive UDP unicast</td></tr>
+<tr><td>multicast + broadcast, both ways</td><td>non-<code>.local</code> names; LAN DNS / proxy</td></tr>
+<tr><td>resolve a <code>.local</code> name</td><td>WKWebView, Safari</td></tr>
+<tr><td>Bonjour register / browse / resolve</td><td>AirPlay, printing, AccessorySetupKit</td></tr>
+</tbody>
+</table></p>
+<p><strong>Local</strong> = Wi-Fi/Ethernet subnet, multicast, broadcast, <code>.local</code> — not cellular or VPN.</p>
+<ul>
+<li><strong>States</strong>: undetermined <span class="math">→</span> alert at the <strong>first local operation</strong> <span class="math">→</span>  allowed / denied (Settings). In the <strong>background</strong> while undetermined: silently denied,  not recorded.</li>
+<li><strong>Info.plist</strong>: <code>NSLocalNetworkUsageDescription</code> (alert text) + <code>NSBonjourServices</code>  (<code>_demo._tcp</code>) — the <em>app’s</em> plist, even for extensions.</li>
+<li><strong><code>com.apple.developer.networking.multicast</code></strong> (iOS, requested from Apple): raw  multicast/broadcast, arbitrary or <em>all</em> service types. Declared types don’t need it.</li>
+<li><strong>Denied</strong>: browser <code>.waiting</code> with DNS error <code>-65570</code> (PolicyDenied); connection  <code>.waiting</code>, <code>unsatisfiedReason</code> <code>.localNetworkDenied</code>. <strong>No status API</strong> —  infer it; trigger the alert on purpose: connect a UDP socket to a local address.</li>
+<li><strong>Background</strong>: suspended <span class="math">→</span> sockets may be reclaimed; rebuild on foreground.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">Tearing down on <code>.waiting</code> — it retries; <code>.failed</code> is final.</li>
+<li class="trap">“TCP delivers messages” — bytes. Length-prefix, framer, or iOS 26 <code>TLV</code> / <code>Coder</code>.</li>
+<li class="trap">TLS to <code>kitchen.local</code>: no public CA issues it — PSK or pin its self-signed cert.</li>
+<li class="trap">Empty browse: type not in <code>NSBonjourServices</code>, permission denied, or no  <code>includePeerToPeer</code> for an AWDL-only peer.</li>
+<li class="trap">Storing the device IP — DHCP moves it. Store the <em>service name</em>; re-resolve.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<p><strong>“Listener advertises, browser finds names, connection resolves; the alert gates all but
+<em>accept</em>. Waiting retries, failed is final.”</strong></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> tcp-udp-quic · dns-for-apps ·
+poor-network-engineering · ble-apple-ecosystem · tls-pki · background-execution · urlsession-networking</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=networking" title="area">networking</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=ios" title="platform">ios</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=networking" title="topic">networking</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=platform-apis" title="topic">platform-apis</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=protocols" title="topic">protocols</a></li><li class="sheet-tag"><a href="/folios.html?tag=network-framework">network-framework</a></li><li class="sheet-tag"><a href="/folios.html?tag=nwconnection">nwconnection</a></li><li class="sheet-tag"><a href="/folios.html?tag=nwlistener">nwlistener</a></li><li class="sheet-tag"><a href="/folios.html?tag=nwbrowser">nwbrowser</a></li><li class="sheet-tag"><a href="/folios.html?tag=bonjour">bonjour</a></li><li class="sheet-tag"><a href="/folios.html?tag=dns-sd">dns-sd</a></li><li class="sheet-tag"><a href="/folios.html?tag=mdns">mdns</a></li><li class="sheet-tag"><a href="/folios.html?tag=local-network-privacy">local-network-privacy</a></li><li class="sheet-tag"><a href="/folios.html?tag=nwprotocolframer">nwprotocolframer</a></li><li class="sheet-tag"><a href="/folios.html?tag=multicast-entitlement">multicast-entitlement</a></li><li class="sheet-tag"><a href="/folios.html?tag=networkconnection">networkconnection</a></li><li class="sheet-tag"><a href="/folios.html?tag=wifi-aware">wifi-aware</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=networking%2Fnetwork-framework-local.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/226">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

@@ -1,0 +1,190 @@
+% resumable-uploads.tex — large uploads from a phone: resumable (server-tracked offset) vs chunked /
+% multipart (independent parts), the four protocols you meet (IETF resumable-upload draft, tus 1.0,
+% S3 multipart, Google Cloud Storage resumable), URLSession on iOS 17+ (automatic resume, resume data),
+% background sessions (file-only), progress, integrity (checksums), retries, the server contract.
+% Picture: the chunk / upload state machine + "sent is not stored" byte bar.
+% Sources (checked 2026-09-25): datatracker.ietf.org/doc/draft-ietf-httpbis-resumable-upload/ (-12,
+% 6 Jul 2026); developer.apple.com/videos/play/wwdc2023/10006; developer.apple.com/documentation/
+% foundation/urlsession/uploadtask(withresumedata:); developer.apple.com/documentation/foundation/
+% downloading-files-in-the-background; tus.io/protocols/resumable-upload; docs.aws.amazon.com/AmazonS3/
+% latest/userguide/qfacts.html + checking-object-integrity.html + API_CompleteMultipartUpload.html;
+% docs.cloud.google.com/storage/docs/performing-resumable-uploads.
+% NOT repeated: background URLSession relaunch mechanics (ios-platform/background-execution.tex).
+% @labels: area=networking kind=concept platform=general topic=networking,protocols discussion=229
+% @tags: resumable-upload, chunked-upload, tus, s3-multipart, gcs-resumable, upload-offset, background-urlsession, resume-data, checksums, progress, retries
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,for,in,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2}
+\lstdefinelanguage{HTTPSheet}{
+  morekeywords={POST,HEAD,PATCH,DELETE,PUT},
+  sensitive=true, morecomment=[l]{\#},
+  literate={->}{{\hbox{-}\hbox{>}}}2 {<-}{{$\leftarrow$}}1 {--}{{\hbox{-}\hbox{-}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{Resumable \& chunked uploads — from a phone that keeps losing signal}{networking · folio}
+
+\oneliner{A big upload over a mobile network \emph{will} be interrupted. \textbf{Resumable}: the server
+keeps the bytes it has under an \textbf{upload URL} and reports its \textbf{offset}; after a drop the client
+asks \emph{``where were we?''} and continues from there. \textbf{Chunked / multipart}: the file is split into
+parts that are sent, retried and \textbf{checksummed} independently, then \textbf{assembled} by an explicit
+\emph{complete}. On iOS a \textbf{background URLSession} hands the transfer to a system daemon —
+\textbf{from a file}, never from \ct{Data}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    st/.style={box, font=\scriptsize, minimum height=6.5mm, inner sep=2pt, align=center},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    ok/.style={->, thick, draw=sheetGreen!70!black},
+    bad/.style={->, thick, draw=sheetRed},
+    nx/.style={->, thick, draw=sheetBlue}]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.3,3.7) {Upload state machine};
+  \node[st, draw=sheetGrey, fill=black!4] (idle) at (0.4,2.45) {queued\\\tiny file on disk};
+  \node[st] (cr) at (2.75,2.45) {CREATE\\\tiny POST $\to$ upload URL};
+  \node[st, draw=sheetOrange, fill=sheetOrange!10] (up) at (6.4,2.45) {SEND CHUNK $k$\\\tiny from server offset};
+  \node[st, draw=sheetRed, fill=sheetRed!7] (int) at (6.4,0.55) {INTERRUPTED\\\tiny drop · kill · 5xx};
+  \node[st] (q) at (3.3,0.55) {QUERY OFFSET\\\tiny HEAD $\to$ \ct{Upload-Offset}};
+  \node[st] (cp) at (9.5,2.45) {COMPLETE\\\tiny last chunk / Complete};
+  \node[st, draw=sheetGreen, fill=sheetGreen!12] (done) at (11.95,2.45) {DONE\\\tiny hash verified};
+  \node[st, draw=sheetGrey, fill=black!4] (ab) at (11.95,0.55) {ABORTED\\\tiny DELETE · expiry GC};
+  \draw[nx] (idle) -- (cr);
+  \draw[nx] (cr) -- node[l, above]{201 / 104\\+ \ct{Location}} (up);
+  \draw[ok] (up) edge[loop above, looseness=5, in=60, out=120] node[l, above, text=sheetGreen!50!black]
+     {ack: offset += len, next $k$ · checksum mismatch: resend $k$} (up);
+  \draw[nx] (up) -- node[l, above]{last byte} (cp);
+  \draw[ok] (cp) -- (done);
+  \draw[bad] (up) -- node[l, right, text=sheetRed]{network error} (int);
+  \draw[nx] (int) -- node[l, above]{backoff} node[l, below]{+ jitter} (q);
+  \draw[nx] ([xshift=0.5cm]q.north) -- node[l, anchor=south east, align=right, pos=0.5, xshift=-2pt]{resume from\\the \emph{server's}\\offset} (up.south west);
+  \draw[bad] (q.north -| cr.south) -- node[l, left, text=sheetRed, align=right]{404 / 410:\\expired $\to$\\create again} (cr.south);
+  \draw[->, thick, dashed, draw=sheetGrey] (int) -- node[l, above]{user cancels} (ab);
+  \node[l, anchor=west, align=left, text=sheetBrown] at (-0.3,0.55) {persist upload URL\\+ state: survives\\a kill / relaunch};
+  % byte bar
+  \draw[sheetGrey!40] (13.0,3.8) -- (13.0,0.2);
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (13.1,3.7) {Sent $\neq$ stored};
+  \fill[sheetGreen!45] (13.2,2.8) rectangle (15.2,3.15);
+  \fill[sheetOrange!45] (15.2,2.8) rectangle (15.9,3.15);
+  \draw[sheetGrey] (13.2,2.8) rectangle (17.2,3.15);
+  \node[l, anchor=north west, align=left] at (13.15,2.75) {\textcolor{sheetGreen!50!black}{\textbf{0–6 MB}: server has it}\\
+     \textcolor{sheetOrange!80!black}{\textbf{6–7 MB}: sent, lost in flight}\\
+     client counter says 7 MB $\to$ \textbf{ask}:\\HEAD $\to$ \ct{Upload-Offset: 6291456}\\resume at \textbf{6 MB}, not 7};
+  \node[l, anchor=north west, align=left, text=sheetRed] at (13.15,1.1) {send from the local counter\\= a hole or a 409 Conflict};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Why}: cells drop, NAT rows expire, the app is killed — restarting 500 MB at 90\,\%
+        burns time, battery and data.
+  \item \textbf{Resumable} = one sequential stream with a \textbf{server-authoritative offset}
+        (IETF draft, tus, GCS). \textbf{Multipart} = N parts, any order, \textbf{in parallel},
+        assembled at the end (S3). Both need an \textbf{upload id/URL persisted} on the device.
+  \item \textbf{Integrity}: a checksum per chunk (tus \ct{Upload-Checksum} $\to$ 460 on mismatch;
+        S3 \ct{x-amz-checksum-*}, CRC64NVME default) + a whole-file hash checked at
+        \emph{complete}. Hash first $\to$ server can \textbf{dedupe} (already have it: skip).
+  \item \textbf{Retries}: exponential backoff + jitter; on every resume re-read the offset. Chunk
+        size trades request overhead against bytes re-sent after a failure.
+  \item \textbf{Progress}: \ct{didSendBodyData} / \ct{task.progress} count bytes \emph{sent};
+        show the server-acknowledged offset. Multipart: a parent \ct{Progress} with one child
+        per part, weighted by bytes.
+\end{itemize}
+
+\hd{The protocols}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{61mm}@{}}
+\toprule
+\textbf{IETF draft} & \ct{draft-ietf-httpbis-resumable-upload} (-12, Jul 2026, not yet an RFC).
+  Server \emph{may} answer the POST with \textbf{104 Upload Resumption Supported} + \ct{Location};
+  offset: \ct{HEAD} $\to$ \ct{Upload-Offset}; append: \ct{PATCH}, \ct{application/partial-upload},
+  \ct{Upload-Complete: ?1} on the last; cancel: \ct{DELETE}. Also \ct{Upload-Length},
+  \ct{Upload-Limit}, \ct{Upload-Draft-Interop-Version}. \\
+\textbf{tus 1.0} & \ct{Tus-Resumable: 1.0.0}. POST $\to$ 201 + \ct{Location}; HEAD $\to$ \ct{Upload-Offset};
+  PATCH \ct{application/offset+octet-stream} $\to$ 204 + new offset (409 if offsets differ);
+  DELETE; \ct{Upload-Expires}. \\
+\textbf{S3} & Create $\to$ UploadPart 1–10{,}000 (5 MiB–5 GiB, last smaller; each returns an
+  \ct{ETag}) $\to$ \textbf{Complete} with every PartNumber + ETag. Max object 48.8 TiB. Abort;
+  lifecycle \ct{AbortIncompleteMultipartUpload}. Client: one \textbf{presigned URL per part}. \\
+\textbf{GCS} & POST \ct{?uploadType=resumable} $\to$ session URI (valid 1 week); PUT chunks, multiples of
+  256 KiB, \ct{Content-Range: bytes 0-262143/*}; \textbf{308} + \ct{Range} = incomplete; status =
+  empty PUT \ct{bytes */SIZE}. \\
+\bottomrule
+\end{tabular}}
+
+\hd{Server contract (what to ask the backend for)}
+Idempotent create (client upload id / \ct{Idempotency-Key}) · offset is the server's truth ·
+size limits up front · auth on \emph{every} chunk (re-signable URLs) · expiry + garbage collection of
+abandoned uploads · \emph{complete} verifies the hash, then processing (scan, transcode) runs async
+$\to$ 202 + status URL.
+
+\columnbreak
+
+\hd{Example — the IETF draft on the wire, then iOS 17}
+\begin{lstlisting}[language=HTTPSheet]
+POST /uploads          # Upload-Complete: ?1, whole file
+  <- 104 Upload Resumption Supported
+     Location: /uploads/7f3      # save it!
+# ... connection lost ...
+HEAD /uploads/7f3
+  <- Upload-Offset: 6291456, Upload-Complete: ?0
+PATCH /uploads/7f3     # Upload-Offset: 6291456
+  Content-Type: application/partial-upload
+  Upload-Complete: ?1  # bytes 6291456..end
+  <- 200 OK            # the original request's answer
+\end{lstlisting}
+\begin{lstlisting}[language=SwiftSheet]
+// iOS 17+: URLSession resumes by itself if the server
+// speaks the draft; you can also pause and resume later
+let task = session.uploadTask(with: req, fromFile: file)
+task.resume()
+task.cancel(byProducingResumeData: { data in
+  store.save(data) })          // nil: not resumable
+if let data = store.load() {   // file must be unchanged
+  session.uploadTask(withResumeData: data).resume() }
+\end{lstlisting}
+
+\hd{On iOS}
+\begin{itemize}
+  \item iOS 17: upload tasks are \textbf{automatically resumable} when the server supports the
+        draft (WWDC23 \emph{Build robust and resumable file transfers}; interop version 3).
+  \item \textbf{Background session}: Apple: \emph{``Only upload tasks from a file are supported
+        (uploads from data instances or a stream fail after the app exits).''} Multipart: write
+        each part to its own file — \ct{uploadTask(fromFile:)} sends the whole file.
+  \item Keep files in Application Support (not \ct{tmp}/Caches, which the system may purge).
+  \item RN: \ct{fetch} has no resume. tus-js-client resumes in the foreground; background needs a
+        native module on URLSession / WorkManager.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Resuming from the \emph{client's} byte counter — bytes in flight were lost. Ask the server.}
+  \trap{\ct{uploadTask(with:from: Data)} in a background session — fails once the app exits.}
+  \trap{S3 parts under 5 MiB (except the last) are rejected; unfinished uploads are \textbf{billed}
+        until aborted — add the lifecycle rule.}
+  \trap{Presigned URL expired mid-upload $\to$ re-sign that part, don't restart.}
+  \trap{``Chunked'' $\neq$ HTTP/1.1 \ct{Transfer-Encoding: chunked} — that streams one request of
+        unknown length and resumes nothing.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Ask where you are, send from there, check every piece, finish explicitly, sweep the
+abandoned.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} background-execution (session relaunch) ·
+cellular-network-performance · poor-network-engineering (backoff, idempotency) · api-design (202) · hashing-deep}
+
+\end{document}

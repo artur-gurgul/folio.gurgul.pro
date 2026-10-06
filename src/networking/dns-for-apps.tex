@@ -1,0 +1,193 @@
+% dns-for-apps.tex — DNS for app developers: the resolution chain + caches (drawn), record types incl.
+% HTTPS/SVCB, TTLs + negative caching, encrypted DNS (DoT/DoH, NEDNSSettingsManager, PrivacyContext,
+% DDR), DNSSEC opt-in, split-horizon, IPv6-only + NAT64/DNS64 (drawn) + App Review 2.5.5, Happy
+% Eyeballs, DNS failures on mobile.
+% Sources (checked 2026-09-25): App Review Guidelines 2.5.5 ("Apps must be fully functional on
+% IPv6-only networks"); developer.apple.com: NEDNSSettingsManager (iOS 14; user enables in Settings),
+% NWParameters.PrivacyContext + requireEncryptedNameResolution + ResolverConfiguration (iOS 14),
+% URLRequest.requiresDNSSECValidation (iOS 16.1); WWDC20 10047 + WWDC22 10079 (DDR, iOS 16);
+% Apple archive "Supporting IPv6 DNS64/NAT64 Networks" (Mac "Create NAT64 Network");
+% IETF dnsop/quic lists, T. Pauly 2020-09 (iOS 14 HTTPS queries; in-process encrypted DNS covers
+% getaddrinfo); RFC 8305 (Happy Eyeballs), RFC 9460 (SVCB/HTTPS), RFC 2308 (negative caching),
+% RFC 8484 (DoH), RFC 7858 (DoT), RFC 9250 (DoQ), RFC 6052 + 6146 + 6147 (NAT64/DNS64), RFC 2782 (SRV).
+% @labels: area=networking kind=concept platform=ios topic=networking,protocols discussion=221
+% @tags: dns, dns-records, svcb-https-record, ttl, negative-caching, doh, dot, nednssettingsmanager, privacycontext, nat64, dns64, ipv6-only, happy-eyeballs, split-horizon
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,for,in,case,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,import,
+    true,false},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2}
+\lstdefinelanguage{Zone}{morecomment=[l]{;}, morestring=[b]", sensitive=true,
+  morekeywords={IN,A,AAAA,CNAME,MX,TXT,SRV,HTTPS,CAA,SOA,NS}}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{DNS for app developers — resolution, records, caching, IPv6-only}{networking · folio}
+
+\oneliner{DNS maps a \textbf{name} to \textbf{records} through a hierarchy: your device's \textbf{stub
+resolver} asks a \textbf{recursive resolver}, which walks \textbf{root $\to$ TLD $\to$ authoritative}
+and \textbf{caches} every answer for its \textbf{TTL}. Classic DNS is \textbf{plaintext UDP/53}; encrypted
+DNS (DoT/DoH) hides it, DNSSEC authenticates it. On iOS the app must work on \textbf{IPv6-only} networks
+(NAT64/DNS64) — App Review tests it.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    n/.style={box, font=\scriptsize, inner sep=2pt, minimum height=7mm, text width=18mm},
+    c/.style={font=\tiny, text=sheetGreen!45!black, inner sep=1pt, align=center},
+    q/.style={->, thick, draw=sheetBlue},
+    a/.style={->, thick, draw=sheetOrange},
+    num/.style={circle, fill=sheetBlue, text=white, font=\bfseries\tiny, inner sep=0.5pt, minimum size=3mm},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center}]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.3,3.85) {Resolving \ct{api.example.com} — a cold cache};
+  \node[n, fill=black!4, draw=sheetGrey, text width=14mm] (app) at (0.45,2.1) {app\\\ct{URLSession}};
+  \node[n] (stub) at (2.75,2.1) {stub resolver\\{\tiny\ct{mDNSResponder}}};
+  \node[n, text width=20mm] (rec) at (5.25,2.1) {recursive resolver\\{\tiny ISP · carrier · 1.1.1.1}};
+  \node[n, text width=24mm, draw=sheetBrown, fill=sheetBrown!8] (root) at (9.05,3.3) {root \ct{.} {\tiny(13 names, anycast)}\\{\tiny refers to the \ct{com.} servers}};
+  \node[n, text width=24mm, draw=sheetBrown, fill=sheetBrown!8] (tld) at (9.05,2.1) {TLD \ct{com.}\\{\tiny refers to \ct{example.com} NS}};
+  \node[n, text width=24mm, draw=sheetGreen, fill=sheetGreen!8] (auth) at (9.05,0.9) {authoritative \ct{example.com.}\\{\tiny\textbf{answers} A / AAAA, TTL 300}};
+  \draw[q] ([yshift=1mm]app.east) -- node[num, above=1pt]{1} ([yshift=1mm]stub.west);
+  \draw[q] ([yshift=1mm]stub.east) -- node[num, above=1pt]{2} ([yshift=1mm]rec.west);
+  \draw[a] ([yshift=-2mm]rec.west) -- node[num, fill=sheetOrange, below=1pt]{6} ([yshift=-2mm]stub.east);
+  \draw[a] ([yshift=-2mm]stub.west) -- node[num, fill=sheetOrange, below=1pt]{7} ([yshift=-2mm]app.east);
+  \draw[<->, thick, draw=sheetBrown] (rec.north east) -- node[num, pos=0.5]{3} (root.west);
+  \draw[<->, thick, draw=sheetBrown] (rec.east) -- node[num, pos=0.5]{4} (tld.west);
+  \draw[<->, thick, draw=sheetGreen] (rec.south east) -- node[num, pos=0.5]{5} (auth.west);
+  \node[c] at (2.75,1.35) {cache: honours TTL};
+  \node[c] at (5.25,1.2) {cache shared by\\all its users};
+  \node[l, anchor=north west, align=left] at (-0.3,0.55) {1–2 \textbf{recursive} query (``give me the answer''); 3–5 \textbf{iterative} (``who knows?'' $\to$ referral).\\
+    Warm caches skip 3–5 (root and TLD answers live for days). A, AAAA and HTTPS (type 65) are asked\\
+    in parallel. Transport: UDP/53 (TCP when truncated), DoT :853, DoH :443.};
+  \draw[sheetGrey!40] (10.55,3.95) -- (10.55,-0.4);
+  % ---- NAT64
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (10.7,3.85) {IPv6-only network: DNS64 + NAT64};
+  \node[box, font=\tiny, text width=13mm, fill=black!4, draw=sheetGrey] (ph) at (11.45,2.9) {iPhone\\IPv6 only};
+  \node[box, font=\tiny, text width=12mm, draw=sheetOrange, fill=sheetOrange!8] (d64) at (15.9,2.9) {DNS64\\resolver};
+  \node[box, font=\tiny, text width=13mm, draw=sheetOrange, fill=sheetOrange!8] (n64) at (13.45,1.15) {NAT64\\gateway};
+  \node[box, font=\tiny, text width=13mm, fill=black!4, draw=sheetGrey] (v4) at (15.9,1.15) {IPv4 server\\\ct{192.0.2.1}};
+  \draw[q] ([yshift=1.2mm]ph.east) -- node[l, above]{AAAA \ct{api.example.com}?} ([yshift=1.2mm]d64.west);
+  \draw[a] ([yshift=-1.2mm]d64.west) -- node[l, below, text=sheetOrange!80!black]{\ct{64:ff9b::c000:201}} ([yshift=-1.2mm]ph.east);
+  \node[l, anchor=north, text width=26mm, text=sheetOrange!80!black] at (15.9,2.5) {only an A exists: synthesise\\\ct{64:ff9b::/96} + IPv4};
+  \draw[q] (ph.south) |- node[l, above, pos=0.72]{IPv6} (n64.west);
+  \draw[q] (n64) -- node[l, above]{IPv4} (v4);
+  \node[l, anchor=north west, align=left, text=sheetRed] at (10.7,0.55) {Breaks: hard-coded IPv4 literals, \ct{AF\_INET}-only sockets,\\
+     \ct{inet\_addr}/\ct{gethostbyname}, IPv4 in payloads. Test: Mac\\Internet Sharing $\to$ \textbf{Create NAT64 Network} (Option-click).};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Records you should know}
+{\footnotesize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{64mm}@{}}
+\toprule
+\ct{A}/\ct{AAAA} & IPv4 / IPv6 address \\
+\ct{CNAME} & alias to another name; nothing else may sit beside it $\Rightarrow$ not at the zone apex \\
+\ct{NS}/\ct{SOA} & who is authoritative / zone serial + negative-cache TTL \\
+\ct{MX} & mail servers with priority \\
+\ct{TXT} & free text: SPF, DKIM, domain-ownership proofs \\
+\ct{SRV} & \ct{\_svc.\_proto.name}: priority, weight, port, target (RFC 2782) — XMPP, SIP \\
+\ct{HTTPS}/\ct{SVCB} & RFC 9460, types 65/64: \ct{alpn} (h3!), port, IP hints, ECH config; AliasMode works at the apex. iOS 14+ asks for it \\
+\ct{CAA} & which CAs may issue certificates \\
+\ct{PTR} & reverse: IP $\to$ name \\
+\bottomrule
+\end{tabular}}
+
+\hd{Caching and TTLs}
+\begin{itemize}
+  \item \textbf{Layers}: authoritative $\to$ recursive resolver cache $\to$ home router / forwarder $\to$
+        OS cache (\ct{mDNSResponder}) $\to$ (never) your app. Each keeps a record for its \textbf{TTL},
+        counting down from when \emph{it} fetched it.
+  \item \textbf{Negative caching} (RFC 2308): \ct{NXDOMAIN}/no-data is cached for
+        min(SOA TTL, SOA \ct{MINIMUM}). Querying a name \emph{before} creating it keeps it
+        ``missing'' for that long.
+  \item \textbf{Migration}: lower the TTL a full old-TTL \emph{before} moving; resolvers that ignore
+        TTLs, and apps that cache IPs, still hit the old address — keep it up for a while.
+  \item \textbf{Encrypted DNS}: \textbf{DoT} (RFC 7858, TCP :853), \textbf{DoH} (RFC 8484, HTTPS :443),
+        DoQ (RFC 9250). \textbf{DNSSEC} signs records: authenticity, \emph{not} privacy.
+  \item \textbf{Split-horizon}: the same name answers differently inside a VPN / office / home LAN.
+        VPN profiles scope DNS with match domains (\ct{NEDNSSettings.matchDomains}).
+  \item \textbf{Happy Eyeballs v2} (RFC 8305): AAAA first, A right after; waits 50\,ms for AAAA if A
+        wins, then races IPv6 vs IPv4 connects 250\,ms apart. Built into URLSession + Network.framework.
+\end{itemize}
+
+\hd{Apple APIs}
+\begin{itemize}
+  \item \textbf{System-wide}: \ct{NEDNSSettingsManager} (iOS 14) installs a DoH/DoT config
+        (\ct{NEDNSOverHTTPSSettings}, \ct{onDemandRules}); the \textbf{user} must enable it in Settings.
+  \item \textbf{Per app}: \ct{NWParameters.PrivacyContext} (iOS 14) —
+        \ct{requireEncryptedNameResolution}; on \ct{.default} it covers the process (URLSession,
+        \ct{getaddrinfo}). iOS 16: DDR auto-upgrades to the network's encrypted resolver.
+  \item \textbf{DNSSEC}: \ct{URLRequest.requiresDNSSECValidation} (iOS 16.1) — lookup fails if
+        validation fails. Custom records (SRV, TXT): \ct{DNSServiceQueryRecord} (\ct{dns\_sd.h}).
+  \item \textbf{Local names} (\ct{.local}, Bonjour): Local Network permission (iOS 14):
+        \ct{NSLocalNetworkUsageDescription} + \ct{NSBonjourServices}.
+  \item \textbf{Debug} from a Mac: \ct{dig api.example.com AAAA +short}, \ct{dig +trace} (walks the
+        chain above), \ct{dig @1.1.1.1 …} (compare resolvers); on device: \ct{URLSessionTaskMetrics}
+        \ct{domainLookup*} dates and \ct{domainResolutionProtocol} (udp / tcp / tls / https).
+\end{itemize}
+
+\columnbreak
+
+\hd{Example — a zone, and encrypted DNS for one app}
+\begin{lstlisting}[language=Zone]
+api.example.com.  300 IN A     192.0.2.10
+api.example.com.  300 IN AAAA  2001:db8::10
+www.example.com. 3600 IN CNAME cdn.example.net.
+example.com.     3600 IN HTTPS 1 . alpn="h3,h2" ipv4hint=192.0.2.10
+_sip._tcp.example.com. 86400 IN SRV 10 60 5060 sip.example.com.
+example.com.     3600 IN MX    10 mail.example.com.
+example.com.     3600 IN CAA   0 issue "ca.example.net"
+\end{lstlisting}
+\begin{lstlisting}[language=SwiftSheet]
+import Network
+NWParameters.PrivacyContext.default.requireEncryptedNameResolution(
+  true, fallbackResolver: .https(
+    URL(string: "https://dns.example.net/dns-query")!,
+    serverAddresses: [.hostPort(host: "192.0.2.53", port: 443)]))
+// every later URLSession / NWConnection lookup: DoH (or system DoH)
+\end{lstlisting}
+
+\hd{DNS failures on mobile}
+{\footnotesize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{51mm}@{}}
+\toprule
+\textbf{symptom} & \textbf{usual cause} \\ \midrule
+\ct{-1003} cannot find host & NXDOMAIN, typo, split-horizon name outside the VPN \\
+\ct{-1006} DNS lookup failed & resolver unreachable, captive portal, blocked DoH \\
+slow first request only & cold cache, slow carrier / Wi-Fi resolver \\
+works on Wi-Fi, fails on LTE & IPv6-only carrier + IPv4 literal (NAT64) \\
+old server after migration & high TTL, or the app cached the IP \\
+\ct{.local} device not found & Local Network permission denied \\
+\bottomrule
+\end{tabular}}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``My app is IPv6-ready because the server has AAAA'' — App Review runs on \textbf{NAT64}:
+        the server can stay IPv4; your \emph{client} must avoid IPv4 literals and v4-only APIs.}
+  \trap{Resolving yourself and connecting to an IP: breaks Happy Eyeballs, TLS SNI/hostname
+        checks, CDN routing and NAT64. Connect by \textbf{name}.}
+  \trap{Caching IPs in the app or pinning one address — the TTL was the contract.}
+  \trap{DNSSEC $\neq$ encryption; DoH $\neq$ authenticity of the zone.}
+  \trap{Pre-creating a name after querying it: negative caching keeps it NXDOMAIN.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Stub asks, recursive walks, everyone caches for the TTL — and your app speaks names, never
+IPv4 literals.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} what-happens-tap-a-url · tcp-udp-quic ·
+tls-pki (SNI, ECH) · http-deep (Alt-Svc) · poor-network-engineering (captive portals) · app-hardening-privacy}
+
+\end{document}

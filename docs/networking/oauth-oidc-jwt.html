@@ -1,0 +1,77 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>OAuth 2.0 · OIDC · JWT — for a native app — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/networking/oauth-oidc-jwt.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">190</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area current" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">OAuth 2.0 · OIDC · JWT — for a native app</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">networking · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> <strong>OAuth 2.0</strong> (RFC 6749) is <em>delegated authorization</em>: the app gets a scoped
+<strong>access token</strong> without ever seeing the password. <strong>OIDC</strong> adds <em>authentication</em>: an
+<strong>ID token</strong> saying who logged in. A native app is a <strong>public client</strong> (no secret), so it uses
+<strong>authorization code + PKCE</strong> (RFC 7636) in the <strong>system browser</strong> (RFC 8252). A <strong>JWT</strong>
+(RFC 7519) is <em>signed, not encrypted</em>.</p>
+<p class="sheet-tools"><a class="sheet-download" href="oauth-oidc-jwt.pdf" download>Download PDF</a> <a href="oauth-oidc-jwt.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/networking/oauth-oidc-jwt.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="oauth-oidc-jwt-fig1.svg" width="636" height="195" class="wide" alt="OAuth 2.0 · OIDC · JWT — for a native app — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">How it works</span></h3>
+<ul>
+<li><strong>Roles</strong>: resource owner (user) · client (app) · authorization server (issues tokens)  · resource server (API). <strong>Scopes</strong> cap what a token may ever do; the API still does  per-user authZ.</li>
+<li><strong>Implicit is dead</strong>: token in the redirect <em>fragment</em> — leaks via history/referrer/logs,  no refresh, nothing to bind PKCE to. Security BCP (RFC 9700): implicit <strong>SHOULD NOT</strong>,  password grant <strong>MUST NOT</strong>; the OAuth 2.1 draft omits both. Machine-to-machine: client credentials.</li>
+<li><strong>Redirect</strong>: <code>ASWebAuthenticationSession(url:callbackURLScheme:)</code> — the app never sees  the password, shares Safari’s SSO cookies; <code>prefersEphemeralWebBrowserSession</code> opts out.  Claimed <code>https</code> redirect (universal link) beats a custom scheme. <strong>Not</strong> a  <code>WKWebView</code>: the app could read the password; Google refuses embedded views.</li>
+<li><strong>Refresh rotation</strong>: every refresh returns a <em>new</em> RT and kills the old; an  old RT presented again <span class="math">=</span> theft <span class="math">→</span> the server revokes the whole <strong>family</strong>.  Alternative: sender-constrained tokens (DPoP, RFC 9449).</li>
+<li><strong>OIDC</strong>: <code>scope=openid</code>; ID token claims <code>iss sub aud exp iat nonce auth_time</code>;  <code>/userinfo</code> takes the access token. Identity key = <code>iss + sub</code>, never email. Check the  <code>nonce</code> you sent — binds the token to this login (replay).</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">JWT validation — server side, every request</span></h3>
+<ol>
+<li><code>alg</code> in <strong>your allow-list</strong> (e.g. only RS256/ES256) — never <code>none</code>; never let the  token’s <code>alg</code> pick the key type (RS256<span class="math">→</span>HS256 confusion signs with the <em>public</em> key).</li>
+<li><code>kid</code> <span class="math">→</span> key from cached JWKS; unknown <code>kid</code> <span class="math">→</span> refetch once (rate-limited).</li>
+<li>Verify the signature over the bytes <em>as received</em>.</li>
+<li><code>iss</code> exact · <code>aud</code> contains <em>me</em> · <code>exp</code> <span class="math">&gt;</span> now <span class="math">-</span> leeway, <code>nbf</code> <span class="math">≤</span> now  <span class="math">+</span> leeway (30–60 s skew) · <code>scope</code> · <code>jti</code> if one-time.</li>
+</ol>
+<p>ID token from <code>/token</code> over TLS: OIDC lets the <em>app</em> skip the signature check<span class="unverified">(unverified)</span>, but still check <code>iss aud exp nonce</code>.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — single-flight refresh</span></h3>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">actor</span> <span class="hljs-title class_">TokenStore</span> {
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">var</span> access: <span class="hljs-type">Token</span>                   <span class="hljs-comment">// in memory</span>
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">var</span> refreshing: <span class="hljs-type">Task</span>&lt;<span class="hljs-type">Token</span>, <span class="hljs-type">Error</span>&gt;?
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">valid</span>() <span class="hljs-keyword">async</span> <span class="hljs-keyword">throws</span> -&gt; <span class="hljs-type">Token</span> {
+    <span class="hljs-keyword">if</span> <span class="hljs-keyword">let</span> r <span class="hljs-operator">=</span> refreshing { <span class="hljs-keyword">return</span> <span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> r.value } <span class="hljs-comment">// join</span>
+    <span class="hljs-keyword">guard</span> access.expiresWithin(<span class="hljs-number">60</span>) <span class="hljs-keyword">else</span> { <span class="hljs-keyword">return</span> access }
+    <span class="hljs-keyword">let</span> r <span class="hljs-operator">=</span> <span class="hljs-type">Task</span> { <span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> auth.refresh(keychain.refreshToken) }
+    refreshing <span class="hljs-operator">=</span> r                  <span class="hljs-comment">// set BEFORE the await</span>
+    <span class="hljs-keyword">defer</span> { refreshing <span class="hljs-operator">=</span> <span class="hljs-literal">nil</span> }
+    access <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> r.value      <span class="hljs-comment">// new RT saved to Keychain</span>
+    <span class="hljs-keyword">return</span> access                   <span class="hljs-comment">// 401 later? same path, forced</span>
+  }
+}</code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">Tokens at a glance</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th><strong>for</strong></th><th><strong>life</strong></th><th><strong>on iOS</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>access</td><td>API</td><td>5–15 min</td><td>memory (+ Keychain)</td></tr>
+<tr><td>refresh</td><td>auth server</td><td>days, rotated</td><td>Keychain only</td></tr>
+<tr><td>ID</td><td>the app</td><td>minutes</td><td>read claims once, then drop</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Storing tokens on iOS</span></h3>
+<p><code>SecItemAdd</code> with <code>kSecClassGenericPassword</code>. Accessibility: <code>AfterFirstUnlockThisDeviceOnly</code> if a background refresh must read it while locked; <code>WhenUnlockedThisDeviceOnly</code> otherwise. <code>ThisDeviceOnly</code> <span class="math">=</span> no backup/migration to a new phone. Biometry (<code>SecAccessControl .biometryCurrentSet</code>) on the RT blocks <em>silent</em> refresh — a deliberate trade. Never <code>UserDefaults</code>. Keychain items <strong>survive uninstall</strong> (undocumented) <span class="math">→</span> wipe on first launch after reinstall.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Logout and revocation — the JWT limit</span></h3>
+<p>A JWT is valid until <code>exp</code>: nothing <em>un-signs</em> it. Levers: short access TTL · revoke the RT (<code>/revoke</code>, RFC 7009) · deny-list by <code>jti</code> or a per-user token version (state again) · opaque tokens + introspection (RFC 7662). Logout <span class="math">=</span> revoke RT + delete Keychain + end the browser session (<code>end_session_endpoint</code>) — or the next login is silent.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">Two requests hit 401, two refreshes run with rotation: the second uses a dead RT <span class="math">→</span> reuse  detection revokes the family <span class="math">→</span> “random logouts”. Single-flight it.</li>
+<li class="trap">Sending the <strong>ID token</strong> to your API (wrong <code>aud</code>) or reading authZ from it.</li>
+<li class="trap">A client secret in the binary is public — extractable. PKCE replaces it.</li>
+<li class="trap"><code>exp</code> is NumericDate <strong>seconds</strong>, not ms; compare with a leeway.</li>
+<li class="trap">OAuth alone is not login: an access token says <em>what</em>, not <em>who</em>.</li>
+<li class="trap">Sign in with Apple returns name/email only on the <strong>first</strong> authorization<span class="unverified">(unverified)</span> — store them.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<h3 class="sheet-hd">“Code + verifier in the browser; access to the API, ID to the app, refresh to nobody else;
+check alg, kid, iss, aud, exp.”</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> tls-pki (mTLS instead of bearer) ·
+keychain-secure-enclave · swift6-strict-concurrency (actor reentrancy) · api-design (401/403) ·
+deep-links-universal-links (https redirect)</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=networking" title="area">networking</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=general" title="platform">general</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=security" title="topic">security</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=networking" title="topic">networking</a></li><li class="sheet-tag"><a href="/folios.html?tag=oauth2">oauth2</a></li><li class="sheet-tag"><a href="/folios.html?tag=oidc">oidc</a></li><li class="sheet-tag"><a href="/folios.html?tag=pkce">pkce</a></li><li class="sheet-tag"><a href="/folios.html?tag=jwt">jwt</a></li><li class="sheet-tag"><a href="/folios.html?tag=jwks">jwks</a></li><li class="sheet-tag"><a href="/folios.html?tag=refresh-token-rotation">refresh-token-rotation</a></li><li class="sheet-tag"><a href="/folios.html?tag=id-token">id-token</a></li><li class="sheet-tag"><a href="/folios.html?tag=aswebauthenticationsession">aswebauthenticationsession</a></li><li class="sheet-tag"><a href="/folios.html?tag=token-refresh">token-refresh</a></li><li class="sheet-tag"><a href="/folios.html?tag=keychain">keychain</a></li><li class="sheet-tag"><a href="/folios.html?tag=token-revocation">token-revocation</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=networking%2Foauth-oidc-jwt.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/227">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

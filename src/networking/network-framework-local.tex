@@ -1,0 +1,206 @@
+% network-framework-local.tex — Network.framework for local networking: NWConnection states (drawn),
+% NWParameters knobs, NWListener + Bonjour advertising, NWBrowser, the DNS-SD records behind a browse
+% (drawn as a sequence), NWProtocolFramer, multicast groups, the Local Network privacy permission
+% (what it gates, what it does not, how denial shows up, no status API), the iOS 26 structured-
+% concurrency API (NetworkConnection / NetworkListener / NetworkBrowser, TLV + Coder), Wi-Fi Aware,
+% and background limits. Not repeated here: TCP/QUIC mechanics + NWProtocolTCP knobs (tcp-udp-quic),
+% NWPathMonitor + Low Data Mode (poor-network-engineering), DNS records/resolvers (dns-for-apps),
+% MultipeerConnectivity + AccessorySetupKit (ble-apple-ecosystem).
+% Sources (checked 2026-09-29):
+%   https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy
+%   https://developer.apple.com/documentation/network
+%   https://developer.apple.com/videos/play/wwdc2025/250/  (NetworkConnection/Listener/Browser, TLV, Coder)
+%   https://developer.apple.com/videos/play/wwdc2025/228/  (Wi-Fi Aware, WiFiAwareServices)
+%   https://developer.apple.com/documentation/wifiaware
+%   https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.wifi-aware
+%   RFC 6762 (mDNS), RFC 6763 (DNS-SD), RFC 6335 (service names <= 15 chars)
+% @labels: area=networking kind=api platform=ios topic=networking,platform-apis,protocols discussion=226
+% @tags: network-framework, nwconnection, nwlistener, nwbrowser, bonjour, dns-sd, mdns, local-network-privacy, nwprotocolframer, multicast-entitlement, networkconnection, wifi-aware
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,for,in,case,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,import,
+    true,false},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {::}{{\hbox{:}\hbox{:}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dc{\hbox{:}\hbox{:}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{Network.framework on the LAN — Bonjour, Local Network}{networking · folio}
+
+\oneliner{\textbf{Network.framework} (iOS 12) is Apple's socket API: an \ct{NWConnection} is one
+flow driven by a \textbf{state machine} on your queue, an \ct{NWListener} accepts flows and can
+\textbf{advertise} a Bonjour service, an \ct{NWBrowser} \textbf{discovers} services as endpoints the
+connection resolves later. Local-network traffic is gated by the \textbf{Local Network} privacy
+alert (iOS 14) — with \textbf{no API to read its state}. iOS 26 adds async
+\ct{NetworkConnection} / \ct{NetworkListener} / \ct{NetworkBrowser}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    s/.style={box, font=\scriptsize, minimum width=12mm, minimum height=5.5mm, inner sep=1.5pt},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    m/.style={font=\tiny, inner sep=0.5pt, align=center, fill=white},
+    rec/.style={font=\ttfamily\tiny, anchor=west, inner sep=0.5pt},
+    num/.style={circle, fill=sheetBlue, text=white, font=\bfseries\tiny, inner sep=0.5pt, minimum size=3mm}]
+  % ---------------- NWConnection state machine ----------------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.2,3.75) {\ct{NWConnection} states {\normalfont\footnotesize(\ct{NWListener}: same, no \ct{.preparing})}};
+  \node[s, fill=black!4, draw=sheetGrey] (setup) at (0.35,2.75) {\ct{.setup}};
+  \node[s] (prep) at (3.0,2.75) {\ct{.preparing}};
+  \node[s, draw=sheetGreen, fill=sheetGreen!12] (ready) at (6.4,2.75) {\ct{.ready}};
+  \node[s, draw=sheetOrange, fill=sheetOrange!10] (wait) at (3.0,0.95) {\ct{.waiting(err)}};
+  \node[s, draw=sheetRed, fill=sheetRed!10] (fail) at (6.4,0.95) {\ct{.failed(err)}};
+  \node[s, draw=sheetGrey, fill=black!6] (canc) at (6.4,0.05) {\ct{.cancelled}};
+  \draw[flow] (setup) -- node[l, above]{\ct{start(queue:)}} (prep);
+  \draw[hot, draw=sheetGreen] (prep) -- node[l, above]{resolve: DNS / Bonjour} node[l, below]{TCP + TLS handshake} (ready);
+  \draw[hot] ([xshift=-4mm]prep.south) -- node[l, left, text=sheetOrange!80!black]{no usable path\\connection refused\\\ct{localNetworkDenied}} ([xshift=-4mm]wait.north);
+  \draw[hot, draw=sheetBlue] ([xshift=4mm]wait.north) -- node[l, right, text=sheetBlue, pos=0.3]{path change\\or \ct{restart()}} ([xshift=4mm]prep.south);
+  \draw[hot, draw=sheetRed] ([yshift=-1.5mm]prep.east) -- node[l, below, sloped, text=sheetRed, pos=0.62]{fatal: TLS, bad params} (fail.north west);
+  \draw[hot, draw=sheetRed] (ready) -- node[l, right, text=sheetRed]{reset /\\error} (fail);
+  \draw[flow] (1.0,0.05) -- node[l, above]{\ct{cancel()} from any state} (canc.west);
+  \draw[decorate, decoration={brace, amplitude=3pt}, sheetRed, thick] (7.2,1.25) -- (7.2,-0.25)
+     node[midway, right, l, text=sheetRed, align=left]{final:\\make a\\\textbf{new}\\one};
+  \node[l, anchor=west, align=left] at (-0.2,-0.55) {\ct{viabilityUpdateHandler(false)}: ready path briefly unusable (Wi-Fi blip) — keep it, wait.\\
+     \ct{betterPathUpdateHandler(true)}: a preferred path appeared — open a new flow, drop this one.};
+
+  \draw[sheetGrey!40] (7.95,3.95) -- (7.95,-0.9);
+
+  % ---------------- Bonjour sequence ----------------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (8.1,3.75) {Bonjour = DNS-SD over mDNS: advertise $\to$ browse $\to$ resolve $\to$ connect};
+  \node[s, text width=18mm] (dev) at (9.05,3.15) {device / peer app\\\ct{NWListener}};
+  \node[s, text width=21mm] (ph) at (15.35,3.15) {iPhone: \ct{NWBrowser}\\+ \ct{NWConnection}};
+  \draw[sheetGrey, thick] (9.05,2.8) -- (9.05,1.0);
+  \draw[sheetGrey, thick] (15.35,2.8) -- (15.35,1.0);
+  \draw[hot, draw=sheetBlue] (9.05,2.55) -- node[m, above]{\ct{listener.start}: register + announce on 224.0.0.251 / ff02\dc fb, UDP 5353} (15.35,2.55);
+  \node[num] at (8.8,2.55) {1};
+  \draw[hot, draw=sheetBlue] (15.35,2.15) -- node[m, above]{\ct{browser.start}: PTR query for \ct{\_demo.\_tcp.local.}} (9.05,2.15);
+  \node[num] at (15.6,2.15) {2};
+  \draw[hot, draw=sheetGreen] (9.05,1.75) -- node[m, above]{PTR + TXT $\to$ \ct{Result}: \ct{.service(name:type:domain:interface:)} + TXT} (15.35,1.75);
+  \draw[hot, draw=sheetBlue] (15.35,1.4) -- node[m, above]{\ct{NWConnection(to: endpoint)} in \ct{.preparing}: SRV + AAAA/A} (9.05,1.4);
+  \node[num] at (15.6,1.4) {3};
+  \draw[hot, very thick, draw=sheetGreen] (9.05,1.05) -- node[m, above]{\ct{kitchen.local:52001} $\to$ TCP (+TLS) $\to$ \ct{.ready}} (15.35,1.05);
+  \node[num] at (8.8,1.05) {4};
+  \node[l, text=sheetRed, anchor=west, align=left, fill=sheetRed!6, draw=sheetRed, inner sep=1.5pt] at (14.05,0.25)
+     {\textbf{Local Network alert}\\at the first of 1 / 2 / 3\\(foreground only)\\denied: \ct{-65570}};
+  \node[rec] at (8.1,0.65) {PTR  \_demo.\_tcp.local. $\to$ Kitchen.\_demo.\_tcp.local.};
+  \node[rec] at (8.1,0.35) {SRV  Kitchen.\_demo.\_tcp.local. $\to$ 0 0 52001 kitchen.local.};
+  \node[rec] at (8.1,0.05) {TXT  Kitchen.\_demo.\_tcp.local. "model=K1" "fw=2.3"};
+  \node[rec] at (8.1,-0.25) {AAAA kitchen.local. $\to$ fe80\dc 1c2a (link-local); A too};
+  \node[l, anchor=west, align=left, text=sheetBrown] at (8.1,-0.6) {type \ct{\_name.\_tcp} / \ct{\_udp}, name $\leq$ 15 chars · instance name is user-visible UTF-8; clash $\to$ ``Kitchen (2)''};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{The classic API (iOS 12+)}
+\begin{itemize}
+  \item \textbf{\ct{NWConnection}}: one flow to an \ct{NWEndpoint} (\ct{.hostPort}, Bonjour \ct{.service},
+        \ct{.url}); inert until \ct{start(queue:)}, every handler on that queue. TCP \ct{receive}
+        returns \emph{arbitrary chunks} — re-arm it after each; \ct{receiveMessage} for UDP / framed.
+  \item \textbf{\ct{NWParameters}}: \ct{.tcp .udp .tls .dtls}, \ct{.quic(alpn:)} (iOS 15). LAN knobs:
+        \ct{requiredInterfaceType = .wifi}, \ct{includePeerToPeer} (AWDL: peers with no shared AP),
+        \ct{acceptLocalOnly} (listener).
+  \item \textbf{\ct{NWListener}}: port \ct{.any} $\to$ \ct{listener.port} once ready. Setting
+        \ct{service} advertises it (a rename shows in \ct{serviceRegistrationUpdateHandler});
+        \ct{newConnectionHandler} must \ct{start} or \ct{cancel} \emph{each} connection.
+  \item \textbf{\ct{NWBrowser}}: \ct{.bonjour(type:domain:)} / \ct{.bonjourWithTXTRecord};
+        changes \ct{.added} / \ct{.removed} / \ct{.changed} (TXT). A result is a \emph{name}, not an IP.
+  \item \textbf{\ct{NWProtocolFramer}} (iOS 13): your framing inside the stack (\ct{handleInput} /
+        \ct{handleOutput}, at \ct{applicationProtocols[0]}). \textbf{Multicast}:
+        \ct{NWConnectionGroup} + \ct{NWMulticastGroup} (iOS 14).
+\end{itemize}
+
+\hd{Example — advertise, discover, connect}
+\begin{lstlisting}[language=SwiftSheet]
+let p = NWParameters.tcp; p.includePeerToPeer = true
+let listener = try NWListener(using: p)        // port: .any
+listener.service = .init(name: "Kitchen", type: "_demo._tcp",
+                         txtRecord: NWTXTRecord(["model": "K1"]))
+listener.newConnectionHandler = { c in c.start(queue: .main) }
+listener.start(queue: .main)                    // registers + announces
+let browser = NWBrowser(for: .bonjourWithTXTRecord(
+                  type: "_demo._tcp", domain: nil), using: p)
+browser.browseResultsChangedHandler = { results, _ in
+  guard let r = results.first else { return }   // r.metadata = TXT
+  let c = NWConnection(to: r.endpoint, using: p) // resolves later
+  c.stateUpdateHandler = { if case .waiting(let e) = $0 { print(e) } }
+  c.start(queue: .main) }
+browser.start(queue: .main)
+\end{lstlisting}
+
+\hd{iOS 26 — structured concurrency (WWDC25 session 250)}
+\begin{lstlisting}[language=SwiftSheet]
+enum Msg: Codable { case hello(String), move(Int) }
+try await NetworkListener {                // result-builder stack
+  Coder(Msg.self, using: .json) { TLS() }  // Codable framing
+}.run { conn in                            // child task per peer
+  for try await (msg, _) in conn.messages { handle(msg) } }
+let c = NetworkConnection(to: .hostPort(host: "printer.local",
+          port: 1029)) { TLV { TLS() } }   // type-length-value
+try await c.send(data, type: 1)            // waits for .ready
+\end{lstlisting}
+Cancelled with its task. \ct{NetworkBrowser} returns endpoints for \textbf{Bonjour} or \textbf{Wi-Fi
+Aware} descriptors. The old API keeps working.
+
+\hd{Wi-Fi Aware (iOS 26)}
+Peer-to-peer Wi-Fi, no access point, encrypted at the Wi-Fi layer. \ct{WiFiAware}: \textbf{pair once}
+(DeviceDiscoveryUI / AccessorySetupKit), then \ct{NetworkListener} / \ct{NetworkBrowser}
+\ct{.wifiAware(...)}; Info.plist \ct{WiFiAwareServices}; entitlement \ct{com.apple.developer.wifi-aware}.
+
+\columnbreak
+
+\hd{Local Network privacy (iOS 14, macOS 15)}
+{\footnotesize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{36mm}>{\raggedright\arraybackslash}p{38mm}@{}}
+\toprule
+\textbf{needs permission} & \textbf{does not} \\ \midrule
+outgoing TCP to a LAN address & listen + \textbf{accept} TCP \\
+send UDP unicast / connect UDP & receive UDP unicast \\
+multicast + broadcast, both ways & non-\ct{.local} names; LAN DNS / proxy \\
+resolve a \ct{.local} name & WKWebView, Safari \\
+Bonjour register / browse / resolve & AirPlay, printing, AccessorySetupKit \\
+\bottomrule
+\end{tabular}}\par
+\textbf{Local} = Wi-Fi/Ethernet subnet, multicast, broadcast, \ct{.local} — not cellular or VPN.
+\begin{itemize}
+  \item \textbf{States}: undetermined $\to$ alert at the \textbf{first local operation} $\to$
+        allowed / denied (Settings). In the \textbf{background} while undetermined: silently denied,
+        not recorded.
+  \item \textbf{Info.plist}: \ct{NSLocalNetworkUsageDescription} (alert text) + \ct{NSBonjourServices}
+        (\ct{\_demo.\_tcp}) — the \emph{app's} plist, even for extensions.
+  \item \textbf{\ct{com.apple.developer.networking.multicast}} (iOS, requested from Apple): raw
+        multicast/broadcast, arbitrary or \emph{all} service types. Declared types don't need it.
+  \item \textbf{Denied}: browser \ct{.waiting} with DNS error \ct{-65570} (PolicyDenied); connection
+        \ct{.waiting}, \ct{unsatisfiedReason} \ct{.localNetworkDenied}. \textbf{No status API} —
+        infer it; trigger the alert on purpose: connect a UDP socket to a local address.
+  \item \textbf{Background}: suspended $\to$ sockets may be reclaimed; rebuild on foreground.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Tearing down on \ct{.waiting} — it retries; \ct{.failed} is final.}
+  \trap{``TCP delivers messages'' — bytes. Length-prefix, framer, or iOS 26 \ct{TLV} / \ct{Coder}.}
+  \trap{TLS to \ct{kitchen.local}: no public CA issues it — PSK or pin its self-signed cert.}
+  \trap{Empty browse: type not in \ct{NSBonjourServices}, permission denied, or no
+        \ct{includePeerToPeer} for an AWDL-only peer.}
+  \trap{Storing the device IP — DHCP moves it. Store the \emph{service name}; re-resolve.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Listener advertises, browser finds names, connection resolves; the alert gates all but
+\emph{accept}. Waiting retries, failed is final.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} tcp-udp-quic · dns-for-apps ·
+poor-network-engineering · ble-apple-ecosystem · tls-pki · background-execution · urlsession-networking}
+
+\end{document}
