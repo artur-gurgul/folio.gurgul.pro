@@ -1,0 +1,223 @@
+% auto-layout.tex — constraints, priorities, hugging/compression, intrinsic
+% size, UIStackView, self-sizing cells, safe area, conflicts, size classes.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/uikit/uilayoutpriority (required 1000, defaultHigh 750,
+%     defaultLow 250, fittingSizeLevel 50)
+%   developer.apple.com/library/archive/documentation/UserExperience/Conceptual/AutolayoutPG
+%     (constraint equation, intrinsic size, hugging/compression, unsatisfiable + ambiguous layouts,
+%     UIViewAlertForUnsatisfiableConstraints, self-sizing table cells)
+%   developer.apple.com/documentation/uikit/uistackview (axis, distribution, alignment, spacing)
+%   developer.apple.com/documentation/uikit/uiview/translatesautoresizingmaskintoconstraints
+%   developer.apple.com/design/human-interface-guidelines/layout (size classes per device/orientation)
+%   developer.apple.com/documentation/uikit/uiview (setNeedsUpdateConstraints/updateConstraintsIfNeeded,
+%     setNeedsLayout/layoutIfNeeded, setNeedsDisplay)
+% Not documented by Apple: Interface Builder's 251 hugging default for labels (marked \unverified).
+% @labels: area=ios-swift kind=api platform=ios topic=ui discussion=60
+% @tags: nslayoutconstraint, content-hugging, compression-resistance, uilayoutpriority, intrinsiccontentsize, uistackview, self-sizing-cells, safearealayoutguide, size-classes, translatesautoresizingmaskintoconstraints, unsatisfiable-constraints
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,private,true,false,in,
+    AnyObject,Void,String,Bool,Int},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  ttl/.style={font=\bfseries\small},
+  vw/.style={draw=sheetBlue, fill=sheetBlue!10, minimum height=5mm,
+             font=\scriptsize, inner sep=1.5pt},
+  push/.style={-{Stealth[length=3pt]}, thick},
+}
+
+\begin{document}
+
+\sheettitle{Auto Layout · priorities · UIStackView · self-sizing cells}{ios-swift · folio}
+
+\oneliner{Every constraint is one \textbf{linear equation}
+\;\texttt{item1.attr} $\{=,\le,\ge\}$ \texttt{multiplier} $\times$
+\texttt{item2.attr} $+$ \texttt{constant}\; — the engine solves them all so each
+view gets exactly \textbf{x, y, width, height}. Too few = \emph{ambiguous}; contradictory
+\emph{required} ones = \emph{unsatisfiable}. \textbf{Priorities} decide who
+yields: \textbf{1000 / 750 / 250}.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \texttt{translatesAutoresizingMaskIntoConstraints = false}\\
+        on every \textbf{code-created} view — else UIKit turns the autoresizing mask into constraints that fight yours
+        (wrong place / zero size / conflict log). IB sets it for you. Then
+        \texttt{NSLayoutConstraint.activate([…])}.
+  \item \textbf{Anchors:} \texttt{leading/trailing} (flip for RTL — prefer
+        them over \texttt{left/right}), \texttt{top/bottom},
+        \texttt{centerX/Y}, \texttt{width/height},
+        \texttt{firstBaseline}. Trailing/bottom constants are
+        \textbf{negative} (\texttt{-16}).
+  \item \textbf{Intrinsic content size}: \texttt{UILabel}, \texttt{UIButton},
+        \texttt{UIImageView}, \texttt{UISwitch} know their natural size, so
+        position constraints alone suffice. Plain \texttt{UIView} has none.
+        Custom: override \texttt{intrinsicContentSize}, call
+        \texttt{invalidateIntrinsicContentSize()} when it changes.
+  \item \textbf{Hugging} (default \textbf{250}) = resist growing
+        \emph{beyond} intrinsic size. \textbf{Compression resistance} (default
+        \textbf{750}) = resist shrinking \emph{below} it. Per axis. Lower value
+        \textbf{loses}: stretches first / truncates first.
+  \item \textbf{\texttt{UILayoutPriority}}: \texttt{.required} = \textbf{1000},
+        \texttt{.defaultHigh} = \textbf{750}, \texttt{.defaultLow} =
+        \textbf{250}, \texttt{.fittingSizeLevel} = 50. $<$1000 = optional:
+        broken \emph{silently}, lowest first. Tie at 750 vs 750 $\to$ arbitrary;
+        nudge one to 749 / 251 to make it deterministic.
+  \item \textbf{Unsatisfiable} (``Unable to simultaneously satisfy
+        constraints'') = $\geq$2 \textbf{required} constraints contradict
+        (\texttt{leading 0 + width 300 + trailing 0} in 320 pt). The engine
+        breaks one — ``Will attempt to recover by breaking…'' — which one is
+        arbitrary. Fix: drop one below 1000. Debug: symbolic breakpoint
+        \texttt{UIViewAlertForUnsatisfiableConstraints}, the View Debugger,
+        \texttt{hasAmbiguousLayout}.
+  \item \textbf{Safe area}: pin content to \texttt{view.safeAreaLayoutGuide}.
+        Superview edges put text under the notch / Dynamic Island and buttons
+        under the home indicator (the system gesture eats the tap).
+        Full-bleed \emph{backgrounds} may go to the real edges.
+  \item \textbf{Size classes}: two axes (horizontal, vertical) $\times$ two
+        values (\texttt{.compact}, \texttt{.regular}). iPhone portrait = wC\,hR;
+        iPhone landscape = wC\,hC (Max/Plus: wR\,hC); iPad full screen =
+        wR\,hR; iPad narrow split = wC. Read
+        \texttt{traitCollection.horizontalSizeClass}; react on trait change
+        (swap constraints / stack \texttt{axis}).
+  \item \textbf{Animate} a constraint: change \texttt{.constant}, then
+        \texttt{UIView.animate \{ superview.layoutIfNeeded() \}}.
+\end{itemize}
+
+\section{Example — a title + price row}
+\begin{lstlisting}[language=SwiftSheet]
+let row = UIStackView(arrangedSubviews: [title, price])
+row.axis = .horizontal; row.spacing = 8  // direction, gap
+row.distribution = .fill          // sizing ALONG the axis
+row.alignment = .firstBaseline    // position ACROSS the axis
+row.translatesAutoresizingMaskIntoConstraints = false // #1 bug
+view.addSubview(row)
+let m = view.layoutMarginsGuide   // inset, inside the safe area
+NSLayoutConstraint.activate([     // height: intrinsic size
+  row.topAnchor.constraint(equalTo: m.topAnchor),
+  row.leadingAnchor.constraint(equalTo: m.leadingAnchor),
+  row.trailingAnchor.constraint(equalTo: m.trailingAnchor)])
+title.setContentHuggingPriority(.defaultLow - 1, for: .horizontal)
+title.setContentCompressionResistancePriority(.defaultHigh - 1,
+                                              for: .horizontal)
+\end{lstlisting}
+{\footnotesize Result: \texttt{title} (249 / 749) stretches to fill
+\emph{and} truncates first; \texttt{price} (250 / 750) stays compact and
+readable. \texttt{.fill} picks the stretcher by lowest hugging.}
+
+\columnbreak
+
+\section{The priority scale}
+\begin{tikzpicture}[sheet, x=0.0068cm]
+  \fill[sheetGreen!12] (0,0) rectangle (999,0.32);
+  \fill[sheetRed!18] (999,0) rectangle (1000,0.32);
+  \draw[sheetGrey] (0,0) rectangle (1000,0.32);
+  \foreach \v/\n/\c in {250/.defaultLow/sheetBlue,
+                        750/.defaultHigh/sheetBlue, 1000/.required/sheetRed} {
+    \draw[thick, \c] (\v,-0.08) -- (\v,0.4);
+    \node[font=\bfseries\scriptsize, text=\c, above] at (\v,0.4) {\v};
+    \node[lbl, text=\c, below] at (\v,-0.08) {\texttt{\n}};
+  }
+  \node[lbl, align=center] at (250,-0.72) {\textbf{hugging} default\\``don't stretch me''};
+  \node[lbl, align=center] at (750,-0.72) {\textbf{compression} default\\``don't squeeze me''};
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}] (0,-1.1) -- (995,-1.1)
+    node[lbl, midway, below=3pt]{1–999 optional: may break \emph{silently}, lowest loses};
+  \node[lbl, text=sheetRed, align=center, anchor=north] at (1000,-0.42) {break =\\warning};
+\end{tikzpicture}
+
+\section{Hugging vs compression}
+\begin{tikzpicture}[sheet]
+  % the forces on one label
+  \node[vw, minimum width=16mm, minimum height=7mm, fill=sheetOrange!12, draw=sheetOrange] (p) at (1.2,0) {\$9.99};
+  \draw[push, sheetBlue, very thick] ([xshift=-6mm, yshift=1.3mm]p.west) -- ([yshift=1.3mm]p.west);
+  \draw[push, sheetBlue, very thick] ([xshift=6mm, yshift=1.3mm]p.east) -- ([yshift=1.3mm]p.east);
+  \draw[push, sheetRed, very thick] ([xshift=1mm, yshift=-1.3mm]p.west) -- ([xshift=-5mm, yshift=-1.3mm]p.west);
+  \draw[push, sheetRed, very thick] ([xshift=-1mm, yshift=-1.3mm]p.east) -- ([xshift=5mm, yshift=-1.3mm]p.east);
+  \node[lbl, anchor=south, text=sheetBlue] at (1.2,0.4) {\textbf{hugging}: pulls in — won't grow};
+  \node[lbl, anchor=north, text=sheetRed] at (1.2,-0.4) {\textbf{compression resist.}: pushes out — won't shrink};
+  % outcome rows
+  \node[lbl, anchor=east] at (4.35,0.3) {wide};
+  \node[vw, minimum width=20mm, anchor=west] at (4.45,0.3) {title $\leftarrow$ 249 $\rightarrow$};
+  \node[vw, minimum width=10mm, fill=sheetOrange!12, draw=sheetOrange, anchor=west] at (6.5,0.3) {\$9.99};
+  \node[lbl, anchor=east] at (4.35,-0.3) {narrow};
+  \node[vw, minimum width=14mm, anchor=west] at (4.45,-0.3) {title tr…};
+  \node[vw, minimum width=10mm, fill=sheetOrange!12, draw=sheetOrange, anchor=west] at (5.9,-0.3) {\$9.99};
+  \node[lbl, anchor=north west] at (4.45,-0.6) {lower number loses};
+\end{tikzpicture}
+
+\section{Stack view · self-sizing cell}
+\begin{tikzpicture}[sheet]
+  % stack view
+  \draw[sheetGrey, dashed, rounded corners=1pt] (0,0) rectangle (4.3,1.35);
+  \node[vw, minimum width=9mm, minimum height=9mm, anchor=south west] at (0.15,0.2) {A};
+  \node[vw, minimum width=13mm, minimum height=6mm, anchor=south west] at (1.4,0.2) {B};
+  \node[vw, minimum width=9mm, minimum height=7mm, anchor=south west] at (3.05,0.2) {C};
+  \draw[<->, sheetOrange] (2.73,0.5) -- (3.05,0.5);
+  \node[lbl, text=sheetOrange] at (2.9,1.12) {spacing};
+  \draw[->, thick, sheetBlue] (0.1,-0.25) -- node[lbl, below, text=sheetBlue]{\textbf{axis} + \textbf{distribution} (along)} (4.2,-0.25);
+  \draw[->, thick, sheetGreen] (4.5,0.1) -- node[lbl, right, text=sheetGreen!70!black, align=left]{\textbf{alignment}\\(across)} (4.5,1.2);
+  \node[lbl, anchor=north west, align=left] at (-0.05,-0.55)
+    {\texttt{.fill} \textbullet{} \texttt{.fillEqually} \textbullet{} \texttt{.fillProportionally}\\
+     \texttt{.equalSpacing} \textbullet{} \texttt{.equalCentering}};
+  % self-sizing cell
+  \begin{scope}[xshift=5.85cm]
+    \draw[sheetBrown, thick, rounded corners=1pt] (0,-0.9) rectangle (1.9,1.3);
+    \node[lbl, text=sheetBrown, anchor=south] at (0.95,1.3) {contentView};
+    \node[vw, minimum width=14mm] (l1) at (0.95,0.65) {title};
+    \node[vw, minimum width=14mm, minimum height=8mm] (l2) at (0.95,-0.2) {body (lines 0)};
+    \draw[<->, thick, sheetRed] (0.95,1.3) -- (l1.north);
+    \draw[<->, thick, sheetRed] (l1.south) -- (l2.north);
+    \draw[<->, thick, sheetRed] (l2.south) -- (0.95,-0.9);
+    \node[lbl, text=sheetRed, align=center, anchor=north] at (0.95,-0.95) {unbroken chain\\top $\to$ bottom};
+  \end{scope}
+\end{tikzpicture}
+{\footnotesize\raggedright Cell: \texttt{tableView.rowHeight =
+UITableView.automaticDimension} + \texttt{tableView.estimatedRowHeight = 80}
+(non-zero) + the chain; no \texttt{heightForRowAt}. Stack: add with
+\texttt{addArrangedSubview} (not \texttt{addSubview}); \texttt{isHidden}
+collapses a child.\par}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Two views both at 750 / 250: who yields is \textbf{arbitrary} — set one to
+        \textbf{749 / 251}; a strict loser beats a random tie.}
+  \trap{Interface Builder gives labels hugging \textbf{251}\unverified{}, code gets
+        \textbf{250}: the same layout behaves differently built in code.}
+  \trap{Distribution = \emph{along} the axis, alignment = \emph{across} — swapped, the
+        stack ``ignores'' the setting.}
+  \trap{Self-sizing cells are \emph{not} the delegate:
+        \texttt{automaticDimension} + \texttt{estimatedRowHeight} + an unbroken chain.}
+  \trap{Hugging is about growing past \emph{content}, not about ``edges''.}
+  \trap{Wrong place / zero size in code $\to$ first suspect \texttt{translates…}.}
+  \trap{Size classes = compact/regular per axis, not device sizes.}
+\end{itemize}
+
+\section{The three passes, top-down each frame}
+{\footnotesize
+\begin{tabular}{@{}l l l@{}}
+\toprule
+pass (override) & mark dirty & force now \\ \midrule
+\texttt{updateConstraints} & \texttt{setNeedsUpdate…} & \texttt{updateConstraintsIfNeeded} \\
+\texttt{layoutSubviews} & \texttt{setNeedsLayout} & \texttt{layoutIfNeeded} \\
+\texttt{draw(\_:)} & \texttt{setNeedsDisplay} & — (next frame) \\
+\bottomrule
+\end{tabular}}
+
+\section{Remember}
+\textbf{``A thousand is law, 750 guards the content, 250 lets it grow.''}
+Stack: \textbf{A-D-A-S} — \textbf{A}xis, \textbf{D}istribution,
+\textbf{A}lignment, \textbf{S}pacing. Cell: \emph{auto + estimate + chain}.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{updateConstraints} $\to$ \texttt{layoutSubviews} · \texttt{setNeedsLayout} vs \texttt{layoutIfNeeded} · \texttt{keyboardLayoutGuide} · SwiftUI \texttt{HStack} · compositional layout}
+
+\end{document}

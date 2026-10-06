@@ -1,0 +1,92 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Concurrency · GCD · async/await · actors — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/ios-swift/concurrency.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">81</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area current" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Concurrency · GCD · async/await · actors</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">ios-swift · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> <strong>GCD</strong> submits closures to <em>queues</em> and <em>blocks
+threads</em> to wait; <strong>Swift Concurrency</strong> <em>suspends tasks</em> at
+<code>await</code> (the thread is freed) and lets the <strong>compiler</strong> prove
+safety with <strong>actors</strong> (serialised state), <code>@MainActor</code> (UI) and
+<code>Sendable</code> (what may cross). Rule zero in both: <strong>UIKit only on
+the main thread.</strong></p>
+<p class="sheet-tools"><a class="sheet-download" href="concurrency.pdf" download>Download PDF</a> <a href="concurrency.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-swift/concurrency.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<h2>GCD</h2>
+<ul>
+<li><code>DispatchQueue.main</code> = <strong>serial</strong>, bound to the main thread  (UI). <code>DispatchQueue.global(qos:)</code> = shared <strong>concurrent</strong>  pool. <code>DispatchQueue(label:)</code> = serial unless  <code>attributes: .concurrent</code>.</li>
+<li><code>async</code> returns at once; <code>sync</code> <strong>blocks the caller</strong>  until the block ran. <code>main.sync</code> <em>from</em> main (or  <code>sync</code> onto the serial queue you are on) = <strong>deadlock</strong>.</li>
+<li><strong>QoS</strong>, high<span class="math">→</span>low: <code>.userInteractive</code> <span class="math">&gt;</span>  <code>.userInitiated</code> <span class="math">&gt;</span> <code>.default</code> <span class="math">&gt;</span> <code>.utility</code> <span class="math">&gt;</span>  <code>.background</code>.</li>
+<li><code>DispatchGroup</code> (<code>enter</code>/<code>leave</code>/<code>notify</code>)  = wait for N jobs; <code>DispatchSemaphore(value: N)</code> = limit to N;  <code>.barrier</code> on a <em>private concurrent</em> queue = reader–writer.</li>
+<li><strong>URLSession completion handlers run on a background queue</strong>  (the session’s delegate <code>OperationQueue</code>) — <em>never</em> main.  Hop before UI: <code>DispatchQueue.main.async {…}</code>. Forgot  <code>.resume()</code>? Tasks start suspended.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Async/await</h2>
+<ul>
+<li><code>await</code> <strong>suspends, never blocks</strong>: the thread returns to a  cooperative pool (one per core, no thread explosion); the task may resume on  another thread.</li>
+<li><code>Task {}</code> inherits actor, priority, task-locals.  <code>Task.detached {}</code> inherits <strong>nothing</strong> (loses  <code>@MainActor</code>). Both unstructured.</li>
+<li><strong>Structured:</strong> <code>async let x = f()</code> (fixed count),  <code>withThrowingTaskGroup</code> (dynamic count). Parent waits for  children; cancel flows down, errors flow up. Two plain  <code>await</code>s in a row run <strong>one after the other</strong>;  <code>async let a = f(); async let b = g()</code> starts both at once.</li>
+<li><strong>Cancellation is cooperative</strong>: <code>task.cancel()</code> only sets  a flag. Check <code>Task.isCancelled</code> or <code>try
+ Task.checkCancellation()</code> (throws <code>CancellationError</code>).</li>
+<li><code>withCheckedThrowingContinuation</code> bridges a callback API — resume  <strong>exactly once</strong> (0 = hang, 2 = trap).</li>
+<li><strong>actor</strong>: reference type; one task at a time touches its state;  outside calls need <code>await</code>. <code>nonisolated</code> opts a member out  (methods that touch no isolated state; Sendable <code>let</code>s). <strong>Reentrant</strong>: at every <code>await</code> inside  it, other calls may run <span class="math">⇒</span> re-check state after  <code>await</code>.</li>
+<li><code>@MainActor</code> = global actor on the main thread; on a type,  method or property. Off-main: <code>await MainActor.run {}</code>.</li>
+<li><code>Sendable</code> = safe to cross isolation: value types of Sendable  parts, <code>final class</code> with only <code>let</code> Sendable props,  actors (implicitly). <code>@unchecked Sendable</code> = “I lock it myself”.  Swift 6 makes violations <em>errors</em>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example — the main-thread hop</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-comment">// 1. Completion handler: runs on a BACKGROUND queue</span>
+<span class="hljs-type">URLSession</span>.shared.dataTask(with: url) { data, <span class="hljs-keyword">_</span>, <span class="hljs-keyword">_</span> <span class="hljs-keyword">in</span>
+  <span class="hljs-keyword">let</span> img <span class="hljs-operator">=</span> data.flatMap(<span class="hljs-type">UIImage</span>.<span class="hljs-keyword">init</span>(data:))
+  <span class="hljs-type">DispatchQueue</span>.main.async { <span class="hljs-keyword">self</span>.imageView.image <span class="hljs-operator">=</span> img } <span class="hljs-comment">// hop!</span>
+}.resume()                              <span class="hljs-comment">// tasks start suspended</span>
+
+<span class="hljs-comment">// 2. async/await inside @MainActor: resumes on main, no hop</span>
+<span class="hljs-meta">@MainActor</span> <span class="hljs-keyword">func</span> <span class="hljs-title function_">load</span>() <span class="hljs-keyword">async</span> <span class="hljs-keyword">throws</span> {
+  <span class="hljs-keyword">let</span> (data, <span class="hljs-keyword">_</span>) <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> <span class="hljs-type">URLSession</span>.shared.data(from: url)
+  imageView.image <span class="hljs-operator">=</span> <span class="hljs-type">UIImage</span>(data: data) <span class="hljs-comment">// already on main</span>
+}</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Which thread runs what</h2>
+<figure class="sheet-figure"><img src="concurrency-fig1.svg" width="345" height="226" alt="Concurrency · GCD · async/await · actors — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Actor reentrancy</h2>
+<figure class="sheet-figure"><img src="concurrency-fig2.svg" width="304" height="87" alt="Concurrency · GCD · async/await · actors — figure 2" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><strong>Completion handlers run on URLSession’s background queue</strong>  <span class="math">→</span> hop to main for UI. <code>async/await</code> resumes on <em>your</em> actor —  <code>@MainActor</code> needs no hop. A <code>nonisolated async</code> func leaves the  actor — unless Swift 6.2’s <code>NonisolatedNonsendingByDefault</code> (SE-0461) is  on: then it runs on the caller’s actor.</li>
+<li class="trap"><code>await</code> <span class="math">≠</span> blocking. <code>sync</code>/semaphore/<code>sleep()</code> block a  thread; <code>Task.sleep</code> suspends.</li>
+<li class="trap"><code>Task.detached</code> in a <code>@MainActor</code> VM runs off-main.</li>
+<li class="trap">Cancelling does not stop a loop that never checks.</li>
+<li class="trap"><code>DispatchGroup</code>: an early return without <code>leave()</code> <span class="math">→</span>  <code>notify</code> never fires; use <code>defer</code>.</li>
+<li class="trap">Actor as a “make it fast” tool: it <em>serialises</em> — use a TaskGroup for parallel work.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>GCD <span class="math">→</span> Swift concurrency</h2>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><code>DispatchQueue.main.async</code></td><td><code>@MainActor</code> · <code>await MainActor.run</code></td></tr>
+<tr><td>serial queue guarding state</td><td><code>actor</code></td></tr>
+<tr><td><code>DispatchGroup</code> + <code>notify</code></td><td><code>async let</code> · task group</td></tr>
+<tr><td>semaphore “at most N”</td><td>task group seeded with N, add one per finish</td></tr>
+<tr><td><code>global().async</code></td><td><code>Task.detached</code> · <code>@concurrent</code> (6.2)</td></tr>
+<tr><td><code>asyncAfter</code></td><td><code>try await Task.sleep(for:)</code></td></tr>
+<tr><td>callback API</td><td><code>withCheckedThrowingContinuation</code></td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>GCD blocks threads, await suspends tasks.</strong> <em>“Background
+brings the data, main paints it.”</em> QoS: <strong>I</strong>nteractive, <strong>I</strong>nitiated, <strong>D</strong>efault, <strong>U</strong>tility, <strong>B</strong>ackground — “<em>I I D U B</em>”.</p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> locks-and-synchronization · Main Thread Checker · Thread Sanitizer · <code>OperationQueue</code> · <code>AsyncSequence</code> / <code>AsyncStream</code> · Combine <code>receive(on:)</code> · SwiftUI <code>.task</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=ios-swift" title="area">ios-swift</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=concurrency" title="topic">concurrency</a></li><li class="sheet-tag"><a href="/folios.html?tag=gcd">gcd</a></li><li class="sheet-tag"><a href="/folios.html?tag=dispatchqueue">dispatchqueue</a></li><li class="sheet-tag"><a href="/folios.html?tag=async-await">async-await</a></li><li class="sheet-tag"><a href="/folios.html?tag=actor">actor</a></li><li class="sheet-tag"><a href="/folios.html?tag=reentrancy">reentrancy</a></li><li class="sheet-tag"><a href="/folios.html?tag=mainactor">mainactor</a></li><li class="sheet-tag"><a href="/folios.html?tag=sendable">sendable</a></li><li class="sheet-tag"><a href="/folios.html?tag=task-detached">task-detached</a></li><li class="sheet-tag"><a href="/folios.html?tag=taskgroup">taskgroup</a></li><li class="sheet-tag"><a href="/folios.html?tag=cancellation">cancellation</a></li><li class="sheet-tag"><a href="/folios.html?tag=continuation">continuation</a></li><li class="sheet-tag"><a href="/folios.html?tag=deadlock">deadlock</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=ios-swift%2Fconcurrency.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/63">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

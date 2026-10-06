@@ -1,0 +1,174 @@
+% tableview-diffable.tex — UITableView data source/delegate, cell reuse, UICollectionView,
+% diffable data source + snapshots, reconfigure vs reload, CellRegistration.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/uikit/uitableviewdatasource · .../uitableviewdelegate ·
+%     .../uitableview/dequeuereusablecell(withidentifier:for:) · .../uitableviewcell/prepareforreuse()
+%   developer.apple.com/documentation/uikit/uitableviewdiffabledatasource (iOS 13) ·
+%     .../nsdiffabledatasourcesnapshot (reconfigureItems iOS 15, reloadItems iOS 13; identifiers
+%     must be unique) · .../uicollectionview/cellregistration (iOS 14)
+%   developer.apple.com/documentation/uikit/uitableviewcell/cellstyle
+%   developer.apple.com/videos/play/wwdc2021/10252 "Make blazing fast lists and collection views"
+% @labels: area=ios-swift kind=api platform=ios topic=ui discussion=71
+% @tags: uitableview, uicollectionview, cell-reuse, dequeuereusablecell, prepareforreuse, diffable-data-source, nsdiffabledatasourcesnapshot, reconfigureitems, reloaditems, cellregistration, performbatchupdates, compositional-layout
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,protocol,extension,return,if,else,
+    guard,try,await,async,case,switch,self,some,any,where,init,in,private,override},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\begin{document}
+
+\sheettitle{Table views, cell reuse \& diffable data source}{ios-swift · folio}
+
+\oneliner{A list keeps only the \textbf{visible} cells alive and \textbf{recycles} them — so a
+dequeued cell is \emph{used}, never blank. A \textbf{diffable data source} replaces index math:
+you describe the \emph{whole desired state} as a \textbf{snapshot of unique \texttt{Hashable} IDs},
+\texttt{apply} it, and UIKit computes the inserts/deletes/moves.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{\texttt{UITableViewDataSource}} (\emph{what} to show) — required:
+        \texttt{tableView(\_:numberOfRowsInSection:)}, \texttt{tableView(\_:cellForRowAt:)};
+        optional \texttt{numberOfSections(in:)}. \textbf{\texttt{UITableViewDelegate}}
+        (\emph{behaviour}) — \texttt{didSelectRowAt}, \texttt{heightForRowAt}, \texttt{willDisplay}.
+        Both held \texttt{weak}.
+  \item \textbf{Reuse}: \texttt{register(\_:forCellReuseIdentifier:)} once, then
+        \texttt{dequeueReusableCell(withIdentifier:for:)} — always returns a cell (crashes if
+        unregistered). Old \texttt{dequeueReusableCell(withIdentifier:)} may return \texttt{nil}.
+        A cell leaving the screen goes to a per-identifier \textbf{reuse queue}; \sloppy
+        \texttt{prepareForReuse()} runs before it comes back.
+  \item \textbf{Stale content} = a recycled cell still shows the last row's image/check/colour,
+        because \texttt{cellForRowAt} set it only on \emph{some} paths, or an async image load
+        finished \emph{after} reuse. Fix: set \textbf{every} property on every path; in
+        \texttt{prepareForReuse} reset transient state + \textbf{cancel} the load; on completion
+        check the cell still shows the same ID.
+  \item \textbf{Manual updates}: change the model \emph{first}, then \texttt{performBatchUpdates}
+        with \texttt{insertRows}/\texttt{deleteRows}. Counts must add up or
+        \texttt{NSInternalInconsistencyException} (``invalid number of rows'').
+  \item \textbf{\texttt{UICollectionView}} = same data source/delegate/reuse, plus a \textbf{layout}
+        object: \texttt{UICollectionViewFlowLayout} or \texttt{UICollectionViewCompositionalLayout}
+        (item $\to$ group $\to$ section); lists via \texttt{UICollectionLayoutListConfiguration} (iOS 14).
+  \item \textbf{Diffable} (iOS 13): \texttt{UITableViewDiffableDataSource} /
+        \texttt{UICollectionViewDiffableDataSource<SectionID, ItemID>}; both generic params
+        \textbf{\texttt{Hashable}}; created with a \texttt{cellProvider} closure.
+        \texttt{NSDiffableDataSourceSnapshot} is a \emph{struct}: \texttt{appendSections},
+        \texttt{appendItems(\_:toSection:)}, \texttt{deleteItems}, \texttt{moveItem(\_:beforeItem:)},
+        then \texttt{apply(\_:animatingDifferences:)}. Edit the live one via
+        \texttt{dataSource.snapshot()}. Map positions with \texttt{itemIdentifier(for:)} /
+        \texttt{indexPath(for:)}.
+  \item \textbf{Same ID, new content}: \texttt{reconfigureItems} (iOS 15) re-runs the config on the
+        \emph{existing} cell — cheap, keeps state. \texttt{reloadItems} (iOS 13) throws the cell away
+        and dequeues a new one. Prefer reconfigure unless the cell \emph{type} changes.
+  \item \textbf{\texttt{CellRegistration}} (iOS 14): typed cell + config closure, no string IDs;
+        \texttt{dequeueConfiguredReusableCell(using:for:item:)}. Headers need
+        \texttt{supplementaryViewProvider} (collection) or a subclass overriding
+        \texttt{titleForHeaderInSection} (table).
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+enum Section: Hashable { case main }
+let reg = UICollectionView.CellRegistration
+    <UICollectionViewListCell, Todo.ID> { cell, _, id in
+  var c = cell.defaultContentConfiguration()
+  c.text = store[id]?.title        // read LIVE data by id
+  cell.contentConfiguration = c    // set EVERY property
+}
+ds = UICollectionViewDiffableDataSource<Section, Todo.ID>(
+  collectionView: cv) { cv, ip, id in
+  cv.dequeueConfiguredReusableCell(using: reg, for: ip, item: id) }
+var snap = NSDiffableDataSourceSnapshot<Section, Todo.ID>()
+snap.appendSections([.main])
+snap.appendItems(todos.map(\.id))  // ids UNIQUE
+ds.apply(snap, animatingDifferences: true)
+\end{lstlisting}
+
+\columnbreak
+
+\section{The reuse pool}
+\begin{tikzpicture}[sheet]
+  \tikzset{row/.style={cell, minimum width=24mm, minimum height=4.6mm, font=\ttfamily\scriptsize}}
+  \node[draw=sheetBlue, thick, rounded corners=3pt, minimum width=28mm, minimum height=28.5mm,
+        fill=sheetBlue!4] (scr) at (0,0) {};
+  \node[note, font=\scriptsize\itshape] at (0,1.2) {screen: visible rows only};
+  \node[row, fill=black!4, text=sheetGrey] (r6) at (0,2.0) {row 6 (scrolled off)};
+  \node[row] at (0,0.8) {row 7};
+  \node[row] at (0,0.27) {row 8};
+  \node[row] at (0,-0.26) {row 9};
+  \node[row] at (0,-0.79) {row 10};
+  \node[row, draw=sheetGreen, fill=sheetGreen!10] (r11) at (0,-2.0) {row 11 (appearing)};
+  \node[box, fill=sheetOrange!8, draw=sheetOrange, text width=27mm, align=left, font=\footnotesize]
+       (pool) at (4.5,0) {\textbf{reuse queue}\\[-1pt]per identifier\\[1pt]
+       \texttt{prepareForReuse()}\\[-1pt]{\scriptsize reset + cancel loads}};
+  \draw[hot] (r6.east) to[out=0,in=90] node[above right, note, pos=0.3]{enqueue} (pool.north);
+  \draw[hot] (pool.south) to[out=-90,in=0] (r11.east);
+  \node[note, align=left, anchor=west] at (4.1,-1.6)
+       {\texttt{dequeueReusableCell}\\[-1pt]\texttt{(withIdentifier:for:)}};
+  \node[note, text=sheetRed, anchor=north, align=center, text width=75mm] at (2.3,-2.3)
+       {same object, still holds row 6's image $\to$ \texttt{cellForRowAt} sets \textbf{all}};
+\end{tikzpicture}
+
+\section{Snapshot diff: IDs, not content}
+\begin{tikzpicture}[sheet]
+  \tikzset{sid/.style={cell, minimum width=12mm, minimum height=4.8mm}}
+  \node[note] at (0,0.5) {old snapshot};
+  \node[note] at (3.0,0.5) {new snapshot};
+  \node[sid] (a0) at (0,0) {A};   \node[sid] (a1) at (3.0,0) {A};
+  \node[sid, draw=sheetRed, fill=sheetRed!8] (b0) at (0,-0.6) {B};
+  \node[sid, fill=sheetBlue!8] (c0) at (0,-1.2) {C};
+  \node[sid, fill=sheetBlue!8] (c1) at (3.0,-0.6) {C\,\textsuperscript{*}};
+  \node[sid, draw=sheetGreen, fill=sheetGreen!10] (d1) at (3.0,-1.2) {D};
+  \draw[flow] (a0) -- node[above, note]{kept} (a1);
+  \draw[flow, sheetBlue] (c0.east) -- node[below, sloped, note, pos=0.4]{move} (c1.west);
+  \node[note, text=sheetRed, left=1mm of b0] {delete};
+  \node[note, text=sheetGreen, right=1mm of d1] {insert};
+  \node[note, align=left, text width=33mm, anchor=north west] at (3.75,0.3)
+       {\textsuperscript{*}title changed, id same $\to$ the diff sees \emph{nothing}.
+        \texttt{reconfigureItems([C])}, then \texttt{apply}.};
+  \node[note, align=left, text width=76mm, anchor=north west, text=sheetRed] at (-1.0,-1.65)
+       {Whole model \emph{as} the id (\texttt{Hashable} over all fields) $\to$ an edit changes the
+        hash $\to$ delete + insert: flicker, lost selection. Two equal ids $\to$ crash.};
+\end{tikzpicture}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{``Diffable detects content changes.''} No — it diffs \textbf{identifiers} only.
+        Same ID + new title = no update until \texttt{reconfigureItems}/\texttt{reloadItems}.}
+  \trap{\textbf{Duplicate IDs} anywhere in the snapshot (across sections too) $\to$ runtime crash.
+        Never use a display name as the ID.}
+  \trap{Caching an \texttt{IndexPath} across an \texttt{apply} — positions shift; convert to the ID
+        with \texttt{itemIdentifier(for:)} immediately.}
+  \trap{Config closure capturing a model copy $\to$ reconfigure shows old data. Look it up by ID.}
+  \trap{Apply from main \emph{or} always the same background queue — never mix.}
+  \trap{\texttt{prepareForReuse} is not the place to set content — that is \texttt{cellForRowAt}.}
+\end{itemize}
+
+\section{\texttt{UITableViewCell.CellStyle}}
+{\footnotesize
+\begin{tabular}{@{}l l@{}}
+\toprule
+\texttt{.default} & title only (+ image) \\
+\texttt{.subtitle} & title, smaller grey subtitle \emph{below} \\
+\texttt{.value1} & title left, detail right-aligned (Settings) \\
+\texttt{.value2} & small blue label, then detail (Contacts) \\
+\bottomrule
+\end{tabular}}\\[1pt]
+{\scriptsize iOS 14+: \texttt{defaultContentConfiguration()} replaces \texttt{textLabel} /
+\texttt{detailTextLabel}.}
+
+\section{Remember}
+\textbf{``The pool gives you a \emph{used} cell — set everything, assume nothing.''}
+\textbf{``Snapshot = IDs; content = your store; reconfigure = repaint.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} compositional layout · self-sizing cells
+(\texttt{automaticDimension}, \texttt{.estimated}) · \texttt{NSDiffableDataSourceSectionSnapshot} (outlines) · prefetching}
+
+\end{document}

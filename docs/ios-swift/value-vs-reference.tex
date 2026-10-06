@@ -1,0 +1,194 @@
+% value-vs-reference.tex — struct vs class, identity, mutating, copy-on-write.
+% Sources (checked 2026-10-05):
+%   docs.swift.org/swift-book/documentation/the-swift-programming-language/classesandstructures
+%     (value vs reference, identity operators, let on structs)
+%   docs.swift.org/swift-book/documentation/the-swift-programming-language/methods (mutating)
+%   docs.swift.org/swift-book/documentation/the-swift-programming-language/memorysafety (inout, exclusivity)
+%   developer.apple.com/documentation/swift/isknownuniquelyreferenced(_:) (inout, native Swift classes)
+%   developer.apple.com/documentation/swift/choosing-between-structures-and-classes
+%   github.com/swiftlang/swift/blob/main/docs/OptimizationTips.rst (copy-on-write over a class box)
+% @labels: area=ios-swift kind=concept platform=apple topic=language,memory discussion=73
+% @tags: struct, class, value-semantics, reference-semantics, mutating, copy-on-write, isknownuniquelyreferenced, inout, identity, equatable
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,mutating,
+    nonmutating,inout,if,else,return,guard,self,nil,private,true,false,deinit,
+    AnyObject,Void,String,Bool,Int},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  var/.style={cell, minimum width=8mm, fill=sheetBlue!10},
+  obj/.style={box, draw=sheetGreen, fill=sheetGreen!10, font=\ttfamily\footnotesize},
+  buf/.style={box, draw=sheetBrown, fill=sheetBrown!10, font=\ttfamily\footnotesize},
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  ttl/.style={font=\bfseries\small},
+}
+
+\begin{document}
+
+\sheettitle{Value vs reference · mutating · copy-on-write}{ios-swift · folio}
+
+\oneliner{A \textbf{value type} (\texttt{struct}, \texttt{enum}, tuple) is
+\textbf{copied} on assignment / argument passing — every variable owns an
+independent value. A \textbf{reference type} (\texttt{class}, \texttt{actor},
+closure) is \textbf{shared} — assignment copies the \emph{pointer}, all variables
+see one object with an \emph{identity} (\texttt{===}). Default to
+\texttt{struct}; reach for \texttt{class} when you need identity.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Equality vs identity:} \texttt{==} = same \emph{value}
+        (\texttt{Equatable}, auto-synthesised for structs/enums whose members
+        conform). \texttt{===} = same \emph{object}; classes only, never synthesised.
+  \item \textbf{\texttt{let} differs:} \texttt{let s = aStruct} freezes the
+        \emph{whole value} (no property can change). \texttt{let c = aClass}
+        freezes only the \emph{reference} — \texttt{c.x = 1} still compiles.
+  \item \textbf{\texttt{mutating}:} a struct/enum method \emph{cannot modify
+        \texttt{self} by default} (\texttt{self} is an immutable copy). Mark it
+        \texttt{mutating} $\Rightarrow$ \texttt{self} is passed as
+        \texttt{inout}; it may assign properties or \texttt{self = …} (enum
+        state change). Callable \textbf{only on a \texttt{var}} — on a
+        \texttt{let} it is a compile error. Classes never need it (they mutate
+        through the reference). \texttt{nonmutating set} = storage lives
+        elsewhere (how \texttt{@State} works).
+  \item \textbf{\texttt{inout}} = copy-in / copy-out (write-back on return), not a
+        C pointer. Same var passed twice $\to$ exclusivity violation.
+  \item \textbf{Copy-on-write (COW):} \texttt{Array}, \texttt{Dictionary},
+        \texttt{Set}, \texttt{String} are structs that wrap a private
+        \textbf{class} buffer. \texttt{b = a} copies the header and bumps the
+        buffer's retain count — O(1), shared. The first \emph{mutation} asks
+        \texttt{isKnownUniquelyReferenced(\&buffer)}: \emph{false} $\to$ copy the
+        buffer (O(n)) then write; \emph{true} $\to$ write in place. Keep one
+        owner while mutating in a loop, or every append re-copies.
+  \item \textbf{Your own struct gets NO COW for free.} Memberwise copy is eager;
+        a stored class property is copied as a \emph{pointer} (shallow) — both
+        copies share it. Want value semantics over a heap object? Write COW
+        yourself (below).
+  \item \textbf{Stack vs heap is an optimiser detail}, not the definition: a
+        struct captured by an escaping closure or boxed in an existential lives
+        on the heap; a class may be stack-promoted. Argue \emph{copy vs share}.
+\end{itemize}
+
+\section{Choosing}
+{\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}p{36mm}p{38mm}@{}}
+\toprule
+\textbf{struct (default)} & \textbf{class — only when you need} \\
+\midrule
+models, DTOs, geometry, state & \textbf{identity} (``the same'' object) \\
+no identity, thread-safe copies & \textbf{inheritance} \\
+\texttt{Sendable} almost for free & \textbf{ObjC interop} / \texttt{NSObject} \\
+SwiftUI state diffs by value & \textbf{\texttt{deinit}} (cleanup) \\
+protocols for polymorphism & shared mutable state, resources \\
+\bottomrule
+\end{tabular}}
+
+\section{Example — COW by hand}
+\begin{lstlisting}[language=SwiftSheet]
+final class Box<T> { var v: T; init(_ v: T) { self.v = v } }
+struct Pixels {                        // value semantics
+  private var box: Box<[UInt8]>        // shared heap buffer
+  init(_ b: [UInt8]) { box = Box(b) }
+  var bytes: [UInt8] { box.v }         // reads: shared, free
+  mutating func set(_ i: Int, _ x: UInt8) {
+    if !isKnownUniquelyReferenced(&box) {
+      box = Box(box.v)                 // shared -> copy first
+    }
+    box.v[i] = x                       // unique -> in place
+  }
+}
+let p = Pixels([0, 0]); // p.set(0, 9)  error: p is a let
+\end{lstlisting}
+
+\columnbreak
+
+\section{Copy, share, copy-on-write}
+\begin{tikzpicture}[sheet, yscale=0.9]
+  % ── struct ─────────────────────────────────────
+  \node[ttl, anchor=west] at (-0.2,4.55) {struct: \texttt{var b = a; b.x = 9}};
+  \node[var] (a1) at (0.4,3.85) {a};
+  \node[obj, right=3mm of a1, draw=sheetBlue, fill=sheetBlue!6] (a1v) {x = 0};
+  \node[var] (b1) at (0.4,3.15) {b};
+  \node[obj, right=3mm of b1, draw=sheetBlue, fill=sheetBlue!6] (b1v) {x = 9};
+  \node[lbl, align=left, anchor=west] at (2.45,3.5) {two independent values\\\texttt{a.x} still \textbf{0}};
+  % ── class ──────────────────────────────────────
+  \node[ttl, anchor=west] at (-0.2,2.45) {class: \texttt{let d = c; d.x = 9}};
+  \node[var] (c1) at (0.4,1.85) {c};
+  \node[var] (d1) at (0.4,1.15) {d};
+  \node[obj] (o1) at (2.5,1.5) {Obj\\x = 9 · rc 2};
+  \draw[flow] (c1.east) -- (o1.west);
+  \draw[flow] (d1.east) -- (o1.west);
+  \node[lbl, align=left, anchor=west] at (3.55,1.5) {one object, one identity\\\texttt{c.x} is \textbf{9}, \texttt{c === d}};
+  % ── COW ────────────────────────────────────────
+  \node[ttl, anchor=west] at (-0.2,0.45) {Array COW: \texttt{var b = a}, then \texttt{b.append(4)}};
+  \node[var] (a2) at (0.4,-0.25) {a};
+  \node[var] (b2) at (0.4,-0.95) {b};
+  \node[buf] (s2) at (2.35,-0.6) {[1,2,3]\\rc 2};
+  \draw[flow] (a2.east) -- (s2.west);
+  \draw[flow] (b2.east) -- (s2.west);
+  \node[lbl] at (2.35,-1.35) {O(1): shared};
+  \draw[hot] (3.2,-0.6) -- node[lbl, above]{mutate:} node[lbl, below]{not unique} (4.35,-0.6);
+  \node[var] (a3) at (4.8,-0.25) {a};
+  \node[var] (b3) at (4.8,-0.95) {b};
+  \node[buf] (s3) at (6.5,-0.25) {[1,2,3] rc 1};
+  \node[buf, draw=sheetOrange, fill=sheetOrange!10] (t3) at (6.5,-0.95) {[1,2,3,4] rc 1};
+  \draw[flow] (a3.east) -- (s3.west);
+  \draw[hot] (b3.east) -- (t3.west);
+  \node[lbl] at (6.2,-1.55) {O(n) copy, once};
+  % ── struct holding a class ─────────────────────
+  \node[ttl, anchor=west] at (-0.2,-2.05) {struct holding a class — shallow copy};
+  \node[var, minimum width=14mm] (w1) at (0.7,-2.75) {w1.box};
+  \node[var, minimum width=14mm] (w2) at (0.7,-3.45) {w2.box};
+  \node[obj, draw=sheetRed, fill=sheetRed!6] (o4) at (3.0,-3.1) {CRef x = 42};
+  \draw[->, thick, sheetRed] (w1.east) -- (o4.west);
+  \draw[->, thick, sheetRed] (w2.east) -- (o4.west);
+  \node[lbl, align=left, anchor=west, text=sheetRed] at (4.1,-3.1) {\texttt{w2.box.x = 42}\\changes \texttt{w1} too};
+\end{tikzpicture}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Calling a \texttt{mutating} method on a \texttt{let} struct — compile error;
+        the same call on a \texttt{let} class instance compiles.}
+  \trap{\textbf{``Structs are COW.''} Only the stdlib collections (class storage +
+        \texttt{isKnownUniquelyReferenced}); \emph{your own structs do not get it}.}
+  \trap{Picking a class for ``shared state'' alone — the four real reasons are
+        \textbf{identity, inheritance, ObjC interop, \texttt{deinit}}; otherwise struct.}
+  \trap{``Structs live on the stack'' — implementation detail, not semantics.}
+  \trap{\texttt{let arr = [S()]; arr[0].x = 1} — compile error; \texttt{let}
+        freezes the elements too.}
+  \trap{Closures are \emph{reference} types: two copies share captured vars.}
+  \trap{\texttt{isKnownUniquelyReferenced} takes \texttt{inout} (\texttt{\&box}),
+        native Swift classes only; call it inside the \texttt{mutating} method.}
+\end{itemize}
+
+\section{What \texttt{let} / \texttt{var} lets you change}
+{\footnotesize
+\begin{tabular}{@{}l l l@{}}
+\toprule
+ & \texttt{struct} (value) & \texttt{class} (reference) \\ \midrule
+\texttt{let x} & \textbf{nothing} — no property, no rebind & its \texttt{var} properties; no rebind \\
+\texttt{var x} & any property, \texttt{mutating} methods & properties + rebind \texttt{x} \\
+passed to a func & a copy (\texttt{inout} to write back) & the same object \\
+\bottomrule
+\end{tabular}}\\[2pt]
+{\scriptsize Value: \texttt{struct enum} tuples, \texttt{Int String Array Dictionary Set
+Optional}. Reference: \texttt{class actor} closures, every \texttt{NSObject} (\texttt{NSString},
+\texttt{NSMutableArray}…).}
+
+\section{Remember}
+\textbf{Struct = photocopy, class = shared online document, COW = photocopy made
+lazily at the first pen stroke.} \emph{I-I-O-D} — \textbf{I}dentity,
+\textbf{I}nheritance, \textbf{O}bjC, \textbf{D}einit — the four reasons for a class.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} ARC \& ownership · \texttt{inout} \& exclusivity · \texttt{Sendable} · protocols / POP · \texttt{@State} (\texttt{nonmutating set}) · small-string optimisation}
+
+\end{document}

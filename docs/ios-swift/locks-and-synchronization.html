@@ -1,0 +1,88 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Locks &amp; synchronisation primitives — Apple platforms — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/ios-swift/locks-and-synchronization.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">81</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area current" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Locks &amp; synchronisation primitives — Apple platforms</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">ios-swift · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A <strong>lock</strong> makes a critical section mutually exclusive and has an
+<strong>owner</strong> (the thread that took it, which must release it); a <strong>semaphore</strong> is a
+<strong>counter</strong> with no owner; a <strong>serial queue</strong> or <strong>actor</strong> serialises by
+<em>ownership</em> instead. Pick by: is there an <code>await</code> inside? how short is it? do you
+need a count? Then: never block the cooperative pool, never hold a lock across a call-out.</p>
+<p class="sheet-tools"><a class="sheet-download" href="locks-and-synchronization.pdf" download>Download PDF</a> <a href="locks-and-synchronization.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-swift/locks-and-synchronization.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="locks-and-synchronization-fig1.svg" width="688" height="176" class="wide" alt="Locks &amp; synchronisation primitives — Apple platforms — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>The primitives</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>Primitive</strong></th><th><strong>since</strong></th><th><strong>recursive</strong></th><th><strong>Know this</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>Mutex&lt;State&gt;</code></td><td>iOS 18</td><td>no</td><td><code>Synchronization</code>; <code>~Copyable</code>, <code>Sendable</code>; <code>withLock</code> closure is sync <span class="math">⇒</span> no <code>await</code> inside</td></tr>
+<tr><td><code>OSAllocated-</code> <code>UnfairLock</code></td><td>iOS 16</td><td>no</td><td><code>import os</code>; heap-allocated = stable address; <code>withLock</code>, <code>lockIfAvailable</code></td></tr>
+<tr><td><code>os_unfair_lock</code></td><td>iOS 10</td><td>no</td><td>fastest; unlock on another thread <strong>aborts</strong>; Swift <code>&amp;lock</code> may copy/move it</td></tr>
+<tr><td><code>NSLock</code></td><td>iOS 2</td><td><strong>no</strong></td><td>2nd <code>lock()</code> on the same thread hangs forever; unlock on the locking thread</td></tr>
+<tr><td><code>NSRecursive-</code> <code>Lock</code></td><td>iOS 2</td><td>yes</td><td>same thread may re-take it; unlock as often</td></tr>
+<tr><td><code>pthread_</code> <code>mutex_t</code></td><td>POSIX</td><td>attribute</td><td><code>init</code>/<code>destroy</code>; heap-allocate it in Swift</td></tr>
+<tr><td><code>Dispatch-</code> <code>Semaphore</code></td><td>GCD</td><td>—</td><td>counter, <strong>no owner</strong>, any thread signals; freed while value <span class="math">&lt;</span> initial <span class="math">⇒</span> crash</td></tr>
+<tr><td>serial queue, <code>actor</code></td><td>—</td><td>—</td><td>ownership, not a lock; <code>q.sync</code> onto itself deadlocks</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>How it works</h2>
+<ul>
+<li>Uncontended locks are cheap; <strong>contention</strong> costs — copy out, work outside.</li>
+<li><strong>Barrier</strong> (<code>async(flags: .barrier)</code>) waits for earlier blocks, runs alone,  then lets reads resume — only on a <strong>private concurrent</strong> queue: on a global or  serial queue it is a plain <code>async</code>/<code>sync</code>.</li>
+<li><code>DispatchQueue.concurrentPerform(iterations:)</code> = parallel <code>for</code>, returns when  all iterations are done; give each iteration its own slot, never <code>append</code>.</li>
+<li><code>Thread {…}.start()</code>; selectors are <code>#selector(job(_:))</code>, not ObjC’s  <code>job:</code>; raw <code>pthread_create</code> takes its context via <code>Unmanaged</code>. Rarely  worth it over GCD / tasks.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Sizing: CPU- vs I/O-bound</h2>
+<p><strong>CPU-bound</strong>: threads <span class="math">≈</span> cores; more only adds context switches. <strong>I/O-bound</strong>: <span class="math">threads = cores / (1 - b)</span>, <span class="math">b</span> = fraction of time blocked (8 cores, <span class="math">b = 0.9</span> <span class="math">→</span> 80). On Apple you size <em>concurrency</em>, not threads: GCD and the cooperative pool (<span class="math">≈</span> one thread per core, never grows) own the threads — set <code>maxConcurrentOperationCount</code>, a task-group width, or <code>httpMaximumConnectionsPerHost</code>; do I/O with <code>async</code> APIs.</p>
+</section>
+<section class="sheet-section">
+<h2>RunLoop — sleeps when idle, wakes for work</h2>
+<p>Every thread has one; the <strong>main</strong> run loop is started by <code>UIApplicationMain</code>, a <strong>secondary</strong> thread must run its own — and with no source or timer it exits at once. A GCD worker never runs it, so a <code>Timer.scheduledTimer</code> made there never fires<span class="unverified">(unverified)</span>. <strong>Modes</strong> filter sources: a scroll switches main to <em>tracking</em> mode, so a timer in <code>.default</code> stalls — add it for <code>.common</code>. Touch a <code>RunLoop</code> only from its own thread.</p>
+</section>
+<section class="sheet-section">
+<h2>Example — the three you will write</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">import</span> Synchronization                      <span class="hljs-comment">// iOS 18</span>
+<span class="hljs-keyword">final</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">Counter</span>: <span class="hljs-title class_ inherited__">Sendable</span> {             <span class="hljs-comment">// no @unchecked</span>
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">let</span> n <span class="hljs-operator">=</span> <span class="hljs-type">Mutex</span>(<span class="hljs-number">0</span>)
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">next</span>() -&gt; <span class="hljs-type">Int</span> { n.withLock { <span class="hljs-variable">$0</span> <span class="hljs-operator">+=</span> <span class="hljs-number">1</span>; <span class="hljs-keyword">return</span> <span class="hljs-variable">$0</span> } } }
+<span class="hljs-keyword">final</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">Store</span> {                         <span class="hljs-comment">// reader-writer</span>
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">let</span> q <span class="hljs-operator">=</span> <span class="hljs-type">DispatchQueue</span>(label: <span class="hljs-string">&quot;store&quot;</span>,
+                                attributes: .concurrent)
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">var</span> d: [<span class="hljs-type">String</span>: <span class="hljs-type">Int</span>] <span class="hljs-operator">=</span> [:]
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">get</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">k</span>: <span class="hljs-type">String</span>) -&gt; <span class="hljs-type">Int</span>? { q.sync { d[k] } }
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">set</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">k</span>: <span class="hljs-type">String</span>, <span class="hljs-keyword">_</span> <span class="hljs-params">v</span>: <span class="hljs-type">Int</span>) {
+    q.async(flags: .barrier) { <span class="hljs-keyword">self</span>.d[k] <span class="hljs-operator">=</span> v } } }
+<span class="hljs-keyword">let</span> sem <span class="hljs-operator">=</span> <span class="hljs-type">DispatchSemaphore</span>(value: <span class="hljs-number">3</span>)       <span class="hljs-comment">// max 3 at once</span>
+<span class="hljs-keyword">for</span> job <span class="hljs-keyword">in</span> jobs {                           <span class="hljs-comment">// bg thread, not main</span>
+  sem.wait()                                <span class="hljs-comment">// wait BEFORE dispatch</span>
+  work.async { <span class="hljs-keyword">defer</span> { sem.signal() }; run(job) } }</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">“Semaphore(1) = mutex” — no owner: any thread signals, no priority boost.</li>
+<li class="trap"><code>sem.wait()</code> <em>inside</em> 15 queued blocks parks up to 12 workers → GCD  spawns more (thread explosion). On main: hang → watchdog.</li>
+<li class="trap"><code>&amp;m</code> on a <code>var m = pthread_mutex_t()</code>: valid for that call only — the lock  can move. Use <code>OSAllocatedUnfairLock</code> / <code>Mutex</code>.</li>
+<li class="trap">Appending to one array from concurrent blocks = data race (crash, lost items).</li>
+<li class="trap">A lock or semaphore held across <code>await</code>: the task may resume on another thread.</li>
+<li class="trap"><code>sleep(2)</code> blocks the thread; <code>Task.sleep(for:)</code> suspends the task.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>Short and sync <span class="math">→</span> Mutex. Has <code>await</code> <span class="math">→</span> actor. Counting <span class="math">→</span> semaphore.
+Many readers <span class="math">→</span> barrier. Owners beat inversion.</strong></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> concurrency · actors-reentrancy-isolation
+(actor vs Mutex) · concurrency-patterns (deadlock, CAS) · operationqueue-deep · swift-time-clock</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=ios-swift" title="area">ios-swift</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=concurrency" title="topic">concurrency</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=performance" title="topic">performance</a></li><li class="sheet-tag"><a href="/folios.html?tag=mutex">mutex</a></li><li class="sheet-tag"><a href="/folios.html?tag=os-unfair-lock">os-unfair-lock</a></li><li class="sheet-tag"><a href="/folios.html?tag=osallocatedunfairlock">osallocatedunfairlock</a></li><li class="sheet-tag"><a href="/folios.html?tag=nslock">nslock</a></li><li class="sheet-tag"><a href="/folios.html?tag=nsrecursivelock">nsrecursivelock</a></li><li class="sheet-tag"><a href="/folios.html?tag=pthread-mutex">pthread-mutex</a></li><li class="sheet-tag"><a href="/folios.html?tag=dispatchsemaphore">dispatchsemaphore</a></li><li class="sheet-tag"><a href="/folios.html?tag=barrier">barrier</a></li><li class="sheet-tag"><a href="/folios.html?tag=priority-inversion">priority-inversion</a></li><li class="sheet-tag"><a href="/folios.html?tag=runloop">runloop</a></li><li class="sheet-tag"><a href="/folios.html?tag=thread-pool-sizing">thread-pool-sizing</a></li><li class="sheet-tag"><a href="/folios.html?tag=concurrentperform">concurrentperform</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=ios-swift%2Flocks-and-synchronization.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/65">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

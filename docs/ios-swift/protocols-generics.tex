@@ -1,0 +1,170 @@
+% protocols-generics.tex — POP, protocol extensions and the static-dispatch trap, witness tables,
+% some vs any, generics + where, associated types, type erasure, the four dispatch kinds.
+% Sources (checked 2026-10-05):
+%   docs.swift.org/swift-book/documentation/the-swift-programming-language/protocols · …/generics ·
+%     …/opaquetypes (some vs any, boxed protocol types)
+%   github.com/swiftlang/swift-evolution: SE-0335 `any` (Swift 5.6), SE-0346 primary associated
+%     types (5.7), SE-0352 implicitly opened existentials (5.7), SE-0341 opaque parameters (5.7)
+%   developer.apple.com/videos/play/wwdc2015/408 "Protocol-Oriented Programming in Swift"
+%   developer.apple.com/videos/play/wwdc2016/416 "Understanding Swift Performance" (existential
+%     container: 3-word inline buffer, value witness + protocol witness tables)
+% @labels: area=ios-swift kind=concept platform=apple topic=language,performance discussion=69
+% @tags: protocol-oriented-programming, protocol-extensions, witness-table, method-dispatch, static-dispatch, opaque-types, existentials, some-vs-any, associatedtype, type-erasure, conditional-conformance, generic-specialization
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,protocol,extension,return,if,else,
+    guard,case,switch,self,Self,some,any,where,init,in,private,associatedtype,typealias},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\begin{document}
+
+\sheettitle{Protocols, generics \& method dispatch}{ios-swift · folio}
+
+\oneliner{A protocol is a contract; an extension adds shared behaviour. Only \textbf{requirements}
+(declared in the protocol body) go into the \textbf{witness table} and dispatch dynamically — a method
+that lives \emph{only} in the extension is picked \textbf{statically} from the declared type.
+\texttt{some P} = one hidden concrete type (static); \texttt{any P} = a box holding any conformer (dynamic).}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{POP} (WWDC15): compose behaviour from protocols + \textbf{protocol extensions}
+        (default implementations) instead of a base class. Works for \texttt{struct}/\texttt{enum},
+        allows many conformances and \emph{retroactive} conformance to types you don't own.
+        \texttt{protocol D: AnyObject} = class-only, so a delegate can be \texttt{weak}.
+  \item \textbf{Requirement vs extension-only}: a requirement with a default impl is still a
+        \emph{customisation point} — the conformer's version wins everywhere. An extension-only
+        method is not in the witness table $\to$ chosen by the \emph{static type}.
+  \item \textbf{Witness table (PWT)}: one per \emph{conformance} (\texttt{S: P}), mapping each
+        requirement to S's implementation — the protocol analogue of a class vtable.
+  \item \textbf{Associated type}: \texttt{associatedtype Item} — chosen by the \emph{conformer}
+        (\texttt{Sequence.Element}). A \textbf{generic parameter} \texttt{<T>} is chosen by the
+        \emph{caller}. Primary associated type (5.7): \texttt{protocol Collection<Element>} $\to$
+        \texttt{some Collection<Int>}, \texttt{any Collection<Int>}.
+  \item \textbf{Constraints}: \texttt{<T: Hashable \& Codable>}, \texttt{where C.Element: Equatable},
+        same-type \texttt{where A.Element == B.Element}. \textbf{Conditional conformance}:
+        \texttt{extension Array: Equatable where Element: Equatable}.
+  \item \textbf{\texttt{some P}} (opaque): the \emph{callee} fixes one concrete type; the caller can't
+        name it but the compiler knows it $\to$ static dispatch, specialisation, associated types
+        kept. All \texttt{return}s must be the \emph{same} type. As a parameter, \texttt{some P}
+        is sugar for \texttt{<T: P>}.
+  \item \textbf{\texttt{any P}} (existential, keyword since 5.6): a box that can hold \emph{any}
+        conformer — \texttt{[any Shape]} can mix types. Costs: 3-word inline buffer (bigger values go
+        to the heap), dynamic calls through the PWT, no specialisation. Pre-5.7 a protocol with
+        \texttt{associatedtype}/\texttt{Self} ``can only be used as a generic constraint''.
+  \item \textbf{Type erasure}: a concrete wrapper that hides the underlying type —
+        \texttt{AnySequence}, \texttt{AnyHashable}, \texttt{AnyPublisher}, \texttt{AnyView}; hand-rolled
+        by storing the conformer's methods as closures.
+  \item \textbf{Specialisation}: the optimiser clones generic code per concrete type (same module,
+        WMO, or \texttt{@inlinable}) $\to$ witness calls become direct calls.
+  \item \textbf{Class extensions} are statically dispatched too: you cannot \texttt{override} a
+        method declared only in an extension (unless \texttt{@objc}).
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+protocol P { func a() }                // requirement
+extension P {
+  func a() { print("ext a") }          // default impl
+  func b() { print("ext b") }          // NOT a requirement
+}
+struct S: P {
+  func a() { print("S a") };  func b() { print("S b") } }
+let p: any P = S()
+p.a()     // "S a"   requirement -> witness table
+p.b()     // "ext b" static: declared type is P
+S().b()   // "S b"   static: declared type is S
+func top<C: Collection>(_ c: C) -> C.Element?
+    where C.Element: Comparable { c.max() }
+func nums() -> some Collection<Int> { [1, 2, 3] }
+\end{lstlisting}
+
+\columnbreak
+
+\section{Why \texttt{p.b()} ignores \texttt{S.b}}
+\begin{tikzpicture}[sheet]
+  \tikzset{w/.style={cell, minimum width=27mm, minimum height=4.8mm, font=\ttfamily\scriptsize}}
+  % existential container
+  \node[note, anchor=south] at (0,1.05) {\texttt{let p: any P} = existential box};
+  \node[w, fill=sheetBlue!6] (v) at (0,0.6) {value buffer (3 words): S};
+  \node[w, fill=sheetBlue!6] (m) at (0,0.12) {type metadata $\to$ S};
+  \node[w, fill=sheetOrange!12, draw=sheetOrange] (pw) at (0,-0.36) {witness table ptr};
+  % PWT
+  \node[note, anchor=south, align=center] at (4.55,0.6) {PWT for \texttt{S: P}\\[-2pt]requirements only};
+  \node[w, fill=sheetOrange!12, draw=sheetOrange] (ra) at (4.55,0.36) {a() $\to$ S.a()};
+  \node[w, dashed, text=sheetGrey] (rb) at (4.55,-0.12) {b(): no slot};
+  \draw[hot] (pw.east) to[out=0,in=180] (ra.west);
+  % calls
+  \node[box, fill=sheetGreen!10, draw=sheetGreen, font=\ttfamily\footnotesize] (ca) at (0,-1.35) {p.a()};
+  \node[box, fill=sheetRed!6, draw=sheetRed, font=\ttfamily\footnotesize] (cb) at (0,-2.25) {p.b()};
+  \node[box, fill=sheetGreen!10, draw=sheetGreen, font=\ttfamily\footnotesize, text width=27mm]
+       (sa) at (4.55,-1.35) {S.a() $\to$ "S a"};
+  \node[box, fill=sheetRed!6, draw=sheetRed, font=\ttfamily\footnotesize, text width=27mm]
+       (eb) at (4.55,-2.25) {extension P.b() $\to$ "ext b"};
+  \draw[->, thick, sheetGreen] (ca.north) -- (pw.south);
+  \draw[->, thick, sheetGreen] (ra.east) -- ++(0.3,0) |- (sa.east);
+  \node[note, text=sheetGreen, anchor=west] at (6.25,-0.75) {dynamic};
+  \draw[->, thick, sheetRed] (cb.east) -- node[above, note, text=sheetRed]{static, compile time} (eb.west);
+  \node[note, text width=76mm, align=left, anchor=north west] at (-1.5,-2.7)
+       {Fix: declare \texttt{func b()} in the protocol body $\to$ it gets a PWT slot $\to$ \texttt{"S b"}.};
+\end{tikzpicture}
+
+\vspace{1pt}
+{\footnotesize
+\begin{tabular}{@{}p{12mm}p{39mm}p{22mm}@{}}
+\toprule
+\textbf{dispatch} & \textbf{used for} & \textbf{cost} \\
+\midrule
+\textcolor{sheetGreen}{\textbf{static}} & struct/enum methods, \texttt{final}, \texttt{static},
+  extension-only methods, globals & direct call, inlinable \\
+\textcolor{sheetBlue}{\textbf{vtable}} & overridable (non-\texttt{final}) class methods & 1 table lookup \\
+\textcolor{sheetOrange}{\textbf{witness}} & protocol requirement via \texttt{any P} or \texttt{<T: P>} & PWT lookup \\
+\textcolor{sheetRed}{\textbf{message}} & \texttt{@objc dynamic} (KVO, swizzling) & \texttt{objc\_msgSend}, slowest \\
+\bottomrule
+\end{tabular}\par}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{Extension-only method + existential} = static dispatch: \texttt{p.b()} prints
+        \texttt{"ext b"} even though \texttt{S} defines \texttt{b()}. The classic dispatch surprise.}
+  \trap{\textbf{``\texttt{some} and \texttt{any} are the same.''} \texttt{some} = one fixed type chosen
+        by the callee (returning \texttt{[Int]} or \texttt{Set<Int>} from two branches fails);
+        \texttt{any} = a runtime box, heterogeneous.}
+  \trap{\texttt{func make<T>() -> T} — \texttt{T} is the \emph{caller's} choice; to return a type
+        \emph{you} pick but hide, use \texttt{-> some P}.}
+  \trap{\texttt{private} is not a dispatch guarantee — the optimiser may \emph{infer} final;
+        \texttt{final} is the guarantee.}
+  \trap{User generics are \textbf{invariant}: \texttt{Box<Cat>} is not a \texttt{Box<Animal>}
+        (\texttt{Array}/\texttt{Optional} are special-cased).}
+\end{itemize}
+
+\section{Generic vs \texttt{some} vs \texttt{any}}
+{\footnotesize
+\begin{tabular}{@{}l l l l@{}}
+\toprule
+ & \texttt{<T: P>} & \texttt{some P} & \texttt{any P} \\ \midrule
+who picks the type & caller & callee (hidden) & anyone, at runtime \\
+one call, many types & no & no & yes (\texttt{[any P]}) \\
+dispatch & static / specialised & static & witness table \\
+storage & inline & inline & box, heap if $>$ 3 words \\
+\bottomrule
+\end{tabular}}\\[1pt]
+{\scriptsize Swift 5.7 (SE-0352): an \texttt{any P} can be passed straight to a \texttt{<T: P>}
+function — the existential is \emph{opened} for the call.}
+
+\section{Remember}
+\textbf{``In the body = in the table = dynamic. Only in the extension = static.''}
+\textbf{\texttt{some}} = \emph{same} type every time; \textbf{\texttt{any}} = \emph{any} type, in a box.
+Dispatch order fast$\to$slow: \textbf{S V W M} (Static, Vtable, Witness, Message).
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{Equatable}/\texttt{Hashable} synthesis ·
+\texttt{Self} requirements · \texttt{@inlinable} · KVO \& \texttt{@objc dynamic} · value vs reference types}
+
+\end{document}

@@ -1,0 +1,203 @@
+% instruments-performance.tex — the performance workflow and which tool answers
+% which question: Memory Graph vs Leaks vs Allocations, Time Profiler, Hangs,
+% os_signpost, App Launch, hitches, MetricKit, Zombies / sanitizers.
+% ARC / cycle shapes live in arc-ownership.tex — not repeated here.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/xcode/gathering-information-about-memory-use (Memory Graph,
+%     malloc stack logging) · Instruments help (Leaks, Allocations + Mark Generation, Time Profiler,
+%     Hangs, Animation Hitches, App Launch, Zombies, System Trace)
+%   developer.apple.com/documentation/xcode/understanding-hangs-in-your-app (250 ms)
+%   developer.apple.com/videos/play/wwdc2020/10077 "Eliminate animation hitches with XCTest"
+%     (hitch time ratio: < 5 ms/s good, 5–10 warning, > 10 critical)
+%   developer.apple.com/documentation/os/ossignposter · .../metrickit (MXMetricPayload, MXDiagnosticPayload)
+%   developer.apple.com/documentation/xcode/diagnosing-memory-thread-and-crash-issues-early
+%     (ASan and TSan cannot run together; Main Thread Checker)
+% A common wrong version of the dealloc test (assert inside main.async) asserts nothing — see Traps.
+% @labels: area=ios-swift kind=tooling platform=apple topic=performance,debugging,memory discussion=64
+% @tags: instruments, time-profiler, allocations, leaks-instrument, memory-graph-debugger, mark-generation, hangs, hitches, app-launch, os-signpost, metrickit, zombies
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,import,
+    if,else,return,guard,self,nil,try,await,async,throws,private,defer,
+    true,false,NSObject,Void,String},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  sy/.style={box, font=\scriptsize\bfseries, minimum width=22mm, minimum height=5.5mm,
+             inner sep=1.5pt, draw=sheetRed, fill=sheetRed!7},
+  tl/.style={box, font=\scriptsize, minimum height=5.5mm, inner sep=1.5pt},
+  tx/.style={tl, draw=sheetGreen!70!black, fill=sheetGreen!10},
+  dec/.style={diamond, aspect=2.4, draw=sheetOrange, thick, fill=sheetOrange!8,
+              font=\tiny, inner sep=0.5pt, align=center},
+  lp/.style={box, font=\scriptsize, minimum height=5mm, inner sep=1.5pt,
+             draw=sheetBrown, fill=sheetBrown!8},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Instruments · measure-first performance workflow}{ios-swift · folio}
+
+\oneliner{\textbf{Measure, don't guess}: baseline on a \textbf{real device} in the
+\textbf{Release/Profile} config $\to$ pick the instrument that answers \emph{this}
+symptom $\to$ change \textbf{one} thing $\to$ re-measure the same scenario. For each tool
+know its \textbf{name}, how to \textbf{read its number}, and what it \emph{cannot} see.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── the loop ──
+  \node[lp] (b)  at (0.9,3.8) {1 baseline\\(Release, device)};
+  \node[lp] (p)  at (4.0,3.8) {2 profile with the\\right instrument};
+  \node[lp] (c)  at (7.1,3.8) {3 change ONE thing};
+  \node[lp] (r)  at (10.0,3.8) {4 re-measure same\\scenario};
+  \node[lp] (g)  at (13.4,3.8) {5 guard: XCTest metric\\+ MetricKit field data};
+  \draw[flow] (b) -- (p); \draw[flow] (p) -- (c); \draw[flow] (c) -- (r); \draw[flow] (r) -- (g);
+  \draw[flow, dashed] (r.north) to[bend right=12] node[lbl, above]{not under budget? loop} (p.north);
+  % ── lane 1: memory ──
+  \node[sy] (m) at (0.9,3.0) {memory climbs};
+  \node[tl] (lk) at (3.35,3.0) {Instruments \textbf{Leaks}};
+  \node[dec] (d) at (5.35,3.0) {finds\\any?};
+  \node[tl] (al) at (9.0,3.0) {\textbf{Allocations}: Mark Generation,\\repeat flow ×5, mark again};
+  \node[tx] (mg) at (13.9,3.0) {\textbf{Memory Graph Debugger}:\\reference path = who holds it};
+  \draw[flow] (m) -- (lk); \draw[flow] (lk) -- (d);
+  \draw[flow] (d) -- node[lbl, above]{no = \emph{abandoned}} (al);
+  \draw[flow] (al) -- node[lbl, above]{survivors} (mg);
+  \draw[flow] (d.south) |- node[lbl, below, pos=0.75]{yes = unreachable (cycle / CF leak)} (12.4,2.55) -| ([xshift=-6mm]mg.south);
+  % ── lane 2: hang ──
+  \node[sy] (h) at (0.9,2.05) {UI freezes (hang)};
+  \node[tl] (hg) at (3.8,2.05) {\textbf{Hangs} (main thread\\blocked ≥ 250 ms)};
+  \node[tl] (tp) at (8.2,2.05) {\textbf{Time Profiler}: main thread only,\\Invert Call Tree, Hide System Libraries};
+  \node[tx] (fx) at (13.4,2.05) {move sync I/O / lock / compute off\\main, hop back for UI};
+  \draw[flow] (h) -- (hg); \draw[flow] (hg) -- (tp); \draw[flow] (tp) -- (fx);
+  % ── lane 3: hitch ──
+  \node[sy] (s) at (0.9,1.2) {scroll jank (hitch)};
+  \node[tl] (ah) at (3.8,1.2) {\textbf{Animation Hitches}:\\commit or render?};
+  \node[tl] (cp) at (7.35,1.2) {commit (main/CPU) $\to$\\Time Profiler in \texttt{cellFor…}};
+  \node[tl] (rd) at (10.45,1.2) {render (GPU) $\to$ Color\\Offscreen / Blended Layers};
+  \node[tx] (sf) at (13.9,1.2) {budget 16.7 ms @60 Hz\\8.3 ms @120 Hz};
+  \draw[flow] (s) -- (ah); \draw[flow] (ah) -- (cp); \draw[flow] (cp) -- (rd); \draw[flow] (rd) -- (sf);
+  % ── lane 4: launch ──
+  \node[sy] (l) at (0.9,0.35) {slow launch};
+  \node[tl] (la) at (4.3,0.35) {\textbf{App Launch}: pre-main (dyld)\\+ post-main (to first frame)};
+  \node[tl] (sp) at (8.6,0.35) {\texttt{os\_signpost} your phases\\$\to$ Points of Interest track};
+  \node[tx] (df) at (13.4,0.35) {fewer dylibs, no \texttt{+load};\\defer SDKs past first frame};
+  \draw[flow] (l) -- (la); \draw[flow] (la) -- (sp); \draw[flow] (sp) -- (df);
+  % ── lane 5: crash / race / field ──
+  \node[sy] (x) at (0.9,-0.5) {crash · race · field};
+  \node[tl] (z) at (3.6,-0.5) {\texttt{EXC\_BAD\_ACCESS} $\to$\\\textbf{Zombies} (ObjC) / \textbf{ASan}};
+  \node[tl] (ts) at (7.0,-0.5) {nondeterministic data\\$\to$ \textbf{TSan} (not with ASan)};
+  \node[tl] (mc) at (10.4,-0.5) {UIKit off main $\to$ \textbf{Main}\\\textbf{Thread Checker} (debug default)};
+  \node[tx] (mk) at (13.9,-0.5) {users only $\to$ \textbf{MetricKit}\\/ Xcode Organizer};
+  \draw[flow] (x) -- (z);
+  \draw[sheetGrey!50] (5.25,-0.8) -- (5.25,-0.2); \draw[sheetGrey!50] (8.65,-0.8) -- (8.65,-0.2);
+  \draw[sheetGrey!50] (12.25,-0.8) -- (12.25,-0.2);
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{The tools, precisely}
+\begin{itemize}
+  \item \textbf{Memory Graph Debugger} (Xcode debug bar, \emph{not} Instruments):
+        pauses the app, snapshots every live object and its references. Purple
+        \textbf{!} = leak/cycle; select an object $\to$ \emph{who holds it}. Snapshot
+        only, no timeline. Enable \textbf{Malloc Stack Logging} (scheme $\to$
+        Diagnostics) to get the \emph{allocation backtrace}.
+  \item \textbf{Leaks} (Instruments): periodically scans for \textbf{unreachable}
+        blocks — cycles, un-released CF. \textbf{Blind to abandoned memory}
+        (still reachable: unbounded \texttt{Dictionary} cache, observer array).
+  \item \textbf{Allocations}: every heap alloc over time. \textbf{Persistent} vs
+        \textbf{Transient}; \textbf{Mark Generation} (a.k.a. heapshot) — objects
+        created after a mark and still alive show under that generation. Stepwise
+        growth per repetition = abandoned or leaked.
+  \item \textbf{Footprint $\neq$ live bytes}: Jetsam kills on \emph{footprint}
+        (dirty pages, decoded bitmaps). 4000×3000 image = 48 MB decoded, any JPEG size.
+  \item \textbf{Time Profiler} \emph{samples} every thread's stack (\textasciitilde1 ms):
+        statistical, cheap, no call counts. Read it: \emph{Separate by Thread}
+        $\to$ main thread, \emph{Invert Call Tree}, \emph{Hide System Libraries};
+        chase high \textbf{self} weight (total includes callees). 80 \% CPU on a
+        background thread is harmless; 300 ms of sync I/O on main is a hang.
+  \item \textbf{Hang} = main thread not servicing the run loop (Hangs instrument,
+        \texttt{MXHangDiagnostic}). \textbf{Hitch} = frame presented late. Different
+        metric, different fix. \textbf{Thread Performance Checker} flags priority
+        inversions at runtime; \textbf{System Trace} shows \emph{why} a thread is not
+        running (lock, page fault).
+  \item \textbf{Hitch time ratio} = hitch ms per second of scroll: < 5 ms/s good,
+        5–10 warning, > 10 critical. Commit hitch = your layout/decode on main;
+        render hitch = offscreen passes (\texttt{masksToBounds}+radius, shadow w/o
+        \texttt{shadowPath}), blending.
+  \item \textbf{Launch}: pre-main = dyld loads/binds dylibs, ObjC setup,
+        static initializers; post-main = \texttt{main} $\to$ \texttt{didFinishLaunching}
+        $\to$ first frame. Measure \emph{cold} launch; the watchdog
+        (\texttt{0x8badf00d}) kills a stuck launch. CI:
+        \texttt{measure(metrics: [XCTApplicationLaunchMetric()])}.
+  \item \textbf{MetricKit}: \texttt{MXMetricPayload} (launch, hang rate, memory,
+        hitches — aggregated \textasciitilde daily) + \texttt{MXDiagnosticPayload}
+        (hang/crash/CPU/disk-write stacks). Tells you \emph{which} problem to bring
+        into Instruments.
+\end{itemize}
+
+\columnbreak
+
+\section{Example — signpost + MetricKit}
+\begin{lstlisting}[language=SwiftSheet]
+import os; import MetricKit
+let sp = OSSignposter(subsystem: "app.feed",
+                      category: .pointsOfInterest)
+func loadFeed() async throws -> [Post] {
+  let s = sp.beginInterval("Feed", id: sp.makeSignpostID())
+  defer { sp.endInterval("Feed", s) } // ~free unless recording
+  return try await api.fetchFeed()
+}
+final class Field: NSObject, MXMetricManagerSubscriber {
+  func didReceive(_ p: [MXMetricPayload]) {}     // aggregates
+  func didReceive(_ p: [MXDiagnosticPayload]) {} // hang stacks
+}
+MXMetricManager.shared.add(field)  // keep `field` alive
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{``Leaks says 0, so no leak''} — memory still climbs = \emph{abandoned}
+        memory. Allocations generations, then Memory Graph for the holder.}
+  \trap{Memory Graph lives in \textbf{Xcode}, Leaks/Allocations in
+        \textbf{Instruments} — three tools, three questions.}
+  \trap{Profiling \textbf{Debug} or the \textbf{Simulator}: no inlining, Mac CPU —
+        wrong hot spots. Profile scheme, slowest supported device. \texttt{NSLog}
+        timing perturbs the run — use \texttt{os\_signpost}.}
+  \trap{Dealloc test: \texttt{XCTAssertNil} inside \texttt{DispatchQueue.main.async}
+        asserts \emph{nothing} — the test already returned. Assert directly or await
+        an expectation.}
+  \trap{Zombies: ObjC objects only, never frees. ASan + TSan: not in one run.}
+  \trap{``16 ms per frame'' on a ProMotion phone: it is \textbf{8.3 ms}.}
+\end{itemize}
+
+\section{Runtime checkers (scheme $\to$ Diagnostics)}
+{\footnotesize
+\begin{tabular}{@{}l l@{}}
+\toprule
+Address Sanitizer & use-after-free, buffer overflow (C, Swift unsafe) \\
+Thread Sanitizer & data races — not together with ASan \\
+Undefined Behavior Sanitizer & C/ObjC undefined behaviour (overflow, misaligned) \\
+Main Thread Checker & UIKit/AppKit off main — on by default in Debug \\
+Thread Performance Checker & priority inversions, main-thread I/O \\
+Zombie Objects & message to a freed ObjC object \\
+\bottomrule
+\end{tabular}}
+
+\section{Remember}
+Growth: \textbf{Leaks $\to$ Allocations $\to$ Graph}. Freeze: \textbf{Hangs $\to$ Time
+Profiler (main, inverted)}. Jank: \textbf{Hitches $\to$ commit or render}. Field:
+\textbf{MetricKit}. Always: \emph{one change, re-measure}.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} arc-ownership (cycle shapes,
+dealloc test) · image downsampling / \texttt{NSCache} · run loop \& main thread ·
+concurrency (priority inversion) · SwiftUI re-render cost · ios-client-system-design}
+
+\end{document}
