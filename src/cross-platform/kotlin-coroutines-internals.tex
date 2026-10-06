@@ -1,0 +1,216 @@
+% kotlin-coroutines-internals.tex — how coroutines work underneath: the CPS transform
+% (Continuation param, Any? return, COROUTINE_SUSPENDED), the generated state machine (label,
+% spilled locals), ContinuationInterceptor + dispatch, CoroutineContext as an indexed set, Job
+% states and the parent/child tree, structured-concurrency rules, cooperative cancellation (and
+% the runCatching trap), exception propagation launch vs async, coroutineScope vs supervisorScope,
+% CoroutineExceptionHandler, NonCancellable, suspendCancellableCoroutine, dispatchers +
+% limitedParallelism. Diagram: state machine of a 2-suspension function + the Job tree.
+% Goes deeper than android-coroutines-platform (usage level) — does not repeat it.
+% Sources (checked 2026-09-26):
+%   https://github.com/Kotlin/KEEP/blob/master/proposals/coroutines.md  (CPS, state machines)
+%   https://kotlinlang.org/docs/exception-handling.html · https://kotlinlang.org/docs/cancellation-and-timeouts.html
+%   https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines/-job/  (states table)
+%   https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines/-dispatchers/-i-o.html
+%   https://kotlinlang.org/docs/coroutine-context-and-dispatchers.html
+% @labels: area=cross-platform kind=concept platform=android topic=concurrency,language discussion=117
+% @tags: kotlin-coroutines, continuation-passing-style, state-machine, coroutine-context, job-hierarchy, structured-concurrency, cooperative-cancellation, exception-propagation, supervisorscope, dispatchers, suspendcancellablecoroutine
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usepackage{tabularx}
+
+% Kotlin listings language; literate = one \hbox per char so 0xProto ligatures never form
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,suspend,when,is,in,out,
+    override,private,return,if,else,try,catch,finally,throw,while,null,this,it,inline},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {?.}{{\hbox{?}\hbox{.}}}2 {?:}{{\hbox{?}\hbox{:}}}2
+           {!!}{{\hbox{!}\hbox{!}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {::}{{\hbox{:}\hbox{:}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ar{\texttt{\hbox{-}\hbox{>}}}
+
+\tikzset{
+  st/.style={box, font=\tiny, inner sep=1.2pt, minimum height=4.2mm, text width=#1, align=left},
+  st/.default=24mm,
+  jb/.style={box, font=\tiny, inner sep=1.2pt, minimum height=4mm, minimum width=13mm},
+  ok/.style={jb, draw=sheetGreen, fill=sheetGreen!12},
+  ko/.style={jb, draw=sheetRed, fill=sheetRed!10},
+  gone/.style={jb, draw=sheetGrey, fill=sheetGrey!10, dashed},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+
+\begin{document}
+
+\sheettitle{Kotlin coroutines — internals}{cross-platform · folio}
+
+\oneliner{The compiler rewrites every \texttt{suspend fun} in \textbf{continuation-passing
+style}: it gains a hidden \texttt{Continuation} parameter, returns \texttt{Any?}, and its body
+becomes a \textbf{state machine} whose \texttt{label} says where to resume. A suspension
+returns \texttt{COROUTINE\_SUSPENDED} all the way up and frees the thread; later something calls
+\texttt{resumeWith}, the \textbf{dispatcher} picks a thread, the machine jumps to the next
+label. \texttt{Job}, scopes, cancellation = \emph{library} (kotlinx.coroutines) on top.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- A: state machine ----------
+  \node[hd] at (-0.3,3.35) {\texttt{suspend fun load(id)\{ val u = user(id); val p = posts(u); return Ui(u,p) \}}};
+  \node[st=27mm, draw=sheetBrown, fill=sheetBrown!8] (obj) at (1.25,2.7)
+    {\textbf{\texttt{load\$1 : ContinuationImpl}}\\\texttt{label}, \texttt{result},
+     \texttt{L\$0} (spilled \texttt{u}), \texttt{completion}};
+  \node[st=19mm] (s0) at (0.75,1.55) {\textbf{label 0}: \texttt{label=1};\\call \texttt{user(id,}\\\texttt{this)}};
+  \node[st=19mm] (s1) at (3.95,1.55) {\textbf{label 1}: \texttt{u=result};\\\texttt{L\$0=u; label=2};\\call \texttt{posts(u,this)}};
+  \node[st=19mm, draw=sheetGreen, fill=sheetGreen!10] (s2) at (7.4,1.55) {\textbf{label 2}: \texttt{u=L\$0};\\\texttt{p=result};\\\texttt{return Ui(u,p)}};
+  \draw[hot] (s0) -- node[lbl, above]{\texttt{resumeWith}} node[lbl, below]{\texttt{(u)}} (s1);
+  \draw[hot] (s1) -- node[lbl, above]{\texttt{resumeWith}} node[lbl, below]{\texttt{(p)}} (s2);
+  \node[lbl, text=sheetRed] (su0) at (0.75,0.6) {returns\\\texttt{COROUTINE\_SUSPENDED}};
+  \node[lbl, text=sheetRed] (su1) at (3.95,0.6) {returns\\\texttt{COROUTINE\_SUSPENDED}};
+  \draw[->, thick, dashed, sheetRed] (s0) -- (su0);
+  \draw[->, thick, dashed, sheetRed] (s1) -- (su1);
+  \node[lbl, text=sheetGreen!60!black] (dn) at (7.4,0.6) {\texttt{completion.resumeWith(}\\\texttt{Result.success(ui))}};
+  \draw[flow, draw=sheetGreen] (s2) -- (dn);
+  \draw[flow, dashed, draw=sheetBrown] (obj.east) -- ++(1.2,0) node[lbl, right, text=sheetBrown, align=left]
+    {one object per call, reused for every resume\\\texttt{invokeSuspend(result)} = \texttt{switch(label)}};
+  \node[lbl, text=sheetBlue, align=left, anchor=west] at (-0.3,0.0) {resume: callback thread $\to$ \texttt{resumeWith} $\to$
+    \texttt{DispatchedContinuation} $\to$ \texttt{dispatcher.dispatch()}\\$\to$ \texttt{invokeSuspend} on the chosen thread.
+    \textcolor{sheetGrey}{Fast path: callee returned a value, not the marker $\to$ fall through.}};
+  \draw[sheetGrey!40] (8.75,3.3) -- (8.75,-0.45);
+  % ---------- B: Job tree ----------
+  \node[hd] at (8.9,3.35) {Job tree — failure up, cancellation down};
+  \node[jb, draw=sheetBlue, minimum width=24mm] (root) at (12.6,2.85) {\texttt{coroutineScope \{\}} (Job)};
+  \node[ko] (p) at (10.6,2.05) {launch A: \textbf{Cancelling}};
+  \node[ok, draw=sheetBlue, fill=sheetBlue!8] (sv) at (14.7,2.05) {\texttt{supervisorScope}};
+  \node[ko] (c1) at (9.7,1.2) {async a1 \textbf{throws IOE}};
+  \node[gone] (c2) at (11.55,1.2) {launch a2};
+  \node[ko] (d1) at (13.8,1.2) {launch s1 throws};
+  \node[ok] (d2) at (15.7,1.2) {launch s2 lives};
+  \draw[flow] (root) -- (p); \draw[flow] (root) -- (sv);
+  \draw[flow] (p) -- (c1); \draw[flow] (p) -- (c2);
+  \draw[flow] (sv) -- (d1); \draw[flow] (sv) -- (d2);
+  \draw[hot, draw=sheetRed] (c1.north) to[bend left=35] node[lbl, left, text=sheetRed]{1 fail} (p.west);
+  \draw[hot, draw=sheetRed] (p.north) to[bend left=25] node[lbl, above left, text=sheetRed]{2 fail} (root.west);
+  \draw[hot, draw=sheetOrange] (p.south east) -- node[lbl, right, text=sheetOrange]{3 CE} (c2.north);
+  \draw[hot, draw=sheetOrange, dashed] (root.south east) to[bend left=15] node[lbl, right, text=sheetOrange]{4 cancel} (sv.north);
+  \node[lbl, text=sheetRed, align=left, anchor=west] at (13.1,0.6) {s1's error stops at the supervisor:\\goes to \emph{s1's} \texttt{CoroutineExceptionHandler}};
+  \node[lbl, text=sheetBrown, align=left, anchor=west] at (8.9,0.6) {5 scope waits for all children,\\then \textbf{rethrows IOE} to caller};
+  \node[lbl, align=left, anchor=west] at (8.9,0.0) {States: \texttt{New}\,(LAZY) $\to$ \texttt{Active} $\to$ \texttt{Completing}
+    (waits children) $\to$ \texttt{Completed};\\cancel/fail $\to$ \texttt{Cancelling} $\to$ \texttt{Cancelled}.
+    \texttt{isActive}: Active/Completing only.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{The CPS transform}
+\begin{itemize}\raggedright
+  \item \texttt{suspend fun f(x: A): T} $\to$ JVM \texttt{Object f(A x, Continuation<? super T> c)}.
+        Return is \texttt{T} \emph{or} the marker \texttt{COROUTINE\_SUSPENDED}
+        (\texttt{kotlin.coroutines.intrinsics}) — hence \texttt{Any?}.
+  \item \texttt{interface Continuation<in T> \{ val context: CoroutineContext;
+        fun resumeWith(result: Result<T>) \}} — a typed callback carrying its context.
+  \item Only functions that \emph{call} suspend functions get a state machine; one
+        \texttt{ContinuationImpl} subclass per function, \textbf{locals live across a
+        suspension are spilled} into fields (\texttt{L\$0}, \texttt{I\$0}…\unverified), the rest stay on
+        the stack. A suspended coroutine = that heap object, \textbf{no thread held}.
+\end{itemize}
+
+\section{Context \& dispatch}
+\begin{itemize}\raggedright
+  \item \texttt{CoroutineContext} = \textbf{indexed set} of \texttt{Element}s keyed by
+        \texttt{Key}: \texttt{Job}, \texttt{ContinuationInterceptor} (the dispatcher),
+        \texttt{CoroutineName}, \texttt{CoroutineExceptionHandler}. \texttt{a + b}: the right
+        side wins per key; \texttt{ctx[Job]}, \texttt{minusKey}.
+  \item A child's context = parent context + builder arg + a \textbf{new child Job}.
+        Passing \texttt{Job()} as an argument \textbf{breaks the parent link}.
+  \item Dispatcher = interceptor: \texttt{interceptContinuation} wraps so \texttt{resume}
+        $\to$ \texttt{dispatch()}.
+  \item \texttt{Default}: \#cores (min 2), CPU work. \texttt{IO}: 64 or \#cores, whichever is
+        larger — \textbf{shares threads with Default}, so \texttt{withContext(IO)} from Default
+        often does not switch thread. \texttt{IO.limitedParallelism(n)} is \emph{elastic}
+        (beyond the 64); \texttt{Default.limitedParallelism(n)} is a view within Default.
+        \texttt{Main.immediate}: no re-post if already on main.
+\end{itemize}
+
+\section{Example — bridge a callback, cancel cleanly}
+\begin{lstlisting}[language=KotlinSheet]
+suspend fun Call.await(): Response =
+  suspendCancellableCoroutine { cont ->
+    cont.invokeOnCancellation { cancel() }   // propagate inward
+    enqueue(object : Callback {
+      override fun onResponse(c: Call, r: Response) = cont.resume(r)
+      override fun onFailure(c: Call, e: IOException) =
+        cont.resumeWithException(e)
+    })
+  }
+suspend fun crunch(xs: List<Int>) = withContext(Dispatchers.Default) {
+  for (x in xs) { ensureActive(); heavy(x) }  // cooperative
+}
+try { work() } finally {
+  withContext(NonCancellable) { db.flush() } // may suspend
+}
+runCatching { fetch() }          // TRAP: also catches CancellationException
+  .onFailure { if (it is CancellationException) throw it }
+\end{lstlisting}
+
+\columnbreak
+
+\section{Structured concurrency \& cancellation}
+\begin{itemize}\raggedright
+  \item Rules: every coroutine has a parent Job; a parent \textbf{completes only after its
+        children}; \textbf{cancelling a parent cancels all children}; a child failing with a
+        non-\texttt{CancellationException} \textbf{cancels its parent} and so its siblings.
+  \item \texttt{job.cancel()} takes only a \texttt{CancellationException} = \emph{normal}:
+        parent \textbf{not} cancelled, handlers ignore it.
+  \item Cancellation is \textbf{cooperative}: a flag that bites at the next
+        \emph{cancellable} suspension point (\texttt{delay}, \texttt{yield},
+        \texttt{withContext}, \texttt{await}…) by throwing \texttt{CancellationException}.
+        CPU loops check \texttt{isActive}/\texttt{ensureActive()}/\texttt{yield()}.
+  \item Suspending in \texttt{finally} after cancel throws again $\to$
+        \texttt{withContext(NonCancellable)}. \texttt{withTimeout} throws a CE subclass.
+\end{itemize}
+
+\section{Exceptions — who sees what}
+{\scriptsize
+\noindent\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{22mm}L@{}}
+\toprule
+\textbf{Where} & \textbf{What happens to an exception} \\
+\midrule
+root \texttt{launch} & uncaught $\to$ its \texttt{CoroutineExceptionHandler}, else the thread's
+  uncaught handler (Android: crash) \\
+root \texttt{async} & stored in the \texttt{Deferred}; thrown at \texttt{await()};
+  a CEH on it has \textbf{no effect} \\
+any child & delegated to the parent, up to the root — a CEH on a child is \textbf{never used};
+  an un-awaited child \texttt{async} still fails the parent \\
+\texttt{coroutineScope} & cancels the rest, waits, \textbf{rethrows} to the caller —
+  a normal \texttt{try/catch} around it works \\
+\texttt{supervisorScope} / \texttt{SupervisorJob} & child failure is not propagated; direct
+  children use \emph{their own} CEH (like roots) \\
+several fail & first exception wins, the rest are \texttt{suppressed} \\
+\bottomrule
+\end{tabularx}}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{\texttt{runCatching}/\texttt{catch (e: Exception)} swallows
+        \texttt{CancellationException}: the coroutine runs on after cancel.}
+  \trap{\texttt{launch(SupervisorJob())} in a scope: that Job becomes the parent — nothing
+        supervised, scope cancel no longer reaches it.}
+  \trap{\texttt{try/catch} around \texttt{launch \{\}} catches nothing — the exception goes up
+        the Job tree, not up the call stack.}
+  \trap{Blocking calls ignore cancel — use \texttt{runInterruptible}.}
+\end{itemize}
+
+\textbf{Remember:} \emph{suspend = callback + state machine · failure up, cancel down ·
+CE is normal · handler at the root.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} android-coroutines-platform ·
+kotlin-flow-deep · kotlin-under-the-hood · kmp-stack-concurrency · kotlin-language ·
+concurrency (Swift) · swift6-strict-concurrency}
+
+\end{document}

@@ -1,0 +1,194 @@
+% kotlin-under-the-hood.tex — what Kotlin compiles to on the JVM: file facades (FileNameKt),
+% properties/getters, const vs @JvmField, companion + @JvmStatic, object INSTANCE (class-init
+% thread safety), default args ($default + mask) and @JvmOverloads, data-class members, lambdas via
+% invokedynamic (2.0), value-class mangling and box-impl, lateinit vs nullable, parameter null
+% checks, when -> instanceof chain / typeSwitch / WhenMappings tableswitch, read-only vs immutable
+% collections, Sequence vs Iterable, boxing and the Integer cache, K2/FIR, Kotlin/Native memory.
+% Diagram: one Kotlin source file mapped to the classes and members it compiles to.
+% Complements kotlin-language (language view) and kmp-fundamentals-interop (the ObjC side).
+% Sources (checked 2026-09-26):
+%   https://kotlinlang.org/docs/java-to-kotlin-interop.html  (FileNameKt, @JvmStatic/@JvmField/const,
+%     @JvmOverloads, lateinit field exposure, internal mangling, Nothing -> raw type)
+%   https://kotlinlang.org/docs/whatsnew20.html  (lambdas via invokedynamic by default, -Xlambdas=class; K2/FIR)
+%   https://kotlinlang.org/docs/whatsnew2220.html · https://kotlinlang.org/docs/whatsnew2420.html
+%     (when with is-checks -> SwitchBootstraps.typeSwitch on JVM 21+: experimental 2.2.20, stable+default 2.4.20)
+%   https://kotlinlang.org/docs/inline-classes.html · https://kotlinlang.org/docs/data-classes.html
+%   https://kotlinlang.org/docs/sequences.html · https://kotlinlang.org/docs/collections-overview.html
+%   https://kotlinlang.org/docs/native-memory-manager.html
+% @labels: area=cross-platform kind=concept platform=android topic=language,performance,memory discussion=122
+% @tags: kotlin, jvm-bytecode, companion-object, jvmstatic, default-arguments, invokedynamic, value-class, lateinit, kotlin-collections, sequences, boxing, k2-compiler
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usepackage{tabularx}
+
+% Kotlin listings language; literate = one \hbox per char so 0xProto ligatures never form
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,suspend,when,is,in,out,
+    override,private,return,if,else,throw,null,this,it,inline,value,const,companion,lateinit,
+    constructor,internal},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {?.}{{\hbox{?}\hbox{.}}}2 {?:}{{\hbox{?}\hbox{:}}}2
+           {!!}{{\hbox{!}\hbox{!}}}2 {===}{{\hbox{=}\hbox{=}\hbox{=}}}3 {==}{{\hbox{=}\hbox{=}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {::}{{\hbox{:}\hbox{:}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\eqeqeq{\texttt{\hbox{=}\hbox{=}\hbox{=}}}
+\newcommand\bb{\texttt{\hbox{!}\hbox{!}}}
+\newcommand\sq{\texttt{\hbox{?}\hbox{.}}}
+\newcommand\cc{\texttt{\hbox{:}\hbox{:}}}
+
+\tikzset{
+  src/.style={box, font=\tiny\ttfamily, inner sep=1.2pt, align=left, anchor=west, text width=62mm,
+              draw=sheetGrey, fill=sheetGrey!6, minimum height=3.6mm},
+  cls/.style={box, font=\tiny, inner sep=1.4pt, align=left, anchor=north west, text width=#1},
+  cls/.default=42mm,
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+  map/.style={->, thick, draw=#1!80!black},
+}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+
+\begin{document}
+
+\sheettitle{Kotlin under the hood — what reaches the JVM}{cross-platform · folio}
+
+\oneliner{The JVM knows nothing about Kotlin: no top-level functions, no properties, no
+companions, no default arguments, no value classes, no \texttt{suspend}. \textbf{kotlinc}
+lowers each feature to plain classes, static methods, synthetic bridges and runtime helper
+calls (\texttt{kotlin.jvm.internal.Intrinsics}). Knowing the lowering explains Java-interop
+annotations, boxing costs, \texttt{\$default} frames in stack traces, and why a read-only
+\texttt{List} can still change.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[hd] at (-0.3,3.55) {\texttt{User.kt} $\to$ the classes \texttt{javap} shows};
+  \node[src] (s1) at (-0.3,3.1)  {@JvmInline value class UserId(val raw: String)};
+  \node[src] (s2) at (-0.3,2.62) {data class User(val id: UserId, val name: String = "")};
+  \node[src] (s3) at (-0.3,2.14) {object Registry \{ fun add(u: User) \{ … \} \}};
+  \node[src] (s4) at (-0.3,1.66) {class Api \{ companion object \{\\\ \ const val V = 2; @JvmStatic fun create() = Api() \} \}};
+  \node[src] (s5) at (-0.3,1.1)  {fun greet(u: User) = "Hi \$\{u.name\}"\\val users = mutableListOf<User>()};
+  % class boxes
+  \node[cls=44mm, draw=sheetGreen, fill=sheetGreen!8] (cU) at (7.1,3.45)
+    {\textbf{\texttt{final class User}} — field \texttt{id: String} (\textbf{unboxed}), \texttt{name};
+     \texttt{getId-<hash>()} (mangled) · \texttt{equals/hashCode/toString} · \texttt{component1/2}
+     · \texttt{copy} + \texttt{copy\$default} · synthetic defaults ctor};
+  \node[cls=42mm, draw=sheetOrange, fill=sheetOrange!8] (cV) at (11.95,3.45)
+    {\textbf{\texttt{final class UserId}} — only for boxing: \texttt{box-impl},
+     \texttt{unbox-impl}, static \texttt{constructor-impl}\unverified; elsewhere it \emph{is} a
+     \texttt{String}};
+  \node[cls=44mm, draw=sheetBlue, fill=sheetBlue!6] (cR) at (7.1,2.05)
+    {\textbf{\texttt{final class Registry}} — \texttt{static final Registry INSTANCE} set in
+     \texttt{<clinit>} (JVM class init = lazy + thread-safe)};
+  \node[cls=42mm, draw=sheetBlue, fill=sheetBlue!6] (cA) at (11.95,2.55)
+    {\textbf{\texttt{Api}} — \texttt{static final int V = 2} (inlined at call sites),
+     \texttt{static Companion Companion}, \texttt{static create()} bridge ·
+     \textbf{\texttt{Api\$Companion}} — instance \texttt{create()}};
+  \node[cls=44mm, draw=sheetBrown, fill=sheetBrown!8] (cK) at (7.1,1.2)
+    {\textbf{\texttt{final class UserKt}} (file facade) — \texttt{static String greet(User)},
+     \texttt{private static final List users} + \texttt{getUsers()}, \texttt{<clinit>}};
+  \node[cls=42mm, draw=sheetGrey, fill=white] (cN) at (11.95,1.5)
+    {public params get a null check in the preamble\\(\texttt{Intrinsics.checkNotNullParameter}\unverified):
+     a \texttt{null} from Java throws NPE \emph{at the door}};
+  \draw[map=sheetOrange] (s1.east) -- (6.75,3.1) -- (6.75,3.62) -- (12.6,3.62) -- (12.6,3.45);
+  \draw[map=sheetGreen] (s2.east) -- ++(0.3,0) |- ([yshift=-3mm]cU.north west);
+  \draw[map=sheetBlue] (s3.east) -- ++(0.15,0) |- ([yshift=-2.5mm]cR.north west);
+  \draw[map=sheetBlue] (s4.east) -- ++(0.45,0) |- ([yshift=0.6mm]cA.south west) ;
+  \draw[map=sheetBrown] (s5.east) -- ++(0.15,0) |- ([yshift=-3mm]cK.north west);
+  \node[lbl, text=sheetBrown, align=left, anchor=west] at (-0.3,0.12) {See it yourself: IDE \emph{Tools $\to$ Kotlin
+    $\to$ Show Kotlin Bytecode $\to$ Decompile}, or \texttt{javap -c -p}.\\\texttt{@file:JvmName("Users")} renames the
+    facade; \texttt{internal} members get \texttt{name\$module} names.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Declarations $\to$ JVM}
+\begin{itemize}\raggedright
+  \item \textbf{Properties} = private field + \texttt{getX()}/\texttt{setX()} (\texttt{isX}
+        stays \texttt{isX}). \texttt{@JvmField} exposes the field; \texttt{const val}
+        (primitive/String, top-level/\texttt{object}/companion) is a compile-time constant
+        \textbf{copied into callers} — change it, recompile them.
+  \item \textbf{Companion} = nested class \texttt{Outer\$Companion} + static field; its
+        members are \emph{instance} methods. \texttt{@JvmStatic} adds a real static in
+        \texttt{Outer}, so Java writes \texttt{Api.create()}.
+  \item \textbf{Default args}: one body + synthetic \texttt{f\$default(args…, int mask,
+        Object)}; each bit of \texttt{mask} says ``use the default''. Java sees only the full
+        signature — add \texttt{@JvmOverloads} for telescoping overloads.
+  \item \textbf{Lambdas}: \texttt{invokedynamic} + \texttt{LambdaMetafactory} by default
+        since \textbf{2.0} (smaller APKs; not serializable; \texttt{-Xlambdas=class} reverts).
+        Captured \texttt{var}s become \texttt{Ref.IntRef}/\texttt{ObjectRef}.
+  \item \textbf{\texttt{lateinit var}}: non-null field; the getter null-checks and throws
+        \texttt{UninitializedPropertyAccessException}; \cc\texttt{x.isInitialized}; no
+        primitives. A nullable \texttt{var} instead makes every read \sq/\bb.
+  \item No checked exceptions in Kotlin: without \texttt{@Throws(IOException}\cc\texttt{class)} Java
+        cannot \texttt{catch (IOException e)} around the call — ``never thrown in try''.
+\end{itemize}
+
+\section{Example — Java-facing API}
+\begin{lstlisting}[language=KotlinSheet]
+class Client @JvmOverloads constructor(
+  val url: String, val retries: Int = 3, val gzip: Boolean = true) {
+  companion object {
+    const val VERSION = 2        // Java: Client.VERSION (inlined)
+    @JvmField val TAG = "client" // Java: Client.TAG (static field)
+    @JvmStatic fun local() = Client("https://example.com")
+    fun plain() = 1              // Java: Client.Companion.plain()
+  }
+  @Throws(IOException::class) fun fetch(): ByteArray = TODO()
+}
+val a: Int? = 1000; val b: Int? = 1000
+a == b    // true  -> equals()
+a === b   // false -> two Integer boxes (cache is -128..127)
+\end{lstlisting}
+
+\columnbreak
+
+\section{Control flow \& collections}
+\begin{itemize}\raggedright
+  \item \texttt{when (s)} on \textbf{sealed}/\texttt{is}: an \texttt{instanceof} chain; on
+        JVM 21+ a single \texttt{invokedynamic} \texttt{SwitchBootstraps.typeSwitch}
+        (experimental 2.2.20, \textbf{default since 2.4.20}). On an \textbf{enum}: synthetic
+        \texttt{\$WhenMappings} ordinal table + \texttt{tableswitch}\unverified.
+  \item \textbf{Read-only $\neq$ immutable}: \texttt{List} is a compile-time view of
+        \texttt{java.util.List}; \texttt{listOf(a, b)} is \texttt{Arrays.asList}-backed\unverified,
+        \texttt{mutableListOf} an \texttt{ArrayList} — a cast or Java code can mutate it.
+        \texttt{setOf} iterates in insertion order.
+  \item \textbf{Iterable} ops are eager — every step builds a new list. \textbf{Sequence}
+        is lazy, \emph{per element} (map 1 $\to$ filter 1 $\to$ \ldots), short-circuits
+        (\texttt{first}); pays off for long chains/big data, not 10 items or \texttt{sorted()}.
+\end{itemize}
+
+\section{Boxing}
+\begin{itemize}\raggedright
+  \item \texttt{Int} $\to$ \texttt{int}; \texttt{Int?}, \texttt{List<Int>}, generic
+        \texttt{T} $\to$ \texttt{Integer}. \texttt{IntArray} = \texttt{int[]},
+        \texttt{Array<Int>} = \texttt{Integer[]}. \eqeqeq{} on boxes compares objects.
+\end{itemize}
+
+\section{Compiler \& targets}
+\begin{itemize}\raggedright
+  \item \textbf{K2} (stable, default since \textbf{2.0}, May 2024): new frontend \textbf{FIR}
+        feeds a shared \textbf{IR} backend $\to$ JVM bytecode, JS, Wasm, or LLVM (Native).
+  \item \textbf{Kotlin/Native}: LLVM machine code, a \textbf{tracing GC} (new memory
+        manager, default since 1.7.20, no \texttt{freeze}); ARC only at the ObjC/Swift edge.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{``\texttt{List} is immutable'' — only a read-only \emph{interface}.}
+  \trap{\texttt{foo\$default} in a trace = the default-args bridge.}
+  \trap{Changed a library \texttt{const val}: callers keep the \emph{old} inlined value.}
+\end{itemize}
+
+\textbf{Remember:} \emph{FileKt · INSTANCE · Outer\$Companion · \$default + mask · indy
+lambdas · List = java.util.List.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} kotlin-language ·
+kotlin-type-system-generics · kotlin-coroutines-internals · kotlin-dsl-delegation-inline ·
+kmp-fundamentals-interop · android-build-performance}
+
+\end{document}

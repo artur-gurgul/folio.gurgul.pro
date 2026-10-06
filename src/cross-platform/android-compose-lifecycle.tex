@@ -1,0 +1,198 @@
+% android-compose-lifecycle.tex — Activity/Fragment lifecycle, configuration changes
+% (rotation recreates the Activity), ViewModel + viewModelScope, SavedStateHandle and
+% process death, Jetpack Compose (recomposition, remember/rememberSaveable, hoisting,
+% stability + skipping, modifier order, side effects) and the Compose <-> SwiftUI map.
+% Sources (checked 2026-10-06):
+%   developer.android.com/reference/android/app/Activity (onSaveInstanceState: "will occur after
+%     onStop() for applications targeting platforms starting with Build.VERSION_CODES.P")
+%   developer.android.com/guide/components/activities/state-changes (configuration changes
+%     recreate the Activity) · /topic/libraries/architecture/saving-states (ViewModel vs saved
+%     state vs process death; Bundle size) · /guide/fragments/lifecycle (viewLifecycleOwner)
+%   developer.android.com/topic/libraries/architecture/viewmodel (ViewModelStore, onCleared,
+%     viewModelScope) · /reference/android/os/TransactionTooLargeException (1 MB Binder buffer)
+%   developer.android.com/develop/ui/compose/performance/stability/strongskipping ("enabled by
+%     default in Kotlin 2.0.20"; unstable params compared with ===; lambdas auto-remembered)
+%   developer.android.com/develop/ui/compose/side-effects · /lifecycle · /modifiers (order)
+% @labels: area=cross-platform kind=concept platform=android topic=ui,architecture discussion=109
+% @tags: activity-lifecycle, configuration-change, process-death, viewmodel, savedstatehandle, jetpack-compose, recomposition, remembersaveable, state-hoisting, compose-stability, launchedeffect, compose-vs-swiftui
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usepackage{tabularx}
+
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,suspend,when,is,in,out,
+    override,private,return,if,else,import,package,companion,by,lazy,launch,flow,emit,collect},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  st/.style={box, font=\scriptsize\bfseries, minimum width=15mm, minimum height=5mm, inner sep=1pt},
+  cb/.style={font=\tiny\ttfamily, text=black!85, inner sep=0.5pt},
+  ios/.style={font=\tiny\itshape, text=sheetGrey, align=center, inner sep=0.5pt},
+  bar/.style={draw=none, minimum height=3mm, inner sep=0pt, font=\tiny, text=white},
+  rl/.style={font=\tiny, anchor=east, inner sep=1pt},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+
+\begin{document}
+
+\sheettitle{Android lifecycle, ViewModel \& Jetpack Compose}{android · folio}
+
+\oneliner{An Activity is \textbf{destroyed and recreated} on every configuration change
+(rotation, locale, dark mode, window size); the \textbf{ViewModel} survives that, the
+\textbf{saved-state Bundle} survives \textbf{process death}, and Compose redraws UI as a
+\textbf{function of state} — re-running only the composables that \emph{read} a changed
+\texttt{State}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- Activity lifecycle state machine ----------
+  \node[font=\bfseries\scriptsize, anchor=west] at (-0.3,2.95) {Activity \texttt{Lifecycle.State} + callbacks};
+  \node[st, draw=sheetGrey, fill=sheetGrey!8] (d) at (0.4,1.6) {DESTROYED};
+  \node[st] (c) at (2.4,1.6) {CREATED};
+  \node[st] (s) at (4.4,1.6) {STARTED};
+  \node[st, draw=sheetGreen, fill=sheetGreen!12] (r) at (6.4,1.6) {RESUMED};
+  \draw[flow, draw=sheetBlue] (d.north) to[bend left=35] node[cb, above]{onCreate} (c.north);
+  \draw[flow, draw=sheetBlue] (c.north) to[bend left=35] node[cb, above]{onStart} (s.north);
+  \draw[flow, draw=sheetBlue] (s.north) to[bend left=35] node[cb, above]{onResume} (r.north);
+  \draw[flow, draw=sheetOrange] (r.south) to[bend left=35] node[cb, below]{onPause} (s.south);
+  \draw[flow, draw=sheetOrange] (s.south) to[bend left=35] node[cb, below]{onStop} (c.south);
+  \draw[flow, draw=sheetOrange] (c.south) to[bend left=35] node[cb, below]{onDestroy} (d.south);
+  \node[ios] at (2.4,0.45) {$\approx$ viewDidLoad\\(onRestart on return)};
+  \node[ios] at (4.4,0.45) {visible\\$\approx$ viewWillAppear};
+  \node[ios] at (6.4,0.45) {focused, input\\$\approx$ scene active};
+  \node[lbl, text=sheetBrown, anchor=west] at (-0.3,0.0) {\texttt{onSaveInstanceState} runs after \texttt{onStop} (API 28+): the Bundle is written before the process may die};
+  % ---------- rotation + process-death timeline ----------
+  \node[font=\bfseries\scriptsize, anchor=west] at (8.4,2.95) {What survives what};
+  \foreach \y/\t in {2.55/Activity, 2.1/\texttt{remember\{\}}, 1.65/saved Bundle, 1.2/ViewModel, 0.75/process}
+    \node[rl] at (10.3,\y) {\t};
+  % event lines first: a bar that continues across an event hides the line
+  \draw[sheetBlue, dashed, thick] (11.8,2.8) -- (11.8,0.45) node[lbl, below, text=sheetBlue]{rotate};
+  \draw[sheetRed, dashed, thick] (14.55,2.8) -- (14.55,0.45) node[lbl, below, text=sheetRed]{bg + killed};
+  \node[bar, fill=sheetBlue, minimum width=13mm] at (11.05,2.55) {\#1};
+  \node[bar, fill=sheetBlue, minimum width=19mm] at (13.05,2.55) {\#2 new object};
+  \node[bar, fill=sheetBlue, minimum width=17mm] at (15.55,2.55) {\#3};
+  \node[bar, fill=sheetGrey, minimum width=13mm] at (11.05,2.1) {x = 5};
+  \node[bar, fill=sheetRed, minimum width=19mm] at (13.05,2.1) {reset: x = 0};
+  \node[bar, fill=sheetRed, minimum width=17mm] at (15.55,2.1) {reset};
+  \node[bar, fill=sheetGreen, minimum width=60mm] at (13.4,1.65) {rememberSaveable + SavedStateHandle: q = ble, restored each time};
+  \node[bar, fill=sheetOrange, minimum width=34mm] at (12.1,1.2) {same instance, same StateFlow};
+  \node[bar, fill=sheetRed, minimum width=17mm] at (15.55,1.2) {NEW VM};
+  \node[bar, fill=sheetGrey, minimum width=34mm] at (12.1,0.75) {pid 4711};
+  \node[bar, fill=sheetGrey!60, minimum width=17mm] at (15.55,0.75) {new pid};
+  \node[lbl, text=sheetRed, anchor=west] at (13.1,0.0) {no \texttt{onCleared}, no \texttt{onDestroy}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Lifecycle, ViewModel, process death}
+\begin{itemize}\raggedright
+  \item Config change $\Rightarrow$ \texttt{onPause/onStop/onDestroy} + a \textbf{new}
+        Activity \texttt{onCreate(savedInstanceState)}: fields and views gone.
+        \texttt{android:configChanges} opts out — avoid.
+  \item \textbf{Fragment}: its \emph{view} dies (\texttt{onDestroyView}) while the instance
+        sits on the back stack $\Rightarrow$ observe with \texttt{viewLifecycleOwner}.
+  \item \textbf{ViewModel} lives in a \texttt{ViewModelStore} (Activity, Fragment or nav
+        entry) carried across recreation; \texttt{onCleared()} only when the owner
+        \emph{finishes}. \texttt{viewModelScope} = \texttt{SupervisorJob} +
+        \texttt{Main.immediate}, cancelled there.
+  \item \textbf{Process death}: killed in background; on return a new process rebuilds the
+        Activity \emph{from the Bundle} + a new VM. \texttt{SavedStateHandle} (VM) and
+        \texttt{rememberSaveable} (UI) write that Bundle — ids, not data (Binder
+        $\approx$1 MB $\to$ \texttt{TransactionTooLargeException}).
+  \item Activity \texttt{Context} in a VM leaks it per rotation: \texttt{applicationContext}.
+\end{itemize}
+
+\section{Compose — the model}
+\begin{itemize}\raggedright
+  \item Phases: \textbf{composition $\to$ layout $\to$ draw}. Snapshot state records which
+        scope \textbf{read} which \texttt{State}; a write re-runs only those scopes.
+  \item \texttt{remember} survives recomposition only; \texttt{remember(key)} recomputes on
+        key change; \texttt{rememberSaveable} also survives rotation + death (Bundle types
+        or a \texttt{Saver}). \textbf{Hoisting}: stateless \texttt{Foo(value, onValueChange)}.
+  \item \textbf{Skipping}: skipped if all params are \textbf{stable} and equal. Stable:
+        primitives, \texttt{String}, lambdas, \texttt{val}-only classes,
+        \texttt{@Immutable}/\texttt{@Stable}. Unstable: \texttt{var}, \texttt{List}
+        (interface), types from non-Compose modules. \textbf{Strong skipping} (default,
+        Kotlin 2.0.20+): unstable params compared by identity, lambdas auto-remembered.
+  \item \textbf{Modifier order} wraps: \texttt{size(100.dp).padding(10.dp)} = 80 dp content;
+        reversed = 120 dp total. \texttt{clickable} first = padding tappable.
+\end{itemize}
+
+\section{Example — VM + hoisted screen}
+\begin{lstlisting}[language=KotlinSheet]
+class SearchVM(saved: SavedStateHandle, val repo: Repo)
+    : ViewModel() {
+  val query = saved.getStateFlow("q", "") // survives death
+  private val _ui = MutableStateFlow<Ui>(Ui.Idle)
+  val ui = _ui.asStateFlow()              // read-only
+  fun onQuery(q: String) { saved["q"] = q
+    viewModelScope.launch { _ui.value = repo.search(q) } }
+}
+@Composable fun Search(vm: SearchVM = viewModel()) {
+  val q by vm.query.collectAsStateWithLifecycle()
+  SearchBar(q, onChange = vm::onQuery)  // hoisted
+  LaunchedEffect(q) { delay(300); log(q) } // per q
+}
+\end{lstlisting}
+
+\columnbreak
+
+\section{Compose ↔ SwiftUI (incl. effects)}
+{\scriptsize
+\noindent\begin{tabularx}{\linewidth}{@{}L>{\raggedright\arraybackslash}p{30mm}@{}}
+\toprule
+\textbf{Compose / Android} & \textbf{SwiftUI / iOS} \\
+\midrule
+\texttt{@Composable fun} — re-run function & \texttt{body} — value tree, diffed \\
+\texttt{remember \{ mutableStateOf() \}} & \texttt{@State} \\
+hoisted \texttt{value} + \texttt{onValueChange} & \texttt{@Binding} \\
+\texttt{rememberSaveable} & \texttt{@SceneStorage} \\
+ViewModel + \texttt{StateFlow}, \texttt{collectAsStateWithLifecycle} & \texttt{@Observable}
+  model in \texttt{@State} \\
+\texttt{CompositionLocal} & \texttt{@Environment} \\
+\texttt{Modifier} chain · slot lambdas & modifiers · \texttt{@ViewBuilder} \\
+\texttt{items(list, key = \{ it.id \})} (else index) & \texttt{ForEach(id:)} \\
+\texttt{AndroidView} · \texttt{ComposeView} & \texttt{UIViewRepresentable} ·
+  \texttt{UIHostingController} \\
+\texttt{NavHost} + back stack & \texttt{NavigationStack(path:)} \\
+\midrule
+\texttt{LaunchedEffect(k)}: coroutine on enter, relaunched when \texttt{k} changes,
+  cancelled on leave & \texttt{.task(id:)} \\
+\texttt{DisposableEffect(k)}: setup + \texttt{onDispose\{\}} & \texttt{onAppear} /
+  \texttt{onDisappear} \\
+\texttt{SideEffect\{\}}: after every successful recomposition, push to non-Compose code &
+  \texttt{updateUIView} \\
+\texttt{rememberCoroutineScope}: coroutines from callbacks & \texttt{Task \{\}} in an action \\
+\texttt{rememberUpdatedState}: latest value in a long effect, no restart & — \\
+\texttt{derivedStateOf}: recompose only when the \emph{result} changes & computed property \\
+\texttt{snapshotFlow} (State$\to$Flow) · \texttt{produceState} & — \\
+\bottomrule
+\end{tabularx}}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{\textbf{Rotation recreates the Activity} — the iOS reflex ``the VC stays'' loses
+        state. Three tiers: \texttt{remember} < ViewModel < Bundle.}
+  \trap{VM does \textbf{not} survive process death. ``Don't keep activities'' only destroys
+        Activities; real death: \texttt{adb shell am kill <pkg>} while backgrounded.}
+  \trap{\texttt{mutableStateOf(0)} without \texttt{remember} resets each recomposition.
+        \texttt{LaunchedEffect(Unit)} never restarts (stale id).}
+  \trap{Fast state (\texttt{scrollState.value}) read high up recomposes the screen — defer
+        the read: lambda, \texttt{graphicsLayer\{\}}, \texttt{derivedStateOf}.}
+  \trap{Bodies re-run often, in any order: no I/O or writes.}
+\end{itemize}
+
+\section{Remember}
+\emph{remember < ViewModel < Bundle · state down, events up · read late, key your effects.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} android-coroutines-platform ·
+kmp-fundamentals-interop · swiftui-state · swiftui-performance-identity · app-and-vc-lifecycle
+· compose-recomposition-stability}
+
+\end{document}

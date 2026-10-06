@@ -1,0 +1,101 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>KMP in practice — library stack, shared architecture, concurrency — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/cross-platform/kmp-stack-concurrency.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">114</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area current" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">KMP in practice — library stack, shared architecture, concurrency</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">kmp · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A shared module is <strong>repositories + use cases + a state holder exposing
+<code>StateFlow</code></strong> in <code>commonMain</code>, built on <strong>Ktor</strong>, <strong>kotlinx.serialization</strong>,
+<strong>SQLDelight</strong>, <strong>Koin</strong> and <strong>kotlinx-datetime</strong>, with per-platform engines
+and drivers; each platform binds native UI to it. On iOS, <code>Dispatchers.Main</code> is the
+main queue and the <strong>new memory model</strong> (tracing GC, no freezing) lets objects cross
+threads like on the JVM.</p>
+<p class="sheet-tools"><a class="sheet-download" href="kmp-stack-concurrency.pdf" download>Download PDF</a> <a href="kmp-stack-concurrency.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/cross-platform/kmp-stack-concurrency.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="kmp-stack-concurrency-fig1.svg" width="641" height="146" class="wide" alt="KMP in practice — library stack, shared architecture, concurrency — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>The stack — common core, platform piece</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>Library</strong></th><th><strong>Role · platform part</strong></th><th><strong>iOS twin</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Ktor</strong> client</td><td>HTTP, plugins (<code>ContentNegotiation</code>, auth, logging);
+ <strong>engine per target</strong>: OkHttp/Android · <strong>Darwin</strong> (NSURLSession)</td><td>URLSession</td></tr>
+<tr><td><strong>kotlinx .serialization</strong></td><td><code>@Serializable</code> + <strong>compiler plugin</strong>, no
+ reflection; <code>Json { ignoreUnknownKeys = true }</code>; sealed = class discriminator</td><td>Codable</td></tr>
+<tr><td><strong>SQLDelight</strong></td><td>write <code>.sq</code> SQL <span class="math">→</span> typed Kotlin; <code>.sqm</code> migrations
+ verified; <code>asFlow()</code>; driver: <code>AndroidSqliteDriver</code> ·
+ <code>NativeSqliteDriver</code></td><td>GRDB / Core Data</td></tr>
+<tr><td><strong>Koin</strong> · kotlin-inject</td><td>runtime DSL (errors at runtime) · KSP compile-time
+ graph; Hilt is Android-only</td><td>init injection</td></tr>
+<tr><td><strong>kotlinx -datetime</strong></td><td><code>Instant</code>, <code>LocalDateTime</code>, <code>TimeZone</code> —
+ no <code>java.time</code> in common</td><td>Date, Calendar</td></tr>
+<tr><td>multiplatform -settings</td><td>KV over SharedPreferences / NSUserDefaults — <strong>not</strong> for
+ secrets (Keychain via an interface)</td><td>UserDefaults</td></tr>
+<tr><td>Kermit / Napier</td><td>logging to Logcat / <code>os_log</code></td><td><code>Logger</code></td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Exposing state to SwiftUI</h2>
+<ul>
+<li>Shared store owns <code>CoroutineScope(SupervisorJob() + Dispatchers.Main)</code> and a  <code>clear()</code>; Android calls it from <code>onCleared</code>, iOS from the owner’s  teardown — iOS has no <code>viewModelScope</code>.</li>
+<li>Swift side: <strong>SKIE</strong> (<code>for await</code> over the flow), <strong>KMP-NativeCoroutines</strong>  (<code>asyncSequence(for:)</code>), or a hand-written <code>watch({…}) <span class="math">→</span> cancel handle</code>  wrapper. Map Kotlin types to Swift structs in the adapter.</li>
+</ul>
+<pre class="sheet-code"><code class="hljs language-kotlin"><span class="hljs-keyword">class</span> <span class="hljs-title class_">DevicesStore</span>(<span class="hljs-keyword">private</span> <span class="hljs-keyword">val</span> repo: DeviceRepo,
+    <span class="hljs-keyword">private</span> <span class="hljs-keyword">val</span> scope: CoroutineScope) {     <span class="hljs-comment">// injected</span>
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">val</span> _s = MutableStateFlow&lt;Ui&gt;(Ui.Loading)
+  <span class="hljs-keyword">val</span> state: StateFlow&lt;Ui&gt; = _s.asStateFlow()
+  <span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-title">refresh</span><span class="hljs-params">()</span></span> { scope.launch {
+    _s.value = <span class="hljs-keyword">try</span> { Ui.Loaded(repo.devices()) }
+      <span class="hljs-keyword">catch</span> (e: ApiError) { Ui.Failed(e.message) } } }
+  <span class="hljs-function"><span class="hljs-keyword">fun</span> <span class="hljs-title">clear</span><span class="hljs-params">()</span></span> = scope.cancel()
+}</code></pre>
+<pre class="sheet-code"><code class="hljs language-swift">.task { <span class="hljs-keyword">for</span> <span class="hljs-keyword">await</span> s <span class="hljs-keyword">in</span> store.state { ui <span class="hljs-operator">=</span> map(s) } } <span class="hljs-comment">// SKIE</span></code></pre>
+</section>
+<section class="sheet-section">
+<h2>Threading &amp; memory on iOS</h2>
+<ul>
+<li><code>Dispatchers.Main</code> on iOS = main dispatch queue (in coroutines-core; Android  needs <code>-android</code>). <code>Dispatchers.IO</code> exists on Native since coroutines  1.7 — still inject dispatchers.</li>
+<li>Old model (pre-1.7.20): shared objects had to be <strong>frozen</strong> (immutable) or  crashed — the #1 historic KMP pain; now gone.</li>
+<li>Hop to <code>@MainActor</code> before touching SwiftUI state; never  <code>runBlocking</code> on the main thread.</li>
+<li>Kotlin objects in Swift are GC-managed: <code>deinit</code>-style cleanup is late —  call <code>close()/clear()</code> explicitly; capture <code>[weak self]</code> in closures  handed to Kotlin.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Testing shared code</h2>
+<ul>
+<li><code>commonTest</code> + <code>kotlin.test</code>; <code>runTest</code> = virtual time  (skips <code>delay</code>); <code>StandardTestDispatcher</code> +  <code>Dispatchers.setMain</code>; <strong>Turbine</strong> <code>flow.test { awaitItem() }</code>  for hot flows.</li>
+<li>Fakes over mocks (MockK is JVM-only); Ktor <code>MockEngine</code>; in-memory SQLite  driver. JVM runs fast on CI; iOS-simulator tests need macOS.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Team &amp; process</h2>
+<ul>
+<li><strong>Ownership</strong>: a cross-platform core team, or iOS becomes a second-class  consumer of an Android-shaped API. iOS devs <strong>review the Swift surface</strong>.</li>
+<li><strong>Debugging</strong>: iOS devs must read Kotlin; Xcode steps into Kotlin only with a  plugin (Touchlab xcode-kotlin); Kotlin/Native link time slows iOS builds.</li>
+<li><strong>Delivery</strong>: monorepo + build phase (fast iteration) vs versioned XCFramework  via SPM (decoupled, slower loop). Crash reports need Kotlin symbolication.</li>
+<li><strong>Adopt incrementally</strong>: one module (API client, validation) behind a facade;  measure, then grow.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">Forgot the iOS Ktor engine / SQL driver <span class="math">→</span> compiles, fails at <em>runtime</em> on iOS.</li>
+<li class="trap"><code>catch (e: Exception)</code> around <code>suspend</code> eats cancellation — rethrow.</li>
+<li class="trap"><code>StateFlow</code> is conflated: rapid events are lost — a <code>Channel</code> for events.</li>
+<li class="trap">Hard-coded <code>Dispatchers.Main</code> in shared code = untestable on the JVM.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><em>Core in common, engines and drivers per platform · inject scope and dispatcher ·
+no freezing, but a GC · iOS reviews the API.</em></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> kmp-fundamentals-interop ·
+android-coroutines-platform · concurrency · swiftui-state · modularization-spm ·
+keychain-secure-enclave · async-and-network-testing</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=cross-platform" title="area">cross-platform</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=architecture" title="kind">architecture</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=cross-platform" title="platform">cross-platform</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=architecture" title="topic">architecture</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=concurrency" title="topic">concurrency</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=testing" title="topic">testing</a></li><li class="sheet-tag"><a href="/folios.html?tag=kotlin-multiplatform">kotlin-multiplatform</a></li><li class="sheet-tag"><a href="/folios.html?tag=ktor">ktor</a></li><li class="sheet-tag"><a href="/folios.html?tag=kotlinx-serialization">kotlinx-serialization</a></li><li class="sheet-tag"><a href="/folios.html?tag=sqldelight">sqldelight</a></li><li class="sheet-tag"><a href="/folios.html?tag=koin">koin</a></li><li class="sheet-tag"><a href="/folios.html?tag=kotlinx-datetime">kotlinx-datetime</a></li><li class="sheet-tag"><a href="/folios.html?tag=stateflow">stateflow</a></li><li class="sheet-tag"><a href="/folios.html?tag=kotlin-native-memory-model">kotlin-native-memory-model</a></li><li class="sheet-tag"><a href="/folios.html?tag=dispatchers-main">dispatchers-main</a></li><li class="sheet-tag"><a href="/folios.html?tag=turbine">turbine</a></li><li class="sheet-tag"><a href="/folios.html?tag=skie">skie</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=cross-platform%2Fkmp-stack-concurrency.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/116">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

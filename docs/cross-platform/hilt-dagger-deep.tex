@@ -1,0 +1,183 @@
+% hilt-dagger-deep.tex — Hilt/Dagger in depth: the binding graph resolved at compile time (KSP/kapt
+% codegen, factories, DoubleCheck for scoped bindings), @Inject vs @Provides vs @Binds, the Hilt
+% component hierarchy with scopes, lifetimes and default bindings, qualifiers, multibindings, Lazy vs
+% Provider, @AssistedInject + @HiltViewModel(assistedFactory), @EntryPoint, testing (@HiltAndroidTest,
+% @UninstallModules, @TestInstallIn, @BindValue), Koin vs Hilt, the error messages you will see.
+% Diagram: the component tree (scope + created/destroyed + default bindings) and what codegen emits.
+% Extends android-jetpack-stack (the short Hilt section + small component tree) — does not repeat it.
+% Sources (checked 2026-09-26):
+%   https://dagger.dev/hilt/components.html           (hierarchy, scopes, lifetimes, default bindings)
+%   https://dagger.dev/hilt/view-model.html           (assisted injection, @ViewModelScoped)
+%   https://dagger.dev/hilt/testing.html              (@HiltAndroidTest, @UninstallModules, @BindValue)
+%   https://dagger.dev/hilt/entry-points.html
+%   https://dagger.dev/dev-guide/multibindings.html
+%   https://github.com/google/dagger/releases/tag/dagger-2.48   (KSP processors, alpha)
+%   https://github.com/google/dagger/releases/tag/dagger-2.49   (@HiltViewModel assistedFactory)
+%   https://developer.android.com/training/dependency-injection/hilt-android
+% @labels: area=cross-platform kind=pattern platform=android topic=architecture,patterns,testing discussion=114
+% @tags: hilt, dagger, dependency-injection, hilt-components, scopes, qualifiers, multibindings, assisted-injection, entrypoint, hilt-testing, koin, ksp
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{KotlinSheet}{
+  morekeywords={fun,val,var,class,object,data,sealed,interface,when,is,in,out,as,by,
+    override,private,return,if,else,null,this,it,abstract,annotation,companion},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {?.}{{\hbox{?}\hbox{.}}}2 {?:}{{\hbox{?}\hbox{:}}}2
+           {!!}{{\hbox{!}\hbox{!}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {::}{{\hbox{:}\hbox{:}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2 {>=}{{\hbox{>}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\tikzset{
+  cp/.style={box, font=\tiny, inner sep=1pt, minimum height=8mm, text width=#1, align=center},
+  cp/.default=26mm,
+  gen/.style={box, font=\tiny, inner sep=1pt, minimum height=5mm, text width=62mm, align=left,
+    draw=sheetGrey, fill=sheetGrey!6},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Hilt \& Dagger in depth — graph, components, scopes, tests}{cross-platform · folio}
+
+\oneliner{Dagger turns \texttt{@Inject}/\texttt{@Provides}/\texttt{@Binds} into a \textbf{dependency graph checked
+at compile time} and emits plain factory code — no reflection. Hilt fixes the \textbf{component tree}
+to Android lifetimes: a binding lives in one component, is visible to that component's
+\textbf{children}, and a \textbf{scope} annotation means ``one instance per component instance''.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet, y=0.92cm]
+  \node[hd] at (-0.3,3.25) {Hilt components — scope · created $\to$ destroyed · default bindings};
+  \node[cp=40mm, draw=sheetBlue, fill=sheetBlue!10] (sg) at (4.0,2.65) {\textbf{SingletonComponent} · \texttt{@Singleton}\\
+    \texttt{Application.onCreate} $\to$ process dies · \texttt{Application}};
+  \node[cp=33mm, draw=sheetOrange, fill=sheetOrange!10] (ar) at (2.1,1.7) {\textbf{ActivityRetainedComponent}\\
+    \texttt{@ActivityRetainedScoped}\\first \texttt{onCreate} $\to$ last \texttt{onDestroy}};
+  \node[cp=24mm] (sv) at (7.9,1.7) {\textbf{ServiceComponent}\\\texttt{@ServiceScoped}\\
+    \texttt{onCreate} $\to$ \texttt{onDestroy}};
+  \node[cp=27mm, draw=sheetOrange, fill=sheetOrange!10] (vm) at (0.75,0.7) {\textbf{ViewModelComponent}\\
+    \texttt{@ViewModelScoped} · VM life\\\texttt{SavedStateHandle}};
+  \node[cp=30mm] (ac) at (3.95,0.7) {\textbf{ActivityComponent} · dies on rotation\\\texttt{@ActivityScoped}\\
+    \texttt{Activity}, \texttt{@ActivityContext}};
+  \node[cp=24mm] (fc) at (2.75,-0.3) {\textbf{FragmentComponent}\\\texttt{@FragmentScoped}\\
+    \texttt{onAttach} $\to$ \texttt{onDestroy}};
+  \node[cp=21mm] (vw) at (5.4,-0.3) {\textbf{ViewComponent}\\\texttt{@ViewScoped}\\
+    \texttt{View} constructor};
+  \draw[flow] (sg) -- (ar); \draw[flow] (sg) -- (sv);
+  \draw[flow] (ar) -- (vm); \draw[flow] (ar) -- (ac);
+  \draw[flow] (ac) -- (fc); \draw[flow] (ac) -- (vw);
+  \node[lbl, text=sheetGrey, anchor=west, align=left] at (6.55,-0.3) {+ ViewWith-\\FragmentComponent\\under Fragment};
+  \node[lbl, text=sheetRed, anchor=west, align=left] at (5.7,0.75) {$\times$\,\texttt{@Singleton} repo asks for\\
+    \texttt{Activity}: \textbf{MissingBinding} —\\a parent never sees a child};
+  \node[lbl, text=sheetBrown, anchor=west, align=left] at (-0.3,-1.05) {child sees all parent bindings ·
+    unscoped (default) = new instance per request · ViewModel is a sibling of Activity};
+  \draw[sheetGrey!40] (9.45,3.4) -- (9.45,-1.25);
+  % ---------- codegen ----------
+  \node[hd] at (9.55,3.25) {Build time — what the processors emit};
+  \node[gen] at (12.9,2.65) {\texttt{class Repo @Inject constructor(api: Api)} $\to$ \texttt{Repo\_Factory}};
+  \node[gen] at (12.9,2.0) {\texttt{@Provides fun api(ok: OkHttpClient): Api} $\to$ \texttt{NetModule\_ApiFactory}};
+  \node[gen] at (12.9,1.35) {\texttt{@AndroidEntryPoint class MainActivity} $\to$ superclass swapped to
+    \texttt{Hilt\_MainActivity} (Gradle plugin bytecode rewrite) — injects in \texttt{onCreate}};
+  \node[gen, draw=sheetOrange, fill=sheetOrange!8] at (12.9,0.6) {scoped: \texttt{DoubleCheck.provider(Repo\_Factory…)}
+    — lazily created once, cached in the component (locked); unscoped: \texttt{factory.get()} each time};
+  \node[gen, draw=sheetRed, fill=sheetRed!6] at (12.9,-0.2) {graph validated per build: missing / duplicate binding,
+    cycle, scope mismatch = \textbf{compile error}, not a crash. Processors: \textbf{KSP} (2.48+) or kapt};
+  \node[lbl, text=sheetBrown, anchor=west] at (9.55,-0.9) {Koin: the same graph built by lambdas at \textbf{runtime} — errors surface on first use};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Binding sources}
+\begin{itemize}\raggedright
+  \item \texttt{@Inject constructor} — your own classes; prefer it. \texttt{@Provides} — code
+        for types you don't own (Retrofit, Room builder). \texttt{@Binds} — abstract,
+        \textbf{no body}, interface $\to$ impl, cheapest (no module instance).
+  \item \texttt{@Module @InstallIn(X::class)} decides the component (and so who can see it and how
+        long a scoped instance lives). A scope on a binding must match its component.
+  \item \textbf{Qualifiers} for two bindings of one type: \texttt{@Named("auth")} or a custom
+        \texttt{@Qualifier annotation class}; built-ins \texttt{@ApplicationContext},
+        \texttt{@ActivityContext}.
+  \item \textbf{Multibindings}: \texttt{@IntoSet}/\texttt{@ElementsIntoSet} $\to$
+        \texttt{Set<T>}; \texttt{@IntoMap} + \texttt{@StringKey}/\texttt{@ClassKey}/custom
+        \texttt{@MapKey} $\to$ \texttt{Map<K, V>} or \texttt{Map<K, Provider<V>{}>};
+        \texttt{@Multibinds} declares a possibly empty one. Plug-ins, interceptors, initialisers.
+  \item \texttt{Provider<T>}: \texttt{get()} each call (new if unscoped). \texttt{Lazy<T>}
+        (\texttt{dagger.Lazy}): built on first \texttt{get()}, then cached \emph{per Lazy}. Both
+        defer work and break a cycle.
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=KotlinSheet]
+@Qualifier annotation class Auth
+@Module @InstallIn(SingletonComponent::class)
+abstract class DataModule {
+  @Binds abstract fun repo(impl: NoteRepoImpl): NoteRepo
+  @Binds @IntoSet abstract fun log(i: LogInterceptor): Interceptor
+  companion object {
+    @Provides @Singleton @Auth
+    fun ok(set: Set<@JvmSuppressWildcards Interceptor>) =
+      OkHttpClient.Builder().apply { set.forEach(::addInterceptor) }.build() } }
+@HiltViewModel(assistedFactory = NoteVM.Factory::class)
+class NoteVM @AssistedInject constructor(@Assisted val id: Long,
+    repo: NoteRepo, heavy: Lazy<Parser>) : ViewModel() {
+  @AssistedFactory interface Factory { fun create(id: Long): NoteVM } }
+// Compose: hiltViewModel<NoteVM, NoteVM.Factory> { it.create(id) }
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{Scoping ``for performance'' — a scope is a lifetime + a lock, not a speed-up.}
+  \trap{\texttt{Set<Interceptor>} in Kotlin needs \texttt{@JvmSuppressWildcards}, or MissingBinding.}
+  \trap{Plain unit tests need no Hilt — call the \texttt{@Inject} constructor with fakes.}
+\end{itemize}
+
+\textbf{Remember:} \emph{Inject constructors, Bind interfaces, Provide the rest · install decides
+visibility · scope = one per component.}
+
+\columnbreak
+
+\section{Assisted injection \& entry points}
+\begin{itemize}\raggedright
+  \item \texttt{@AssistedInject} mixes runtime values (\texttt{@Assisted id}) with graph deps
+        via a generated \texttt{@AssistedFactory}; VMs: \texttt{@HiltViewModel(assistedFactory =
+        …)} (Dagger \textbf{2.49}). Assisted values are \textbf{not saved} on process death —
+        nav args go in \texttt{SavedStateHandle}.
+  \item \texttt{@EntryPoint} = a door \emph{into} the graph for what Hilt can't construct
+        (\texttt{ContentProvider}, library callbacks): \texttt{interface E \{ fun repo(): Repo \}}
+        + \texttt{EntryPointAccessors.fromApplication(ctx, E::class.java).repo()}.
+\end{itemize}
+
+\section{Testing}
+\begin{itemize}\raggedright
+  \item \texttt{@HiltAndroidTest} + \texttt{@get:Rule val hilt = HiltAndroidRule(this)} (first
+        rule) + \texttt{hilt.inject()}, \texttt{HiltTestApplication}; a \textbf{fresh}
+        SingletonComponent per test.
+  \item Per class: \texttt{@UninstallModules(NetModule::class)} + a nested test module. Whole
+        source set: \texttt{@TestInstallIn(replaces = [NetModule::class], …)}. One field:
+        \texttt{@BindValue @JvmField val api: Api = FakeApi()}.
+\end{itemize}
+
+\section{Koin vs Hilt}
+\raggedright Koin: \texttt{module \{ single \{ Repo(get()) \}; viewModel \{ VM(get()) \} \}},
+resolved at \textbf{runtime}: fast builds, KMP-ready, a missing binding crashes on first use
+(\texttt{verify()} test; Koin Annotations add KSP checks). Hilt: compile-time, Android/JVM only.
+
+\section{Errors you will read}
+\begin{itemize}\raggedright
+  \item \texttt{[Dagger/MissingBinding] X cannot be provided without an @Inject constructor or an
+        @Provides-annotated method} — wrong component/qualifier, no \texttt{@Binds}.
+  \item \texttt{[Dagger/IncompatiblyScopedBindings]} (\texttt{@Singleton} $\to$
+        \texttt{@ActivityScoped}); \texttt{[Dagger/DependencyCycle]} $\to$ \texttt{Provider}/\texttt{Lazy}.
+  \item ``Hilt Activity must be attached to an @HiltAndroidApp Application'' — no
+        \texttt{android:name}.
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} android-jetpack-stack ·
+navigation-compose-deep · room-deep · android-background-work · coordinator-repository-di-clean ·
+swift DI (iOS)}
+
+\end{document}
