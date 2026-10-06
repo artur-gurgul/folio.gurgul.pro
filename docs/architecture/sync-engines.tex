@@ -1,0 +1,219 @@
+% sync-engines.tex — offline-first sync engines in depth: the operation log / outbox, server
+% revisions and delta cursors, conflict DETECTION (versions, Lamport clocks, vector / version
+% vectors, hybrid logical clocks) vs RESOLUTION (server-authoritative, LWW, three-way field
+% merge, operational transformation, CRDTs: G-Counter, PN-Counter, LWW-Register, OR-Set),
+% tombstones + GC, idempotent apply, full-resync fallback, CloudKit (NSPersistentCloudKitContainer
+% model rules, CKSyncEngine) as the Apple example.
+% Not repeated (neighbours): the layered client + outbox (architecture/ios-client-system-design.tex),
+% Repository / SSOT / cache strategies (design/data-access-patterns.tex).
+% Sources (checked 2026-09-25): developer.apple.com "Creating a Core Data model for CloudKit"
+% (no unique constraints; relationships optional + inverse; no Deny rule; production schema:
+% add types/fields, never modify, rename or delete); developer.apple.com CKSyncEngine
+% (iOS 17 / macOS 14; engine schedules sync, app persists the serialized state, app handles
+% serverRecordChanged). Concepts: Lamport, "Time, Clocks, and the Ordering of Events" (1978);
+% Shapiro et al., "Conflict-free Replicated Data Types" (2011: CvRDT/CmRDT, G-Counter,
+% PN-Counter, LWW-Register, OR-Set); Kulkarni et al., "Logical Physical Clocks" (2014, HLC);
+% Ellis & Gibbs (1989, OT). Library names (Yjs, Automerge) as examples only.
+% @labels: area=architecture kind=architecture platform=general topic=system-design,data,networking discussion=88
+% @tags: offline-first, sync-engine, conflict-resolution, last-write-wins, vector-clocks, hybrid-logical-clock, operational-transformation, crdt, or-set, tombstones, delta-sync, cloudkit
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,switch,
+    if,else,return,guard,self,Self,nil,for,in,where,mutating,static,extension,
+    true,false,Int,String,Bool,Set,UUID,Sendable,Hashable,Codable},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {<=}{{\hbox{<}\hbox{=}}}2 {>=}{{\hbox{>}\hbox{=}}}2
+           {&&}{{\hbox{\&}\hbox{\&}}}2 {||}{{\hbox{|}\hbox{|}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  ev/.style={box, font=\tiny, inner sep=1.5pt, minimum height=5mm, align=center},
+  evA/.style={ev, draw=sheetBlue, fill=sheetBlue!8},
+  evB/.style={ev, draw=sheetOrange, fill=sheetOrange!10},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ln/.style={draw=sheetGrey, thick},
+}
+
+\begin{document}
+
+\sheettitle{Sync engines — clocks, conflicts, CRDTs}{architecture · folio}
+
+\oneliner{A sync engine keeps \textbf{replicas} (phones, tablets, the server) that accept
+writes \emph{offline} and must end in the \textbf{same state}. Record \textbf{operations}, not
+snapshots, in a durable \textbf{log}; apply them \textbf{idempotently}; \textbf{detect}
+concurrency with \textbf{versions or vector clocks} (never wall clocks); \textbf{resolve} it with a
+named policy — server-authoritative, LWW, field merge, \textbf{OT} (a server orders and transforms)
+or \textbf{CRDTs} (merge is mathematically order-free); keep deletes as \textbf{tombstones}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- timelines
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.2,2.95) {Two devices edit the same note offline};
+  \node[ev, draw=sheetGreen, fill=sheetGreen!10] (s0) at (0.35,1.45) {base\\\ct{title:"Draft"}\\\ct{tags:\{a\}}\\\ct{[A0,B0]}};
+  \draw[ln, sheetBlue] (1.1,2.3) -- (6.4,2.3); \node[lbl, anchor=east, text=sheetBlue] at (1.05,2.55) {\textbf{A}};
+  \draw[ln, sheetOrange] (1.1,0.6) -- (6.4,0.6); \node[lbl, anchor=east, text=sheetOrange] at (1.05,0.3) {\textbf{B}};
+  \draw[flow] (s0.north east) -- (1.2,2.3); \draw[flow] (s0.south east) -- (1.2,0.6);
+  \node[evA] at (2.3,2.3) {\ct{title="Plan"}\\\ct{[A1,B0]} 10:02};
+  \node[evA] at (4.4,2.3) {add \ct{b}\\\ct{[A2,B0]}};
+  \node[evB] at (2.8,0.6) {\ct{title="Notes"}\\\ct{[A0,B1]} 10:07\,\textcolor{sheetRed}{*}};
+  \node[evB] at (4.9,0.6) {remove \ct{a}\\\ct{[A0,B2]}};
+  \node[lbl, text=sheetRed, anchor=north west] at (1.2,0.18) {* B's clock runs 6 min fast: it really edited at 10:01, \emph{before} A};
+  \node[lbl, text=sheetGrey] at (3.6,1.45) {\textbf{no network} — both commit locally, append to the op log};
+  \node[ev, draw=sheetGrey, fill=black!5, minimum height=14mm] (m) at (7.2,1.45) {reconnect\\+ \textbf{merge}};
+  \draw[hot] (6.4,2.3) -- (m.north west); \draw[hot] (6.4,0.6) -- (m.south west);
+  \draw[sheetGrey!50] (8.0,3.05) -- (8.0,-0.1);
+  % ---------- outcomes
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (8.1,2.95) {What each policy produces};
+  \node[anchor=north west, inner sep=0pt] at (8.15,2.72) {\scriptsize\setstretch{0.95}
+    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{18mm}>{\raggedright\arraybackslash}p{62mm}@{}}
+    \toprule
+    \textbf{policy} & \textbf{result} \\ \midrule
+    \textbf{LWW, wall clock} & \ct{"Notes"} — the \emph{skewed} clock wins; A's later edit silently lost (whole-record LWW drops A's tag \ct{b} too) \\
+    \textbf{server-authoritative} & first to sync wins; second gets \textbf{412 / conflict}, must rebase its ops \\
+    \textbf{version vectors} & \ct{[A2,B0]} vs \ct{[A0,B2]}: neither $\leq$ the other $\to$ \textbf{concurrent} $\to$ \emph{detected}, not solved \\
+    \textbf{3-way field merge} & vs base: tags \ct{\{a\}}$\to$ A \ct{\{a,b\}}, B \ct{\{\}} $\to$ \ct{\{b\}}; title changed on \emph{both} $\to$ ask / keep both \\
+    \textbf{OT} & server orders A then B, \textbf{transforms} B's op against A's — text editors \\
+    \textbf{CRDT} & title = LWW-Register on an \textbf{HLC} (same winner on every replica); tags = \textbf{OR-Set} $\to$ \ct{\{b\}} — converge with \emph{no} server \\
+    \bottomrule
+    \end{tabular}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\footnotesize\setstretch{1.0}
+
+\hd{The engine}
+\begin{itemize}
+  \item \textbf{Local store = truth}; each write also appends an \textbf{op}
+        \ct{\{opId: UUID, entity, id, field, value, baseVersion\}} to a durable \textbf{outbox}
+        in the \emph{same} transaction. Ops (intent: ``add tag b'') merge better than
+        snapshots (``tags = \{a,b\}'').
+  \item \textbf{Push}: send ops in order; the server applies each once — \ct{opId} is the
+        \textbf{idempotency key} (at-least-once delivery + idempotent apply = effectively once)
+        and stamps a monotonic \textbf{server revision}.
+  \item \textbf{Pull}: \ct{GET /changes?since=<cursor>} $\to$ \ct{\{changes, cursor, hasMore\}};
+        the cursor is a server \textbf{revision}, never a timestamp. Apply + store the new
+        cursor in \textbf{one transaction}. Cursor too old (GC'd) $\to$ \textbf{410 Gone} $\to$
+        full resync.
+  \item \textbf{Rebase}: remote changes arrive while local ops are pending $\to$ apply remote,
+        replay pending ops on top (like \ct{git rebase}) so the UI shows local intent.
+  \item \textbf{Tombstones}: a delete is a row \ct{deleted=true, version=n}, synced like any
+        change. GC only when every replica has seen it (\emph{causal stability}) or after a TTL
+        longer than the max offline window — else an old device \textbf{resurrects} the row.
+\end{itemize}
+
+\hd{Clocks — detection, not decoration}
+\begin{itemize}
+  \item \textbf{Wall clock}: users and NTP move it; skew of minutes is normal. Display only.
+  \item \textbf{Lamport}: counter; on send \ct{c+=1}, on receive \ct{c=max(c,msg)+1}.
+        Causal $\Rightarrow$ smaller, but a smaller number does \emph{not} prove causality —
+        cannot detect concurrency. Total order with a replica-id tie-break.
+  \item \textbf{Vector clock / version vector}: one counter per replica. \ct{V1 $\leq$ V2} in every
+        slot $\Rightarrow$ V1 happened-before; neither $\Rightarrow$ \textbf{concurrent}. Cost:
+        grows with replicas (per \emph{device}, not per user) — prune retired devices.
+  \item \textbf{HLC} (hybrid logical clock): \ct{(max physical seen, logical counter)} — stays
+        close to real time, monotonic even when the device clock jumps back, fits in 64 bits;
+        a good LWW timestamp.
+\end{itemize}
+
+\hd{Example — the two smallest CRDT merges}
+\begin{lstlisting}[language=SwiftSheet]
+struct GCounter: Hashable {              // grow-only counter
+  var slots: [String: Int] = [:]        // replicaId -> count
+  var value: Int { slots.values.reduce(0, +) }
+  mutating func inc(_ r: String) { slots[r, default: 0] += 1 }
+  func merged(_ o: GCounter) -> GCounter {   // join = max per slot
+    GCounter(slots: slots.merging(o.slots, uniquingKeysWith: max)) }
+}
+struct ORSet<E: Hashable> {              // observed-remove set
+  var adds: [E: Set<UUID>] = [:]; var removed: Set<UUID> = []
+  mutating func add(_ e: E) { adds[e, default: []].insert(UUID()) }
+  mutating func remove(_ e: E) { removed.formUnion(adds[e] ?? []) }
+  var elements: Set<E> {                 // alive = a tag not removed
+    Set(adds.filter { !$0.value.subtracting(removed).isEmpty }.keys) }
+}   // merge: union adds, union removed -> concurrent add WINS
+\end{lstlisting}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Newest timestamp wins'' with device clocks — skew picks the winner.}
+  \trap{Lamport order $\neq$ causality: it can't tell ``after'' from ``concurrent''.}
+  \trap{Hard delete locally — the delete never syncs; the row comes back.}
+  \trap{Counter as a plain \ct{Int} ``+1'' replayed on retry — double count; use op ids or a G-Counter.}
+  \trap{CRDT $\neq$ correct: it converges to \emph{a} state — maybe not the one users meant (invariants like ``stock $\geq$ 0'' need a server).}
+  \trap{Cursor = ``last sync time'': a row committed late with an older timestamp is skipped forever.}
+\end{itemize}
+
+\columnbreak
+
+\hd{CRDTs — why they converge}
+\begin{itemize}
+  \item \textbf{State-based} (CvRDT): replicas ship state; \ct{merge} is a \textbf{join} —
+        \textbf{commutative, associative, idempotent} — so any order, any duplicates, same result.
+        \textbf{Op-based} (CmRDT): ship ops that commute; needs causal, exactly-once delivery.
+  \item \textbf{G-Counter}: slot per replica, value = sum, merge = max per slot (a single int
+        would double-count on re-merge). \textbf{PN-Counter} = two G-Counters (P $-$ N): likes.
+  \item \textbf{LWW-Register}: \ct{(value, timestamp, replicaId)}, larger wins — deterministic,
+        still \emph{loses} an edit by design. Use an HLC, not \ct{Date()}.
+  \item \textbf{OR-Set}: every add gets a unique tag; remove deletes only the tags it
+        \emph{observed} $\to$ a concurrent add survives (\textbf{add-wins}). Tombstoned tags =
+        metadata that grows until GC.
+  \item \textbf{Text / JSON}: sequence CRDTs (RGA, YATA) give each character an id and order —
+        Yjs, Automerge. Cost: metadata per character, history kept.
+\end{itemize}
+
+\hd{OT vs CRDT}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{29mm}>{\raggedright\arraybackslash}p{32mm}@{}}
+\toprule
+ & \textbf{OT} & \textbf{CRDT} \\ \midrule
+idea & rewrite op B against A: \ct{ins(5)} after \ct{ins(2,"xy")} $\to$ \ct{ins(7)} & data type whose merge is order-free \\
+needs & a central server to order ops & nothing — peer-to-peer, offline for weeks \\
+cost & transform functions, hard to prove & metadata + tombstones grow \\
+seen in & Google Docs–style editors & local-first apps, Yjs, Automerge \\
+\bottomrule
+\end{tabular}}
+
+\hd{Pick the policy per field, not per app}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{47mm}@{}}
+\toprule
+one user, many devices & field-level LWW on an HLC — rare conflicts, cheap \\
+money · stock · bookings & \textbf{server-authoritative}: reject + rebase (invariants) \\
+likes, counts & increment ops with op ids, or a PN-Counter \\
+tags, members & OR-Set semantics (add wins) \\
+shared text & sequence CRDT, or OT behind a server \\
+files, blobs & keep both: ``conflicted copy'' + let the user pick \\
+\bottomrule
+\end{tabular}}
+
+\hd{Apple's example — CloudKit}
+\begin{itemize}
+  \item \ct{NSPersistentCloudKitContainer}: mirrors a Core Data store to CloudKit record zones.
+        Model rules: \textbf{no unique constraints}, every relationship \textbf{optional + has an
+        inverse} (records arrive out of order), no \textbf{Deny} delete rule. After promoting to
+        production the schema is \textbf{add-only} — never rename or delete a field.
+  \item Conflict detection: each \ct{CKRecord} carries a change tag; saving a stale copy
+        $\to$ \ct{CKError.serverRecordChanged} (the server's record in the error).
+  \item \ct{CKSyncEngine} (iOS 17 / macOS 14): your own store; the engine \textbf{schedules}
+        send/fetch, batches your pending changes (\ct{nextRecordZoneChangeBatch}), and hands
+        you a state blob to \textbf{persist}; \ct{serverRecordChanged} is \textbf{yours} to resolve.
+\end{itemize}
+
+\hd{Remember}
+\textbf{Ops in a log · idempotent by op id · revision cursor · versions detect · policy
+resolves · CRDT = merge is a join · tombstones until everyone has seen them.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} ios-client-system-design (sync cycle,
+outbox) · data-access-patterns (SSOT) · cloudkit-sync-sharing · coredata-migrations-swiftdata · distributed-system-design (CAP) · api-design (ETag, If-Match)}
+
+\end{document}

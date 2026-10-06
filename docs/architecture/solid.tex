@@ -1,0 +1,197 @@
+% solid.tex — the five SOLID principles, exact definitions + an iOS example each.
+% Sources (checked 2026-10-06):
+%   R. C. Martin, "Design Principles and Design Patterns" (2000) · "The Interface Segregation
+%     Principle" / "The Dependency Inversion Principle" (C++ Report, 1996) — the DIP (a)/(b) wording
+%   R. C. Martin, Clean Architecture (2017), ch. 7: SRP = "A module should be responsible to one,
+%     and only one, actor" (earlier: "one, and only one, reason to change")
+%   B. Meyer, Object-Oriented Software Construction (1988) — open/closed
+%   B. Liskov, "Data Abstraction and Hierarchy" (OOPSLA 1987 keynote); Liskov & Wing (1994) —
+%     pre/postconditions, invariants
+%   Martin credits Michael Feathers with arranging the initials into "SOLID" (c. 2004)
+% @labels: area=architecture kind=concept platform=general topic=patterns,architecture discussion=87
+% @tags: solid, srp, ocp, lsp, isp, dip, liskov-substitution, dependency-inversion, strategy, composition-over-inheritance
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false,AnyObject,Void,String,Bool,Decimal},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5mm},
+  bad/.style={sb, draw=sheetRed, fill=sheetRed!7},
+  good/.style={sb, draw=sheetGreen, fill=sheetGreen!10},
+  abs/.style={sb, draw=sheetGreen!70!black, fill=sheetGreen!18, dashed, font=\scriptsize\itshape},
+  new/.style={sb, draw=sheetOrange, fill=sheetOrange!10, dashed},
+  conf/.style={-{Latex[open,length=4pt]}, thick, draw=sheetGreen!70!black},
+  inh/.style={-{Latex[open,length=4pt]}, thick, draw=sheetRed},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{SOLID — five principles, exact words}{architecture · folio}
+
+\oneliner{\textbf{S}ingle responsibility · \textbf{O}pen/closed · \textbf{L}iskov
+substitution · \textbf{I}nterface segregation · \textbf{D}ependency inversion — Robert C.
+Martin's rules for code whose parts can \emph{change independently}. Each below: the
+\textbf{exact definition}, one \textbf{iOS example}, and \textbf{which pattern serves it}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % panel separators
+  \foreach \x in {3.3,6.65,10.0,13.35} \draw[sheetGrey!40] (\x,3.35) -- (\x,-0.55);
+  % ── S ──
+  \node[pt] at (0,3.2) {\textcolor{sheetBlue}{S} one reason};
+  \node[bad, minimum width=29mm] (god) at (1.6,2.5) {FeedVC: fetch · parse ·\\cache · layout};
+  \draw[flow] (god) -- (1.6,1.55);
+  \node[good, minimum width=13mm] at (0.85,1.25) {VC};
+  \node[good, minimum width=13mm] at (2.35,1.25) {ViewModel};
+  \node[good, minimum width=13mm] at (0.85,0.6) {Repository};
+  \node[good, minimum width=13mm] at (2.35,0.6) {Parser};
+  \node[lbl] at (1.6,-0.15) {each changes for ONE actor\\(designer · API · backend)};
+  % ── O ──
+  \node[pt] at (3.4,3.2) {\textcolor{sheetBlue}{O} add, don't edit};
+  \node[good, minimum width=18mm] (co) at (4.95,2.5) {Checkout};
+  \node[abs, minimum width=22mm] (pm) at (4.95,1.55) {PaymentMethod};
+  \node[good] (ap) at (3.95,0.45) {ApplePay};
+  \node[good] (cd) at (4.95,0.45) {Card};
+  \node[new] (pp) at (5.95,0.45) {PayPal};
+  \draw[flow] (co) -- (pm);
+  \draw[conf] (ap) -- (pm); \draw[conf] (cd) -- (pm); \draw[conf] (pp) -- (pm);
+  \node[lbl, text=sheetOrange] at (4.95,-0.15) {new case = new type;\\Checkout untouched};
+  % ── L ──
+  \node[pt] at (6.75,3.2) {\textcolor{sheetBlue}{L} honest subtypes};
+  \node[sb, minimum width=18mm] (re) at (8.3,2.5) {Rectangle};
+  \node[bad, minimum width=18mm] (sq) at (8.3,1.5) {Square};
+  \draw[inh] (sq) -- (re);
+  \node[lbl, text=sheetRed] at (8.3,0.75) {\texttt{s.width=5; s.height=4}\\area 16, caller expected 20};
+  \node[lbl, text=sheetGreen!60!black] at (8.3,-0.15) {fix: a \texttt{Shape} protocol\\with honest \texttt{area}};
+  % ── I ──
+  \node[pt] at (10.1,3.2) {\textcolor{sheetBlue}{I} small protocols};
+  \node[bad, minimum width=29mm] (fat) at (11.65,2.5) {fat: data · layout · select ·\\edit · drag · prefetch};
+  \node[abs, minimum width=13mm] (ds) at (10.9,1.35) {DataSource};
+  \node[abs, minimum width=13mm] (dl) at (12.4,1.35) {Delegate};
+  \draw[flow] (fat) -- (ds); \draw[flow] (fat) -- (dl);
+  \node[good, minimum width=13mm] (c1) at (10.9,0.45) {client A};
+  \draw[flow] (c1) -- (ds);
+  \node[lbl] at (12.4,0.5) {conform only to\\what you use};
+  \node[lbl] at (11.65,-0.15) {UIKit: \texttt{UITableViewDataSource}\\+ \texttt{UITableViewDelegate}};
+  % ── D ──
+  \node[pt] at (13.45,3.2) {\textcolor{sheetBlue}{D} both → abstraction};
+  \node[lbl, anchor=west] at (13.4,2.85) {before:};
+  \node[sb, minimum width=11mm] (vm0) at (14.2,2.4) {FeedVM};
+  \node[bad, minimum width=15mm] (us0) at (15.95,2.4) {URLSessionAPI};
+  \draw[hot, draw=sheetRed] (vm0) -- (us0);
+  \node[lbl, anchor=west] at (13.4,1.75) {after:};
+  \node[good, minimum width=11mm] (vm1) at (14.2,1.3) {FeedVM};
+  \node[good, minimum width=15mm] (us1) at (15.95,1.3) {URLSessionAPI};
+  \node[abs, minimum width=16mm] (api) at (15.05,0.4) {APIClient};
+  \draw[flow] (vm1) -- node[lbl, left]{uses} (api);
+  \draw[conf] (us1) -- node[lbl, right]{conforms} (api);
+  \node[lbl] at (15.05,-0.15) {high-level \emph{owns} the protocol;\\low-level depends ``up''};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Definition · iOS example}
+\begin{itemize}
+  \item \textbf{SRP} — \emph{``A module should have one, and only one, reason to
+        change''}; Martin's 2017 restatement: \emph{``\ldots responsible to one, and only
+        one, actor''}. \emph{Not} ``one method'': a
+        \texttt{Money} type with \texttt{add}/\texttt{format} is fine. Violation: the
+        Massive View Controller; fix: VC · VM · Repository · Parser.
+  \item \textbf{OCP} — \emph{``Software entities should be open for extension, but
+        closed for modification''} (Meyer 1988). Add behaviour by adding a type behind
+        a protocol, not by editing a \texttt{switch}. Example: a new
+        \texttt{PaymentMethod}; SwiftUI \texttt{ViewModifier}. It targets the
+        \emph{volatile} axes only; bug fixes still edit code.
+  \item \textbf{LSP} — \emph{``Subtypes must be substitutable for their base
+        types''} — callers of the base must not notice (Martin, after Liskov 1987). A
+        subtype may not \textbf{strengthen preconditions}, \textbf{weaken
+        postconditions}, break invariants, or throw/\texttt{fatalError}/no-op where the
+        base works. Swift smell: a read-only subclass whose setter crashes. Fine:
+        \texttt{UIButton} used anywhere a \texttt{UIView} is.
+  \item \textbf{ISP} — \emph{``\textbf{Clients} should not be forced to depend on
+        methods they do not use.''} It is judged from the \emph{caller's} side: split fat
+        protocols into role protocols. iOS: \texttt{UITableViewDataSource} vs
+        \texttt{UITableViewDelegate}; compose with \texttt{A \& B};
+        \texttt{Codable = Encodable \& Decodable}.
+  \item \textbf{DIP} — (a) \emph{``High-level modules should not depend on low-level
+        modules. \textbf{Both} should depend on abstractions.''} (b) \emph{``Abstractions
+        should not depend on details. Details should depend on abstractions.''} The
+        \emph{inversion}: the protocol belongs to the high-level (app/domain) side, and
+        the low-level \texttt{URLSession} client conforms to it. Achieved by DI; tested
+        with a \texttt{MockAPIClient}.
+\end{itemize}
+
+\section{Example — Strategy = OCP + DIP}
+\begin{lstlisting}[language=SwiftSheet]
+protocol PaymentMethod {             // the abstraction
+  func pay(_ amount: Decimal) throws }
+struct ApplePay: PaymentMethod { func pay(_ a: Decimal) {} }
+struct Card: PaymentMethod { func pay(_ a: Decimal) {} }
+final class Checkout {               // high-level policy
+  private let method: PaymentMethod  // DIP: protocol, not Card
+  init(method: PaymentMethod) { self.method = method } // DI
+  func buy(_ total: Decimal) throws {
+    try method.pay(total) }          // no switch on the type
+}
+// OCP: a new case = a NEW type; Checkout is never edited
+struct PayPal: PaymentMethod { func pay(_ a: Decimal) {} }
+let checkout = Checkout(method: PayPal())  // swap at runtime
+\end{lstlisting}
+
+\columnbreak
+
+\section{Which principle does a pattern serve?}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{16mm}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{46mm}@{}}
+\toprule
+\textbf{Pattern} & \textbf{Serves} & \textbf{Why} \\
+\midrule
+\textbf{Strategy} & \textbf{OCP + DIP} & new algorithm = new type; client holds the protocol \\
+Decorator & OCP & extend by wrapping, no $2^N$ subclasses \\
+Adapter & DIP / ISP & client keeps its target protocol \\
+Facade & ISP / SRP & one narrow surface over a subsystem \\
+Composite & LSP & leaf and group used uniformly \\
+Factory & DIP & one place touches the concrete type \\
+Repository & DIP + SRP & domain depends on a data protocol \\
+MVVM / MVP & SRP + DIP & logic out of the UIKit view \\
+\bottomrule
+\end{tabular}}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{``Strategy serves ISP''} — no, that describes a Facade.
+        Strategy serves \textbf{Open/Closed} + \textbf{Dependency Inversion}.}
+  \trap{\textbf{ISP} is about \textbf{clients}: ``clients should not be forced to
+        depend on methods they do not use'' — not ``methods describe behaviour''.}
+  \trap{\textbf{DIP} says \textbf{both} high- and low-level modules depend on the
+        abstraction — not just ``depend on abstractions''. Name who owns the protocol
+        (the high-level side).}
+  \trap{SRP $\neq$ ``one method''; OCP $\neq$ ``never modify''.}
+  \trap{DI $\neq$ DIP: DI is a technique (pass deps in); DIP the principle. Injecting a
+        concrete class is DI without DIP.}
+  \trap{Every pattern adds indirection — a protocol with one conformer ``for the
+        future'' is over-engineering (rule of three, YAGNI).}
+\end{itemize}
+
+\section{Remember}
+\textbf{S}ingle \emph{reason} · \textbf{O}pen \emph{to add} · \textbf{L}iskov \emph{no
+surprises} · \textbf{I}SP \emph{clients pick} · \textbf{D}IP \emph{both point at the
+protocol}. Martin named the rules ($\sim$2000); Michael Feathers ordered them into
+``SOLID'' — the order is a mnemonic, not a ranking.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} MVC/MVP/MVVM · Coordinator ·
+Repository · DI · Clean Architecture · Strategy · Decorator · composition over inheritance}
+
+\end{document}

@@ -1,0 +1,222 @@
+% client-sdk-design.tex — designing a client SDK / library that other apps embed: API surface
+% (small, hard to misuse), configuration + init, threading guarantees + callback queue, errors,
+% SemVer + deprecation cycle + API-diff checks, Swift binary compatibility (library evolution,
+% .swiftinterface, @frozen, @inlinable), XCFramework + signing, size and startup cost, privacy
+% manifest for SDKs, logging hooks, test doubles + sample app, distribution (SPM, CocoaPods
+% trunk read-only, Maven Central Portal, npm).
+% Not repeated (neighbours): the analytics-SDK pipeline worked through the system-design
+% framework (architecture/system-design-sdk-messenger.tex); HTTP API evolution + Swift API
+% Design Guidelines (design/api-design.tex); SPM module structure (security-build/modularization-spm.tex);
+% static vs dynamic linking cost (security-build/linking-and-launch-time.tex).
+% Sources (checked 2026-09-25): swift.org/blog/library-evolution (BUILD_LIBRARY_FOR_DISTRIBUTION
+% = library evolution + module stability; @frozen add/remove is binary-incompatible; @inlinable /
+% @usableFromInline; resilient values are manipulated indirectly; binary compatibility across
+% compiler versions guaranteed on Apple platforms only); developer.apple.com "Creating a
+% multiplatform binary framework bundle" (archive per destination, Skip Install = No,
+% -create-xcframework); developer.apple.com/support/third-party-SDK-requirements (privacy
+% manifest + signature for listed SDKs, binary dependencies; Xcode validates same signer);
+% blog.cocoapods.org/CocoaPods-Specs-Repo (trunk read-only 2 Dec 2026, existing builds keep
+% working); central.sonatype.org (OSSRH end-of-life 30 Jun 2025 -> Central Publisher Portal);
+% kotlinlang.org api-guidelines-backward-compatibility (binary-compatibility-validator apiDump /
+% apiCheck, built into the Kotlin Gradle plugin from 2.2.0; deprecation warning -> error ->
+% hidden; avoid data classes in public API; @PublishedApi).
+% @labels: area=architecture kind=architecture platform=general topic=architecture,build,system-design discussion=76
+% @tags: sdk-design, library-evolution, binary-compatibility, swiftinterface, frozen, xcframework, semantic-versioning, deprecation, privacy-manifest, callback-queue, maven-central, swift-package-manager
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,public,static,
+    if,else,return,guard,self,Self,nil,try,await,async,throws,private,internal,
+    true,false,some,any,Sendable,Error,String,Void,escaping},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {--}{{\hbox{-}\hbox{-}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  nd/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=6mm, align=center},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Client SDK design — a library inside someone else's app}{architecture · folio}
+
+\oneliner{An SDK is a \textbf{guest with a contract}: a \textbf{small public surface} that is hard
+to misuse, \textbf{documented threading} (callbacks on a known queue), \textbf{no crash, no
+block, no launch cost}, errors as values, and a \textbf{compatibility promise} — SemVer at the
+source level, \textbf{library evolution} at the binary level — enforced by an API-diff check in CI.
+Every \ct{public} symbol is forever; shipping it is the easy part, removing it takes a major version.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------- panel 1: SDK inside the host
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.2,3.35) {Inside the host app — the boundary};
+  \draw[sheetGrey, thick, rounded corners=3pt, fill=black!2] (-0.1,-0.35) rectangle (8.9,3.05);
+  \node[lbl, anchor=north west, font=\tiny\bfseries, text=sheetGrey] at (-0.05,3.0) {host app process};
+  \node[nd, draw=sheetGrey, fill=white] (host) at (0.9,1.9) {host code\\\tiny any thread};
+  \draw[sheetBlue, very thick, rounded corners=3pt, fill=sheetBlue!4] (2.2,-0.2) rectangle (8.75,2.85);
+  \node[lbl, anchor=north east, font=\tiny\bfseries, text=sheetBlue] at (8.7,2.8) {YourSDK};
+  \node[nd, draw=sheetOrange, fill=sheetOrange!10] (fac) at (3.3,1.9) {public facade\\\tiny copy args, return};
+  \node[nd, draw=sheetGreen!60!black, fill=sheetGreen!10] (core) at (5.6,1.9) {internal core\\\tiny actor / serial queue};
+  \node[nd, draw=sheetGrey, fill=white] (tr) at (7.75,2.3) {transport\\\tiny injectable};
+  \node[nd, draw=sheetGrey, fill=white] (st) at (7.75,1.5) {own storage\\\tiny namespaced};
+  \node[nd, draw=sheetBrown, fill=sheetBrown!10] (cb) at (3.3,0.35) {callback / \ct{async}\\\tiny on \ct{callbackQueue}};
+  \node[nd, draw=sheetGrey, fill=white] (log) at (6.35,0.35) {log hook\\\tiny host sets level};
+  \node[nd, draw=sheetGrey, fill=white] (pm) at (7.75,0.45) {\ct{PrivacyInfo}\\\tiny\ct{.xcprivacy}};
+  \draw[hot] (host) -- node[lbl, above]{call} (fac);
+  \draw[hot] (fac) -- node[lbl, above]{hop} (core);
+  \draw[flow] (core) -- (tr); \draw[flow] (core) -- (st);
+  \draw[flow] ([xshift=-5mm]core.south) |- (cb.east);
+  \draw[hot, draw=sheetBrown] (cb.west) -| node[lbl, pos=0.3, below]{result} (host.south);
+  \draw[flow, dashed] ([xshift=6mm]core.south) -- ([xshift=-1mm]log.north);
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (-0.05,-0.62) {never: crash · block the caller · work at launch · swizzle by default · log secrets · call back while holding a lock};
+  % ---------- panel 2: binary compatibility
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (9.2,3.35) {Binary-compatible? (resilient Swift library)};
+  \node[anchor=north west, inner sep=0pt] at (9.25,3.05) {\scriptsize\setstretch{0.95}
+    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{47mm}>{\raggedright\arraybackslash}p{24mm}@{}}
+    \toprule
+    \textbf{change in v2.x} & \textbf{old apps keep working?} \\ \midrule
+    add a method / type / conformance & \textcolor{sheetGreen!60!black}{\textbf{yes}} \\
+    add a stored property to a non-\ct{@frozen} struct & \textcolor{sheetGreen!60!black}{\textbf{yes}} (layout is hidden) \\
+    add a case to a non-\ct{@frozen} enum & \textcolor{sheetGreen!60!black}{\textbf{yes}}; callers need \ct{@unknown default} \\
+    add a protocol requirement \emph{with} a default & \textcolor{sheetGreen!60!black}{\textbf{yes}} \\
+    stored $\to$ computed property & \textcolor{sheetGreen!60!black}{\textbf{yes}} \\
+    change an \ct{@inlinable} body & old body still inlined in old apps \\
+    requirement \emph{without} default · rename · remove & \textcolor{sheetRed}{\textbf{no}} — major version \\
+    add or remove \ct{@frozen} & \textcolor{sheetRed}{\textbf{no}} \\
+    \bottomrule
+    \end{tabular}};
+  \node[lbl, anchor=west, align=left] at (9.2,-0.5) {\ct{BUILD\_LIBRARY\_FOR\_DISTRIBUTION=YES} $\to$ library evolution + a \ct{.swiftinterface}\\(module stability); cost: resilient values are accessed indirectly. Apple platforms only.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\footnotesize\setstretch{1.0}
+
+\hd{The surface}
+\begin{itemize}
+  \item \textbf{One entry type}, value-type \textbf{configuration} with safe defaults, required
+        values in \ct{init} (not setters you can forget). Allow instances; a \ct{shared} convenience
+        is optional — a forced singleton blocks tests and multi-account hosts.
+  \item \textbf{Hard to misuse}: \ct{final} classes (\ct{public}, not \ct{open}), enums over flag
+        combos, tagged IDs, \ct{some P} returns so the concrete type can change, \ct{internal}
+        by default. Kotlin: \textbf{explicit API mode}, no \ct{data} classes in the public API
+        (\ct{copy}/constructor break on every new property).
+  \item \textbf{Init}: cheap, no I/O, no network; nothing in \ct{+load} / static initialisers; no
+        swizzling unless the host opts in. Start work lazily, after launch.
+  \item \textbf{Threading}: ``callable from any thread'' stated in the doc comment; state behind
+        an \ct{actor} / serial queue; public types \ct{Sendable}; callbacks on a
+        \textbf{documented queue} (main by default, or a \ct{callbackQueue} like
+        \ct{URLSession}'s \ct{delegateQueue}); never call back synchronously inside the call.
+  \item \textbf{Errors}: one domain \ct{enum} (non-\ct{@frozen}, so new cases are additive) +
+        underlying error; invalid config $\to$ \ct{assertionFailure} in debug, an error in release.
+        Retries and backoff inside, bounded.
+\end{itemize}
+
+\hd{Example — a surface that is hard to misuse}
+\begin{lstlisting}[language=SwiftSheet]
+public struct PayConfig: Sendable {
+  public let apiKey: String                 // required: in init
+  public var environment: Environment = .production
+  public var logLevel: LogLevel = .error    // silent by default
+  public var callbackQueue: DispatchQueue = .main
+  public init(apiKey: String) { self.apiKey = apiKey }
+}
+public enum PayError: Error, Sendable {     // NOT @frozen
+  case invalidRequest(String), declined(code: String)
+  case transport(underlying: any Error)
+}
+public final class PayClient: Sendable {
+  public init(config: PayConfig)            // no I/O here
+  public func pay(_ r: PayRequest) async throws -> Receipt
+  public func pay(_ r: PayRequest, completion: @escaping @Sendable
+      (Result<Receipt, PayError>) -> Void)  // on callbackQueue
+  @available(*, deprecated, renamed: "pay(_:)")
+  public func charge(_ r: PayRequest) async throws -> Receipt
+}
+\end{lstlisting}
+
+\hd{Versioning — the promise}
+\begin{itemize}
+  \item \textbf{SemVer}: patch = fix, minor = additive, \textbf{major} = anything a caller must
+        change. Deprecate first (\ct{@available(*, deprecated, renamed:)}; Kotlin
+        \ct{@Deprecated} WARNING $\to$ ERROR $\to$ HIDDEN over several minors), remove at the next major.
+  \item \textbf{API-diff in CI}: \ct{swift package diagnose-api-breaking-changes <tag>};
+        Kotlin binary-compatibility-validator \ct{apiDump} / \ct{apiCheck} (in the Kotlin Gradle
+        plugin from 2.2.0); a committed public-API file makes every surface change a reviewed diff.
+  \item \textbf{Support window}: minimum OS, Xcode/Swift, Kotlin, RN versions written down;
+        raising one is a \textbf{major}. Old SDK versions live in shipped apps for years.
+  \item \textbf{Fleet visibility}: send the SDK version with every request (a header or
+        User-Agent) — adoption per version, and the backend can \textbf{disable a broken
+        version} remotely (kill switch) while hosts update.
+\end{itemize}
+
+\columnbreak
+
+\hd{Distribution}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{14mm}>{\raggedright\arraybackslash}p{60mm}@{}}
+\toprule
+\textbf{SPM} & source package, or \ct{.binaryTarget(url:checksum:)} pointing at a zipped XCFramework \\
+\textbf{XCFramework} & archive per destination (\ct{generic/platform=iOS}, \ct{…iOS Simulator}; Skip Install = No, Build Libraries for Distribution = Yes) $\to$ \ct{xcodebuild -create-xcframework}; \textbf{sign} it \\
+\textbf{CocoaPods} & trunk goes \textbf{read-only on 2 Dec 2026} — existing builds keep working, no new versions; ship SPM \\
+\textbf{Android} & AAR on Maven Central via the \textbf{Central Publisher Portal} (OSSRH ended 30 Jun 2025); ship \ct{consumer-rules.pro} for R8 \\
+\textbf{npm / RN} & \ct{"exports"}, \ct{react}/\ct{react-native} as \textbf{peer} deps, native code autolinked (or an Expo config plugin) \\
+\bottomrule
+\end{tabular}}
+
+\hd{Size, startup, privacy — the host pays}
+\begin{itemize}
+  \item \textbf{Budget} the SDK: measure the app-size and launch-time \emph{delta} in a sample app
+        per release. Few dependencies — a bundled copy of a popular library clashes with the
+        host's (duplicate classes / symbols); vendor + rename, or depend on nothing.
+  \item \textbf{Static} XCFramework: no dyld cost; \textbf{dynamic}: one copy for app + extensions.
+  \item \textbf{Privacy manifest}: the SDK ships its own \ct{PrivacyInfo.xcprivacy} (data
+        collected, tracking domains, required-reason APIs). SDKs on Apple's
+        commonly-used list (Alamofire, Firebase*, SDWebImage\ldots) need the manifest
+        \textbf{and a signature} when shipped as binaries; Xcode checks a new version is signed
+        by the \textbf{same developer}.
+  \item \textbf{Logging}: default silent or \ct{Logger(subsystem: "com.example.sdk")}; a
+        host-settable level and handler; never tokens or PII.
+\end{itemize}
+
+\hd{Testing and docs}
+\begin{itemize}
+  \item Internal seams (\ct{Transport}, \ct{Clock}, \ct{Storage}) for your tests; ship a
+        \textbf{test double} (\ct{PayClient.mock}) so hosts can test \emph{their} code.
+  \item A \textbf{sample app} in the repo = the integration test CI builds against the
+        \emph{binary} artifact (catches a missing \ct{.swiftinterface}, resource bundle or
+        privacy manifest) on the minimum OS.
+  \item DocC / KDoc for every public symbol incl. threading and error behaviour; a migration
+        guide per major.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Library evolution ``for safety'' in a source-only package — it is for \emph{binaries}
+        built separately from clients; it costs indirection.}
+  \trap{\ct{@frozen} or \ct{@inlinable} on day one — you can never add a stored property or
+        change that body for old apps.}
+  \trap{Typed \ct{throws(PayError)} is a promise too — the error type is now public API.}
+  \trap{Callback on ``whatever thread the network used'' — host UI updates off-main.}
+  \trap{Doing work in \ct{init} or at launch ``to be ready'' — you just slowed every host.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Small, final, Sendable · config in init · callbacks on a known queue · errors as
+values · additive minors · API diff in CI · the host pays for your size, launch and privacy.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} system-design-sdk-messenger (analytics
+SDK pipeline) · api-design (SemVer, API guidelines) · modularization-spm · linking-and-launch-time ·
+app-hardening-privacy (privacy manifest) · swift-idiom-patterns (tagged IDs)}
+
+\end{document}

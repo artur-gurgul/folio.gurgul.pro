@@ -1,0 +1,136 @@
+% gof-creational-structural.tex — GoF creational + structural patterns, one page.
+% Sources (checked 2026-10-06):
+%   Gamma, Helm, Johnson, Vlissides, Design Patterns (1994) — intents of Singleton, Factory Method,
+%     Abstract Factory, Builder (+ Director), Adapter, Decorator, Facade, Proxy (virtual, protection,
+%     remote, smart reference)
+%   docs.swift.org/swift-book (Properties: global and static stored properties are lazily initialized,
+%     once, even across threads) · developer.apple.com/documentation/uikit/uiview/layerclass
+%   developer.apple.com/documentation/foundation/nsxpcconnection (remoteObjectProxy)
+% @labels: area=architecture kind=pattern platform=general topic=patterns discussion=81
+% @tags: gof, singleton, factory-method, abstract-factory, builder, adapter, decorator, facade, proxy, virtual-proxy, telescoping-initializers
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{tabularx}
+
+% A pattern mini-box: \pat[colour]{Name}{body}
+\newcommand\pat[3][sheetBlue]{\par\noindent\fcolorbox{#1}{#1!5}{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{\raggedright{\bfseries\color{#1}#2}\enspace #3}}\par\vspace{2pt}}
+\newcommand\iface[1]{\textcolor{sheetOrange}{\textbf{#1}}}
+
+\begin{document}
+
+\sheettitle{GoF: creational + structural}{architecture · folio}
+
+\oneliner{Creational patterns decide \emph{how an object comes to exist}
+(Singleton, Factory Method, Abstract Factory, Builder). The four ``wrappers''
+are told apart by \textbf{intent}, not shape: Adapter \iface{changes} the
+interface, Decorator \iface{keeps} it and \emph{adds behaviour}, Facade
+\iface{simplifies} a whole subsystem, Proxy \iface{keeps} it and \emph{controls access}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    w/.style={box, minimum width=20mm, font=\footnotesize, inner sep=2pt},
+    c/.style={box, draw=sheetGrey, fill=black!4, minimum width=14mm, font=\footnotesize, inner sep=1.5pt},
+    lab/.style={font=\scriptsize\ttfamily, text=sheetOrange}]
+  % ---------- Adapter
+  \node[font=\bfseries, text=sheetBlue] at (1.9,3.3) {Adapter};
+  \node[c] (ac) at (1.9,2.8) {Client};
+  \node[w] (aa) at (1.9,1.95) {AnalyticsAdapter};
+  \node[w, draw=sheetBrown, fill=sheetBrown!8] (ad) at (1.9,1.1) {FirebaseSDK};
+  \draw[flow] (ac) -- node[right, lab]{Tracker} (aa);
+  \draw[flow] (aa) -- node[right, lab]{logEvent(\_:parameters:)} (ad);
+  % ---------- Decorator
+  \node[font=\bfseries, text=sheetBlue] at (6.1,3.3) {Decorator};
+  \node[c] (dc) at (6.1,2.8) {Client};
+  \node[w] (d1) at (6.1,2.24) {Logging};
+  \node[w] (d2) at (6.1,1.67) {Caching};
+  \node[w, fill=sheetGreen!12, draw=sheetGreen] (d3) at (6.1,1.1) {RemoteLoader};
+  \draw[flow] (dc) -- (d1); \draw[flow] (d1) -- (d2); \draw[flow] (d2) -- (d3);
+  \node[lab, right=1mm of d1] {Loader}; \node[lab, right=1mm of d2] {Loader}; \node[lab, right=1mm of d3] {Loader};
+  % ---------- Facade
+  \node[font=\bfseries, text=sheetBlue] at (10.3,3.3) {Facade};
+  \node[c] (fc) at (10.3,2.8) {Client};
+  \node[w] (ff) at (10.3,1.95) {VideoPlayer};
+  \node[c, minimum width=9mm, font=\scriptsize] (f1) at (9.15,1.1) {AVPlayer};
+  \node[c, minimum width=9mm, font=\scriptsize] (f2) at (10.3,1.1) {AudioSession};
+  \node[c, minimum width=9mm, font=\scriptsize] (f3) at (11.5,1.1) {NowPlaying};
+  \draw[flow] (fc) -- node[right, lab]{play(url)} (ff);
+  \draw[flow] (ff) -- (f1); \draw[flow] (ff) -- (f2); \draw[flow] (ff) -- (f3);
+  % ---------- Proxy
+  \node[font=\bfseries, text=sheetBlue] at (14.5,3.3) {Proxy};
+  \node[c] (pc) at (14.5,2.8) {Client};
+  \node[w] (pp) at (14.5,1.95) {LazyImageProxy};
+  \node[w, fill=sheetGreen!12, draw=sheetGreen, dashed] (pr) at (14.5,1.1) {RealImage};
+  \draw[flow] (pc) -- node[right, lab]{Image} (pp);
+  \draw[hot] (pp) -- node[right, lab]{Image} node[left, note, font=\scriptsize\itshape]{if / when?} (pr);
+  % ---------- captions
+  \foreach \x/\t in {1.9/{\iface{different} interface below},
+                     6.1/{\iface{same} interface, STACKED},
+                     10.3/{NEW simpler API over MANY},
+                     14.5/{\iface{same} interface, GATED}}
+    \node[note, align=center] at (\x,0.6) {\t};
+\end{tikzpicture}
+
+\noindent{\footnotesize\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}%
+\begin{tabularx}{\linewidth}{@{}l l l >{\raggedright\arraybackslash}p{33mm} >{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Pattern} & \textbf{Interface} & \textbf{Intent} & \textbf{Wraps} & \textbf{iOS example}\\
+\midrule
+\textbf{Adapter}   & \iface{changes} to one a client already expects & compatibility & ONE adaptee; adds no features & \texttt{extension SDK: MyProtocol}; callback API $\to$ \texttt{async} via \texttt{withCheckedContinuation}\\
+\textbf{Decorator} & \iface{same}         & augmentation  & ONE, handed in by client; stackable & \texttt{Logging(Caching(Remote()))}; SwiftUI \texttt{ViewModifier}, \texttt{.padding().border()}\\
+\textbf{Facade}    & \iface{new, simpler} (invented) & simplification & a SUBSYSTEM of many classes & \texttt{VideoPlayer} over AVFoundation; \texttt{URLSession} over the network stack\\
+\textbf{Proxy}     & \iface{same}         & access control & ONE subject, often created/owned by the proxy & \texttt{lazy var}; \texttt{NSXPCConnection.remoteObjectProxy}; auth-gated client; image cache\\
+\bottomrule
+\end{tabularx}}
+
+\vspace{2pt}
+\noindent\colorbox{sheetOrange!10}{\parbox{\dimexpr\linewidth-2\fboxsep}{
+\textbf{Decide in two questions. (1) Same interface as the wrapped object?}
+\emph{No} $\to$ dictated by an existing client? \textbf{Adapter} · invented to hide many classes? \textbf{Facade}.
+\textbf{(2) Same} $\to$ \emph{adds behaviour}, stackable? \textbf{Decorator} ·
+decides \emph{whether / when / how} you reach the real object? \textbf{Proxy}.}}
+
+\vspace{2pt}
+\begin{multicols}{2}
+\raggedright
+
+\pat{Proxy — ``Very Private Rooms Cache''}{Surrogate with the subject's interface that \textbf{controls access}.
+\textbf{V}irtual: defer expensive creation (\texttt{lazy var} = built-in virtual proxy; not thread-safe) ·
+\textbf{P}rotection: check auth, then forward ·
+\textbf{R}emote: local stand-in for another process/server (XPC, API stubs) ·
+\textbf{C}aching / smart reference: memoise, ref-count.}
+\pat{Decorator}{Holds one object of the \textbf{same protocol}, forwards \emph{every} call, adds behaviour before/after; wrappers \textbf{stack}, order chosen at runtime.
+\textbf{Beats subclassing:} $N$ optional features $\to$ $2^N$ subclasses (log+cache+retry = 8); decorators = $N$ types, composed (OCP).
+Cost: forwards the whole interface (keep it small, ISP). SwiftUI: \texttt{.padding().background()} $\ne$ \texttt{.background().padding()}.}
+\pat{Facade vs Adapter}{Facade does \emph{not} lock the subsystem away (you may bypass it) and is one-way — the subsystem does not know it (a Mediator's peers talk \emph{back}). Adapter = \emph{one} type made to fit an \emph{existing} interface.}
+\pat[sheetGreen]{Singleton}{\textbf{Purpose:} exactly one instance + global access point.
+\texttt{static let shared = X()} + \texttt{private init()}: static stored properties are initialised \textbf{lazily on first access, once, thread-safely} (\texttt{swift\_once}). Only \emph{creation} is safe — mutable state still needs an \texttt{actor}/lock.\par
+\textbf{Downsides:} \textbf{global mutable state} · \textbf{hidden dependencies} (absent from every \texttt{init}) · \textbf{hard to test}: can't swap a fake, state leaks between tests, order-dependent · tight coupling (DIP) · app-long lifetime · SRP.\par
+\textbf{Fix:} depend on a \textbf{protocol}, \textbf{inject} it; \texttt{.shared} only as default: \texttt{init(api: API = LiveAPI.shared)}.
+\texttt{URLSession.shared}/\texttt{FileManager.default} are \emph{shared instances}, not enforced singletons.}
+\pat[sheetOrange]{Remember}{\textbf{Adapter changes · Decorator decorates · Facade fronts many · Proxy protects.}
+Hooks: plug adapter · gift-wrap layers · building front · bouncer. \textbf{Factory: Method = one, Abstract = family.}}
+
+\columnbreak
+
+\pat[sheetGreen]{Factory — three different things}{%
+\textbf{Simple factory} (not GoF): a function with a \texttt{switch} returning a concrete type.\par
+\textbf{Factory Method}: base class declares a creation method, \textbf{a subclass overrides it to decide ONE product}; base code calls it. Inheritance. iOS: override \texttt{class var layerClass} to pick a \texttt{UIView}'s \texttt{CALayer}.\par
+\textbf{Abstract Factory}: an \textbf{object} (protocol) with \textbf{several} \texttt{make…} methods for a \textbf{FAMILY} that must match: \texttt{ThemeFactory} (\texttt{makeButton}, \texttt{makeLabel}) as \texttt{Light}/\texttt{Dark}; \texttt{Live} vs \texttt{Mock} services. Composition: passed in.}
+\pat[sheetGreen]{Builder}{Solves \textbf{telescoping initialisers} (\texttt{init(a)}, \texttt{init(a,b)}, \texttt{init(a,b,c,…)}).
+Builds \textbf{one} product \textbf{step by step}; setters \textbf{return \texttt{Self}} for chaining; \texttt{build()} validates. \textbf{Director} = holds a fixed recipe of steps.
+\textbf{Swift: default + named params usually replace it.} \texttt{URLComponents} is a value-type builder; \texttt{@resultBuilder} is a compile-time DSL, related in spirit only.}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{Proxy $\ne$ Decorator}: Proxy \emph{controls access}, one, often creates the subject; Decorator \emph{adds behaviour} to what you hand it, stacked.}
+  \trap{\textbf{Facade $\ne$ Adapter}: invents a simpler API over many vs fits one to an existing API.}
+  \trap{A function returning an object is a \emph{simple factory}, not Factory Method.}
+  \trap{``\texttt{static let} makes it thread-safe'' — only its initialisation.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} gof-behavioural · SOLID (OCP, DIP, ISP) · dependency injection · Composite vs Decorator · Bridge vs Strategy · Prototype (value types + CoW)}
+
+\end{document}

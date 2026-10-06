@@ -1,0 +1,195 @@
+% ios-client-system-design.tex — designing an iOS client end to end: requirements, layered
+% client, offline-first + sync, pagination, image loading, flags, modules, observability —
+% worked on a feed.
+% Sources (checked 2026-10-06):
+%   developer.apple.com/documentation/foundation/nscache · .../imageio (downsampling: WWDC18 219
+%     "Image and Graphics Best Practices") · .../uikit/uicollectionviewdatasourceprefetching
+%   developer.apple.com/documentation/network/nwpathmonitor · .../backgroundtasks/bgapprefreshtask
+%   use-the-index-luke.com/no-offset (keyset vs offset pagination)
+%   datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header (Idempotency-Key)
+%   RFC 9110 §13.1.1 If-Match, §15.5.13 412 Precondition Failed
+%   frame budgets 16.7 ms @ 60 Hz / 8.3 ms @ 120 Hz (1000 / Hz)
+% @labels: area=architecture kind=architecture platform=ios topic=system-design,architecture,networking discussion=83
+% @tags: ios-system-design, feed, offline-first, cursor-pagination, outbox, idempotency-key, optimistic-update, conflict-resolution, image-cache, downsampling, feature-flags
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,actor,
+    true,false,String,UUID},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  ly/.style={box, font=\scriptsize, minimum width=21mm, minimum height=10mm, inner sep=1.5pt},
+  src/.style={box, font=\scriptsize, minimum width=27mm, minimum height=6mm, inner sep=1.2pt,
+              draw=sheetGreen!70!black, fill=sheetGreen!10},
+  sot/.style={src, very thick, draw=sheetOrange, fill=sheetOrange!10},
+  be/.style={box, font=\scriptsize, minimum width=17mm, minimum height=5.5mm, inner sep=1pt,
+             draw=sheetGrey, fill=black!4},
+  xc/.style={box, font=\scriptsize, draw=sheetBrown, fill=sheetBrown!8, inner sep=1.5pt,
+             minimum height=5mm},
+  band/.style={font=\bfseries\scriptsize, text=sheetGrey},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  up/.style={->, thick, draw=sheetGreen!70!black},
+  wr/.style={->, thick, draw=sheetOrange},
+}
+
+\begin{document}
+
+\sheettitle{iOS client system design — a feed, end to end}{architecture · folio}
+
+\oneliner{Order of decisions: \textbf{requirements} (functional, non-functional, scale)
+$\to$ \textbf{API + data model} $\to$ \textbf{client layers} $\to$
+\textbf{data flow} (read + write) $\to$ the hard parts (sync, pagination, images)
+$\to$ \textbf{trade-offs}. On the client the \textbf{local store is the source of
+truth}; the network \emph{syncs into} it.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % bands
+  \node[band] at (0.95,3.35) {UI};
+  \node[band] at (3.65,3.35) {presentation};
+  \node[band] at (6.35,3.35) {domain};
+  \node[band] at (9.05,3.35) {data};
+  \node[band] at (12.6,3.35) {sources (Core packages)};
+  \node[band] at (15.75,3.35) {backend};
+  \draw[sheetGrey!40, dashed] (-0.2,-0.55) rectangle (7.55,3.15);
+  \node[lbl, anchor=south west, text=sheetBlue] at (-0.15,-0.5) {\textbf{FeedFeature} SPM module — depends only on protocols};
+  % layers
+  \node[ly] (v) at (0.95,1.55) {\textbf{View}\\\texttt{List} / collection\\view + diffable};
+  \node[ly] (vm) at (3.65,1.55) {\textbf{FeedViewModel}\\\texttt{state}: loading ·\\loaded · empty · error};
+  \node[ly] (uc) at (6.35,1.55) {\textbf{Use cases}\\LoadFeed · LikePost\\\texttt{Post} entity};
+  \node[ly, fill=sheetBlue!12] (rp) at (9.05,1.55) {\textbf{FeedRepository}\\(protocol owned\\by domain)};
+  % sources
+  \node[src] (api) at (12.6,2.65) {APIClient (URLSession)};
+  \node[sot] (db)  at (12.6,1.75) {\textbf{local store} = truth};
+  \node[src] (ob)  at (12.6,0.95) {outbox + sync engine};
+  \node[src] (img) at (12.6,0.1) {image pipeline: RAM$\to$disk};
+  % backend
+  \node[be] (srv) at (15.75,2.65) {feed API\\\texttt{?cursor=\&limit=20}};
+  \node[be] (ws)  at (15.75,1.35) {writes · WS\\deltas};
+  \node[be] (cdn) at (15.75,0.1) {CDN, sized variants};
+  % intents down, state up
+  \draw[wr] ([yshift=2.5mm]v.east) -- node[lbl, above]{intent} ([yshift=2.5mm]vm.west);
+  \draw[up] ([yshift=-2.5mm]vm.west) -- node[lbl, below]{state} ([yshift=-2.5mm]v.east);
+  \draw[wr] ([yshift=2.5mm]vm.east) -- ([yshift=2.5mm]uc.west);
+  \draw[up] ([yshift=-2.5mm]uc.west) -- ([yshift=-2.5mm]vm.east);
+  \draw[wr] ([yshift=2.5mm]uc.east) -- ([yshift=2.5mm]rp.west);
+  \draw[up] ([yshift=-2.5mm]rp.west) -- node[lbl, below]{stream} ([yshift=-2.5mm]uc.east);
+  % repository to sources
+  \draw[wr] ([xshift=-2mm]rp.north east) |- node[lbl, above, pos=0.75]{2 fetch page} (api.west);
+  \draw[wr] (api.south) -- node[lbl, right]{3 upsert by id} (db.north);
+  \draw[up] ([yshift=1mm]db.west) -- node[lbl, above]{1,4 emit} ([yshift=1mm]db.west -| rp.east);
+  \draw[wr] ([yshift=-1mm]db.west -| rp.east) -- node[lbl, below]{like} ([yshift=-1mm]db.west);
+  \draw[wr] ([yshift=-3.5mm]rp.east) -- node[lbl, below, pos=0.6]{enqueue} (ob.west);
+  \draw[flow] (v.south) |- node[lbl, above, pos=0.72]{cell asks for URL @ pixel size (points × scale) · cancel on reuse} (img.west);
+  \draw[flow] (api) -- (srv); \draw[flow] (img) -- (cdn);
+  \draw[wr] ([yshift=1mm]ob.east) -- node[lbl, above, sloped]{op + key} ([yshift=-1.5mm]ws.west);
+  \draw[up] ([yshift=1.5mm]ws.west) -- node[lbl, above, sloped]{deltas} (db.east);
+  \node[lbl, text=sheetRed, anchor=north] at (15.75,0.95) {reject $\to$ revert};
+  % cross-cutting
+  \node[xc, anchor=west] at (-0.2,-0.9) {\textbf{cross-cutting:} DI composition root};
+  \node[xc, anchor=west] at (4.25,-0.9) {feature flags: remote + local default + kill switch};
+  \node[xc, anchor=west] at (10.2,-0.9) {observability: \texttt{Logger}, signposts, MetricKit, crashes};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{The design, step by step}
+\begin{itemize}
+  \item \textbf{1 Requirements.} Functional: scroll, infinite load,
+        pull-to-refresh, like, detail. Out of scope: upload, stories, DMs. Non-functional:
+        cached feed \emph{instantly} on launch, no hitches (16.7/8.3 ms), flaky
+        network/offline, memory-safe images. Ranking + fan-out live on the backend; the
+        client consumes a ranked list.
+  \item \textbf{2 API + model.} \texttt{GET /feed?cursor=<opaque>\&limit=20}
+        $\to$ \texttt{\{items, nextCursor\}}; items carry multi-resolution image URLs
+        and \texttt{viewerHasLiked}. Normalize: entities by \texttt{id} in one store,
+        the feed = ordered \emph{id list} $\to$ one like updates every screen.
+  \item \textbf{3 Layers.} View $\to$ ViewModel (UI state enum, no UIKit) $\to$
+        use cases $\to$ \textbf{Repository} (hides remote vs local) $\to$ data sources.
+        Dependencies point inward; the domain owns the repository protocol (DIP)
+        $\to$ fake repo in tests.
+  \item \textbf{4 Data flow.} \emph{Read}: observe local store (1) $\to$ fetch page
+        (2) $\to$ upsert + dedup (3) $\to$ store emits (4). \emph{Write}: optimistic
+        store write $\to$ outbox $\to$ server $\to$ ack or \textbf{revert}.
+  \item \textbf{Offline-first + sync.} Push dirty ops, pull \emph{since cursor}.
+        Retries need \textbf{idempotency} (client UUID key; ``set'' not ``increment'').
+        Backoff + jitter; per-item success. Deletes = \textbf{tombstones}. Conflicts —
+        \emph{name the policy}: server-wins, LWW (loses edits; clock skew), version/ETag
+        + \texttt{If-Match} (412), field merge, CRDT. Triggers: foreground,
+        \texttt{NWPathMonitor}, \texttt{BGAppRefreshTask}, silent push.
+  \item \textbf{Pagination.} \emph{Cursor/keyset}: stable under inserts, opaque,
+        resumable. \emph{Offset}: new posts at the top shift pages $\to$ duplicates and
+        gaps. Prefetch the next page N rows before the end.
+  \item \textbf{Images.} Memory: \texttt{NSCache} of \emph{decoded, downsampled}
+        images (cost limit, purged under pressure). Disk: size-bounded LRU of
+        bytes. Downsample with ImageIO to points × scale, off main; coalesce
+        duplicate URL requests; \textbf{cancel on reuse} and check the cell still
+        shows the same id; prefetch via \texttt{prefetchItemsAt}.
+  \item \textbf{Real-time.} WebSocket deltas for \emph{visible} posts in the
+        foreground; APNs when backgrounded. Server count \emph{replaces}, never adds to,
+        the optimistic one.
+  \item \textbf{Platform.} SPM feature + Core modules (build time, boundaries).
+        Flags: cached remote config, safe default. Token in \textbf{Keychain}; 401
+        $\to$ refresh + replay.
+\end{itemize}
+
+\columnbreak
+
+\section{Example — repository: read local, sync in}
+\begin{lstlisting}[language=SwiftSheet]
+actor FeedRepository: FeedRepositoryProtocol { // init omitted
+  let api: APIClient; let store: PostStore; let outbox: Outbox
+  private var cursor: String?              // opaque, server-made
+  func posts() -> AsyncStream<[Post]> { store.observeFeed() }
+  func loadNext() async throws {
+    let page = try await api.feed(after: cursor, limit: 20)
+    try await store.upsert(page.items)     // dedup by id -> emits
+    cursor = page.nextCursor               // nil = end of feed
+  }
+  func like(_ id: Post.ID) async {
+    await store.setLiked(id, true)         // optimistic, instant
+    await outbox.enqueue(.like(id), key: UUID()) // retry-safe
+  }                  // server rejects -> store.setLiked(id, false)
+}
+\end{lstlisting}
+
+\section{Trade-offs}
+{\scriptsize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{42mm}@{}}
+\toprule
+\textbf{Choice} & \textbf{What decides it} \\
+\midrule
+SwiftData · GRDB · files & queries + migrations · SQL control · feed cache only \\
+SwiftUI \texttt{List} vs UIKit CV & velocity vs fine reuse / prefetch control \\
+WebSocket · polling · APNs & live in foreground · fallback · app closed \\
+Nuke / Kingfisher & use one — but justify each layer \\
+\bottomrule
+\end{tabular}}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Network as source of truth $\to$ blank screen offline and on every cold launch.}
+  \trap{\textbf{Offset} pagination on a live feed; loading only at the bottom.}
+  \trap{Retrying a POST with no idempotency key $\to$ double like.}
+  \trap{Caching only bytes (decode per display); full-res decode on main.}
+  \trap{``It just syncs'' — name the conflict policy and how you \emph{detect}
+        a conflict (version, not clock).}
+  \trap{\texttt{try!} decoding the page — one bad item kills the feed.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Requirements $\to$ API $\to$ layers $\to$ flow $\to$ hard parts $\to$ trade-offs.}
+Local is truth · cursor · outbox + key · decoded RAM + disk LRU.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} solid (DIP) · MVVM / Repository ·
+DI · instruments-performance · observation-and-combine · actors · URLSession / WebSocket}
+
+\end{document}

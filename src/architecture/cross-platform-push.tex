@@ -1,0 +1,173 @@
+% cross-platform-push.tex — push for one app on iOS + Android (native or React Native): FCM in front of
+% APNs, token lifecycle (registration, refresh, deletion, many tokens per user, staleness), notification
+% vs data messages x app state, priorities (Android high/normal + Doze, APNs 10/5), rich / encrypted
+% payloads (NSE, Android data messages), RN Firebase handlers, server fan-out + dead-token cleanup.
+% Picture: backend token table -> FCM HTTP v1 -> Android / APNs -> devices, with the token-upload loop
+% and the 404 clean-up path.
+% Sources (checked 2026-09-25): firebase.google.com/docs/reference/fcm/rest/v1/projects.messages/send;
+% firebase.google.com/docs/cloud-messaging/migrate-v1, /manage-tokens, /ios/client, /ios/send-image,
+% /android-message-priority, /customize-messages/set-message-type, /send/admin-sdk;
+% rnfirebase.io/messaging/usage + /messaging/notifications;
+% developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app;
+% developer.android.com (notification-permission, channels).
+% NOT repeated: APNs mechanics, .p8 JWT, NSE basics, authorization options (ios-platform/push-notifications.tex).
+% @labels: area=architecture kind=architecture platform=cross-platform topic=system-design,platform-apis,networking discussion=79
+% @tags: fcm, apns, push-notifications, fcm-http-v1, registration-token, token-lifecycle, data-message, notification-message, react-native-firebase, notification-service-extension, fan-out, doze
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{JSONSheet}{
+  sensitive=true, morestring=[b]", morecomment=[l]{//},
+  literate={->}{{\hbox{-}\hbox{>}}}2 {=>}{{\hbox{=}\hbox{>}}}2}
+\lstdefinelanguage{JSSheet}{
+  morekeywords={const,let,async,await,function,return,import,from,new},
+  sensitive=true, morestring=[b]", morestring=[b]', morecomment=[l]{//},
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {===}{{\hbox{=}\hbox{=}\hbox{=}}}3}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{Push on iOS + Android from one app — FCM, APNs, React Native}{architecture · folio}
+
+\oneliner{Your server addresses \textbf{installs}, not users. Each install gets a \textbf{token} (on iOS the
+FCM SDK maps the APNs token to an \textbf{FCM token}) and uploads it keyed by \emph{user + device}; the
+backend \textbf{fans out} to every live token via \textbf{FCM HTTP v1} (or APNs directly) and deletes the
+ones reported dead. What runs on arrival depends on \textbf{message type}, \textbf{app state} and platform.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    b/.style={box, font=\tiny, align=left, inner sep=2pt},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    dv/.style={box, font=\tiny, draw=sheetGreen, fill=sheetGreen!8, inner sep=2pt, align=center}]
+  \node[b, text width=33mm] (be) at (1.4,1.9) {\textbf{\scriptsize Your backend}\\
+     event $\to$ \textbf{queue} $\to$ push workers\\
+     \textbf{token table} (one row per install):\\
+     \ct{user 42 | ios | fcm:dK3\ldots | 2026-09-20}\\
+     \ct{user 42 | ios | fcm:q9A\ldots | 2026-08-02}\\
+     \ct{user 42 | android | fcm:e7P\ldots | \ldots}\\
+     send per token · retry 429/5xx w/ backoff};
+  \node[b, text width=27mm, draw=sheetOrange, fill=sheetOrange!8] (fcm) at (6.15,1.9) {\textbf{\scriptsize FCM HTTP v1}\\
+     \ct{POST /v1/projects/\{id\}/}\\\ct{\ \ messages:send}\\
+     OAuth2 token from a\\service account (legacy API\\shut down from Jul 2024)};
+  \node[dv, text width=22mm] (and) at (10.4,3.0) {\textbf{Android}\\Play services connection};
+  \node[b, text width=22mm, draw=sheetBrown, fill=sheetBrown!8] (apns) at (10.4,1.15) {\textbf{\scriptsize APNs}\\your \textbf{.p8} key uploaded\\to Firebase};
+  \node[dv, text width=16mm] (ios) at (13.6,1.15) {\textbf{iPhone, iPad}\\(+ NSE)};
+  \draw[hot] ([yshift=-0.25cm]be.east) -- node[l, below]{1 msg / token} ([yshift=-0.25cm]fcm.west);
+  \draw[->, thick, dashed, sheetRed] ([yshift=0.3cm]fcm.west) -- node[l, above, text=sheetRed]{404 / 410\\$\to$ delete row} ([yshift=0.3cm]be.east);
+  \draw[hot] (fcm.north east) -- node[l, above, sloped]{\ct{android\{\}}} (and.west);
+  \draw[hot] ([yshift=-4pt]fcm.east) -- node[l, above, sloped]{\ct{apns\{\}}} (apns.west);
+  \draw[hot] (apns) -- (ios);
+  \draw[->, thick, dashed, sheetGrey] (be.south east) ++(-0.3,0) |- node[l, pos=0.8, below]{or APNs directly (HTTP/2 + .p8 JWT)} (apns.south west);
+  % token upload loop
+  \draw[->, thick, sheetBlue] (ios.south) -- ++(0,-0.75) -| node[l, pos=0.25, below, text=sheetBlue]
+     {every install (iOS + Android): \ct{getToken()} each launch + \ct{onTokenRefresh} $\to$ \ct{PUT /me/devices \{token, platform, env, appVersion\}} · logout $\to$ \ct{deleteToken()} + DELETE row} (be.south);
+  \node[l, anchor=north west, align=left, text=sheetBrown] at (15.0,3.35) {per message:\\\textbf{type} notification\\\ \ vs data\\\textbf{priority} (wake?)\\\textbf{TTL} (default\\\ \ 4 weeks, max 28 d)\\\textbf{collapse key}\\payload $\leq$ 4096 B};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Token lifecycle}
+\begin{itemize}
+  \item \textbf{Register}: Android — the FCM SDK gets a token. iOS — \ct{registerForRemoteNotifications}
+        $\to$ APNs token $\to$ the FCM SDK (swizzled AppDelegate, or set
+        \ct{Messaging.messaging().apnsToken} when \ct{FirebaseAppDelegateProxyEnabled = NO})
+        $\to$ FCM token. APNs token $\neq$ FCM token: never send one to the other's API.
+  \item \textbf{Refresh}: reinstall, restore to a new phone, cleared app data, and at FCM's discretion
+        $\to$ \ct{onTokenRefresh}. Upload on every launch with a timestamp.
+  \item \textbf{Many per user}: one row per install (phone + tablet + old phone), each with platform,
+        APNs environment, app version, locale. \textbf{Stale}: FCM calls a registration stale after a
+        month offline and expires Android tokens after 270 days inactive — prune on your timestamps.
+  \item \textbf{Delete}: logout $\to$ \ct{deleteToken()} + delete/unlink the row, or the next person
+        on that phone gets the last user's pushes. FCM is moving to Firebase Installation IDs (FIDs).
+\end{itemize}
+
+\hd{Message type × app state}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{30mm}@{}}
+\toprule
+& \textbf{foreground} & \textbf{background / killed} \\ \midrule
+Android \textbf{notification} & \ct{onMessageReceived} — you show it & \textbf{system tray}, your code \textbf{not} called \\
+Android \textbf{data} & \ct{onMessageReceived} & \ct{onMessageReceived} (RN: background handler, headless JS) \\
+iOS \textbf{alert} & \ct{willPresent} — you choose & system shows it; NSE if \ct{mutable-content:1} \\
+iOS \textbf{data-only} & \ct{didReceiveRemote\-Notification} (RN \ct{onMessage}) & \ct{content-available:1}, priority 5, push-type \ct{background}: throttled; none after force-quit \\
+\bottomrule
+\end{tabular}}
+
+\hd{Priorities}
+Android \textbf{high} may wake a device in Doze; if high-priority messages don't produce visible
+notifications FCM may downgrade them to normal. APNs \textbf{10} = now (alerts), \textbf{5} = power-friendly —
+FCM rejects priority 10 for data-only messages to Apple devices. Android 13+: runtime
+\ct{POST\_NOTIFICATIONS}; Android 8+: every notification needs a \textbf{channel}.
+
+\hd{Rich \& encrypted payloads}
+iOS: \ct{apns.fcm\_options.image} + \ct{mutable-content} $\to$ an NSE calls
+\ct{Messaging.serviceExtension()} \ct{.populateNotificationContent(\_:withContentHandler:)}. \textbf{E2EE}:
+send ciphertext in \ct{data} + a generic alert; the NSE decrypts with a key shared via an App Group /
+Keychain access group and rewrites title/body. Android: send \textbf{data} only, decrypt in your service,
+post the notification yourself.
+
+\columnbreak
+
+\hd{Example — one FCM v1 message, both platforms}
+\begin{lstlisting}[language=JSONSheet]
+{"message": {
+  "token": "fcm-token-of-this-install",
+  "notification": {"title": "Alice", "body": "New message"},
+  "data": {"chatId": "42"},          // values are strings
+  "android": {"priority": "high", "collapse_key": "chat-42",
+    "notification": {"channel_id": "messages"}},
+  "apns": {
+    "headers": {"apns-priority": "10", "apns-collapse-id": "chat-42"},
+    "payload": {"aps": {"mutable-content": 1, "thread-id": "42"}},
+    "fcm_options": {"image": "https://example.com/a.jpg"}}}}
+\end{lstlisting}
+\begin{lstlisting}[language=JSSheet]
+// index.js - OUTSIDE React, before AppRegistry
+messaging().setBackgroundMessageHandler(async (m) => {
+  await inbox.save(m.data) })          // no UI here
+// in the app
+messaging().onMessage((m) => notifee.displayNotification(...))
+messaging().getInitialNotification()   // opened from quit
+messaging().onNotificationOpenedApp(route) // from background
+messaging().onTokenRefresh((t) => api.putDevice(t))
+\end{lstlisting}
+
+\hd{React Native specifics}
+\begin{itemize}
+  \item \ct{@react-native-firebase/messaging}: register the background handler early, outside
+        components; an iOS background launch can be \textbf{headless} — check \ct{isHeadless}, render
+        nothing. \ct{onMessage} shows nothing: use \textbf{Notifee}. RNFB's \ct{requestPermission} is
+        deprecated $\to$ react-native-permissions / expo-notifications.
+  \item Expo: \ct{expo-notifications} + Expo's push service, or raw FCM/APNs tokens.
+\end{itemize}
+
+\hd{Server fan-out}
+Event $\to$ queue $\to$ workers: look up the user's live tokens, render per locale, send \textbf{one
+message per token} (Admin SDK \ct{sendEach}/\ct{sendEachForMulticast}, $\leq$ 500 per call;
+\ct{sendAll}/\ct{sendMulticast} are deprecated), \textbf{topics} for broadcasts. Retry 429/5xx with
+backoff; delete on \ct{UNREGISTERED} (404), and on \ct{INVALID\_ARGUMENT} (400) only if the payload is
+valid (APNs: 410). Idempotency key per event: a retried job must not double-notify.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Android \emph{notification} message in background: your handler never runs — send \emph{data}.}
+  \trap{No \ct{deleteToken} on logout — the next user gets the old one's pushes.}
+  \trap{Data-only to iOS as a sync trigger — throttled, dropped after force-quit.}
+  \trap{Xcode build (sandbox APNs) vs TestFlight (production): different tokens.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Token per install, rows per user, one send per token, delete on 404 — and know which
+messages your code never sees.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} push-notifications (APNs, .p8, NSE, categories) ·
+background-execution · rn-native-modules · app-extensions (App Groups) · crypto-cryptokit (E2EE)}
+
+\end{document}

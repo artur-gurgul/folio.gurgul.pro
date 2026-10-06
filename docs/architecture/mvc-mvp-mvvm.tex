@@ -1,0 +1,206 @@
+% mvc-mvp-mvvm.tex — MVC / MVP / MVVM / MVVM-C, framed by testability and "who knows whom".
+% Sources (checked 2026-10-06):
+%   developer.apple.com/library/archive/documentation/General/Conceptual/DevPedia-CocoaCore/MVC.html
+%     (Cocoa MVC: controller mediates view and model)
+%   T. Reenskaug, "Models-Views-Controllers" (Xerox PARC, 1979) — classic MVC, view observes model
+%   M. Potel, "MVP: Model-View-Presenter" (Taligent, 1996) · martinfowler.com/eaaDev/PassiveScreen.html
+%   J. Gossman, "Introduction to Model/View/ViewModel pattern" (Microsoft blog, 2005)
+%   khanlou.com/2015/01/the-coordinator/ (Coordinator → MVVM-C)
+%   developer.apple.com/documentation/uikit/uinavigationcontrollerdelegate ·
+%     .../uiadaptivepresentationcontrollerdelegate (user-initiated dismissal)
+% @labels: area=architecture kind=architecture platform=ios topic=architecture,patterns discussion=85
+% @tags: mvc, mvp, mvvm, mvvm-c, massive-view-controller, presenter, viewmodel, bindings, coordinator, child-coordinator-leak, classic-mvc
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,import,extension,private,some,true,false,
+    AnyObject,Void,String,Bool},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  vw/.style={box, draw=sheetBlue, fill=sheetBlue!8, minimum width=24mm, minimum height=7mm},
+  mid/.style={box, draw=sheetGreen, fill=sheetGreen!10, minimum width=24mm, minimum height=7mm},
+  mdl/.style={box, draw=sheetBrown, fill=sheetBrown!10, minimum width=24mm, minimum height=6mm},
+  crd/.style={box, draw=sheetOrange, fill=sheetOrange!10, minimum width=24mm, minimum height=6mm},
+  ref/.style={->, thick, draw=sheetGrey},
+  bind/.style={->, thick, dashed, draw=sheetGreen},
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  ttl/.style={font=\bfseries\small},
+}
+
+\begin{document}
+
+\sheettitle{MVC · MVP · MVVM · MVVM-C}{architecture · folio}
+
+\oneliner{All four keep the \textbf{same Model}; they differ in \textbf{where presentation
+logic lives} and \textbf{who holds a reference to whom}. Each step moves logic
+\emph{out} of the UIKit-bound view into a plain, unit-testable object:
+\textbf{MVC} (controller does it all) $\to$ \textbf{MVP} (presenter pushes to a view
+\emph{protocol}) $\to$ \textbf{MVVM} (view \emph{binds} to state; VM never sees the view)
+$\to$ \textbf{MVVM-C} (a Coordinator also takes \emph{navigation} out).}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet, node distance=6mm]
+  % ── MVC ────────────────────────────────────────────────
+  \node[ttl] at (1.25,3.35) {MVC (Apple)};
+  \node[vw]  (v1) at (1.25,2.6) {View\\[-1pt]{\scriptsize UIView, outlets}};
+  \node[mid] (c1) at (1.25,1.3) {Controller\\[-1pt]{\scriptsize logic + format + nav}};
+  \node[mdl] (m1) at (1.25,0.1) {Model};
+  \draw[ref] ([xshift=-5mm]c1.north) -- node[lbl, left]{updates} ([xshift=-5mm]v1.south);
+  \draw[ref] ([xshift=5mm]v1.south) -- node[lbl, right, align=left]{target-\\action} ([xshift=5mm]c1.north);
+  \draw[ref] ([xshift=-5mm]c1.south) -- node[lbl, left]{mutates} ([xshift=-5mm]m1.north);
+  \draw[bind] ([xshift=5mm]m1.north) -- node[lbl, right]{notify/KVO} ([xshift=5mm]c1.south);
+  \begin{scope}[on background layer]
+    \node[draw=sheetRed, dashed, thick, rounded corners, fit=(v1)(c1), inner sep=2.5pt,
+          label={[font=\scriptsize\bfseries, text=sheetRed, rotate=90, anchor=south]west:UIViewController}] {};
+  \end{scope}
+  \node[lbl, text=sheetRed, align=center] at (1.25,-0.75) {V+C fused $\to$ Massive VC\\untestable without UIKit};
+
+  % ── MVP ────────────────────────────────────────────────
+  \node[ttl] at (5.55,3.35) {MVP};
+  \node[vw]  (v2) at (5.55,2.6) {View (passive)\\[-1pt]{\scriptsize VC : \texttt{LoginView}}};
+  \node[mid] (c2) at (5.55,1.3) {Presenter\\[-1pt]{\scriptsize no UIKit import}};
+  \node[mdl] (m2) at (5.55,0.1) {Model};
+  \draw[ref] ([xshift=5mm]v2.south) -- node[lbl, right]{events} ([xshift=5mm]c2.north);
+  \draw[hot] ([xshift=-5mm]c2.north) -- node[lbl, left, align=right]{\textbf{weak} ref\\push: \texttt{show()}} ([xshift=-5mm]v2.south);
+  \draw[ref] (c2) -- node[lbl, right]{calls} (m2);
+  \node[lbl, text=sheetGreen!70!black, align=center] at (5.55,-0.75) {mock the View protocol\\test: \emph{``was show() called?''}};
+
+  % ── MVVM ───────────────────────────────────────────────
+  \node[ttl] at (9.85,3.35) {MVVM};
+  \node[vw]  (v3) at (9.85,2.6) {View\\[-1pt]{\scriptsize VC or SwiftUI View}};
+  \node[mid] (c3) at (9.85,1.3) {ViewModel\\[-1pt]{\scriptsize observable state}};
+  \node[mdl] (m3) at (9.85,0.1) {Model};
+  \draw[ref] ([xshift=5mm]v3.south) -- node[lbl, right, align=left]{owns +\\intents} ([xshift=5mm]c3.north);
+  \draw[bind] ([xshift=-5mm]c3.north) -- node[lbl, left, align=right]{binding\\\textbf{no ref}} ([xshift=-5mm]v3.south);
+  \draw[ref] (c3) -- node[lbl, right]{calls} (m3);
+  \node[lbl, text=sheetGreen!70!black, align=center] at (9.85,-0.75) {no view to mock\\test: \emph{``is state == X?''}};
+
+  % ── MVVM-C ─────────────────────────────────────────────
+  \node[ttl] at (14.4,3.35) {MVVM-C};
+  \node[crd] (k4) at (14.4,2.75) {Coordinator\\[-1pt]{\scriptsize nav + assembly}};
+  \node[vw, minimum width=16mm]  (v4) at (13.35,1.45) {VC};
+  \node[mid, minimum width=16mm] (c4) at (15.45,1.45) {VM};
+  \node[mdl] (m4) at (14.4,0.1) {Model / Repo};
+  \draw[ref] ([xshift=-4mm]k4.south) -- node[lbl, left]{builds, push} (v4.north);
+  \draw[ref] ([xshift=2mm]k4.south) -- node[lbl, pos=0.35, left]{inj.} ([xshift=-2mm]c4.north);
+  \draw[hot] ([xshift=4mm]c4.north) -- ([xshift=8mm]k4.south);
+  \node[lbl, align=left, anchor=west] at (15.95,2.05) {intent\\(weak)};
+  \draw[bind] ([yshift=1mm]c4.west) -- ([yshift=1mm]v4.east);
+  \draw[ref] ([yshift=-1mm]v4.east) -- ([yshift=-1mm]c4.west);
+  \draw[ref] (c4.south) -- (c4.south |- m4.north);
+  \node[lbl, text=sheetOrange, align=center] at (14.4,-0.75) {VC/VM never know\\the next screen};
+
+  % legend
+  \draw[ref] (-0.3,-1.3) -- ++(0.6,0) node[lbl, right]{holds a reference / calls};
+  \draw[bind] (3.6,-1.3) -- ++(0.6,0) node[lbl, right]{observes, no reference back};
+  \draw[hot] (8.0,-1.3) -- ++(0.6,0) node[lbl, right]{back-reference / callback — must be \textbf{weak}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Who knows whom}
+{\footnotesize
+\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}*{3}{>{\raggedright\arraybackslash}p{19.5mm}}@{}}
+\toprule
+ & \textbf{MVC} & \textbf{MVP} & \textbf{MVVM} \\
+\midrule
+logic in & Controller (= the VC) & Presenter & ViewModel \\
+view is & fused w/ controller & passive, behind a protocol & binds to VM state \\
+to view & VC sets outlets & Presenter \emph{pushes}: \texttt{view?.show()} & View \emph{observes} (bindings) \\
+knows view? & yes, owns it & yes — via protocol (weak) & \textbf{no} \\
+test via & UI / host app & mock View, verify calls & assert on state \\
+fits & small screens & UIKit, strict tests & SwiftUI, Combine \\
+\bottomrule
+\end{tabular}}
+
+\begin{itemize}
+  \item \textbf{Classic (Smalltalk) MVC:} the View observes the Model directly.
+        \textbf{Apple MVC:} Controller mediates both ways, so V and M stay reusable. But
+        \texttt{UIViewController} \emph{is} view + controller, so networking, parsing,
+        routing pile in $\to$ \textbf{Massive VC}: violates SRP, testable only with UIKit.
+  \item \textbf{MVP:} View forwards every event, renders only what it is told.
+        Presenter holds \texttt{weak var view: LoginView?}, formats data, calls
+        explicit methods. No bindings. Presenter imports no UIKit $\Rightarrow$
+        fully unit-testable against a mock View.
+  \item \textbf{MVVM:} VM exposes formatted observable state + intent methods,
+        holds \emph{no} view reference and imports no UIKit. Binding tech:
+        \texttt{@Observable}/\texttt{@Published}+Combine, KVO, closures/\texttt{Box<T>}.
+        SwiftUI binds for free; \textbf{UIKit has none} — add one.
+  \item \textbf{MVVM-C:} MVVM solves \emph{presentation}, not \emph{navigation}.
+        Coordinator: \texttt{childCoordinators}, a presenter
+        (\texttt{UINavigationController}), \texttt{start()}. Builds VC+VM,
+        injects deps, performs push/present. VM only \emph{signals} intent
+        (closure / delegate / Combine subject).
+\end{itemize}
+
+\section{Example — same screen, MVP vs MVVM}
+\begin{lstlisting}[language=SwiftSheet]
+// MVP: presenter KNOWS the view (protocol) and PUSHES
+protocol LoginView: AnyObject { func show(error: String) }
+final class LoginPresenter {
+  weak var view: LoginView?        // VC owns presenter
+  func loginTapped(_ u: String) {
+    if u.isEmpty { view?.show(error: "Empty") } }
+}
+// MVVM: VM knows NOTHING of the view; the view OBSERVES
+@Observable final class LoginVM {
+  var error: String?               // bound by the view
+  var onLoggedIn: (() -> Void)?    // intent -> Coordinator
+  func loginTapped(_ u: String) {
+    if u.isEmpty { error = "Empty" } else { onLoggedIn?() } }
+}
+\end{lstlisting}
+{\footnotesize Test MVP: \texttt{spy.shownErrors == ["Empty"]}. Test MVVM:
+\texttt{XCTAssertEqual(vm.error, "Empty")} — no view at all.}
+
+\columnbreak
+
+\section{The MVVM-C leak}
+\begin{tikzpicture}[sheet, node distance=4mm]
+  \node[crd, minimum width=20mm] (app) at (0,0) {AppCoordinator};
+  \node[crd, minimum width=16mm] (auth) at (-2.0,-1.15) {Auth};
+  \node[crd, minimum width=16mm] (main) at (1.4,-1.15) {Main};
+  \node[crd, minimum width=16mm, draw=sheetRed, fill=sheetRed!8, dashed] (chk) at (1.4,-2.35) {Checkout};
+  \node[box, draw=sheetRed, fill=sheetRed!5, dashed, font=\scriptsize] (vcs) at (4.3,-2.35) {its VCs, VMs,\\repos — leaked};
+  \draw[ref] (app) -- (auth);
+  \draw[ref] (app) -- (main);
+  \draw[->, thick, sheetRed] (main) -- node[lbl, left, text=sheetRed, align=right]{still in\\\texttt{childCoordinators}} (chk);
+  \draw[->, thick, sheetRed] (chk) -- (vcs);
+  \draw[hot, bend right=45] (chk.east) to node[lbl, right, align=left, pos=0.7]{\texttt{didFinish(self)}\\$\to$ \texttt{removeAll \{\$0 === c\}}} (main.east);
+  \node[note, anchor=north west] at (-2.9,-2.9) {parent$\to$child strong, child$\to$parent weak; not removed = leaks every visit};
+\end{tikzpicture}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``MVVM is just MVP.'' No: Presenter \emph{knows} the view and
+        \emph{pushes}; VM has \emph{no} view ref and the view \emph{observes}.}
+  \trap{Testability decides it: MVP $\approx$ MVVM $>$ MVC, because
+        Presenter/VM import no UIKit. That is the whole point of the evolution.}
+  \trap{``MVVM in UIKit just works'' — no binding mechanism exists; pick one
+        (Combine \texttt{sink}/\texttt{assign}, closures, KVO, RxSwift).}
+  \trap{VM must not import UIKit nor push screens (that is the Coordinator's
+        job); its nav closure captures \texttt{[weak self]}.}
+  \trap{MVVM-C leak: child coordinator never removed. System \textbf{back button}
+        and \textbf{swipe-to-dismiss} bypass \texttt{didFinish} — detect via
+        \texttt{UINavigationControllerDelegate didShow} /
+        \texttt{presentationControllerDidDismiss}. Remove with \texttt{===}.}
+  \trap{Opposite bug: a child coordinator kept only in a local dies after \texttt{start()} —
+        its screens show, its \texttt{weak} callbacks are \texttt{nil}.}
+\end{itemize}
+
+\section{Remember}
+\textbf{C \emph{does} it · P \emph{pushes} it · VM \emph{publishes} it · C\textsubscript{oord}
+\emph{routes} it.}\\ Place any pattern: testable without UIKit? holds the view?
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} coordinator · repository · DI · Clean/VIPER · SOLID (SRP, DIP) · Observer · Mediator}
+
+\end{document}

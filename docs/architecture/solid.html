@@ -1,0 +1,87 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>SOLID — five principles, exact words — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/architecture/solid.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">96</span></a></li><li><a class="side-area current" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">SOLID — five principles, exact words</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">architecture · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> <strong>S</strong>ingle responsibility · <strong>O</strong>pen/closed · <strong>L</strong>iskov
+substitution · <strong>I</strong>nterface segregation · <strong>D</strong>ependency inversion — Robert C.
+Martin’s rules for code whose parts can <em>change independently</em>. Each below: the
+<strong>exact definition</strong>, one <strong>iOS example</strong>, and <strong>which pattern serves it</strong>.</p>
+<p class="sheet-tools"><a class="sheet-download" href="solid.pdf" download>Download PDF</a> <a href="solid.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/architecture/solid.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="solid-fig1.svg" width="637" height="155" class="wide" alt="SOLID — five principles, exact words — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Definition · iOS example</h2>
+<ul>
+<li><strong>SRP</strong> — <em>“A module should have one, and only one, reason to
+ change”</em>; Martin’s 2017 restatement: <em>“…responsible to one, and only
+ one, actor”</em>. <em>Not</em> “one method”: a  <code>Money</code> type with <code>add</code>/<code>format</code> is fine. Violation: the  Massive View Controller; fix: VC · VM · Repository · Parser.</li>
+<li><strong>OCP</strong> — <em>“Software entities should be open for extension, but
+ closed for modification”</em> (Meyer 1988). Add behaviour by adding a type behind  a protocol, not by editing a <code>switch</code>. Example: a new  <code>PaymentMethod</code>; SwiftUI <code>ViewModifier</code>. It targets the  <em>volatile</em> axes only; bug fixes still edit code.</li>
+<li><strong>LSP</strong> — <em>“Subtypes must be substitutable for their base
+ types”</em> — callers of the base must not notice (Martin, after Liskov 1987). A  subtype may not <strong>strengthen preconditions</strong>, <strong>weaken
+ postconditions</strong>, break invariants, or throw/<code>fatalError</code>/no-op where the  base works. Swift smell: a read-only subclass whose setter crashes. Fine:  <code>UIButton</code> used anywhere a <code>UIView</code> is.</li>
+<li><strong>ISP</strong> — <em>“<strong>Clients</strong> should not be forced to depend on
+ methods they do not use.”</em> It is judged from the <em>caller’s</em> side: split fat  protocols into role protocols. iOS: <code>UITableViewDataSource</code> vs  <code>UITableViewDelegate</code>; compose with <code>A &amp; B</code>;  <code>Codable = Encodable &amp; Decodable</code>.</li>
+<li><strong>DIP</strong> — (a) <em>“High-level modules should not depend on low-level
+ modules. <strong>Both</strong> should depend on abstractions.”</em> (b) <em>“Abstractions
+ should not depend on details. Details should depend on abstractions.”</em> The  <em>inversion</em>: the protocol belongs to the high-level (app/domain) side, and  the low-level <code>URLSession</code> client conforms to it. Achieved by DI; tested  with a <code>MockAPIClient</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example — Strategy = OCP + DIP</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">protocol</span> <span class="hljs-title class_">PaymentMethod</span> {             <span class="hljs-comment">// the abstraction</span>
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">pay</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">amount</span>: <span class="hljs-type">Decimal</span>) <span class="hljs-keyword">throws</span> }
+<span class="hljs-keyword">struct</span> <span class="hljs-title class_">ApplePay</span>: <span class="hljs-title class_ inherited__">PaymentMethod</span> { <span class="hljs-keyword">func</span> <span class="hljs-title function_">pay</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">a</span>: <span class="hljs-type">Decimal</span>) {} }
+<span class="hljs-keyword">struct</span> <span class="hljs-title class_">Card</span>: <span class="hljs-title class_ inherited__">PaymentMethod</span> { <span class="hljs-keyword">func</span> <span class="hljs-title function_">pay</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">a</span>: <span class="hljs-type">Decimal</span>) {} }
+<span class="hljs-keyword">final</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">Checkout</span> {               <span class="hljs-comment">// high-level policy</span>
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">let</span> method: <span class="hljs-type">PaymentMethod</span>  <span class="hljs-comment">// DIP: protocol, not Card</span>
+  <span class="hljs-keyword">init</span>(<span class="hljs-params">method</span>: <span class="hljs-type">PaymentMethod</span>) { <span class="hljs-keyword">self</span>.method <span class="hljs-operator">=</span> method } <span class="hljs-comment">// DI</span>
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">buy</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">total</span>: <span class="hljs-type">Decimal</span>) <span class="hljs-keyword">throws</span> {
+    <span class="hljs-keyword">try</span> method.pay(total) }          <span class="hljs-comment">// no switch on the type</span>
+}
+<span class="hljs-comment">// OCP: a new case = a NEW type; Checkout is never edited</span>
+<span class="hljs-keyword">struct</span> <span class="hljs-title class_">PayPal</span>: <span class="hljs-title class_ inherited__">PaymentMethod</span> { <span class="hljs-keyword">func</span> <span class="hljs-title function_">pay</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">a</span>: <span class="hljs-type">Decimal</span>) {} }
+<span class="hljs-keyword">let</span> checkout <span class="hljs-operator">=</span> <span class="hljs-type">Checkout</span>(method: <span class="hljs-type">PayPal</span>())  <span class="hljs-comment">// swap at runtime</span></code></pre>
+</section>
+<section class="sheet-section">
+<h2>Which principle does a pattern serve?</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>Pattern</strong></th><th><strong>Serves</strong></th><th><strong>Why</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Strategy</strong></td><td><strong>OCP + DIP</strong></td><td>new algorithm = new type; client holds the protocol</td></tr>
+<tr><td>Decorator</td><td>OCP</td><td>extend by wrapping, no <span class="math">2<sup>N</sup></span> subclasses</td></tr>
+<tr><td>Adapter</td><td>DIP / ISP</td><td>client keeps its target protocol</td></tr>
+<tr><td>Facade</td><td>ISP / SRP</td><td>one narrow surface over a subsystem</td></tr>
+<tr><td>Composite</td><td>LSP</td><td>leaf and group used uniformly</td></tr>
+<tr><td>Factory</td><td>DIP</td><td>one place touches the concrete type</td></tr>
+<tr><td>Repository</td><td>DIP + SRP</td><td>domain depends on a data protocol</td></tr>
+<tr><td>MVVM / MVP</td><td>SRP + DIP</td><td>logic out of the UIKit view</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><strong>“Strategy serves ISP”</strong> — no, that describes a Facade.  Strategy serves <strong>Open/Closed</strong> + <strong>Dependency Inversion</strong>.</li>
+<li class="trap"><strong>ISP</strong> is about <strong>clients</strong>: “clients should not be forced to  depend on methods they do not use” — not “methods describe behaviour”.</li>
+<li class="trap"><strong>DIP</strong> says <strong>both</strong> high- and low-level modules depend on the  abstraction — not just “depend on abstractions”. Name who owns the protocol  (the high-level side).</li>
+<li class="trap">SRP <span class="math">≠</span> “one method”; OCP <span class="math">≠</span> “never modify”.</li>
+<li class="trap">DI <span class="math">≠</span> DIP: DI is a technique (pass deps in); DIP the principle. Injecting a  concrete class is DI without DIP.</li>
+<li class="trap">Every pattern adds indirection — a protocol with one conformer “for the  future” is over-engineering (rule of three, YAGNI).</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>S</strong>ingle <em>reason</em> · <strong>O</strong>pen <em>to add</em> · <strong>L</strong>iskov <em>no
+surprises</em> · <strong>I</strong>SP <em>clients pick</em> · <strong>D</strong>IP <em>both point at the
+protocol</em>. Martin named the rules (<span class="math">∼</span>2000); Michael Feathers ordered them into “SOLID” — the order is a mnemonic, not a ranking.</p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> MVC/MVP/MVVM · Coordinator ·
+Repository · DI · Clean Architecture · Strategy · Decorator · composition over inheritance</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=architecture" title="area">architecture</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=general" title="platform">general</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=patterns" title="topic">patterns</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=architecture" title="topic">architecture</a></li><li class="sheet-tag"><a href="/folios.html?tag=solid">solid</a></li><li class="sheet-tag"><a href="/folios.html?tag=srp">srp</a></li><li class="sheet-tag"><a href="/folios.html?tag=ocp">ocp</a></li><li class="sheet-tag"><a href="/folios.html?tag=lsp">lsp</a></li><li class="sheet-tag"><a href="/folios.html?tag=isp">isp</a></li><li class="sheet-tag"><a href="/folios.html?tag=dip">dip</a></li><li class="sheet-tag"><a href="/folios.html?tag=liskov-substitution">liskov-substitution</a></li><li class="sheet-tag"><a href="/folios.html?tag=dependency-inversion">dependency-inversion</a></li><li class="sheet-tag"><a href="/folios.html?tag=strategy">strategy</a></li><li class="sheet-tag"><a href="/folios.html?tag=composition-over-inheritance">composition-over-inheritance</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=architecture%2Fsolid.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/87">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

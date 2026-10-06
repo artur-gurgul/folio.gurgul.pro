@@ -1,0 +1,160 @@
+% gof-behavioural.tex — GoF behavioural patterns, one page.
+% Sources (checked 2026-10-06):
+%   Gamma, Helm, Johnson, Vlissides, Design Patterns (1994) — intents of Strategy, State, Observer,
+%     Command (undo), Template Method (Hollywood principle), Chain of Responsibility, Mediator, Iterator
+%   developer.apple.com/documentation/uikit/using-responders-and-the-responder-chain-to-handle-events
+%     (hit-testing, next responder: view → VC → superview … → window → UIApplication → app delegate)
+%   developer.apple.com/documentation/foundation/undomanager · .../swift/sequence · .../iteratorprotocol
+%   developer.apple.com/documentation/combine/published (willSet) · .../observation (iOS 17)
+% @labels: area=architecture kind=pattern platform=general topic=patterns discussion=80
+% @tags: gof, strategy, state-pattern, observer, command, undo-redo, template-method, chain-of-responsibility, responder-chain, mediator, iterator
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+% A pattern mini-box: \pat[colour]{Name}{body}
+\newcommand\pat[3][sheetBlue]{\par\noindent\fcolorbox{#1}{#1!5}{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{\raggedright{\bfseries\color{#1}#2}\enspace #3}}\par\vspace{2pt}}
+\lstdefinelanguage{Swift}{
+  morekeywords={class,struct,protocol,extension,func,let,var,static,private,
+    init,return,self,Self,final,guard,else,in,weak,mutating},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+\newcommand\ios{\textcolor{sheetGreen}{\textbf{iOS:}}~}
+\newcommand\trapin{\textcolor{sheetRed}{\textbf{Trap:}}~}
+
+\begin{document}
+
+\sheettitle{GoF: behavioural patterns}{architecture · folio}
+
+\oneliner{Behavioural patterns decide \emph{who talks to whom and who decides}:
+\textbf{Strategy} (client picks the algorithm) · \textbf{State} (object switches itself) ·
+\textbf{Observer} (one-to-many notify) · \textbf{Command} (request as object, \texttt{execute}+\texttt{undo}) ·
+\textbf{Template Method} (base skeleton, subclass hooks) · \textbf{Chain of Responsibility} (pass until handled) ·
+\textbf{Mediator} (hub instead of mesh) · \textbf{Iterator} (\texttt{next()} until \texttt{nil}).}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    b/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4mm},
+    g/.style={box, draw=sheetGrey, fill=black!4, font=\scriptsize, inner sep=1.5pt, minimum height=4mm},
+    st/.style={cell, font=\scriptsize\ttfamily, minimum width=11mm, minimum height=3.6mm},
+    t/.style={font=\bfseries\small, text=sheetBlue},
+    lab/.style={font=\scriptsize, text=sheetBrown}]
+  % ================= Strategy vs State
+  \node[t] at (1.95,4.0) {Strategy vs State};
+  \node[g] (cl) at (0.55,3.4) {Client};
+  \node[b] (cx) at (0.55,2.6) {Sorter};
+  \node[b, fill=sheetGreen!10, draw=sheetGreen] (s1) at (0.1,1.75) {Quick};
+  \node[b, fill=sheetGreen!10, draw=sheetGreen] (s2) at (1.05,1.75) {Merge};
+  \draw[hot] (cl) -- node[right, lab]{injects} (cx);
+  \draw[flow] (cx) -- (s1); \draw[flow, dashed] (cx) -- (s2);
+  \node[lab, align=center] at (0.55,1.15) {STRANGER\\picks};
+  % state
+  \node[b] (pl) at (2.95,3.4) {Player};
+  \node[b, fill=sheetOrange!10, draw=sheetOrange] (i) at (2.3,2.55) {Idle};
+  \node[b, fill=sheetOrange!10, draw=sheetOrange] (p) at (3.6,2.55) {Playing};
+  \node[b, fill=sheetOrange!10, draw=sheetOrange] (z) at (2.95,1.75) {Paused};
+  \draw[flow] (pl) -- node[right, lab, pos=0.4]{state} (p);
+  \draw[hot] (i) -- node[above, lab]{play} (p);
+  \draw[hot] (p) -- node[right, lab]{pause} (z);
+  \draw[hot] (z) -- node[left, lab]{stop} (i);
+  \node[lab, align=center] at (2.95,1.15) {SELF\\transitions};
+  % ================= Command
+  \node[t] at (6.05,4.0) {Command: undo / redo};
+  \foreach \k/\n in {0/Rename, 1/Move, 2/Delete}
+    \node[st, fill=sheetBlue!8] at (4.75,2.3+0.37*\k) {\n};
+  \node[st, fill=black!3] at (7.35,2.3) {Paint};
+  \node[lab] at (4.75,3.45) {undo stack};
+  \node[lab] at (7.35,3.45) {redo stack};
+  \draw[hot] (5.4,3.04) -- node[above, font=\scriptsize\ttfamily]{undo()} (6.7,3.04);
+  \draw[flow] (6.7,2.5) -- node[below, font=\scriptsize\ttfamily]{redo()} (5.4,2.5);
+  \node[font=\scriptsize, align=left, anchor=north west] at (4.15,2.0)
+    {undo: pop $\to$ \texttt{undo()} $\to$ push redo\\
+     redo: pop $\to$ \texttt{execute()} $\to$ push undo\\
+     \textcolor{sheetRed}{new command: push on undo, \textbf{CLEAR redo}}};
+  % ================= Responder chain
+  \node[t] at (10.2,4.0) {Responder chain (CoR)};
+  \node[g, minimum width=22mm] (ad) at (10.2,3.5) {AppDelegate};
+  \node[g, minimum width=22mm] (ap) at (10.2,3.05) {UIApplication};
+  \node[b, minimum width=22mm] (wn) at (10.2,2.6) {UIWindow (→ scene)};
+  \node[b, minimum width=22mm] (vc) at (10.2,2.15) {ViewController};
+  \node[b, minimum width=22mm] (sv) at (10.2,1.7) {its view / superview};
+  \node[b, minimum width=22mm, fill=sheetOrange!12, draw=sheetOrange] (fr) at (10.2,1.25) {first responder};
+  \draw[hot, very thick] (11.55,1.2) -- node[right, font=\scriptsize, text=sheetOrange, align=left]{\texttt{next}\\BOTTOM-UP\\until handled} (11.55,3.55);
+  \draw[flow, very thick, draw=sheetBlue] (8.85,2.65) -- node[left, font=\scriptsize, text=sheetBlue, align=right]{hit-test\\TOP-DOWN\\(finds it)} (8.85,1.2);
+  % ================= Mediator
+  \node[t] at (14.55,4.0) {Mediator: mesh → star};
+  \foreach \n/\x/\y in {a/13.2/3.4, b/14.1/3.4, c/13.2/2.5, d/14.1/2.5}
+    \node[g, minimum width=4mm] (m\n) at (\x,\y) {};
+  \foreach \u/\v in {a/b, a/c, a/d, b/c, b/d, c/d} \draw[sheetRed] (m\u) -- (m\v);
+  \node[lab, align=center] at (13.65,1.95) {$N(N{-}1)/2$ links};
+  \node[b, fill=sheetGreen!10, draw=sheetGreen] (hub) at (15.55,2.95) {VM};
+  \foreach \n/\x/\y in {e/15.0/3.5, f/16.1/3.5, h/15.0/2.4, k/16.1/2.4}
+    { \node[g, minimum width=4mm] (m\n) at (\x,\y) {}; \draw[sheetGreen] (m\n) -- (hub); }
+  \node[lab, align=center] at (15.55,1.95) {$N$ links};
+  \node[font=\scriptsize, align=center] at (14.55,1.35) {peers know only the hub;\\risk: hub → god object};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\pat{Strategy vs State — ``stranger picks vs self transitions''}{%
+\textbf{Strategy}: a family of interchangeable algorithms behind one protocol; the \textbf{CLIENT chooses} and injects one; strategies don't know each other. \ios \texttt{sorted(by:)} closure, \texttt{JSONDecoder.keyDecodingStrategy}.\par
+\textbf{State}: behaviour changes with internal state, and the \textbf{states themselves trigger the transition} (\texttt{context.state = Paused()}); each knows its successors. \ios player / download / connection lifecycle; in Swift often an \texttt{enum} + \texttt{switch}. Same class diagram — differ in \emph{who changes it}.}
+
+\pat{Observer}{Subject notifies \textbf{many} subscribers without knowing their types (delegation is the 1:1, answer-back sibling).
+\ios \textbf{NotificationCenter} · \textbf{KVO} (\texttt{NSObject} + \texttt{@objc dynamic}) · \textbf{Combine} (\texttt{@Published} fires on \emph{willSet}) · \textbf{\texttt{@Observable}} (iOS 17, per-property tracking).\par
+\textbf{The problem it CAUSES — leaks / retain cycles}: publisher keeps your closure, closure captures \texttt{self}, \texttt{self} keeps the subscription $\to$ cycle; forgotten observers keep firing.
+Fix: \texttt{sink \{ [weak self] in … \}.store(in: \&bag)}; \texttt{removeObserver(token)} for block-based NotificationCenter; \texttt{NSKeyValueObservation} stops when released.}
+
+\pat{Command}{A request wrapped as an \textbf{object} with \textbf{\texttt{execute()} AND \texttt{undo()}} — so it can be queued, logged, retried, sent later, or \textbf{undone}.
+\textbf{Undo/redo = two stacks} (diagram above).
+\ios \texttt{UndoManager} (\texttt{registerUndo(withTarget:handler:)}), \texttt{UIAction}, \texttt{Operation} + \texttt{OperationQueue}, target–action.}
+
+\pat{Template Method}{Base class owns the algorithm's \textbf{skeleton} and calls \textbf{overridable hooks} that subclasses fill in.
+\textbf{Hollywood Principle: ``don't call us, we'll call you''}.
+\ios \textbf{\texttt{UIViewController} lifecycle} — \texttt{viewDidLoad}, \texttt{viewWillAppear}, \texttt{viewDidLayoutSubviews} (call \texttt{super}); \texttt{UIView.draw(\_:)}, \texttt{layoutSubviews}.
+\textbf{vs Strategy = inheritance vs composition}: TM varies \emph{steps} via subclassing (fixed at compile time); Strategy swaps the \emph{whole} algorithm at runtime.}
+
+\pat{Chain of Responsibility}{Pass a request along handlers \textbf{until one handles it}; sender doesn't know who; may fall off the end.
+\ios \textbf{responder chain}: \textbf{hit-testing} (\texttt{hitTest(\_:with:)}) runs \textbf{TOP-DOWN} from the window to the deepest view; the unhandled event then goes \textbf{BOTTOM-UP} via \texttt{next}: view $\to$ its VC $\to$ superview … $\to$ window $\to$ \texttt{UIApplication} $\to$ app delegate. \texttt{sendAction(\_:to: nil,…)} walks it too.
+\trapin Decorator: \emph{every} wrapper runs; CoR: \emph{one} decides.}
+
+\pat{Mediator}{Colleagues talk only to a \textbf{hub}: $N(N{-}1)/2$ peer links collapse to $N$.
+\ios \textbf{ViewModel}, \textbf{Coordinator} (VCs never push each other), \texttt{UINavigationController}.
+\textbf{vs Facade}: Facade simplifies a subsystem, one-way, subsystem unaware; Mediator coordinates peers \emph{both ways}. Risk: god object.}
+
+\pat{Iterator}{Walk a collection without exposing its storage. \textbf{\texttt{Sequence}} (\texttt{makeIterator()}) + \textbf{\texttt{IteratorProtocol}} (\texttt{mutating func next() -> Element?}, \textbf{\texttt{nil} = end}).
+\texttt{for x in s} $\equiv$ \texttt{var it = s.makeIterator(); while let x = it.next()}. \texttt{for-in} needs only \texttt{Sequence}; \texttt{Collection} adds multi-pass + indices.
+\textbf{\texttt{AsyncSequence}}: \texttt{next() async throws}, \texttt{for try await} (\texttt{URL.lines}, \texttt{AsyncStream}).}
+
+\pat[sheetOrange]{Remember}{\textbf{Strategy: stranger picks · State: self transitions · Template: don't call us · CoR: hit-test down, \texttt{next} up · Mediator: $N^2 \to N$ · Command: execute + undo, two stacks · Iterator: \texttt{nil} ends it.}}
+
+\begin{lstlisting}[language=Swift]
+protocol Command { func execute(); func undo() }
+final class History {                     // the invoker
+  private var undoStack: [Command] = [], redoStack: [Command] = []
+  func run(_ c: Command) {
+    c.execute(); undoStack.append(c); redoStack.removeAll() }
+  func undo() { guard let c = undoStack.popLast() else { return }
+    c.undo(); redoStack.append(c) }
+  func redo() { guard let c = redoStack.popLast() else { return }
+    c.execute(); undoStack.append(c) }
+}
+// Observer without the leak: weak capture + stored token
+vm.$title.sink { [weak self] in self?.label.text = $0 }
+  .store(in: &bag)                        // drop it = never fires
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Strategy $\ne$ State: \emph{who} changes it — client vs the state itself.}
+  \trap{Observer's own failure mode is the \textbf{leak}: strong \texttt{self} in a stored closure.}
+  \trap{Command without \textbf{\texttt{undo()}} is just a callback.}
+  \trap{Responder chain goes \textbf{UP}; hit-testing goes \textbf{DOWN}.}
+  \trap{Mediator $\ne$ Facade: two-way peers vs one-way simplification.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} gof-creational-structural · delegation vs closures · Combine / \texttt{@Observable} · Coordinator + MVVM · \texttt{UndoManager} · Swift Concurrency (\texttt{AsyncSequence})}
+
+\end{document}

@@ -1,0 +1,212 @@
+% system-design-sdk-messenger.tex — two mobile systems designed end to end: (a) an analytics SDK (API surface, event model, persisted batching queue, flush policy,
+% retries, sampling, consent + PII, threading, size/startup, versioning, testing); (b) an end-to-end
+% encrypted messenger (identity/prekeys, X3DH -> Double Ratchet at concept level, per-device fan-out,
+% ordering, receipts, outbox, NSE decrypt, attachments, multi-device).
+% NOT repeated here: the framework + feed (architecture/ios-client-system-design.tex), WebSocket
+% mechanics (networking/websockets-realtime.tex), AEAD/ECDH/HKDF (cs/crypto-cryptokit.tex), APNs +
+% NSE basics (ios-platform/push-notifications.tex).
+% Sources (checked 2026-10-06) — X3DH DH1–DH4 and the initial message re-read:
+%   signal.org/docs/specifications/{x3dh,doubleratchet,sesame}; signal.org/docs (PQXDH listed);
+%   developer.apple.com/documentation/cryptokit/secureenclave (P-256 only);
+% developer.apple.com PushKit doc (VoIP rule, used in realtime-webrtc-callkit.tex). Analytics SDK =
+% general practice (Segment-style API named as such, numbers given as examples, not standards).
+% @labels: area=architecture kind=architecture platform=ios topic=system-design,security,networking discussion=89
+% @tags: analytics-sdk, event-batching, persisted-queue, sampling, consent, e2ee, x3dh, double-ratchet, prekeys, multi-device, notification-service-extension, forward-secrecy
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,public,static,case,
+    if,else,return,guard,self,nil,try,await,async,throws,private,actor,some,any,
+    true,false,in,Sendable},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\st[1]{\textbf{\color{sheetBlue}#1}~}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcommand\dd[3][sheetBlue]{\par\noindent\fcolorbox{#1}{#1!4}{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{\raggedright{\bfseries\color{#1!85!black}#2}\par\vspace{1pt}#3}}\par\vspace{3pt}}
+
+\begin{document}
+
+\sheettitle{System design — analytics SDK \& E2E-encrypted messenger}{architecture · folio}
+
+\oneliner{Same steps, two very different centres of gravity: \textbf{scope} $\to$ \textbf{functional}
+$\to$ \textbf{non-functional} $\to$ \textbf{data model} $\to$ \textbf{API} $\to$ \textbf{high-level} $\to$
+\textbf{the hard parts}. An \textbf{SDK} lives inside \emph{someone else's} app: it must never crash, block, bloat
+or leak it — the design is a \textbf{persisted, batched, privacy-gated queue}. An \textbf{E2EE messenger}'s
+server is an untrusted \textbf{mailbox}: keys live only on devices, every message is sealed per
+\emph{recipient device}, and the push extension has to decrypt.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    s/.style={box, font=\tiny, minimum height=6mm, inner sep=1.5pt},
+    g/.style={s, draw=sheetGreen, fill=sheetGreen!8},
+    o/.style={s, draw=sheetOrange, fill=sheetOrange!10},
+    r/.style={s, draw=sheetRed, fill=sheetRed!6},
+    k/.style={s, draw=sheetGrey, fill=black!4},
+    l/.style={font=\tiny, text=black!75, align=center, inner sep=1pt},
+    n/.style={circle, fill=sheetOrange, text=white, font=\tiny\bfseries, inner sep=0.4pt, minimum size=3mm}]
+  % ================= (a) SDK pipeline
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.2,4.05) {(a) Analytics SDK — the pipeline};
+  \node[k] (app) at (0.45,2.55) {host app\\\ct{track(\_:)}};
+  \node[s] (api) at (2.05,2.55) {facade\\returns at once};
+  \node[g] (enr) at (3.75,2.55) {enrich: \ct{messageId},\\\ct{timestamp}, context};
+  \node[r] (gate) at (5.75,2.55) {consent gate\\PII scrub · sample};
+  \node[o] (buf) at (7.35,2.55) {actor /\\serial queue};
+  \node[o, very thick] (disk) at (7.35,1.1) {\textbf{persisted queue}\\file / SQLite\\cap: drop oldest};
+  \node[s] (fl) at (5.15,1.1) {flush policy: N events\\· T s · background\\· \ct{flush()} · launch};
+  \node[g] (up) at (2.85,1.1) {uploader: gzip batch\\\ct{POST /v1/batch}\\backoff + jitter};
+  \node[k] (col) at (0.55,1.1) {collector};
+  \node[k] (rc) at (5.75,3.5) {remote config: kill switch · rate};
+  \draw[hot] (app) -- (api); \draw[hot] (api) -- (enr); \draw[hot] (enr) -- (gate); \draw[hot] (gate) -- (buf);
+  \draw[hot] (buf) -- node[l, right]{append} (disk);
+  \draw[hot] (disk) -- (fl); \draw[hot] (fl) -- node[l, above]{batch} (up);
+  \draw[hot] (up) -- (col);
+  \draw[flow, dashed] (rc) -- (gate);
+  \node[l, anchor=west, text=sheetGrey] at (-0.2,3.5) {\ct{track} never blocks: copy, hop, return};
+  \draw[->, thick, sheetGreen!60!black] (col.south) |- node[l, pos=0.75, below]{2xx $\to$ delete batch} (6.3,0.2) -- (disk.south west);
+  \node[l, anchor=north west, text=sheetRed, align=left] at (-0.2,-0.2) {5xx / 429 / offline $\to$ keep + retry (honour \ct{Retry-After}) · 400 $\to$ drop the batch (poison)\\server dedupes by \ct{messageId} · a kill loses $\leq$ the in-memory buffer};
+  \draw[sheetGrey!50] (8.3,4.2) -- (8.3,-0.8);
+  % ================= (b) messenger
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (8.4,4.05) {(b) E2EE messenger — client $\leftrightarrow$ server $\leftrightarrow$ push};
+  \node[s, minimum width=17mm] (al) at (9.35,1.85) {\textbf{Alice's phone}\\outbox · sessions\\keys in Keychain};
+  \node[s, minimum width=17mm] (aip) at (9.35,0.35) {Alice's iPad};
+  \node[k, minimum width=22mm] (kd) at (12.45,3.3) {key directory\\IK · SPK+sig · OPKs};
+  \node[k, minimum width=22mm] (mb) at (12.45,1.85) {router + per-device\\\textbf{mailboxes} (ciphertext)};
+  \node[k, minimum width=14mm] (ps) at (12.45,0.35) {push sender};
+  \node[r, minimum width=9mm] (ap) at (14.05,0.35) {APNs};
+  \node[g, minimum width=17mm] (nse) at (15.75,0.35) {Bob: \textbf{NSE}\\fetch + decrypt};
+  \node[s, minimum width=17mm] (bob) at (15.75,1.85) {\textbf{Bob's phone}};
+  \node[s, minimum width=17mm] (bip) at (15.75,3.3) {Bob's iPad};
+  \draw[hot] (al.north east) -- node[n, pos=0.35]{1} node[l, pos=0.62, above left=0pt]{fetch bundle} (kd.west);
+  \node[box, font=\tiny, inner sep=1.5pt, draw=sheetOrange, fill=sheetOrange!10, align=center] at (9.35,3.3) {\textbf{2} X3DH $\to$ SK\\$\to$ Double Ratchet};
+  \draw[hot] (al.east) -- node[n, pos=0.5]{3} (mb.west);
+  \node[l, anchor=north] at (10.78,1.72) {1 envelope\\per device};
+  \draw[hot] ([yshift=1.2mm]mb.east) -- ([yshift=1.2mm]bob.west);
+  \draw[flow, dashed] ([yshift=-1.5mm]bob.west) -- node[l, below, pos=0.4]{\textbf{7} receipt\\(E2EE)} ([yshift=-1.5mm]mb.east);
+  \draw[hot] (mb.north east) -- (bip.south west);
+  \draw[hot] (mb.south west) -- node[l, right=2pt, pos=0.85, align=left]{copy to\\own devices} (aip.east);
+  \draw[hot] (mb) -- node[n, pos=0.5]{4} (ps); \draw[hot] (ps) -- (ap);
+  \draw[hot] (ap) -- node[n, pos=0.5]{5} (nse);
+  \draw[hot, sheetGreen!60!black] (nse.north west) -- node[n, pos=0.25, fill=sheetGreen!60!black]{6} node[l, pos=0.25, above right=2pt]{ack $\to$ delete} ([xshift=-2mm]mb.south east);
+  \node[l, anchor=north west, align=left, text=sheetRed] at (8.4,-0.2) {server sees who $\to$ which device, when, size — \textbf{never} plaintext or keys\\push payload: \ct{mutable-content:1} + generic alert, no content};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\footnotesize\setstretch{1.07}\raggedright
+
+\dd{(a) Analytics SDK — step by step}{%
+\st{Scope} events + screens + identify; \emph{not} dashboards, not crash reporting. Who integrates:
+other teams' apps, iOS 15+.
+\st{Functional} \ct{track}, \ct{screen}, \ct{identify(userId:traits:)}, \ct{reset()} on logout,
+\ct{flush()}, opt-out. \st{Non-functional} never crash / block the host; $\approx$0 launch cost; small
+binary; no data loss across kill/offline; bounded disk + battery; privacy by default; thread-safe.
+\st{Data model} \ct{Event\{messageId: UUID, name, properties, timestamp, context\{app, os, device,
+locale, sessionId\}, schemaVersion\}}; \ct{anonymousId} until \ct{identify}.
+\ct{sentAt} added at upload $\to$ server corrects device-clock skew:
+\ct{receivedAt~-~(sentAt~-~timestamp)}.
+\st{API} one entry point, value types, no callbacks required:}
+\begin{lstlisting}[language=SwiftSheet]
+public final class Analytics: Sendable {
+  public static func configure(writeKey: String, options: Options)
+  public func track(_ name: String, _ props: [String: Value] = [:])
+  public func identify(userId: String, traits: [String: Value])
+  public func setConsent(_ c: Consent)  // gates collection
+  public func flush()                   // fire-and-forget
+  public func reset()                   // logout: new anonymousId
+}
+\end{lstlisting}
+\dd[sheetOrange]{Deep dives}{%
+\textbf{Threading}: public calls copy the event and hop to one \ct{actor} / serial queue — never main,
+never a lock the caller waits on. \textbf{Persistence}: append each event (or small batches) to a
+file / SQLite so a kill loses $\leq$ one in-memory batch; cap bytes + age, drop \emph{oldest}.
+\textbf{Flush}: whichever first — N events (e.g. 20), T seconds (e.g. 30), app to background (inside
+\ct{beginBackgroundTask}), explicit \ct{flush()}, next launch. One upload in flight. \textbf{Retries}:
+exponential backoff + full jitter, capped; 5xx / 429 / offline = retry; a 4xx batch is \emph{poison} —
+drop it or it blocks the queue forever. Idempotent: \ct{messageId} dedup server-side.
+\textbf{Sampling}: decide per \emph{user/session} with \ct{hash(id) \% 100 < rate}, not per event (keeps
+funnels whole); send the rate so the server re-weights. \textbf{Privacy}: no collection before consent;
+scrub PII (allow-list property keys, redact emails / phones), never IDFA without ATT; ship
+\ct{PrivacyInfo.xcprivacy} (data types + required-reason APIs such as \ct{UserDefaults}) and sign
+the binary. \textbf{Size + startup}: no heavy deps, nothing in \ct{+load} / static initialisers, lazy
+I/O after launch; static XCFramework via SPM binary target. \textbf{Versioning}: SemVer; library
+evolution (\ct{BUILD\_LIBRARY\_FOR\_DISTRIBUTION}); deprecate with
+\ct{@available(*, deprecated, renamed:)}; \ct{schemaVersion} in the payload so the server accepts old
+SDKs for years. \textbf{Kill switch}: remote config can stop sending. \textbf{Testing}: inject
+\ct{Clock}, \ct{Storage}, \ct{Transport} protocols; fake clock drives time-based flush; tests for kill
+mid-write, offline, 400 vs 500, consent off.}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{SDK: a \ct{fatalError} / force-unwrap, sync disk I/O on the caller's thread, or work at launch
+        — you just degraded every host app.}
+  \trap{SDK: retrying a 400 forever; in-memory-only queue (kill = data loss); per-event sampling.}
+  \trap{E2EE: keys in iCloud backup, or ``the server encrypts it'' (TLS $\neq$ E2EE).}
+  \trap{Curve25519 identity key ``in the Secure Enclave'' — SE keys are P-256 only; Keychain.}
+  \trap{Encrypting once per \emph{user}, not per device — the iPad can't read it.}
+  \trap{Plaintext in the APNs payload — Apple and logs see it; the NSE decrypts.}
+\end{itemize}
+
+\hd{Trade-offs}
+{\scriptsize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{62mm}@{}}
+\toprule
+queue & append-only file: tiny, no deps · SQLite: queries, atomic batch delete \\
+binary & static: no dyld cost at launch · dynamic: one copy shared with extensions \\
+upload & \ct{URLSession} + bg task: prompt · background session: survives a kill, delayed \\
+groups & pairwise: N encryptions per send · sender keys: one, rekey when a member leaves \\
+receipts & per message: simple · batched ``read up to seq'': far fewer messages \\
+\bottomrule
+\end{tabular}}
+
+\columnbreak
+
+\dd[sheetGreen]{(b) E2EE messenger — step by step}{%
+\st{Scope} 1:1 + small groups, text + media, multi-device; not calls (own design), not backups.
+\st{Functional} send / receive offline, delivery + read receipts, history on each device, push.
+\st{Non-functional} server can't read content; forward secrecy; ordering; works offline; low
+battery; notification shows plaintext.
+\st{Data model} \ct{Message\{clientId, conversationId, senderDevice, serverSeq?, body, state:
+sending|sent|delivered|read|failed\}}; \ct{Session} per (user, \textbf{device}); \ct{Outbox} row per
+send. Envelope on the wire: \ct{\{to: userId.deviceId, type, ciphertext\}} — the server routes blobs.
+\st{API} \ct{PUT /keys} (upload IK, signed prekey, 100 one-time prekeys) · \ct{GET /keys/\{user\}}
+$\to$ bundle per device · \ct{POST /messages} (envelopes for \emph{all} recipient + own devices;
+409 = device list stale) · WebSocket deliver/ack · \ct{GET /messages?since=} catch-up.}
+\dd[sheetGreen]{Deep dives}{%
+\textbf{Keys (Signal, conceptually)}: each device has a long-term \textbf{identity key} (IK), a
+\textbf{signed prekey} (SPK, signed by IK, rotated) and one-time prekeys (OPK), published so a peer can
+start a session while it is \emph{offline}. \textbf{X3DH}: Alice combines DH(IK\textsubscript{A}, SPK\textsubscript{B}),
+DH(EK\textsubscript{A}, IK\textsubscript{B}), DH(EK\textsubscript{A}, SPK\textsubscript{B}) [+ DH(EK\textsubscript{A},
+OPK\textsubscript{B})] through a KDF $\to$ shared secret SK; her first message carries IK\textsubscript{A},
+EK\textsubscript{A} and which prekeys she used. (Signal now also specifies \textbf{PQXDH}, adding a
+post-quantum KEM.) \textbf{Double Ratchet}: SK seeds a \emph{root chain}; a \textbf{symmetric ratchet}
+(KDF chain) gives every message its own key — delete after use = \textbf{forward secrecy}; a
+\textbf{DH ratchet} step each time a new ratchet public key arrives = \textbf{break-in recovery}. Header
+\ct{N} / \ct{PN} + stored skipped keys decrypt out-of-order messages. \textbf{Trust}: compare
+\emph{safety numbers} (IK fingerprints, QR); warn on key change.
+\textbf{Multi-device} (Signal's Sesame): a session per \emph{device}; sender encrypts once per
+recipient device and per own other device; stale devices kept briefly for late messages. Groups:
+pairwise fan-out, or \emph{sender keys} for big groups.
+\textbf{Ordering + sync}: server assigns \ct{serverSeq} per conversation on accept; client sorts by it,
+pending rows last; per-device mailbox deleted on ack; \ct{since} catch-up on reconnect.
+\textbf{Receipts}: sent as encrypted control messages, batched; ``read'' is optional (privacy setting).
+\textbf{Push}: payload carries no content — \ct{mutable-content:1} + generic alert; the \textbf{NSE}
+fetches, decrypts with keys from a shared Keychain group (\ct{AfterFirstUnlockThisDeviceOnly}) + App
+Group DB, rewrites the alert; timeout shows the generic text. NSE and app both advance the ratchet
+$\to$ cross-process lock, or the session corrupts.
+\textbf{Attachments}: random key per file, encrypt + MAC, upload ciphertext to a CDN, send
+\{url, key, digest\} \emph{inside} the E2EE message.}
+
+\hd{Remember}
+\textbf{SDK = guest: fast, silent, persisted, consented.} \textbf{E2EE = mailbox server: keys on
+devices, a session per device, the NSE decrypts.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} ios-client-system-design (outbox, layers) ·
+client-sdk-design · websockets-realtime ·
+crypto-cryptokit (ECDH, HKDF, AEAD) · push-notifications (NSE) · background-execution · keychain-secure-enclave}
+
+\end{document}
