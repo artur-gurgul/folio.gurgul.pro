@@ -1,0 +1,96 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Combine operators · errors · sharing · moving to async/await — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/ios-swift/combine-operators-migration.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">81</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area current" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Combine operators · errors · sharing · moving to async/await</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">ios-swift · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Every operator is a <strong>struct</strong> deciding <strong>which values</strong> it emits, <strong>how it
+passes demand</strong> upstream and <strong>when it ends</strong>. One <strong>failure ends the whole chain</strong> unless
+caught <em>inside</em> a <code>flatMap</code>; <code>share()</code> gives one upstream many subscribers. Migrating keeps
+Combine at the edges: <code>.values</code> / <code>Future.value</code> in, a cancellable <code>Task</code> for the token.</p>
+<p class="sheet-tools"><a class="sheet-download" href="combine-operators-migration.pdf" download>Download PDF</a> <a href="combine-operators-migration.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-swift/combine-operators-migration.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="combine-operators-migration-fig1.svg" width="633" height="169" class="wide" alt="Combine operators · errors · sharing · moving to async/await — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">How it works</span></h3>
+<ul>
+<li>The chain’s type is the nesting: <code>Publishers.Map&lt;Publishers.Filter&lt;…&gt;, T&gt;</code>.  At an API boundary hide it: <code>eraseToAnyPublisher()</code> (a box, dynamic dispatch)  or <code>some Publisher&lt;Feed, Never&gt;</code> (<code>Publisher</code> has primary associated types, Swift 5.7).</li>
+<li><code>flatMap</code> needs <code>Self.Failure == P.Failure</code>: align with  <code>setFailureType(to:)</code> or <code>mapError</code>. An inner <em>finishing</em> does not end  the stream; an inner <em>failing</em> does (Apple docs).</li>
+<li><code>try</code>-operators (<code>tryMap</code>, <code>tryFilter</code>, <code>tryCatch</code>…) widen  <code>Failure</code> to <code>any Error</code>; <code>mapError</code> gets your type back.</li>
+<li><strong>Errors</strong>: <code>catch</code> = swap in a fallback <em>publisher</em>;  <code>replaceError(with:)</code> = a value; <code>retry(n)</code> <strong>re-subscribes</strong> upstream  up to n times (cold: the request runs again, no delay); <code>assertNoFailure()</code> traps.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Catalogue — by job</span></h3>
+<p><table class="sheet-table">
+<tbody>
+<tr><td>transform</td><td><code>map tryMap compactMap scan reduce collect(n) removeDuplicates replaceNil</code></td></tr>
+<tr><td>limit</td><td><code>filter first(where:) prefix(n) prefix(untilOutputFrom:) dropFirst drop(untilOutputFrom:) output(at:)</code></td></tr>
+<tr><td>combine</td><td><code>merge(with:)</code> (<span class="math">≤</span>8; <code>MergeMany</code>) · <code>combineLatest</code> (<span class="math">≤</span>4) · <code>zip</code> (<span class="math">≤</span>4) · <code>append</code> · <code>prepend</code></td></tr>
+<tr><td>flatten</td><td><code>flatMap(maxPublishers:)</code> · <code>switchToLatest</code></td></tr>
+<tr><td>time</td><td><code>debounce throttle delay timeout measureInterval</code></td></tr>
+<tr><td>errors</td><td><code>catch tryCatch retry replaceError mapError setFailureType assertNoFailure</code></td></tr>
+<tr><td>share</td><td><code>share multicast makeConnectable autoconnect</code></td></tr>
+<tr><td>debug</td><td><code>print handleEvents breakpoint breakpointOnError</code></td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — refresh: one load at a time, errors stay inside</span></h3>
+<pre class="sheet-code"><code class="hljs language-swift">refreshTaps                               <span class="hljs-comment">// PassthroughSubject&lt;Void, Never&gt;</span>
+  .flatMap(maxPublishers: .max(<span class="hljs-number">1</span>)) { <span class="hljs-keyword">_</span> <span class="hljs-keyword">in</span> <span class="hljs-comment">// taps while loading: dropped</span>
+    api.feedPublisher()                   <span class="hljs-comment">// AnyPublisher&lt;Feed, APIError&gt;</span>
+      .retry(<span class="hljs-number">2</span>)                           <span class="hljs-comment">// GET re-sent up to 2 more times</span>
+      .map(<span class="hljs-type">State</span>.loaded)
+      .catch { <span class="hljs-type">Just</span>(<span class="hljs-type">State</span>.failed(<span class="hljs-variable">$0</span>)) }   <span class="hljs-comment">// INSIDE: outer stream lives on</span>
+  }
+  .receive(on: <span class="hljs-type">DispatchQueue</span>.main)
+  .assign(to: <span class="hljs-operator">&amp;</span><span class="hljs-variable">$state</span>)                    <span class="hljs-comment">// no token, no self capture</span></code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">Sharing</span></h3>
+<ul>
+<li>Cold publishers run <strong>per subscriber</strong>: two sinks on one <code>dataTaskPublisher</code> = two requests.</li>
+<li><code>share()</code> = <code>multicast</code> + <code>PassthroughSubject</code> + implicit <code>autoconnect()</code>  (docs); <code>Share</code> is a <strong>class</strong>. No replay: a late subscriber misses values; on a  synchronous upstream (<code>Just</code>, an array) the first subscriber drains it all.</li>
+<li><code>multicast(subject: CurrentValueSubject(…))</code> replays the latest;  <code>makeConnectable()</code> + <code>connect()</code> starts work after <em>all</em> subscribed.  <code>Timer.publish(every:on:in:)</code> is connectable: no <code>.autoconnect()</code> = no ticks.</li>
+</ul>
+<p><strong><span class="c-sheetblue">Combine <span class="math">→</span> Swift concurrency</span></strong></p>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>Combine</strong></th><th><strong>async/await</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>Future</code>, one-shot</td><td><code>async</code> func · <code>try await future.value</code> (iOS 15)</td></tr>
+<tr><td>many values</td><td><code>for await v in pub.values</code> (iOS 15)</td></tr>
+<tr><td><code>AnyCancellable</code></td><td>a <code>Task</code> you <code>cancel()</code>; SwiftUI <code>.task</code></td></tr>
+<tr><td><code>receive(on: .main)</code></td><td><code>@MainActor</code></td></tr>
+<tr><td><code>PassthroughSubject</code></td><td><code>AsyncStream</code> — <strong>one</strong> consumer (loops split)</td></tr>
+<tr><td><code>share()</code></td><td>nothing built in: one stream per consumer</td></tr>
+<tr><td><code>@Published</code></td><td><code>@Observable</code> (iOS 17) · <code>Observations</code> (iOS 26)</td></tr>
+<tr><td><code>switchToLatest</code></td><td>cancel the old <code>Task</code> · <code>.task(id:)</code></td></tr>
+<tr><td><code>flatMap(….max(1))</code></td><td><code>await</code> inside <code>for await</code> (serial)</td></tr>
+<tr><td><code>debounce merge zip</code></td><td>swift-async-algorithms package</td></tr>
+<tr><td><code>retry(n)</code> · scheduler</td><td>loop + <code>Task.sleep</code> backoff · inject a <code>Clock</code></td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — typeahead, the async way</span></h3>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-comment">// Combine: $query.debounce(...).map(search).switchToLatest()</span>
+<span class="hljs-type">TextField</span>(<span class="hljs-string">&quot;Search&quot;</span>, text: <span class="hljs-variable">$query</span>)
+  .task(id: query) {                      <span class="hljs-comment">// new id: old task cancelled</span>
+    <span class="hljs-keyword">try?</span> <span class="hljs-keyword">await</span> <span class="hljs-type">Task</span>.sleep(for: .milliseconds(<span class="hljs-number">300</span>))   <span class="hljs-comment">// = debounce</span>
+    <span class="hljs-keyword">guard</span> <span class="hljs-operator">!</span><span class="hljs-type">Task</span>.isCancelled <span class="hljs-keyword">else</span> { <span class="hljs-keyword">return</span> }          <span class="hljs-comment">// = switchToLatest</span>
+    results <span class="hljs-operator">=</span> (<span class="hljs-keyword">try?</span> <span class="hljs-keyword">await</span> api.search(query)) <span class="hljs-operator">??</span> []   <span class="hljs-comment">// main actor</span>
+  }</code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">Testing Combine</span></h3>
+<ul>
+<li><code>sink</code> into an array, keep the token, fulfil an expectation on completion  (<code>.collect()</code> = all at once) — or <code>for await</code> over <code>.values</code>: <strong>start
+ iterating before you trigger</strong>, a subject’s earlier value is dropped.</li>
+<li>Inject the scheduler; a test scheduler you <code>advance(by:)</code> makes <code>debounce</code>  instant. Cancel: <code>handleEvents(receiveCancel:)</code>.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap"><code>retry</code> on a POST re-sends it; on a hot subject it only re-subscribes — nothing is replayed.</li>
+<li class="trap"><code>flatMap(maxPublishers: .max(1))</code> behind a subject <em>drops</em>, not queues — add <code>buffer</code>.</li>
+<li class="trap"><code>combineLatest</code> stays silent while one input never emitted: <code>prepend(initial)</code>.</li>
+<li class="trap"><code>Deferred { Future { Task {…} } }</code>: cancelling the subscription does <strong>not</strong>  cancel the <code>Task</code>. <code>Future</code> alone runs at creation, even with no subscriber.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<p><strong>Values, demand, ending — ask all three of every operator.</strong> Catch inside the <code>flatMap</code>; <code>share</code> = subject + autoconnect; migrate at the edges: <code>.values</code> in, <code>Task</code> for the token.</p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> combine-publishers-demand · observation-and-combine
+(debounce vs throttle) · async-sequences-streams · observation-deep · concurrency · async-and-network-testing</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=ios-swift" title="area">ios-swift</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=concurrency" title="topic">concurrency</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=patterns" title="topic">patterns</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=testing" title="topic">testing</a></li><li class="sheet-tag"><a href="/folios.html?tag=combine-operators">combine-operators</a></li><li class="sheet-tag"><a href="/folios.html?tag=flatmap">flatmap</a></li><li class="sheet-tag"><a href="/folios.html?tag=switchtolatest">switchtolatest</a></li><li class="sheet-tag"><a href="/folios.html?tag=combinelatest">combinelatest</a></li><li class="sheet-tag"><a href="/folios.html?tag=zip">zip</a></li><li class="sheet-tag"><a href="/folios.html?tag=merge">merge</a></li><li class="sheet-tag"><a href="/folios.html?tag=share">share</a></li><li class="sheet-tag"><a href="/folios.html?tag=multicast">multicast</a></li><li class="sheet-tag"><a href="/folios.html?tag=catch">catch</a></li><li class="sheet-tag"><a href="/folios.html?tag=retry">retry</a></li><li class="sheet-tag"><a href="/folios.html?tag=erasetoanypublisher">erasetoanypublisher</a></li><li class="sheet-tag"><a href="/folios.html?tag=async-migration">async-migration</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=ios-swift%2Fcombine-operators-migration.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/61">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

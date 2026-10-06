@@ -1,0 +1,210 @@
+% concurrency.tex — GCD vs async/await, actors + reentrancy, @MainActor,
+% Sendable, and the URLSession completion-thread hop.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/dispatch (main/global/serial/concurrent queues, sync vs async,
+%     DispatchGroup, DispatchSemaphore, barrier, QoS classes)
+%   developer.apple.com/documentation/foundation/urlsession (completion handlers on the delegate
+%     queue — a background serial OperationQueue; tasks start suspended, resume())
+%   docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency (async let,
+%     task groups, unstructured/detached tasks, cancellation, actors, reentrancy, Sendable)
+%   developer.apple.com/documentation/swift/checkedcontinuation (resume exactly once)
+%   github.com/swiftlang/swift-evolution SE-0461 (Swift 6.2, NonisolatedNonsendingByDefault)
+%   developer.apple.com/videos/play/wwdc2021/10254 "Swift concurrency: Behind the scenes"
+%     (cooperative pool, one thread per core)
+% @labels: area=ios-swift kind=concept platform=apple topic=concurrency discussion=63
+% @tags: gcd, dispatchqueue, async-await, actor, reentrancy, mainactor, sendable, task-detached, taskgroup, cancellation, continuation, deadlock
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,actor,
+    async,await,throws,try,if,else,return,guard,self,nil,private,true,false,in,
+    AnyObject,Void,String,Bool,Int,Task},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  lane/.style={font=\bfseries\scriptsize, anchor=east, inner sep=1pt},
+  work/.style={draw=sheetBlue, fill=sheetBlue!12, rounded corners=1pt,
+               minimum height=4.2mm, font=\scriptsize, inner sep=1.5pt},
+  bg/.style={work, draw=sheetBrown, fill=sheetBrown!12},
+  bad/.style={work, draw=sheetRed, fill=sheetRed!12},
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  ttl/.style={font=\bfseries\small},
+}
+
+\begin{document}
+
+\sheettitle{Concurrency · GCD · async/await · actors}{ios-swift · folio}
+
+\oneliner{\textbf{GCD} submits closures to \emph{queues} and \emph{blocks
+threads} to wait; \textbf{Swift Concurrency} \emph{suspends tasks} at
+\texttt{await} (the thread is freed) and lets the \textbf{compiler} prove
+safety with \textbf{actors} (serialised state), \texttt{@MainActor} (UI) and
+\texttt{Sendable} (what may cross). Rule zero in both: \textbf{UIKit only on
+the main thread.}}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{GCD}
+\begin{itemize}
+  \item \texttt{DispatchQueue.main} = \textbf{serial}, bound to the main thread
+        (UI). \texttt{DispatchQueue.global(qos:)} = shared \textbf{concurrent}
+        pool. \texttt{DispatchQueue(label:)} = serial unless
+        \texttt{attributes: .concurrent}.
+  \item \texttt{async} returns at once; \texttt{sync} \textbf{blocks the caller}
+        until the block ran. \texttt{main.sync} \emph{from} main (or
+        \texttt{sync} onto the serial queue you are on) = \textbf{deadlock}.
+  \item \textbf{QoS}, high$\to$low: \texttt{.userInteractive} $>$
+        \texttt{.userInitiated} $>$ \texttt{.default} $>$ \texttt{.utility} $>$
+        \texttt{.background}.
+  \item \texttt{DispatchGroup} (\texttt{enter}/\texttt{leave}/\texttt{notify})
+        = wait for N jobs; \texttt{DispatchSemaphore(value: N)} = limit to N;
+        \texttt{.barrier} on a \emph{private concurrent} queue = reader–writer.
+  \item \textbf{URLSession completion handlers run on a background queue}
+        (the session's delegate \texttt{OperationQueue}) — \emph{never} main.
+        Hop before UI: \texttt{DispatchQueue.main.async \{…\}}. Forgot
+        \texttt{.resume()}? Tasks start suspended.
+\end{itemize}
+
+\section{Async/await}
+\begin{itemize}
+  \item \texttt{await} \textbf{suspends, never blocks}: the thread returns to a
+        cooperative pool (one per core, no thread explosion); the task may resume on
+        another thread.
+  \item \texttt{Task \{\}} inherits actor, priority, task-locals.
+        \texttt{Task.detached \{\}} inherits \textbf{nothing} (loses
+        \texttt{@MainActor}). Both unstructured.
+  \item \textbf{Structured:} \texttt{async let x = f()} (fixed count),
+        \texttt{withThrowingTaskGroup} (dynamic count). Parent waits for
+        children; cancel flows down, errors flow up. Two plain
+        \texttt{await}s in a row run \textbf{one after the other};
+        \texttt{async let a = f(); async let b = g()} starts both at once.
+  \item \textbf{Cancellation is cooperative}: \texttt{task.cancel()} only sets
+        a flag. Check \texttt{Task.isCancelled} or \texttt{try
+        Task.checkCancellation()} (throws \texttt{CancellationError}).
+  \item \texttt{withCheckedThrowingContinuation} bridges a callback API — resume
+        \textbf{exactly once} (0 = hang, 2 = trap).
+  \item \textbf{actor}: reference type; one task at a time touches its state;
+        outside calls need \texttt{await}. \texttt{nonisolated} opts a member out
+        (methods that touch no isolated state; Sendable \texttt{let}s). \textbf{Reentrant}: at every \texttt{await} inside
+        it, other calls may run $\Rightarrow$ re-check state after
+        \texttt{await}.
+  \item \texttt{@MainActor} = global actor on the main thread; on a type,
+        method or property. Off-main: \texttt{await MainActor.run \{\}}.
+  \item \texttt{Sendable} = safe to cross isolation: value types of Sendable
+        parts, \texttt{final class} with only \texttt{let} Sendable props,
+        actors (implicitly). \texttt{@unchecked Sendable} = ``I lock it myself''.
+        Swift 6 makes violations \emph{errors}.
+\end{itemize}
+
+\section{Example — the main-thread hop}
+\begin{lstlisting}[language=SwiftSheet]
+// 1. Completion handler: runs on a BACKGROUND queue
+URLSession.shared.dataTask(with: url) { data, _, _ in
+  let img = data.flatMap(UIImage.init(data:))
+  DispatchQueue.main.async { self.imageView.image = img } // hop!
+}.resume()                              // tasks start suspended
+
+// 2. async/await inside @MainActor: resumes on main, no hop
+@MainActor func load() async throws {
+  let (data, _) = try await URLSession.shared.data(from: url)
+  imageView.image = UIImage(data: data) // already on main
+}
+\end{lstlisting}
+
+\columnbreak
+
+\section{Which thread runs what}
+\begin{tikzpicture}[sheet]
+  \node[ttl, anchor=west] at (-1.3,1.75) {1 · completion handler};
+  \node[lane] at (-0.15,1.15) {main};
+  \node[lane] at (-0.15,0.45) {bg queue};
+  \draw[sheetGrey!60] (0,1.15) -- (7.7,1.15);
+  \draw[sheetGrey!60] (0,0.45) -- (7.7,0.45);
+  \node[work, anchor=west] (r) at (0.05,1.15) {\texttt{resume()}};
+  \node[lbl, anchor=west, fill=white] at (1.35,1.15) {UI stays responsive …};
+  \node[bg, anchor=west] (cb) at (1.6,0.45) {\texttt{\{ data, resp, err in \}}};
+  \node[work, anchor=west] (ui) at (6.2,1.15) {\texttt{label.text=}};
+  \draw[flow] (r.south) |- (cb.west);
+  \draw[hot] (cb.east) -- node[lbl, above left, pos=0.55, text=sheetOrange]{\texttt{main.async} hop} (ui.south west);
+  \node[bad, anchor=west] (x) at (1.6,-0.1) {UI here = crash / UB};
+  \draw[->, thick, sheetRed] (x.north) -- ([xshift=-7.5mm]cb.south);
+  % async/await
+  \node[ttl, anchor=west] at (-1.3,-0.65) {2 · \texttt{await} in \texttt{@MainActor}};
+  \node[lane] at (-0.15,-1.25) {main};
+  \node[lane] at (-0.15,-1.95) {pool};
+  \draw[sheetGrey!60] (0,-1.25) -- (7.7,-1.25);
+  \draw[sheetGrey!60] (0,-1.95) -- (7.7,-1.95);
+  \node[work, anchor=west] (a1) at (0.05,-1.25) {\texttt{load()}};
+  \node[lbl, anchor=west, fill=white, text=sheetGreen!70!black] at (1.3,-1.25) {suspended — main thread free};
+  \node[bg, anchor=west] (a2) at (2.1,-1.95) {\texttt{data(from:)} I/O};
+  \node[work, anchor=west] (a3) at (5.2,-1.25) {resume on main};
+  \draw[flow] (a1.south) |- node[lbl, pos=0.75, below]{\texttt{await}} (a2.west);
+  \draw[flow] (a2.east) -| (a3.south);
+  % deadlock
+  \node[ttl, anchor=west] at (-1.3,-2.6) {3 · \texttt{main.sync} from main};
+  \node[bad, anchor=west] (s1) at (0.05,-3.2) {main: waiting in \texttt{sync}};
+  \node[work, anchor=west] (s2) at (3.9,-3.2) {block queued on main};
+  \draw[->, thick, sheetRed] (s1.north east) to[bend left=25] node[lbl, above]{waits for} (s2.north west);
+  \draw[->, thick, sheetRed] (s2.south west) to[bend left=25] node[lbl, below]{needs main free} (s1.south east);
+\end{tikzpicture}
+
+\section{Actor reentrancy}
+\begin{tikzpicture}[sheet]
+  \node[lane] at (-0.15,0) {call A};
+  \node[lane] at (-0.15,-0.6) {call B};
+  \node[lane] at (-0.15,-1.2) {balance};
+  \node[work, anchor=west] (a1) at (0.05,0) {\texttt{100>=80} ✓};
+  \node[work, anchor=west, fill=white, dashed] (a2) at (1.55,0) {\texttt{await audit()}};
+  \node[bad, anchor=west] (a3) at (5.15,0) {\texttt{-= 80}};
+  \node[work, anchor=west] (b1) at (2.6,-0.6) {\texttt{100>=80} ✓};
+  \node[work, anchor=west] (b2) at (4.05,-0.6) {\texttt{-= 80}};
+  \node[cell, anchor=west] at (0.05,-1.2) {100};
+  \node[cell, anchor=west] at (4.05,-1.2) {20};
+  \node[cell, anchor=west, draw=sheetRed, text=sheetRed] at (5.15,-1.2) {-60};
+  \node[note, anchor=west] at (0.05,-1.75) {A's check is stale after its \texttt{await}: re-check, or mutate before suspending.};
+\end{tikzpicture}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{Completion handlers run on URLSession's background queue}
+        $\to$ hop to main for UI. \texttt{async/await} resumes on \emph{your} actor —
+        \texttt{@MainActor} needs no hop. A \texttt{nonisolated async} func leaves the
+        actor — unless Swift 6.2's \texttt{NonisolatedNonsendingByDefault} (SE-0461) is
+        on: then it runs on the caller's actor.}
+  \trap{\texttt{await} $\neq$ blocking. \texttt{sync}/semaphore/\texttt{sleep()} block a
+        thread; \texttt{Task.sleep} suspends.}
+  \trap{\texttt{Task.detached} in a \texttt{@MainActor} VM runs off-main.}
+  \trap{Cancelling does not stop a loop that never checks.}
+  \trap{\texttt{DispatchGroup}: an early return without \texttt{leave()} $\to$
+        \texttt{notify} never fires; use \texttt{defer}.}
+  \trap{Actor as a ``make it fast'' tool: it \emph{serialises} — use a TaskGroup for parallel work.}
+\end{itemize}
+
+\section{GCD $\to$ Swift concurrency}
+{\footnotesize
+\begin{tabular}{@{}l l@{}}
+\toprule
+\texttt{DispatchQueue.main.async} & \texttt{@MainActor} · \texttt{await MainActor.run} \\
+serial queue guarding state & \texttt{actor} \\
+\texttt{DispatchGroup} + \texttt{notify} & \texttt{async let} · task group \\
+semaphore ``at most N'' & task group seeded with N, add one per finish \\
+\texttt{global().async} & \texttt{Task.detached} · \texttt{@concurrent} (6.2) \\
+\texttt{asyncAfter} & \texttt{try await Task.sleep(for:)} \\
+callback API & \texttt{withCheckedThrowingContinuation} \\
+\bottomrule
+\end{tabular}}
+
+\section{Remember}
+\textbf{GCD blocks threads, await suspends tasks.} \emph{``Background
+brings the data, main paints it.''} QoS: \textbf{I}nteractive,
+\textbf{I}nitiated, \textbf{D}efault, \textbf{U}tility, \textbf{B}ackground —
+``\emph{I I D U B}''.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} locks-and-synchronization · Main Thread Checker · Thread Sanitizer · \texttt{OperationQueue} · \texttt{AsyncSequence} / \texttt{AsyncStream} · Combine \texttt{receive(on:)} · SwiftUI \texttt{.task}}
+
+\end{document}

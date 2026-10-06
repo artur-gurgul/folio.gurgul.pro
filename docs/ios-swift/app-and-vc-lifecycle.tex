@@ -1,0 +1,208 @@
+% app-and-vc-lifecycle.tex — UIViewController callbacks in exact order + app/scene states.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/uikit/uiviewcontroller (loadView: do not call super when
+%     overriding; viewIsAppearing(_:) — iOS 13+ with the iOS 17 SDK; containment: addChild,
+%     didMove(toParent:), willMove(toParent:), removeFromParent;
+%     shouldAutomaticallyForwardAppearanceMethods default true)
+%   developer.apple.com/documentation/uikit/managing-your-app-s-life-cycle (scene-based states;
+%     app-delegate state callbacks not called once scenes are adopted)
+%   developer.apple.com/documentation/uikit/uiscenedelegate · .../swiftui/scenephase
+%   developer.apple.com/documentation/xcode/addressing-watchdog-terminations (0x8badf00d)
+% Not documented by Apple as a number: the ~20 s launch watchdog (marked \unverified).
+% @labels: area=ios-swift kind=concept platform=ios topic=ui,platform-apis discussion=58
+% @tags: uiviewcontroller, loadview, viewdidload, viewisappearing, viewwillappear, viewdidlayoutsubviews, app-states, scene-delegate, uiapplicationdelegate, scenephase, cold-launch, jetsam
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,deinit,
+    override,super,if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false,AnyObject,Void,String,Bool},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  lc/.style={box, font=\scriptsize, inner sep=1pt, minimum height=8mm, text width=12.6mm},
+  once/.style={lc, draw=sheetBlue, fill=sheetBlue!10},
+  app/.style={lc, draw=sheetGreen!70!black, fill=sheetGreen!12},
+  lay/.style={lc, draw=sheetOrange, fill=sheetOrange!12},
+  dis/.style={lc, draw=sheetRed, fill=sheetRed!8},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  st/.style={box, font=\scriptsize\bfseries, minimum width=15mm, minimum height=6mm, inner sep=1.5pt},
+  ed/.style={font=\tiny\ttfamily, text=black!80, inner sep=1pt, align=center},
+  br/.style={decorate, decoration={brace, amplitude=3pt}, thick},
+}
+
+\begin{document}
+
+\sheettitle{App \& view-controller lifecycle — exact order}{ios-swift · folio}
+
+\oneliner{A VC's view is \textbf{lazy}: first access to \texttt{.view} runs
+\texttt{loadView} then \texttt{viewDidLoad} (\textbf{once}); every show runs
+\texttt{viewWillAppear} → \texttt{viewIsAppearing} → layout → \texttt{viewDidAppear}; every
+hide runs \texttt{viewWillDisappear} → \texttt{viewDidDisappear}; \texttt{deinit} last.
+The \emph{app} moves Not running → Inactive \ensuremath{\rightleftarrows} Active → Background → Suspended, reported
+per \textbf{scene} since iOS 13.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet, x=1.49cm]
+  \node[once] (n0) at (0,0) {init\\(coder: / nib:)};
+  \node[once] (n1) at (1,0) {loadView};
+  \node[once] (n2) at (2,0) {viewDid\\Load};
+  \node[app]  (n3) at (3,0) {viewWill\\Appear};
+  \node[app]  (n4) at (4,0) {viewIs\\Appearing};
+  \node[lay]  (n5) at (5,0) {viewWill\\Layout\\Subviews};
+  \node[lay]  (n6) at (6,0) {viewDid\\Layout\\Subviews};
+  \node[app]  (n7) at (7,0) {viewDid\\Appear};
+  \node[dis]  (n8) at (8,0) {viewWill\\Disappear};
+  \node[dis]  (n9) at (9,0) {viewDid\\Disappear};
+  \node[once, draw=sheetGrey, fill=black!6] (n10) at (10,0) {deinit};
+  \foreach \a/\b in {n0/n1,n1/n2,n2/n3,n3/n4,n4/n5,n5/n6,n6/n7,n7/n8,n8/n9,n9/n10}
+    \draw[flow] (\a) -- (\b);
+  % braces above
+  \draw[br, sheetBlue] (-0.45,0.55) -- node[lbl, above=2pt, text=sheetBlue]{\textbf{ONCE} per VC — first \texttt{.view} access} (2.45,0.55);
+  \draw[br, sheetGreen!70!black] (2.55,0.55) -- node[lbl, above=2pt, pos=0.18, text=sheetGreen!60!black]{\textbf{EVERY} appearance} (7.45,0.55);
+  \draw[br, sheetRed] (7.55,0.55) -- node[lbl, above=2pt, text=sheetRed]{\textbf{EVERY} disappearance} (9.45,0.55);
+  \node[lbl, above=5pt, text=sheetGrey] at (10,0.55) {\textbf{ONCE}};
+  % layout loop
+  \draw[->, thick, sheetOrange] (n6.north) to[out=110,in=70] node[lbl, above, text=sheetOrange]{\textbf{MANY}} (n5.north);
+  % what goes where
+  \node[lbl, below=1pt] at (n0.south) {no \texttt{self.view}\\here};
+  \node[lbl, below=1pt] at (n1.south) {\texttt{view = MyView()}\\no \texttt{super}};
+  \node[lbl, below=1pt] at (n2.south) {subviews,\\constraints, bind};
+  \node[lbl, below=1pt] at (n3.south) {refresh data,\\nav-bar style};
+  \node[lbl, below=1pt] at (n4.south) {in hierarchy:\\traits + size OK};
+  \node[lbl, below=1pt] at (5.5,-0.45) {each layout pass: rotation,\\bounds, safe area → frame maths};
+  \node[lbl, below=1pt] at (n7.south) {start anim,\\video, timers};
+  \node[lbl, below=1pt] at (n8.south) {save input,\\end editing};
+  \node[lbl, below=1pt] at (n9.south) {stop timers,\\observers};
+  \node[lbl, below=1pt] at (n10.south) {never runs\\if a cycle};
+  % re-appear loop
+  \draw[->, thick, sheetGreen!70!black, rounded corners=3pt]
+    (n9.south) ++(0,-0.62) -- ++(0,-0.25) -- node[lbl, below, text=sheetGreen!60!black]
+    {shown again (pop back to it, tab re-selected, \texttt{.fullScreen} modal dismissed) → \texttt{viewDidLoad} is NOT re-run}
+    ($(n3.south)+(0,-0.87)$) -- ++(0,0.25);
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{\texttt{loadView}} — creates the root view. Default loads the nib/storyboard
+        (or a blank \texttt{UIView}). Override \emph{only} for all-code UI; assign
+        \texttt{view} and do \textbf{not} call \texttt{super}. Never call it yourself.
+  \item \textbf{\texttt{viewDidLoad}} — in memory, \textbf{not} in a window, bounds = nib
+        size: add subviews + constraints, no frame maths.
+  \item \textbf{\texttt{viewIsAppearing(\_:)}} — iOS 17 SDK, \textbf{back-deployed to iOS 13}.
+        After \texttt{viewWillAppear}: view is \emph{in the hierarchy}, trait collection and
+        geometry are accurate. Best place for size/trait-dependent setup per appearance.
+  \item \textbf{\texttt{viewWill/DidLayoutSubviews}} — every layout pass, also while on
+        screen: keep cheap + idempotent. Always call \texttt{super}. Child VCs get callbacks
+        forwarded (\texttt{addChild} → \texttt{addSubview} → \texttt{didMove(toParent:)}).
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+final class FeedVC: UIViewController {
+  let table = UITableView(); var timer: Timer?
+  override func loadView() { view = table }  // no super
+  override func viewDidLoad() { super.viewDidLoad(); setUp() }
+  override func viewWillAppear(_ a: Bool) {
+    super.viewWillAppear(a); reload() }      // every show
+  override func viewDidLayoutSubviews() {    // many times
+    super.viewDidLayoutSubviews(); gradient.frame = view.bounds }
+  override func viewDidAppear(_ a: Bool) { super.viewDidAppear(a)
+    timer = .scheduledTimer(withTimeInterval: 5, repeats: true) {
+      [weak self] _ in self?.reload() } }
+  override func viewWillDisappear(_ a: Bool) { // mirror
+    super.viewWillDisappear(a); timer?.invalidate() }
+  deinit { print("FeedVC freed") } }         // proves no leak
+\end{lstlisting}
+
+\section{App states — scene-based (iOS 13+)}
+\begin{tikzpicture}[sheet]
+  \node[st, draw=sheetGrey, fill=black!6] (nr) at (0,1.9) {Not running};
+  \node[st] (in) at (3.0,1.9) {Inactive};
+  \node[st, draw=sheetGreen!70!black, fill=sheetGreen!14] (ac) at (6.0,1.9) {Active};
+  \node[st, draw=sheetOrange, fill=sheetOrange!10] (bg) at (3.0,0) {Background};
+  \node[st, draw=sheetRed, fill=sheetRed!8] (su) at (0,0) {Suspended};
+  \draw[flow] (nr) -- node[ed, above]{willConnectTo}node[ed,below]{launch} (in);
+  \draw[flow, sheetGreen!70!black] (in.20) -- node[ed, above]{sceneDidBecome\\Active} (ac.160);
+  \draw[flow, sheetOrange] (ac.200) -- node[ed, below]{sceneWillResign\\Active} (in.340);
+  \draw[flow] (in.250) -- node[ed, left]{sceneDidEnter\\Background} (bg.110);
+  \draw[flow] (bg.70) -- node[ed, right]{sceneWillEnter\\Foreground} (in.290);
+  \draw[flow] (bg.190) -- node[ed, below]{no callback} (su.350);
+  \draw[flow] (su.10) -- node[ed, above]{event wakes} (bg.170);
+  \draw[hot, draw=sheetRed] (su) -- node[ed, right, text=sheetRed]{jetsam:\\silent kill} (nr);
+  \node[lbl, anchor=west, text width=28mm, align=left] at (4.2,0.1) {Background: runs
+     \textasciitilde30\,s (\texttt{beginBackgroundTask}) or a bg mode.
+     Suspended: in RAM, \textbf{no code runs}.};
+\end{tikzpicture}
+
+\section{Launch sequence (cold)}
+dyld + static init → \texttt{main} (\texttt{@main}) → \texttt{UIApplicationMain} →
+\texttt{UIApplication} + delegate → \texttt{willFinishLaunching…} →
+\texttt{didFinishLaunching…} → \texttt{configurationForConnecting} →
+\texttt{scene(\_:willConnectTo:options:)} (make \texttt{UIWindow}, set root,
+\texttt{makeKeyAndVisible}) → \texttt{sceneWillEnterForeground} →
+\texttt{sceneDidBecomeActive} → first frame. Watchdog: \textasciitilde20\,s\unverified{} or killed
+(\texttt{0x8badf00d}). A \textbf{warm} resume skips everything up to willEnterForeground.
+
+\columnbreak
+
+\section{App delegate vs scene delegate}
+\textbf{\texttt{UIApplicationDelegate}} = the \emph{process}: \texttt{didFinishLaunching},
+\texttt{configurationForConnecting}, \texttt{didDiscardSceneSessions}, push token,
+\texttt{applicationWillTerminate} (unreliable).
+\textbf{\texttt{UISceneDelegate}} = one \emph{UI instance} (N per app on iPad):
+\texttt{willConnectTo}, the four hooks in the diagram, \texttt{sceneDidDisconnect}. With
+scenes adopted, \texttt{application\{DidBecomeActive, WillResignActive, DidEnterBackground,
+WillEnterForeground\}} are \textbf{not called}.
+\textbf{SwiftUI:} \texttt{@Environment(\textbackslash.scenePhase)} = \texttt{.active} /
+\texttt{.inactive} / \texttt{.background} (no ``suspended'' — no code runs); in
+\texttt{App} it aggregates all scenes. Bridge with \texttt{@UIApplicationDelegateAdaptor}.
+
+\section{Traps}
+\begin{itemize}
+  \trap{Touching \texttt{self.view} in \texttt{init} or a setter fires \texttt{loadView} +
+        \texttt{viewDidLoad} early — before your properties/outlets are set.}
+  \trap{Frames in \texttt{viewDidLoad} are the storyboard's, not the device's. Use
+        \texttt{viewIsAppearing} / \texttt{viewDidLayoutSubviews}.}
+  \trap{\texttt{.pageSheet} / \texttt{.automatic} modal (iOS 13 default): the
+        \emph{presenter} gets \textbf{no} viewWillDisappear/viewWillAppear — refresh via a
+        delegate or \texttt{presentationControllerDidDismiss}.}
+  \trap{Pause a game on \texttt{WillResignActive} (control centre, call) — not on
+        DidEnterBackground; save on DidEnterBackground. Never rely on willTerminate:
+        jetsam kills a suspended app silently.}
+  \trap{A strong \texttt{Timer}/closure target → \texttt{deinit} never runs. Stop it in
+        \texttt{viewWillDisappear}.}
+\end{itemize}
+
+\section{Child view controllers — the exact calls}
+\begin{lstlisting}[language=SwiftSheet]
+addChild(child)                 // calls willMove(toParent:)
+view.addSubview(child.view)     // + constraints
+child.didMove(toParent: self)   // YOU call this one
+// removing: the mirror image
+child.willMove(toParent: nil)   // YOU call this one
+child.view.removeFromSuperview()
+child.removeFromParent()        // calls didMove(toParent: nil)
+\end{lstlisting}
+Appearance callbacks reach the child automatically
+(\texttt{shouldAutomaticallyForwardAppearanceMethods} = \texttt{true}); a custom container
+that turns it off calls \texttt{beginAppearanceTransition} / \texttt{endAppearanceTransition}.
+
+\section{Remember}
+\textbf{init · load · DidLoad · Will · Is · (layout)$^{n}$ · Did — Will · Did · deinit.}
+\emph{Will} = last chance to prepare; \emph{Did} = already happened, safe to act.
+Appear/disappear come in \textbf{pairs}: start in one, stop in its mirror.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} navigation \& presentation ·
+memory \& retain cycles · Auto Layout pass · background tasks (\texttt{BGTaskScheduler}) ·
+SwiftUI \texttt{onAppear}/\texttt{task} · state restoration}
+
+\end{document}

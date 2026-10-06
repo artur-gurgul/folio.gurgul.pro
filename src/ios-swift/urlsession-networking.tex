@@ -1,0 +1,185 @@
+% urlsession-networking.tex — URLSession, the three error layers, Codable keys, TLS pinning, caching.
+% Sources (checked 2026-10-05):
+%   developer.apple.com/documentation/foundation/urlsession (delegateQueue: serial background
+%     OperationQueue for the completion handlers; tasks start suspended; data(for:) iOS 15)
+%   developer.apple.com/documentation/foundation/urlsessionconfiguration (timeoutIntervalForRequest
+%     60 s idle, timeoutIntervalForResource 7 days, httpMaximumConnectionsPerHost 6, waitsForConnectivity)
+%   developer.apple.com/documentation/foundation/jsondecoder (keyDecodingStrategy, dateDecodingStrategy
+%     default .deferredToDate) · .../urlcache · .../nsurlrequest/cachepolicy
+%   developer.apple.com/documentation/foundation/performing-manual-server-trust-authentication
+%   developer.apple.com/documentation/bundleresources/information-property-list/nsapptransportsecurity/nspinneddomains
+%   developer.apple.com/documentation/foundation/urlerror/code (raw values: NSURLErrorCancelled −999 …)
+% @labels: area=ios-swift kind=api platform=apple topic=networking,security discussion=72
+% @tags: urlsession, urlrequest, urlerror, httpurlresponse, decodingerror, codingkeys, convertfromsnakecase, certificate-pinning, sectrust, urlcache, etag, delegatequeue
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,enum,protocol,extension,return,if,else,
+    guard,try,await,async,throws,throw,case,switch,self,some,any,where,init,in,do,catch},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\begin{document}
+
+\sheettitle{URLSession \& networking}{ios-swift · folio}
+
+\oneliner{\texttt{URLSession} moves bytes; \textbf{you} judge them: it throws only on
+\textbf{transport} failure — a 404/500 arrives as success, so check the
+\textbf{status}, then \textbf{decode}. Three layers, three error types, and UI back on the
+\textbf{main} thread.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{URLRequest}: \texttt{url}, \texttt{httpMethod}, \texttt{setValue(\_:forHTTPHeaderField:)},
+        \texttt{httpBody}, \texttt{timeoutInterval}, \texttt{cachePolicy}.
+  \item \textbf{Session}: \texttt{URLSession.shared} (no delegate) or
+        \texttt{URLSession(configuration:\allowbreak delegate:\allowbreak delegateQueue:)}. Configs:
+        \texttt{.default} (disk cache, cookies) · \texttt{.ephemeral} (memory only) ·
+        \texttt{.background(withIdentifier:)} (system daemon; download/upload only, no \texttt{dataTask}).
+  \item \textbf{Tasks}: \texttt{dataTask} · \texttt{downloadTask} (to a file) · \texttt{uploadTask}.
+        Born \emph{suspended} — nothing happens until \texttt{.resume()}.
+  \item \textbf{async} (iOS 15): \texttt{try await session.data(for: req)} /
+        \texttt{data(from: url)} $\to$ \texttt{(Data, URLResponse)}; cancel = cancel the \texttt{Task}.
+  \item \textbf{Threads}: the completion handler runs on the session's \texttt{delegateQueue}
+        — a \emph{background serial} \texttt{OperationQueue}, not main. UI:
+        \texttt{DispatchQueue.main.async \{…\}} or \texttt{@MainActor}.
+  \item \textbf{Three error layers}, in order:
+        \textbf{1 transport} \texttt{URLError};
+        \textbf{2 HTTP} cast to \texttt{HTTPURLResponse}, require \texttt{200...299};
+        \textbf{3 decode} \texttt{DecodingError} (carries \texttt{context.codingPath} — log it).
+  \item \textbf{Codable keys}: \texttt{enum CodingKeys: String, CodingKey \{ case fullName = "full\_name" \}}
+        \emph{or} \texttt{keyDecodingStrategy = .convertFromSnakeCase}. Pick \textbf{one}.
+        Dates: default \texttt{.deferredToDate} (seconds since 2001!) — set \texttt{.iso8601}.
+  \item \textbf{TLS}: ATS demands HTTPS; URLSession validates chain + hostname \emph{by default}
+        — you only add code to be \emph{stricter} (pinning, below the picture). No-code
+        pinning: \texttt{NSPinnedDomains} under \texttt{NSAppTransportSecurity} in Info.plist.
+  \item \textbf{Caching}: \texttt{URLCache.shared} (memory + disk) obeys \texttt{Cache-Control};
+        \texttt{ETag} $\to$ \texttt{If-None-Match} $\to$ \textbf{304} is transparent (you get the
+        cached body). \texttt{cachePolicy}: \texttt{.useProtocolCachePolicy} (default) ·
+        \texttt{.reloadIgnoringLocalCacheData} · \texttt{.returnCacheDataElseLoad} (stale OK) ·
+        \texttt{.returnCacheDataDontLoad} (offline). \emph{ElseLoad ignores freshness — serves stale data.}
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+func load(_ url: URL) async throws -> User {
+  var req = URLRequest(url: url, timeoutInterval: 15)
+  req.setValue("application/json",
+               forHTTPHeaderField: "Accept")
+  // 1 transport: throws URLError (offline, TLS...)
+  let (data, resp) = try await URLSession.shared
+                                   .data(for: req)
+  // 2 HTTP: 404 / 500 do NOT throw -- check!
+  guard let http = resp as? HTTPURLResponse,
+        (200...299).contains(http.statusCode)
+  else { throw APIError.badStatus(resp) }
+  // 3 decode: throws DecodingError
+  return try decoder.decode(User.self, from: data)
+}
+\end{lstlisting}
+
+\section{\texttt{URLSessionConfiguration} defaults}
+{\footnotesize
+\begin{tabular}{@{}l l@{}}
+\toprule
+\texttt{timeoutIntervalForRequest} & \textbf{60 s} of \emph{idle} (reset per packet) \\
+\texttt{timeoutIntervalForResource} & \textbf{7 days} for the whole transfer \\
+\texttt{httpMaximumConnectionsPerHost} & \textbf{6} \\
+\texttt{waitsForConnectivity} & \texttt{false} — \texttt{true}: wait instead of failing \\
+\texttt{requestCachePolicy} & \texttt{.useProtocolCachePolicy} \\
+\bottomrule
+\end{tabular}}
+
+\columnbreak
+
+\section{One request, three gates}
+\begin{tikzpicture}[sheet, node distance=4mm]
+  \tikzset{gate/.style={box, minimum width=31mm, text width=29mm},
+           err/.style={draw=sheetRed, thick, rounded corners=2pt, fill=sheetRed!6,
+                       font=\footnotesize, align=left, text width=36mm, inner sep=2pt},
+           num/.style={circle, fill=sheetRed, text=white, font=\bfseries\footnotesize,
+                       inner sep=1pt, minimum size=4mm}}
+  \node[box, fill=black!4, draw=sheetGrey, minimum width=31mm, text width=29mm] (req) at (0,0)
+       {\texttt{URLRequest}\\[-1pt]{\footnotesize url · method · headers · body}};
+  \node[draw=sheetBrown, dashed, rounded corners=2pt, font=\footnotesize, align=left,
+        text width=36mm, inner sep=2pt] (cache) at (4.35,0)
+       {\texttt{URLCache}: fresh hit $\to$ served;\\ ETag $\to$ 304 $\to$ cached body};
+  \draw[flow, sheetBrown] (req.east) -- (cache.west);
+
+  \node[gate, below=5mm of req] (t) {transport + TLS\\[-1pt]{\footnotesize DNS · TCP · \texttt{SecTrust}}};
+  \node[err] (te) at (t -| cache) {\textbf{throws} \texttt{URLError}\\
+        \texttt{.timedOut .cancelled}\\\texttt{.notConnectedToInternet}};
+  \node[gate, below=5mm of t] (h) {\texttt{HTTPURLResponse}\\[-1pt]\texttt{.statusCode}};
+  \node[err, fill=sheetOrange!10, draw=sheetOrange] (he) at (h -| cache)
+       {4xx / 5xx = \textbf{no throw}!\\ you \texttt{throw APIError.status}};
+  \node[gate, below=5mm of h] (d) {\texttt{JSONDecoder}\\[-1pt]\texttt{.decode(\_:from:)}};
+  \node[err] (de) at (d -| cache) {\textbf{throws} \texttt{DecodingError}\\
+        \texttt{.keyNotFound .typeMismatch}\\\texttt{.valueNotFound .dataCorrupted}};
+  \node[box, fill=sheetGreen!10, draw=sheetGreen, below=5mm of d, minimum width=31mm,
+        text width=29mm] (ui) {model $\to$ UI\\[-1pt]{\footnotesize on \textbf{main} / \texttt{@MainActor}}};
+  \node[note, text width=36mm] at (ui -| cache)
+       {completion handler runs on the \texttt{delegateQueue} (background) — hop!};
+
+  \draw[flow] (req) -- (t);
+  \draw[flow] (t) -- node[right, note]{bytes} (h);
+  \draw[flow] (h) -- node[right, note]{200...299} (d);
+  \draw[flow] (d) -- node[right, note]{\texttt{User}} (ui);
+  \draw[hot, sheetRed] (t.east) -- (te.west);
+  \draw[hot] (h.east) -- (he.west);
+  \draw[hot, sheetRed] (d.east) -- (de.west);
+  \node[num, left=1.5mm of t] {1};
+  \node[num, left=1.5mm of h] {2};
+  \node[num, left=1.5mm of d] {3};
+\end{tikzpicture}
+
+{\footnotesize\textbf{Pinning at gate 1} (\texttt{URLSessionDelegate}):
+\textbf{(a)} \texttt{urlSession(\_:didReceive:completionHandler:)} gets a \texttt{URLAuthenticationChallenge};
+\textbf{(b)} if \texttt{protectionSpace.authenticationMethod ==} \texttt{NSURLAuthenticationMethodServerTrust},
+take \texttt{protectionSpace.serverTrust} (a \texttt{SecTrust});
+\textbf{(c)} \texttt{SecTrustEvaluateWithError} (keep default validation), then SHA-256 of the
+server's public key $\in$ your pins?
+\textbf{(d)} yes $\to$ \texttt{.useCredential, URLCredential(trust:)}; no $\to$
+\texttt{.cancelAuthenticationChallenge}; other methods $\to$ \texttt{.performDefaultHandling}.\par}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{``A 500 lands in \texttt{catch}.''} No — its HTML body then fails at layer 3 as a
+        misleading \texttt{DecodingError}. Check status \emph{before} decoding.}
+  \trap{\textbf{Completion handler on main?} No — background \texttt{delegateQueue}; UIKit there =
+        Main Thread Checker hit.}
+  \trap{\textbf{Both key mechanisms}: with \texttt{.convertFromSnakeCase} the JSON key becomes
+        \texttt{fullName} \emph{before} matching, so a raw value \texttt{"full\_name"} never matches.
+        Acronyms: \texttt{user\_id} $\to$ \texttt{userId}, never \texttt{userID}.}
+  \trap{\texttt{CodingKeys} is all-or-nothing: an omitted property needs a default value. A default
+        does \emph{not} make a missing JSON key OK (\texttt{keyNotFound}); use an optional or \texttt{decodeIfPresent}.}
+  \trap{Pinning needs \emph{your own} session with a delegate — \texttt{URLSession.shared} has none.
+        Pin the \textbf{public key} (survives renewal) and ship $\geq 2$ pins (current + backup).}
+  \trap{Forgot \texttt{task.resume()} — nothing happens, no error. One session per request = no
+        connection reuse + leaked delegate (session retains it until \texttt{invalidateAndCancel}).}
+\end{itemize}
+
+\section{\texttt{URLError} codes you will see in logs}
+{\footnotesize
+\begin{tabular}{@{}r l r l@{}}
+\toprule
+$-999$ & \texttt{.cancelled} & $-1009$ & \texttt{.notConnectedToInternet} \\
+$-1001$ & \texttt{.timedOut} & $-1200$ & \texttt{.secureConnectionFailed} \\
+$-1003$ & \texttt{.cannotFindHost} & $-1202$ & \texttt{.serverCertificateUntrusted} \\
+$-1004$ & \texttt{.cannotConnectToHost} & $-1005$ & \texttt{.networkConnectionLost} \\
+\bottomrule
+\end{tabular}}
+
+\section{Remember}
+\textbf{``Wire, Status, Shape.''} Did bytes arrive (\texttt{URLError})? Were they good
+(\texttt{statusCode})? Do they fit (\texttt{DecodingError})? Then \textbf{Main}.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} background sessions · \texttt{NWPathMonitor} /
+\texttt{waitsForConnectivity} · retry with backoff + jitter · \texttt{URLSessionTaskMetrics} · Swift concurrency}
+
+\end{document}
