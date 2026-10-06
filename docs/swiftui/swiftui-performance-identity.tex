@@ -1,0 +1,155 @@
+% swiftui-performance-identity.tex — structural vs explicit identity, AnyView / if-branch resets,
+% dependency tracking (@Observable vs ObservableObject), equatable views, cheap body, List vs LazyVStack,
+% pagination, stable ids, Self._printChanges(), the SwiftUI Instrument.
+% Sources (checked 2026-10-06):
+%   WWDC21 "Demystify SwiftUI" (explicit vs structural identity; if/else → _ConditionalContent;
+%     AnyView hides structure, can cost performance; identifiers must be stable)
+%   WWDC23 "Demystify SwiftUI performance" (_printChanges: debug-only, best-effort; "@self")
+%   WWDC25 "Optimize SwiftUI performance with Instruments" (Instruments 26 SwiftUI instrument:
+%     Update Groups, Long View Body / Representable / Other Updates, Cause & Effect Graph)
+%   developer.apple.com/documentation/swiftui/lazyvstack (creates items only as needed) ·
+%     /view/equatable() · /equatableview
+%   Not in those sources, marked \unverified on the page: List's UICollectionView backing and
+%     cell reuse, LazyVStack's lack of reuse.
+% @labels: area=swiftui kind=concept platform=apple topic=performance,ui discussion=184
+% @tags: structural-identity, explicit-identity, anyview, conditionalcontent, body-invalidation, observable, equatable-view, lazyvstack, list, pagination, printchanges, swiftui-instrument
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,protocol,extension,return,if,else,
+    guard,try,await,async,case,switch,self,some,any,where,init,in,private,static,
+    @State,@Binding,@Observable,@Environment,@MainActor},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\begin{document}
+
+\sheettitle{SwiftUI performance \& identity}{swiftui · folio}
+
+\oneliner{SwiftUI keeps state and view lifetime per \textbf{identity}, and re-runs \texttt{body} only for
+views whose \textbf{dependencies} changed. Fast SwiftUI = \textbf{stable identity} (state survives, diff is
+cheap) + \textbf{narrow dependencies} (few bodies run) + \textbf{cheap bodies} (each run is fast).}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Structural identity} — a view's \emph{type + position} in the \texttt{body} tree.
+        \texttt{if/else} becomes \texttt{\_ConditionalContent}: the two branches are \emph{different slots},
+        so switching branch = destroy one view, create the other (state gone, \texttt{onAppear} again,
+        transition plays).
+  \item \textbf{Explicit identity} — \texttt{ForEach} ids (\texttt{Identifiable} / \texttt{id: \textbackslash.x})
+        and \texttt{.id(\_:)}. A new \texttt{.id} value = a brand-new view: legit to \emph{reset} a form or
+        scroll view, costly if it changes every update.
+  \item \textbf{\texttt{AnyView}} erases the type, so SwiftUI cannot see the structure: when the wrapped
+        type changes the whole subtree is replaced, and diffing is slower. Prefer \texttt{@ViewBuilder},
+        \texttt{some View}, or a modifier on one view (\texttt{.opacity}, \texttt{.disabled}) over a branch.
+  \item \textbf{What invalidates \texttt{body}}: a \texttt{@State}/\texttt{@Binding} it reads; an
+        \texttt{ObservableObject}'s \texttt{objectWillChange} (\emph{any} \texttt{@Published} — whole object);
+        an \texttt{@Observable} (17) property it \emph{read} during the last \texttt{body} (per property);
+        an \texttt{@Environment} value it reads; or new, non-equal inputs from the parent.
+  \item \textbf{Skipping}: SwiftUI compares a child's inputs before calling its \texttt{body}; closures and
+        non-equatable fields defeat that. \texttt{Equatable} view + \texttt{.equatable()} lets \emph{your}
+        \texttt{==} decide — worth it only if \texttt{==} is cheap \emph{and} complete.
+  \item \textbf{Cheap body}: no \texttt{DateFormatter()}, sorting, filtering, image decode or I/O inside
+        \texttt{body} or \texttt{init} — precompute in the model, cache in a \texttt{static let}, or load in
+        \texttt{.task(id:)} (cancelled + restarted when \texttt{id} changes).
+  \item \textbf{Narrow state}: push state into the smallest subview that reads it; pass plain values, not the
+        whole model, to leaf views.
+  \item \textbf{\texttt{List}} (\texttt{UICollectionView}-backed since 16) \textbf{reuses} cells\unverified; \texttt{LazyVStack}
+        in a \texttt{ScrollView} builds rows \emph{on demand}, \emph{no reuse}\unverified; \texttt{VStack} builds all rows up front.
+  \item \textbf{Pagination}: load more when the last (or $n$-th from last) row appears, guarded by
+        \texttt{isLoading} + a page cursor — \texttt{onAppear} re-fires on scroll-back.
+  \item \textbf{Measure}: \texttt{let \_ = Self.\_printChanges()} in \texttt{body} (DEBUG, prints
+        \texttt{@self}, \texttt{@identity} or the property that changed). Instruments' \textbf{SwiftUI}
+        template: \emph{View Body} counts (pre-Xcode 26); Xcode 26's SwiftUI instrument adds long-update lanes and a
+        \emph{Cause \& Effect} graph. Pair with Time Profiler + Hangs.
+\end{itemize}
+
+\section{Example — a lean, paged feed}
+\begin{lstlisting}[language=SwiftSheet]
+@MainActor @Observable final class Feed {
+  var items: [Post] = []; var isLoading = false
+  func loadMore() async {
+    guard !isLoading else { return }; isLoading = true
+    defer { isLoading = false }
+    items += await api.page(after: items.last?.id) } }
+struct FeedView: View { let feed: Feed
+  var body: some View {
+    List(feed.items) { post in         // Identifiable, stable id
+      Row(title: post.title)           // a value: Row redraws only
+        .task {                        //   when its title changes
+          if post.id == feed.items.last?.id {
+            await feed.loadMore() } }
+    } } }
+\end{lstlisting}
+
+\columnbreak
+
+\section{Identity \& dependencies}
+\begin{tikzpicture}[sheet]
+  \tikzset{vn/.style={box, font=\scriptsize, minimum width=15mm, inner sep=2pt},
+           st/.style={cell, font=\scriptsize\ttfamily, minimum width=13mm, fill=sheetGreen!12, draw=sheetGreen}}
+  % left: if/else
+  \node[font=\bfseries\footnotesize, anchor=west] at (-0.9,0.6) {\texttt{if on \{ Card() \} else \{ Card() \}}};
+  \node[vn, draw=sheetGrey, fill=black!4] (c) at (0.9,0) {\texttt{\_ConditionalContent}};
+  \node[vn] (t) at (0,-1) {\texttt{Card} (true)};
+  \node[vn, draw=sheetRed, dashed, fill=sheetRed!5] (f) at (1.8,-1) {\texttt{Card} (false)};
+  \draw[flow] (c) -- (t); \draw[flow] (c) -- (f);
+  \node[st] (s1) at (0,-1.8) {n = 5};
+  \node[st, draw=sheetRed, fill=sheetRed!5] (s2) at (1.8,-1.8) {n = 0};
+  \draw[sheetGrey] (t) -- (s1); \draw[sheetGrey] (f) -- (s2);
+  \node[note, text=sheetRed, align=center] at (0.9,-2.45) {toggle ⇒ other slot:\\[-2pt]state \textbf{reset}};
+  % right: modifier
+  \node[font=\bfseries\footnotesize, anchor=west] at (3.3,0.6) {\texttt{Card().opacity(on ? 1 : 0.4)}};
+  \node[vn, draw=sheetGrey, fill=black!4] (m) at (5.3,0) {\texttt{ModifiedContent}};
+  \node[vn, draw=sheetGreen, fill=sheetGreen!8] (k) at (5.3,-1) {\texttt{Card}};
+  \draw[flow] (m) -- (k);
+  \node[st] (s3) at (5.3,-1.8) {n = 5};
+  \draw[sheetGrey] (k) -- (s3);
+  \node[note, text=sheetGreen!70!black, align=center] at (5.3,-2.45) {same slot:\\[-2pt]state \textbf{kept}};
+  \draw[sheetGrey, dashed] (3.1,0.8) -- (3.1,-2.75);
+  % bottom: dependency tracking
+  \node[font=\bfseries\small, anchor=west] at (-0.9,-3.15) {Who re-runs \texttt{body} when \texttt{model.count} changes?};
+  \node[box, draw=sheetBrown, fill=sheetBrown!8, font=\scriptsize, text width=17mm] (om) at (0,-4.25) {\texttt{model}\\\texttt{name}\\\texttt{count} \textcolor{sheetOrange}{\textbf{+1}}};
+  \node[vn, text width=21mm] (a) at (3.0,-3.75) {\texttt{Title} reads \texttt{name}};
+  \node[vn, text width=21mm] (b) at (3.0,-4.75) {\texttt{Badge} reads \texttt{count}};
+  \node[font=\scriptsize\bfseries, align=center] at (5.35,-3.47) {\texttt{ObservableObject}};
+  \node[font=\scriptsize\bfseries, align=center] at (6.85,-3.47) {\texttt{@Observable}};
+  \node[font=\small, text=sheetRed] at (5.35,-3.75) {runs};
+  \node[font=\small, text=sheetRed] at (5.35,-4.75) {runs};
+  \node[font=\small, text=sheetGreen!70!black] at (6.85,-3.75) {skipped};
+  \node[font=\small, text=sheetRed] at (6.85,-4.75) {runs};
+  \draw[hot] (om.east) -- (a.west); \draw[hot] (om.east) -- (b.west);
+  \node[note, anchor=west, text width=78mm] at (-0.9,-5.45)
+       {\texttt{objectWillChange} is one signal for the whole object; Observation records \emph{which
+        properties} each \texttt{body} read and invalidates only those readers.};
+\end{tikzpicture}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{ForEach(items, id: \textbackslash.self)} on mutable values, array indices, or
+        \texttt{UUID()} made in \texttt{body} — every row looks new: lost row state, wrong animations,
+        duplicate-id glitches. Use a stable, entity-owned id.}
+  \trap{``\texttt{@Observable} fixes everything'' — a view that reads a high-churn property, or a whole
+        model passed down, still redraws a lot. Computed properties count as reads of what they touch.}
+  \trap{\texttt{.id(UUID())} or an \texttt{.id} tied to often-changing data silently rebuilds the subtree
+        (and a wrapped \texttt{UIView}) on every update.}
+  \trap{An incomplete \texttt{==} on an \texttt{Equatable} view ⇒ \textbf{stale UI}; an expensive one is
+        slower than just re-rendering.}
+  \trap{\texttt{VStack} of 10\,000 rows inside a \texttt{ScrollView} — eager; use \texttt{List} or
+        \texttt{LazyVStack}. A \texttt{GeometryReader} per row adds layout passes.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Same slot, same state. Read less, redraw less. Body is hot code.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} ios-swift/swiftui-state ·
+\texttt{.task(id:)} · \texttt{scrollPosition(id:)} (17) · \texttt{onScrollVisibilityChange} (18) ·
+image downsampling · Time Profiler / Hangs}
+
+\end{document}

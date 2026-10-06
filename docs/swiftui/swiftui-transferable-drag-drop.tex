@@ -1,0 +1,173 @@
+% swiftui-transferable-drag-drop.tex — Transferable (Codable/Data/File/Proxy representations, UTTypes),
+% draggable/dropDestination, ShareLink, PasteButton, PhotosPicker + loadTransferable, fileImporter/Exporter,
+% security-scoped URLs, the NSItemProvider bridge.
+% Sources (checked 2026-10-06):
+%   developer.apple.com/documentation/coretransferable/transferable (iOS 16; first representation
+%     preferred; custom UTTypes need Info.plist entries) · /filerepresentation (large data as a
+%     file) · /receivedtransferredfile
+%   WWDC22 "Meet Transferable" (order matters — receiver uses the first type it supports;
+%     Codable defaults to JSON; received file comes with a temporary sandbox extension, copied
+%     in the importing closure)
+%   WWDC22 "What's new in the Photos picker" (runs out of process; no library access needed) ·
+%     /photosui/photospicker (iOS 16; PhotosPickerItem is Transferable)
+%   /swiftui/pastebutton · /uikit/uipastecontrol (iOS 16: programmatic paste alerts; the control
+%     pastes without a prompt) · /swiftui/sharelink · /view/fileexporter(…item:…) (Transferable,
+%     iOS 17) · /foundation/nsitemprovider/register(_:) · /loadtransferable(type:completionhandler:)
+%   /foundation/url/startaccessingsecurityscopedresource() (balance with stop; unbalanced calls
+%     leak kernel resources)
+% @labels: area=swiftui kind=api platform=apple topic=platform-apis,data discussion=185
+% @tags: transferable, uttype, codablerepresentation, filerepresentation, draggable, dropdestination, sharelink, pastebutton, photospicker, loadtransferable, security-scoped-url, nsitemprovider
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,struct,class,final,enum,protocol,extension,return,if,else,
+    guard,case,switch,self,some,any,where,init,in,private,static,try,await,async,throws,defer,
+    @State,@Binding,@Observable,@MainActor},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\begin{document}
+
+\sheettitle{Transferable, drag \& drop, sharing, pickers}{swiftui · folio}
+
+\oneliner{\textbf{\texttt{Transferable}} (iOS 16) describes \textbf{once}, as an \textbf{ordered list of
+representations keyed by \texttt{UTType}}, how a value leaves and enters the app; \texttt{ShareLink},
+\texttt{.draggable}, \texttt{.dropDestination}, \texttt{PasteButton} and \texttt{PhotosPicker} all consume it —
+replacing separate \texttt{UIActivityItemSource}, \texttt{NSItemProvider} and \texttt{UIPasteboard} code.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \tikzset{lb/.style={font=\tiny, inner sep=1pt, align=center},
+           src/.style={box, font=\scriptsize, minimum width=22mm, minimum height=5mm, inner sep=1.5pt},
+           rep/.style={draw=sheetGreen, fill=sheetGreen!10, rounded corners=1pt, font=\tiny, minimum width=52mm,
+                       minimum height=4.3mm, inner sep=1pt, anchor=west, align=left},
+           rcv/.style={box, font=\scriptsize, draw=sheetBrown, fill=sheetBrown!8, minimum width=26mm, minimum height=5mm, inner sep=1.5pt}}
+  % consumers / surfaces
+  \node[font=\scriptsize\bfseries] at (0.9,3.35) {surfaces};
+  \foreach \y/\t in {2.85/\texttt{ShareLink}, 2.2/\texttt{.draggable}, 1.55/\texttt{PasteButton},
+                     0.9/\texttt{PhotosPicker}, 0.25/\texttt{NSItemProvider} (UIKit)}
+    { \node[src] (sx) at (0.9,\y) {\t}; \draw[flow] (sx.east) -- (2.55,1.55); }
+  % the transferable
+  \draw[sheetBlue, very thick, rounded corners=3pt, fill=sheetBlue!5] (2.6,-0.2) rectangle (8.4,3.25);
+  \node[font=\scriptsize\bfseries, anchor=west] at (2.7,3.0) {\texttt{Note: Transferable} — \texttt{transferRepresentation}};
+  \node[rep] (r1) at (2.8,2.5) {\textbf{1} \texttt{CodableRepresentation(contentType: .note)} — richest};
+  \node[rep] (r2) at (2.8,1.95) {\textbf{2} \texttt{DataRepresentation(exportedContentType: .pdf)}};
+  \node[rep] (r3) at (2.8,1.4) {\textbf{3} \texttt{FileRepresentation(contentType: .movie)} — big blobs};
+  \node[rep] (r4) at (2.8,0.85) {\textbf{4} \texttt{ProxyRepresentation(exporting: \textbackslash.body)} → \texttt{String}};
+  \node[lb, anchor=west, text=sheetBlue] at (2.75,0.2) {top = preferred; receiver takes the \textbf{first} type it accepts};
+  % receivers
+  \node[rcv] (x1) at (10.2,2.5) {our app / knows \texttt{com.acme.note}};
+  \node[rcv] (x2) at (10.2,1.65) {Mail, Files};
+  \node[rcv] (x3) at (10.2,0.8) {Notes, a text field};
+  \draw[hot] (r1.east) -- (x1.west); \draw[hot] (r2.east) -- (x2.west); \draw[hot] (r4.east) -- (x3.west);
+  \node[lb, text=sheetRed, text width=26mm] at (10.2,0.05) {custom type unregistered or listed last ⇒ everyone gets text};
+  % UTType ladder
+  \begin{scope}[xshift=12.3cm]
+    \node[font=\scriptsize\bfseries, anchor=west] at (-0.1,3.35) {UTType conformance};
+    \node[lb, draw=sheetGrey, rounded corners=1pt] (d) at (1.9,2.85) {\texttt{public.data}};
+    \node[lb, draw=sheetGrey, rounded corners=1pt] (i) at (0.9,2.25) {\texttt{.image}};
+    \node[lb, draw=sheetGrey, rounded corners=1pt] (j) at (2.9,2.25) {\texttt{.json}};
+    \node[lb, draw=sheetGrey, rounded corners=1pt] (p) at (0.9,1.65) {\texttt{.png}};
+    \node[lb, draw=sheetOrange, rounded corners=1pt, thick] (n) at (2.9,1.65) {\texttt{com.acme.note}};
+    \draw[flow] (i) -- (d); \draw[flow] (j) -- (d); \draw[flow] (p) -- (i); \draw[flow] (n) -- (j);
+    \node[lb, anchor=north west, text width=40mm, align=left] at (-0.1,1.3)
+      {\textbf{yours}: \texttt{UTType(exportedAs:)} + Info.plist \texttt{UTExportedTypeDeclarations}
+       (identifier, \texttt{UTTypeConformsTo}, extension).\\
+       \textbf{someone else's}: \texttt{UTType(importedAs:)} + \texttt{UTImportedTypeDeclarations}.\\
+       A drop accepts a type \emph{or anything conforming to it}.};
+  \end{scope}
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Representations} (result builder, order = preference): \textbf{Codable} (JSON by default);
+        \textbf{Data} (\texttt{exporting:}/\texttt{importing:} closures, whole blob in RAM); \textbf{File} (a file URL,
+        lazy — export returns \texttt{SentTransferredFile}, import gets \texttt{ReceivedTransferredFile} whose
+        \texttt{.file} is \textbf{temporary — copy it before returning}); \textbf{Proxy} (reuse \texttt{String},
+        \texttt{URL}, \texttt{Data}, \texttt{Image}). Modifiers: \texttt{.suggestedFileName}, \texttt{.exportingCondition}.
+  \item \textbf{Drag \& drop}: \texttt{.draggable(item) \{ preview \}}; \texttt{.dropDestination(for: T.self)
+        \{ items, location in … return true \} isTargeted: \{ \}}. Only offered types that match \texttt{T} arrive.
+  \item \textbf{Share}: \texttt{ShareLink(item:subject:message:preview: SharePreview(title, image:))}.
+  \item \textbf{Paste}: \texttt{PasteButton(payloadType:)} — the tap is consent, so no ``Allow Paste'' alert (iOS 16
+        alerts on programmatic reads of another app's content; UIKit: \texttt{UIPasteControl}).
+  \item \textbf{\texttt{PhotosPicker(selection:matching:)}} (16) runs \textbf{out of process} — no photo-library permission;
+        the app sees only picked items. \texttt{await item.loadTransferable(type:)} (in \texttt{.task(id: item)})
+        returns \texttt{T?}: \texttt{nil} = type not offered, \texttt{throws} = load failed. Video → your own
+        \texttt{FileRepresentation} type.
+  \item \textbf{Files}: \texttt{.fileImporter} hands back \textbf{security-scoped} URLs outside your sandbox;
+        \texttt{.fileExporter} writes a \texttt{FileDocument} (17 adds a \texttt{Transferable} form).
+  \item \textbf{UIKit bridge}: \texttt{UIDragItem(itemProvider:)}, \texttt{UIDropInteraction},
+        \texttt{UIActivityViewController}. \texttt{NSItemProvider} gained \texttt{register(\_:)} for a
+        \texttt{Transferable} and \texttt{loadTransferable(type:)} (16); older SwiftUI: \texttt{.onDrag} / \texttt{.onDrop(of:)}.
+\end{itemize}
+
+\section{Example — one type, every surface}
+\begin{lstlisting}[language=SwiftSheet]
+extension UTType {
+  static let note = UTType(exportedAs: "com.acme.note") }
+struct Note: Codable, Transferable {
+  var title: String; var body: String
+  static var transferRepresentation: some TransferRepresentation {
+    CodableRepresentation(contentType: .note)   // richest first
+    ProxyRepresentation(exporting: \.body)      // fallback: text
+  } }
+Text(note.title).draggable(note)
+Color.clear.dropDestination(for: Note.self) { notes, _ in
+  inbox += notes; return true }
+ShareLink(item: note, preview: SharePreview(note.title))
+\end{lstlisting}
+
+\columnbreak
+
+\section{Security-scoped URLs}
+\begin{lstlisting}[language=SwiftSheet]
+.fileImporter(isPresented: $open,
+              allowedContentTypes: [.pdf]) { r in
+  guard case .success(let url) = r,
+        url.startAccessingSecurityScopedResource() else { return }
+  defer { url.stopAccessingSecurityScopedResource() } // balance!
+  let data = try? Data(contentsOf: url)
+  saved = try? url.bookmarkData()  // persist THIS, not the path
+}
+\end{lstlisting}
+Next launch: \texttt{URL(resolvingBookmarkData:…, bookmarkDataIsStale:)}; stale $\Rightarrow$ re-create the
+bookmark while you have access. Unbalanced \texttt{start} calls leak kernel resources.
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{Silent drop rejection}: \texttt{dropDestination(for: URL.self)} never fires for a photo from Photos —
+        it offers image data, not a file URL. Accept what is actually offered.}
+  \trap{\textbf{200 MB video as \texttt{DataRepresentation}} — materialised in RAM, memory spike / jetsam. Use
+        \texttt{FileRepresentation}.}
+  \trap{\textbf{\texttt{ReceivedTransferredFile.file} used after the closure} — gone; copy it inside the closure.}
+  \trap{\textbf{Everyone receives plain text}: the custom \texttt{UTType} is not declared in Info.plist, or the text
+        representation is listed first.}
+  \trap{\textbf{Saving the imported path} instead of a bookmark: works in the callback, fails next launch.}
+\end{itemize}
+
+\section{Which representation?}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{18mm}>{\raggedright\arraybackslash}p{54mm}@{}}
+\toprule
+\textbf{Codable} & your own model between your apps / instances \\
+\textbf{Data} & small binary in a standard format (PNG, PDF) \\
+\textbf{File} & anything big, or already on disk (video, documents) \\
+\textbf{Proxy} & ``as text / as URL'' fallback, no encoding code \\
+\bottomrule
+\end{tabular}}
+
+\section{Remember}
+\textbf{``Describe once, richest first, big things as files, borrowed files by bookmark.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{persistence} (sandbox) ·
+\texttt{app-hardening-privacy} (pasteboard privacy) · \texttt{swiftui-gestures-canvas} ·
+\texttt{app-clips-handoff} (Universal Clipboard)}
+
+\end{document}

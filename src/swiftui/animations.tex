@@ -1,0 +1,181 @@
+% animations.tex — SwiftUI + UIKit animations: implicit vs explicit, Animatable,
+% transitions, matchedGeometryEffect, springs, Phase/KeyframeAnimator,
+% Transaction; UIView.animate, UIViewPropertyAnimator, Auto Layout, model vs
+% presentation.
+% Sources (checked 2026-10-06):
+%   developer.apple.com/documentation/swiftui/animation/default (a spring since iOS 17;
+%     easeInOut before) · /swiftui/view/animation(_:value:) (iOS 13) · the unconstrained
+%     /swiftui/view/animation(_:) (iOS 13, deprecated 15: "Use withAnimation or
+%     animation(_:value:)") · /swiftui/view/transaction(_:) · /transaction/disablesanimations ·
+%     /swiftui/animatablepair · /swiftui/view/matchedgeometryeffect (iOS 14) ·
+%     /swiftui/phaseanimator · /keyframeanimator · /keyframetrack (iOS 17)
+%   developer.apple.com/documentation/uikit/uiview/animate(springDuration:bounce:…) (iOS 17) ·
+%     /uikit/uiviewpropertyanimator (iOS 10) · /continueanimation(withtimingparameters:…) ·
+%     /uiviewcontrollercontexttransitioning/completetransition(_:) ·
+%     /quartzcore/calayer/presentation()
+% @labels: area=swiftui kind=api platform=ios topic=ui discussion=172
+% @tags: withanimation, implicit-animation, transaction, animatabledata, transitions, matchedgeometryeffect, spring-animation, phaseanimator, keyframeanimator, uiview-animate, uiviewpropertyanimator, presentation-layer
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={struct,class,final,func,var,let,some,if,else,return,in,self,
+    true,false,nil,get,set,private,static,View,Shape,CGFloat,Bool},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  st/.style={box, minimum height=6mm, font=\scriptsize, inner sep=2pt},
+}
+
+\begin{document}
+
+\sheettitle{Animations — SwiftUI \& UIKit}{swiftui · folio}
+
+\oneliner{You never animate frame by frame: you \textbf{change state} (SwiftUI)
+or set the \textbf{final value} (UIKit) \emph{inside an animation context}, and
+the framework interpolates every \textbf{animatable} property old $\to$ new.
+The questions are always: \emph{which} change is in the context, and \emph{can}
+it be interpolated?}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{SwiftUI}
+\begin{itemize}
+  \item \textbf{Explicit} \texttt{withAnimation(.spring) \{ open.toggle() \}}:
+        animates \emph{every} view depending on state changed in the block
+        (mutation site decides). \textbf{Implicit}
+        \texttt{.animation(.easeIn, value: s)}: only changes of \texttt{s}, only
+        in that subtree (view decides). \texttt{.animation(\_:)} without
+        \texttt{value:} is deprecated — it animated \emph{any} change.
+  \item \textbf{Transaction} carries the animation through one update:
+        \texttt{withTransaction} is the general form;
+        \texttt{.transaction \{ \$0.animation = nil \}} strips an inherited one;
+        \texttt{disablesAnimations = true} forces a snap.
+  \item \textbf{Animatable}: built-in modifiers interpolate (opacity, offset,
+        scale, frame, colour). A custom \texttt{Shape}/modifier must expose
+        \texttt{animatableData: VectorArithmetic} (two values $\to$
+        \texttt{AnimatablePair}) — otherwise it \emph{jumps}.
+  \item \textbf{Transition} (\texttt{.opacity}, \texttt{.move(edge:)}, \\
+        \texttt{.asymmetric(insertion:removal:)}) = entering or leaving the tree:
+        needs an \textbf{identity change} (\texttt{if}, new \texttt{.id}) \emph{and}
+        an animation context, and sits on the conditional view.
+  \item \textbf{matchedGeometryEffect(id:in:)}: same id, same
+        \texttt{@Namespace}, views mounted \emph{exclusively}, inside
+        \texttt{withAnimation} $\to$ hero morph.
+  \item \textbf{Springs} (default since iOS 17): \texttt{.spring(duration: 0.5,
+        bounce: 0.2)}, \texttt{.smooth}/\texttt{.snappy}/\texttt{.bouncy}.
+        Interruptible, re-target \emph{keeping velocity}; curves have fixed duration.
+  \item \textbf{iOS 17}: \texttt{PhaseAnimator} steps through discrete phases
+        (loop or \texttt{trigger:}); \texttt{KeyframeAnimator} = timed
+        per-property \texttt{KeyframeTrack}s (Linear/Spring/Cubic\-Keyframe).
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+struct Ring: Shape {
+  var p: CGFloat                              // 0...1
+  var animatableData: CGFloat { get { p } set { p = newValue } }
+  func path(in r: CGRect) -> Path { Path() }  // arc to p
+}
+struct Card: View {
+  @State private var open = false
+  @Namespace private var ns
+  var body: some View {
+    if open { Big().matchedGeometryEffect(id: "c", in: ns) }
+    else    { Small().matchedGeometryEffect(id: "c", in: ns) }
+    Button("Go") { withAnimation(.snappy) { open.toggle() } }
+  }
+}
+\end{lstlisting}
+
+\section{UIKit}
+\begin{itemize}
+  \item \texttt{UIView.animate(withDuration:…)}: set \emph{final} values in the
+        block. Animatable: \texttt{frame}, \texttt{bounds}, \texttt{center},
+        \texttt{transform}, \texttt{alpha}, \texttt{backgroundColor};
+        \texttt{text}/\texttt{isHidden} snap. Springs:
+        \texttt{usingSpringWithDamping:} (\textless 1 bounces); iOS 17
+        \texttt{animate(springDuration:bounce:)}.
+  \item \textbf{UIViewPropertyAnimator} is an \emph{object}:
+        \texttt{startAnimation()}, \texttt{pauseAnimation()}, scrub
+        \texttt{fractionComplete}, \texttt{isReversed},
+        finish with \texttt{continueAnimation(withTimingParameters:…)} —
+        interruptible gesture-driven UI.
+  \item \textbf{Auto Layout}: change \texttt{constant}, then
+        \texttt{layoutIfNeeded()} \emph{inside} the block (flush once before).
+  \item \texttt{UIView.transition(with:…)} + \texttt{.transitionCrossDissolve};
+        custom VC transitions must call \texttt{completeTransition(\_:)}.
+\end{itemize}
+
+\columnbreak
+
+\section{Model vs presentation}
+\begin{tikzpicture}[sheet, yscale=0.8]
+  \draw[->, sheetGrey] (0,0) -- (7,0) node[lbl, below left]{time};
+  \draw[->, sheetGrey] (0,0) -- (0,2.4) node[lbl, right]{\texttt{x}};
+  \node[lbl, left] at (0,2){100}; \node[lbl, left] at (0,0.08){0};
+  \draw[sheetGrey, dashed] (0.8,0) -- (0.8,2.3);
+  \node[lbl, below] at (0.8,0){set \texttt{x=100}};
+  \draw[sheetGrey, dashed] (5.2,0) -- (5.2,2.3);
+  \node[lbl, below] at (5.2,0){done};
+  \draw[very thick, sheetBlue] (0,0.08) -- (0.8,0.08) -- (0.8,2) -- (6.8,2);
+  \draw[very thick, sheetOrange] (0,0.08) -- (0.8,0.08)
+      .. controls (2.0,0.1) and (2.4,2.4) .. (3.3,2.14)
+      .. controls (4.1,1.95) and (4.5,2.0) .. (5.2,2) -- (6.8,2);
+  \node[lbl, text=sheetBlue, anchor=south west] at (5.3,2.05){\textbf{model}};
+  \node[lbl, text=sheetOrange, anchor=west] at (0.95,1.45)
+       {\textbf{presentation}};
+  \draw[sheetRed, thick, dashed] (2.1,0.95) -- (2.1,2);
+  \fill[sheetRed] (2.1,0.95) circle (1.6pt);
+  \node[lbl, text=sheetRed, anchor=west, align=left] at (2.25,0.5)
+       {drawn: \texttt{presentation()}\\
+        touch/\texttt{position}: 100};
+\end{tikzpicture}
+
+{\footnotesize UIView animations set the model for you. A raw
+\texttt{CABasicAnimation} drives only the presentation $\Rightarrow$ it
+\textbf{snaps back} unless you also set the model value.}
+
+\section{When does a transition run?}
+\begin{tikzpicture}[sheet]
+  \node[st] (c) at (0,0) {state\\change};
+  \node[st, draw=sheetGreen, fill=sheetGreen!10] (a) at (1.75,0) {animation\\context?};
+  \node[st, draw=sheetGreen, fill=sheetGreen!10] (i) at (3.7,0) {identity\\changed?};
+  \node[st, fill=sheetBlue!15] (t) at (5.6,0) {transition\\runs};
+  \node[st, draw=sheetRed, fill=sheetRed!10] (s) at (3.7,-1.0) {instant snap};
+  \draw[flow] (c) -- (a);
+  \draw[flow] (a) -- node[lbl, above]{yes} (i);
+  \draw[flow] (i) -- node[lbl, above]{yes} (t);
+  \draw[hot] (a) |- node[lbl, pos=0.3, left]{no} (s);
+  \draw[hot] (i) -- node[lbl, right]{no: only modifiers animate} (s);
+\end{tikzpicture}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{withAnimation} animates \emph{all} dependent views — scope
+        with \texttt{.animation(\_:value:)} or strip with \texttt{.transaction}.}
+  \trap{\texttt{.transition} without an animation = instant; on a stable
+        ancestor = never runs.}
+  \trap{Custom \texttt{Shape} jumps $\to$ no \texttt{animatableData}.
+        matchedGeometry glitch $\to$ both views mounted / two namespaces.}
+  \trap{Layer animation snaps back $\to$ model never set
+        (\texttt{fillMode = .forwards} + \texttt{isRemovedOnCompletion = false}
+        only hides it).}
+  \trap{Constraint change jumps $\to$ no \texttt{layoutIfNeeded()} inside the block.}
+  \trap{Scrubbing a spring: \texttt{pauseAnimation()} first;
+        \texttt{fractionComplete} maps through the curve.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``State in the block, value in the modifier, identity for
+transitions.''} UIKit: \emph{final value in — the model is already there.}
+Cheapest to animate: \texttt{transform}, \texttt{opacity}.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} SwiftUI identity \& state · rendering pipeline · Core Animation layers · Auto Layout · custom VC transitions · \texttt{CADisplayLink}}
+
+\end{document}
