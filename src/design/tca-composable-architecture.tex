@@ -1,0 +1,184 @@
+% tca-composable-architecture.tex — The Composable Architecture (Point-Free) in depth:
+% @Reducer / @ObservableState / Store / Effect (.run, .send, cancellation), composition
+% (Scope, ifLet, forEach, @Presents), @Dependency, tree vs stack navigation, TestStore
+% (exhaustive vs non-exhaustive), bindings, @Shared, cost/benefit.
+% The general loop + TCA-vs-MVVM live on design/unidirectional-state-machines.tex — not repeated.
+% Sources (checked 2026-09-25): github.com/pointfreeco/swift-composable-architecture
+%   README, releases 1.25.0-1.26.2 (1.26.2 = 2026-08-28), MigratingTo1.25 guide, PR #3923
+%   (label-less Scope/scope in 1.26), IfLetReducer.swift doc ("runs the child first, and
+%   then the parent"); github.com/pointfreeco/swift-sharing (@Shared, withLock).
+%   Re-checked 2026-10-06 (api.github.com …/releases): 1.26.2 is still the newest 1.x;
+%   1.23.3 (2026-09-18) is a patch on the older 1.23 line.
+% @labels: area=design kind=architecture platform=apple topic=architecture,testing discussion=104
+% @tags: tca, composable-architecture, pointfree, reducer, observablestate, effect-cancellation, dependency-macro, presents, stackstate, teststore, testclock, swift-sharing
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,Self,nil,try,await,async,throws,private,some,
+    true,false,case,switch,default,static,in,for,extension},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  lp/.style={box, font=\scriptsize, minimum width=19mm, minimum height=7mm},
+  pure/.style={lp, draw=sheetGreen!60!black, fill=sheetGreen!12},
+  eff/.style={lp, draw=sheetOrange, fill=sheetOrange!10},
+  nd/.style={box, font=\scriptsize, inner sep=2pt, minimum height=6.5mm, minimum width=17mm},
+  kid/.style={nd, draw=sheetGreen!60!black, fill=sheetGreen!10},
+  nav/.style={nd, draw=sheetBrown, fill=sheetBrown!10},
+  op/.style={font=\ttfamily\tiny, text=sheetBlue, inner sep=1pt},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small},
+}
+\newcommand\kp[1]{\texttt{\textbackslash.#1}}
+
+\begin{document}
+
+\sheettitle{The Composable Architecture (TCA)}{design · folio}
+
+\oneliner{Point-Free's library for \textbf{unidirectional} Swift apps: a feature is a
+\texttt{@Reducer} — value-type \textbf{State}, an \textbf{Action} enum, a \textbf{body} that mutates
+state and returns \textbf{Effects}; a \textbf{Store} runs it; features \textbf{compose} by embedding
+child state/actions; the outside world comes in through \textbf{\texttt{@Dependency}};
+\textbf{\texttt{TestStore}} proves every step. Current \textbf{1.26.2} (2026-08-28).}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── the loop, as the Store runs it ─────────────────────
+  \node[ttl, anchor=west] at (-0.3,2.45) {One feature: the loop the Store runs};
+  \node[lp, draw=sheetBlue] (v) at (0.8,1.55) {\textbf{View}\\[-1pt]{\tiny reads \texttt{store.count}}};
+  \node[lp] (a) at (4.3,1.55) {\textbf{Action}\\[-1pt]{\tiny \texttt{enum}, \texttt{@CasePathable}}};
+  \node[pure] (r) at (4.3,0.0) {\textbf{\texttt{body}}\\[-1pt]{\tiny \texttt{Reduce \{ state, action in \}}}};
+  \node[lp] (s) at (0.8,0.0) {\textbf{State}\\[-1pt]{\tiny \texttt{@ObservableState struct}}};
+  \node[eff] (e) at (4.3,-1.45) {\textbf{Effect}\\[-1pt]{\tiny \texttt{.run \{ send in \}}}};
+  \node[eff, fill=black!4, draw=sheetGrey] (d) at (0.8,-1.45) {\textbf{\texttt{@Dependency}}\\[-1pt]{\tiny api · clock · uuid}};
+  \draw[flow] (v) -- node[lbl, above]{\texttt{store.send}\\\texttt{(.tapped)}} (a);
+  \draw[flow] (a) -- (r);
+  \draw[flow] (r) -- node[lbl, above]{\texttt{inout}} (s);
+  \draw[flow] (s) -- node[lbl, left, align=right, pos=0.6]{observes only\\fields it read} (v);
+  \draw[hot] (r) -- node[lbl, right]{returns} (e);
+  \draw[hot] (e) -- node[lbl, above]{\texttt{try await}} (d);
+  \draw[hot] (e.east) .. controls (6.3,-1.45) and (6.3,1.55) .. node[lbl, right, pos=0.5]{\texttt{await}\\\texttt{send(}\\\texttt{.loaded)}} (a.east);
+  \begin{scope}[on background layer]
+    \node[draw=sheetBlue, dashed, rounded corners, fit=(r)(s), inner sep=3pt] (st) {};
+  \end{scope}
+  \node[lbl, text=sheetBlue, anchor=north, font=\tiny\bfseries] at (st.south) {Store runs reducer on state};
+  \node[lbl, text=sheetRed, anchor=west, align=left] at (-0.3,-2.2) {\texttt{.cancellable(id: CancelID.search, cancelInFlight: true)} kills the older run};
+
+  % ── composition tree ───────────────────────────────────
+  \node[ttl, anchor=west] at (7.4,2.45) {Composition: children live \emph{inside} parent state};
+  \node[nd, draw=sheetBlue, fill=sheetBlue!8, align=left, font=\tiny] (p) at (12.3,1.45)
+    {\textbf{\scriptsize AppFeature.State}\\[-1pt]\texttt{var profile: Profile.State}\\[-1pt]\texttt{@Presents var destination: Destination.State?}\\[-1pt]\texttt{var todos: IdentifiedArrayOf<Todo.State>}\\[-1pt]\texttt{var path = StackState<Path.State>()}};
+  \node[kid, label={[op]above:Scope(\kp{profile},…)}] (c1) at (8.3,-0.3) {Profile\\[-2pt]{\tiny always there}};
+  \node[nav, label={[op]above:.ifLet(\kp{\$destination},…)}] (c2) at (10.75,-0.3) {\texttt{@Reducer enum}\\[-2pt]Destination};
+  \node[kid, label={[op]above:.forEach(\kp{todos},…)}] (c3) at (13.2,-0.3) {Todo × n};
+  \node[nav, label={[op]above:.forEach(\kp{path},…)}] (c4) at (15.6,-0.3) {Path\\[-2pt]{\tiny Detail, Edit…}};
+  \foreach \c/\dx in {c2/-1.4,c3/0.9,c4/2.0} \draw[flow] ([xshift=\dx cm]p.south) -- ([yshift=2.3mm]\c.north);
+  \draw[hot] (c1.west) -- ++(-0.2,0) |- node[lbl, above, pos=0.75]{\texttt{.delegate(.saved)}} (p.west);
+  \draw[flow] ([xshift=3mm]p.south west) -- ([xshift=3mm,yshift=2.3mm]c1.north);
+  \node[lbl, anchor=north] at (10.75,-0.72) {sheet · alert · dialog\\\textbf{tree} nav: \texttt{nil} = dismissed};
+  \node[lbl, anchor=north] at (13.2,-0.72) {\texttt{IdentifiedArray}:\\child actions by \texttt{id}};
+  \node[lbl, anchor=north] at (15.6,-0.72) {\texttt{NavigationStack}\\\textbf{stack} nav};
+  \node[lbl, anchor=north] at (8.3,-0.72) {actions arrive\\as \texttt{.profile(.x)}};
+  \node[lbl, anchor=west, align=left] at (7.4,-1.75) {\texttt{.ifLet}/\texttt{.forEach} run the \textbf{child first, then the parent} — the parent can \texttt{nil} out / remove
+    the\\child \emph{after} it handled the action. A child talks up only through \texttt{delegate} actions.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{\texttt{@Reducer}}: nested \texttt{State} (\texttt{@ObservableState} = Observation
+        for structs), \texttt{Action} (made \texttt{@CasePathable} $\to$ \kp{loaded}),
+        \texttt{body: some ReducerOf<Self>}.
+  \item \textbf{Store}: \texttt{Store(initialState: F.State()) \{ F() \}}; view:
+        \texttt{let store: StoreOf<F>} · \texttt{store.x} · \texttt{store.send(.a)} ·
+        \texttt{store.scope(\kp{kid}, action: \kp{kid})}.
+  \item \textbf{Effects}: \texttt{.none} · \texttt{.send(.a)} · \texttt{.run \{ send in \}} ·
+        \texttt{.merge} · \texttt{.cancellable(id:cancelInFlight:)} · \texttt{.cancel(id:)}.
+  \item \textbf{Dependencies}: \texttt{@DependencyClient} struct of closures +
+        \texttt{DependencyKey} (\texttt{liveValue}, \texttt{testValue}, \texttt{previewValue});
+        read \texttt{@Dependency(\kp{api})}; override with \texttt{withDependencies}. An unset
+        dependency called in a test \textbf{fails} it.
+  \item \textbf{Tree nav}: \texttt{@Presents var destination} +
+        \texttt{PresentationAction<…>} + \texttt{.ifLet(\kp{\$destination}, action:
+        \kp{destination})}; view \texttt{.sheet(item: \$store.scope(…))}; child closes with
+        \texttt{@Dependency(\kp{dismiss})}.
+  \item \textbf{Stack nav}: \texttt{StackState<Path.State>} + \texttt{StackActionOf<Path>} +
+        \texttt{.forEach(\kp{path}, action: \kp{path})}; \texttt{NavigationStack(path:
+        \$store.scope(…))}. Deep link = construct the state.
+  \item \textbf{Bindings}: \texttt{@Bindable var store} + \texttt{BindableAction} /
+        \texttt{BindingReducer()} $\to$ \texttt{\$store.name}; or
+        \texttt{\$store.name.sending(\kp{nameChanged})}.
+  \item \textbf{\texttt{@Shared}} (swift-sharing): \texttt{.appStorage("k")},
+        \texttt{.fileStorage(url)}, \texttt{.inMemory("k")}; write via
+        \texttt{\$x.withLock \{ \$0 += 1 \}} (\texttt{+=} is not atomic).
+  \item \textbf{1.25–1.26}: trait \texttt{ComposableArchitecture2Deprecations} flags 2.0-bound
+        APIs (\texttt{BindingViewStore}, \texttt{Effect.map}); 1.26: \texttt{Scope(\kp{kid}, action:)}.
+\end{itemize}
+
+\section{Worth it?}
+\textbf{Pays:} big team wanting one shape; navigation/deep links as state; many cancellable
+effects; exhaustive tests. \textbf{Costs:} learning curve, boilerplate, \textbf{compile time}
+(macros + swift-syntax, deep generic reducers), lock-in + migrations (2.0), every
+high-frequency event (scroll, drag) walks the reducer tree.
+
+\section{Remember}
+\textbf{State in the struct, effects in \texttt{.run}, the world in \texttt{@Dependency};
+scope down, delegate up.}
+
+\columnbreak
+
+\section{Example — debounced search + its test}
+\begin{lstlisting}[language=SwiftSheet]
+@Reducer struct Search {
+  @ObservableState struct State: Equatable {
+    var query = ""; var results: [Item] = [] }
+  enum Action { case queryChanged(String), loaded([Item]) }
+  enum CancelID { case search }
+  @Dependency(\.api) var api
+  @Dependency(\.continuousClock) var clock
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in
+      switch action {
+      case let .queryChanged(q):
+        state.query = q
+        return .run { send in
+          try await clock.sleep(for: .milliseconds(300))
+          await send(.loaded(try await api.search(q)))
+        }.cancellable(id: CancelID.search, cancelInFlight: true)
+      case let .loaded(items):
+        state.results = items; return .none
+      } } } }
+// test - exhaustive by default: every change asserted
+let clock = TestClock()
+let store = TestStore(initialState: Search.State()) { Search() }
+  withDependencies: { $0.continuousClock = clock
+                      $0.api.search = { _ in [.mock] } }
+await store.send(.queryChanged("sw")) { $0.query = "sw" }
+await clock.advance(by: .milliseconds(300))
+await store.receive(\.loaded) { $0.results = [.mock] }
+\end{lstlisting}
+{\footnotesize Unasserted change, unreceived action or a still-running effect $\Rightarrow$
+failure. \texttt{store.exhaustivity = .off} = assert only what matters (big integration flows).}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{Task \{\}} / a singleton inside \texttt{Reduce} — untestable, uncancellable.
+        Return \texttt{.run}; reach the world via \texttt{@Dependency}.}
+  \trap{Search without \texttt{cancelInFlight} — a slow old response overwrites a newer one.}
+  \trap{Sharing logic by \emph{sending actions} — each hop re-runs the reducer tree; call a
+        helper and return one effect.}
+  \trap{Parent matching a child's \emph{internal} actions — listen to \texttt{.delegate} only.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} unidirectional-state-machines (loop,
+TCA vs MVVM) · vip-ribs-mvi-redux · mvc-mvp-mvvm · coordinator-repository-di-clean ·
+modularization-spm}
+
+\end{document}

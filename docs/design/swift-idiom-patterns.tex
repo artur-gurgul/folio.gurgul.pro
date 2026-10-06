@@ -1,0 +1,218 @@
+% swift-idiom-patterns.tex — the patterns Swift developers actually write that are not in GoF:
+% type erasure (hand box vs any P vs some P), phantom types, newtype / tagged IDs, protocol
+% witnesses (struct of closures, as in pointfreeco/swift-dependencies), result builders vs fluent
+% API, closures as Strategy, enums as state machines, default implementations + the subclass
+% dispatch trap, generic constraints as compile-time strategy.
+% Sources (checked 2026-10-06):
+%   swift-evolution 0335 (any; ExistentialAny upcoming feature) · 0309 (existentials for protocols
+%     with associated types / Self, Swift 5.7 — these require `any`) · 0346 (primary associated
+%     types, 5.7) · 0352 (implicit opening of existentials, 5.7) · 0289 (result builders, 5.4)
+%   github.com/swiftlang/swift docs/ABI/TypeLayout.rst (existential container: 3-word inline
+%     value buffer + type metadata + one witness table per protocol)
+%   github.com/pointfreeco/swift-tagged (Tagged<Tag, RawValue>) · github.com/pointfreeco/
+%     swift-dependencies DesigningDependencies.md (struct-of-closures clients)
+%   developer.apple.com/documentation/swiftui/anyview (type erasure loses structural identity)
+% @labels: area=design kind=pattern platform=apple topic=language,patterns discussion=103
+% @tags: type-erasure, existentials, witness-table, generic-specialization, primary-associated-types, anyview, phantom-types, tagged-ids, type-state, protocol-witnesses, result-builders, enum-state-machine
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,case,switch,
+    if,else,return,guard,self,Self,nil,try,await,async,throws,private,static,override,
+    true,false,Void,String,Bool,Int,Data,Date,UUID,Duration,extension,where,some,any,
+    associatedtype,mutating,for,in,do,catch,default,Sendable},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {<<}{{\hbox{<}\hbox{<}}}2}
+
+\newcommand\pat[3][sheetBlue]{\par\noindent\fcolorbox{#1}{#1!5}{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{\footnotesize\raggedright{\bfseries\color{#1}#2}\enspace #3}}\par\vspace{1pt}}
+
+\tikzset{
+  w/.style={cell, minimum width=24mm, minimum height=4mm, font=\ttfamily\tiny},
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.2mm},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small, text=sheetBlue},
+}
+
+\begin{document}
+
+\sheettitle{Swift idiom patterns — beyond GoF}{design · folio}
+
+\oneliner{Swift turns runtime patterns into \textbf{compile-time} ones: a \textbf{phantom type}/\textbf{tagged
+ID} makes a wrong argument a compile error, an \textbf{enum} makes an illegal state unrepresentable, a
+\textbf{generic constraint} is a Strategy chosen at build time — and \textbf{type erasure} is the price
+of going back to runtime. Order of preference: \textbf{\texttt{some}/generics $>$ \texttt{any P<X>} $>$
+a hand-written \texttt{AnyX}}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {4.3,8.55,12.6} \draw[sheetGrey!40] (\x,3.05) -- (\x,-0.2);
+  % ── existential
+  \node[ttl] at (2.05,2.9) {\texttt{let s: any Shape}};
+  \node[w, fill=sheetBlue!6] (b1) at (1.4,2.3) {buffer: 3 words inline};
+  \node[w, fill=sheetBlue!6] (b2) at (1.4,1.9) {type metadata $\to$ Circle};
+  \node[w, fill=sheetOrange!12, draw=sheetOrange] (b3) at (1.4,1.5) {witness table (PWT)};
+  \node[sb, draw=sheetRed, fill=sheetRed!6, font=\tiny] (hp) at (3.55,2.3) {heap box\\if $>$ 3 words};
+  \draw[->, draw=sheetRed] (b1) -- (hp);
+  \node[sb, fill=sheetOrange!10, draw=sheetOrange, font=\tiny] (wa) at (3.55,1.5) {\texttt{area} $\to$\\Circle.area};
+  \draw[hot] (b3) -- (wa);
+  \node[lbl] at (2.05,0.75) {runtime box · any conformer\\call = load PWT, jump · \textbf{no specialisation}};
+  \node[lbl, text=sheetBrown] at (2.05,0.1) {\texttt{[any Shape]} can mix types};
+  % ── unspecialised generic
+  \node[ttl] at (6.4,2.9) {\texttt{func f<T: Shape>(\_ x: T)}};
+  \node[sb] (cal) at (5.35,2.2) {caller: \texttt{f(circle)}};
+  \node[sb, minimum width=24mm, fill=black!4, draw=sheetGrey] (bod) at (6.4,1.1) {ONE compiled body};
+  \draw[flow] (cal) -- (bod);
+  \node[lbl, anchor=west, align=left] at (6.5,2.2) {hidden args:\\\textbf{T's metadata}\\+ \textbf{T: Shape PWT}};
+  \node[lbl] at (6.4,0.55) {no box — but still witness calls};
+  \node[lbl, text=sheetBrown] at (6.4,0.1) {one T per call: \texttt{[T]} can't mix};
+  % ── specialised
+  \node[ttl] at (10.55,2.9) {specialised by the optimiser};
+  \node[sb, draw=sheetGreen, fill=sheetGreen!10] (s1) at (9.6,2.1) {\texttt{f<Circle>}};
+  \node[sb, draw=sheetGreen, fill=sheetGreen!10] (s2) at (11.5,2.1) {\texttt{f<Square>}};
+  \node[sb, fill=black!4, draw=sheetGrey, font=\tiny] (g) at (10.55,1.25) {generic \texttt{f<T>}};
+  \draw[flow] (g) -- (s1); \draw[flow] (g) -- (s2);
+  \node[lbl] at (10.55,0.45) {cloned per concrete type $\to$ \textbf{direct},\\inlinable calls (same module, WMO,\\\texttt{@inlinable}); \texttt{some P} gets this too};
+  % ── hand box
+  \node[ttl] at (14.6,2.9) {hand-written \texttt{AnyShape}};
+  \node[sb, minimum width=24mm] (ab) at (14.6,2.25) {\texttt{struct AnyShape}\\\texttt{\_area: () $\to$ Double}};
+  \node[sb, fill=sheetOrange!10, draw=sheetOrange, font=\tiny] (ctx) at (14.6,1.25) {closure context\\(heap) holds \textbf{Circle}};
+  \draw[hot] (ab) -- (ctx);
+  \node[lbl] at (14.6,0.55) {concrete type, erased by closures;\\\texttt{AnyPublisher}, \texttt{AnySequence} work so};
+  \node[lbl, text=sheetBrown] at (14.6,0.1) {costs an allocation + indirect call};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\pat{Type erasure — three tools}{\textbf{Hand box}: store the conformer's methods as closures
+$\to$ a \emph{concrete} type you can extend and conform (\texttt{AnyPublisher},
+\texttt{AnySequence}). \textbf{\texttt{any P<X>}} (primary associated types, 5.7): a built-in box.
+\textbf{\texttt{some P}}: \emph{not} erasure — hidden from the reader, known to the compiler.
+\texttt{eraseToAnyPublisher()} hides \texttt{Publishers.Map<…>}; \texttt{AnyView} also erases
+\textbf{structural identity} (worse diffing, lost \texttt{@State}); \texttt{AnyHashable} = mixed
+keys in one \texttt{Set}. An \texttt{any P} passed to \texttt{<T: P>} is \textbf{opened} (SE-0352).}
+\begin{lstlisting}[language=SwiftSheet]
+protocol Loader<Output> { associatedtype Output
+  func load() async throws -> Output }
+struct AnyLoader<Output>: Loader {         // hand-written box
+  private let _load: () async throws -> Output
+  init<L: Loader>(_ base: L) where L.Output == Output {
+    _load = base.load }                    // captures base
+  func load() async throws -> Output { try await _load() } }
+let b: any Loader<User> = RemoteUserLoader() // built-in (5.7)
+\end{lstlisting}
+
+\pat{Phantom types · tagged IDs · newtype}{A \textbf{phantom} parameter is never stored; it only
+stops mixing values with the same representation: \textbf{tagged IDs} (pointfree's
+\texttt{Tagged<Tag, Raw>}), \textbf{type-state} (a \texttt{Request<Draft>} has no \texttt{send()}).
+\textbf{Newtype}: \texttt{struct Email} with a failable \texttt{init} validates \emph{once} —
+``parse, don't validate''. Zero runtime cost.}
+\begin{lstlisting}[language=SwiftSheet]
+struct ID<Entity>: Hashable, Sendable { let raw: UUID }
+struct User { let id: ID<User> }
+struct Order { let id: ID<Order>; let buyer: ID<User> }
+func user(_ id: ID<User>) -> User? { nil }
+// user(order.id)   error: ID<Order> is not ID<User>
+enum Draft {}; enum Signed {}              // uninhabited tags
+struct Request<State> { var body: Data }
+extension Request where State == Draft {
+  func signed() -> Request<Signed> { .init(body: body) } }
+extension Request where State == Signed { func send() async {} }
+\end{lstlisting}
+
+\pat{Protocol witnesses — a struct of closures}{One struct whose \emph{properties are closures}
+replaces protocol + conformers; each ``conformance'' is a static value (\texttt{.live},
+\texttt{.mock}). \textbf{+} override \emph{one} endpoint in a test, derive variants by transforming
+values, no \texttt{any}/associated-type friction. \textbf{$-$} no default methods, no \texttt{Self};
+closures must be \texttt{@Sendable} to share. pointfree's \textbf{swift-dependencies} clients are
+built this way.}
+\begin{lstlisting}[language=SwiftSheet]
+struct TimeClient: Sendable {
+  var now: @Sendable () -> Date
+  var sleep: @Sendable (Duration) async throws -> Void }
+extension TimeClient { static let live = TimeClient(
+  now: { Date() }, sleep: { try await Task.sleep(for: $0) }) }
+var t = TimeClient.live; t.now = { .distantPast } // one endpoint
+\end{lstlisting}
+
+\pat{Builder: result builder vs fluent API}{\texttt{@resultBuilder} (SE-0289): the compiler rewrites
+the closure's statements into \texttt{buildExpression}/\texttt{buildBlock}/\texttt{buildOptional}/
+\texttt{buildEither}/\texttt{buildArray} calls — a compile-checked DSL (\texttt{@ViewBuilder}).
+\textbf{Fluent}: each call returns a modified \emph{copy} of a struct —
+\texttt{Req().header(k, v).timeout(5)}; no \texttt{build()}, never half-built.}
+\begin{lstlisting}[language=SwiftSheet]
+@resultBuilder enum PathBuilder {
+  static func buildExpression(_ s: String) -> [String] { [s] }
+  static func buildBlock(_ c: [String]...) -> [String] {
+    c.flatMap { $0 } }
+  static func buildOptional(_ c: [String]?) -> [String] { c ?? [] } }
+func path(@PathBuilder _ make: () -> [String]) -> String {
+  make().joined(separator: "/") }
+let p = path { "users"; if isAdmin { "admin" } } // users/admin
+\end{lstlisting}
+
+\columnbreak
+
+\pat{Closures as Strategy · enums as state machines}{A one-method Strategy is a function:
+\texttt{sorted(by:)}, a \texttt{price} closure. Use a protocol once there are \emph{several} related
+operations, state, or it needs a name. \textbf{State machine}: each case carries only the data valid
+in that state (no \texttt{isLoading} + \texttt{error?} + \texttt{items} combinations); transitions
+= one \texttt{switch} on \texttt{(state, event)}.}
+\begin{lstlisting}[language=SwiftSheet]
+enum Load { case idle, loading, loaded([Item]), failed(String) }
+enum Event { case start, success([Item]), failure(String) }
+extension Load { mutating func send(_ e: Event) {
+  switch (self, e) {
+  case (.idle, .start), (.failed, .start): self = .loading
+  case (.loading, .success(let v)):         self = .loaded(v)
+  case (.loading, .failure(let m)):         self = .failed(m)
+  default: break } } }   // illegal transition: assert/log here
+\end{lstlisting}
+
+\pat{Default implementations — the subclass trap}{Extensions give defaults and mixins. If a
+\textbf{superclass} conforms \emph{using} the default, the witness is bound for \texttt{Base};
+\texttt{Sub}'s method (no \texttt{override} needed!) is never reached through the protocol.
+\textbf{Fix}: implement it in \texttt{Base}; \texttt{Sub} must then write \texttt{override}.}
+\begin{lstlisting}[language=SwiftSheet]
+protocol Greeter { func hi() -> String }
+extension Greeter { func hi() -> String { "default" } }
+class Base: Greeter {}                 // witness = the extension
+class Sub: Base { func hi() -> String { "sub" } } // no override
+let g: any Greeter = Sub()
+g.hi()   // "default"  (but Sub().hi() is "sub")
+\end{lstlisting}
+
+\pat{Generic constraint = compile-time Strategy}{The strategy is a \emph{type} fixed at the use
+site: specialised and inlined, no stored existential, no runtime swap.}
+\begin{lstlisting}[language=SwiftSheet]
+protocol Backoff { static func delay(_ n: Int) -> Duration }
+enum Exponential: Backoff { static func delay(_ n: Int)
+  -> Duration { .milliseconds(100 << n) } }
+struct Retrier<B: Backoff> {
+  func wait(attempt n: Int) async throws {
+    try await Task.sleep(for: B.delay(n)) } } // static call
+let r = Retrier<Exponential>()         // fixed at build time
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{AnyView} everywhere: lost identity $\to$ worse diffing, reset \texttt{@State}.}
+  \trap{``\texttt{some} is type erasure'' — no: the compiler still knows the type.}
+  \trap{Bare \texttt{P} still means \texttt{any P}; \texttt{any} is required for associated-type/\texttt{Self}
+        protocols, everywhere with \texttt{ExistentialAny}.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Make wrong code not compile:} phantom $\to$ wrong ID · enum $\to$ wrong state · newtype
+$\to$ unvalidated input. \textbf{\texttt{some} $>$ \texttt{any} $>$ \texttt{AnyX}.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} protocols-generics (dispatch) ·
+patterns-in-apple-frameworks · dependency-injection-deep · gof-behavioural · gof-creational-structural
+(Builder) · functional-design}
+
+\end{document}

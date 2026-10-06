@@ -1,0 +1,161 @@
+% code-smells-refactoring.tex — common smells mapped to Fowler's refactorings, the discipline
+% (characterization tests, tiny steps, two hats), strangler fig, when not to, measuring hotspots.
+% Sources (checked 2026-10-06):
+%   refactoring.com (definition, quoted verbatim) + refactoring.com/catalog (2nd ed., 2018 names)
+%   martinfowler.com/bliki/OriginalStranglerFigApplication.html (29 June 2004)
+%   x.com/KentBeck/status/250733358307500032 (2012-09-25, "make the change easy (warning: this
+%     may be hard), then make the easy change")
+%   realm.github.io/SwiftLint/cyclomatic_complexity.html (defaults: warning 10, error 20)
+%   McCabe, "A Complexity Measure", IEEE TSE SE-2(4), 1976 (v(G) = E - N + 2P; limit 10)
+%   Feathers, Working Effectively with Legacy Code (2004) · Tornhill, Your Code as a Crime Scene
+%   (2015) · Spolsky, "Things You Should Never Do, Part I" (2000) · SonarSource Cognitive Complexity
+% @labels: area=design kind=concept platform=general topic=patterns,testing discussion=92
+% @tags: code-smells, refactoring, shotgun-surgery, divergent-change, primitive-obsession, feature-envy, characterization-tests, two-hats, strangler-fig, branch-by-abstraction, cyclomatic-complexity, hotspots
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{tabularx}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,case,switch,
+    mutating,if,else,return,guard,self,nil,try,throws,private,some,
+    true,false,AnyObject,Void,String,Bool,Int,Date},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\newcommand\pat[3][sheetBlue]{\par\noindent\fcolorbox{#1}{#1!5}{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{\raggedright{\bfseries\color{#1}#2}\enspace #3}}\par\vspace{2pt}}
+\newcommand\rf[1]{\textcolor{sheetGreen!60!black}{\textbf{#1}}}
+
+\tikzset{
+  sb/.style={box, font=\tiny, inner sep=1.2pt, minimum height=3.6mm},
+  bad/.style={sb, draw=sheetRed, fill=sheetRed!7},
+  good/.style={sb, draw=sheetGreen, fill=sheetGreen!10},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small, text=sheetBlue},
+}
+
+\begin{document}
+
+\sheettitle{Code smells → refactorings}{design · folio}
+
+\oneliner{\textbf{Refactoring} (Fowler): \emph{``a change made to the internal structure of software
+to make it easier to understand and cheaper to modify \textbf{without changing its observable
+behaviour}''}. A \textbf{smell} is a surface symptom that \emph{suggests} a deeper problem — name the
+smell, name the refactoring, and keep behaviour pinned: \textbf{tests first, tiny steps,
+commit each green step}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {4.35,8.2,12.6} \draw[sheetGrey!40] (\x,3.45) -- (\x,0.0);
+  % ───────── shotgun surgery vs divergent change
+  \node[ttl] at (2.15,3.3) {shotgun vs divergent};
+  \node[bad, minimum width=13mm] (ch) at (1.0,2.75) {change:\\add currency};
+  \foreach \i in {0,1,2,3} { \node[sb, minimum width=4mm] (s\i) at (0.25+0.5*\i,1.65) {C\i};
+    \draw[->, draw=sheetRed] (ch) -- (s\i); }
+  \node[lbl, text=sheetRed] at (1.0,1.2) {ONE change $\to$\\MANY classes};
+  \node[lbl] at (1.0,0.6) {\textbf{shotgun surgery}\\fix: gather it (Move,\\Combine into Class)};
+  \node[bad, minimum width=12mm] (ac) at (3.3,1.65) {Account};
+  \foreach \i/\t/\y in {0/{DB schema}/2.85, 1/{UI format}/2.5, 2/{tax rule}/2.85}
+    { \node[lbl] (r\i) at (2.6+0.75*\i,\y) {\t}; \draw[->, draw=sheetRed] (r\i) -- (ac); }
+  \node[lbl, text=sheetRed] at (3.3,1.2) {MANY reasons $\to$\\ONE class};
+  \node[lbl] at (3.3,0.6) {\textbf{divergent change}\\fix: split it (Extract\\Class, Split Phase)};
+  % ───────── the refactoring loop
+  \node[ttl] at (6.25,3.3) {the loop (two hats)};
+  \node[good, minimum width=12mm] (g) at (6.25,2.75) {tests GREEN};
+  \node[sb, minimum width=14mm] (st) at (7.45,1.95) {one tiny step};
+  \node[sb, minimum width=11mm] (rt) at (6.25,1.2) {run tests};
+  \node[good, minimum width=11mm] (cm) at (5.05,1.95) {commit};
+  \draw[hot] (g) -- (st); \draw[hot] (st) -- (rt);
+  \draw[hot, draw=sheetGreen] (rt) -- node[lbl, below left]{green} (cm);
+  \draw[hot, draw=sheetGreen] (cm) -- (g);
+  \node[bad] (rv) at (7.45,0.85) {RED: revert};
+  \draw[->, draw=sheetRed, thick] (rt) -- (rv);
+  \draw[->, draw=sheetRed, thick, dashed] (rv.east) to[out=40, in=-40] (st.east);
+  \node[lbl, text=sheetBrown] at (6.25,0.3) {never refactor + add behaviour\\in the same step (Beck's two hats)};
+  % ───────── strangler fig
+  \node[ttl] at (10.4,3.3) {strangler fig (Fowler 2004)};
+  \foreach \k/\old/\new in {0/1.35/0.25, 1/0.8/0.8, 2/0.0/1.35} {
+    \node[sb, minimum width=10mm, fill=black!4, draw=sheetGrey] (f\k) at (9.05+1.35*\k,2.75) {facade};
+    \ifdim\old cm>0pt \fill[sheetRed!18, draw=sheetRed] (8.6+1.35*\k,1.0) rectangle ++(0.42,\old); \fi
+    \fill[sheetGreen!20, draw=sheetGreen] (9.08+1.35*\k,1.0) rectangle ++(0.42,\new);
+    \draw[->, draw=sheetGrey] (f\k) -- (9.05+1.35*\k,2.45); }
+  \node[lbl, text=sheetRed] at (8.81,0.8) {legacy};
+  \node[lbl, text=sheetGreen!60!black] at (9.29,0.8) {new};
+  \node[lbl, text=sheetBrown] at (10.4,0.35) {route one feature at a time; old code dies\\when nothing routes to it — never a big-bang rewrite};
+  % ───────── churn × complexity
+  \node[ttl] at (14.7,3.3) {hotspots (Tornhill)};
+  \fill[sheetRed!12] (14.9,1.95) rectangle (16.6,3.05);
+  \draw[->, sheetGrey] (12.9,0.8) -- (16.7,0.8) node[lbl, above left]{churn (commits)};
+  \draw[->, sheetGrey] (12.9,0.8) -- (12.9,3.1);
+  \node[lbl, rotate=90] at (12.78,1.9) {complexity};
+  \foreach \p in {(13.2,1.0),(13.5,1.3),(13.7,0.95),(14.0,1.1),(13.3,2.4),(15.3,1.05),(14.4,1.4),(13.8,1.7),(15.6,2.5),(16.2,2.8),(15.2,2.2)}
+    \fill[sheetBlue] \p circle (1.1pt);
+  \node[lbl, text=sheetRed] at (15.75,1.75) {HOTSPOTS: refactor here};
+  \node[lbl, align=left, anchor=west] at (13.0,2.75) {complex but\\untouched: leave};
+  \node[lbl, text=sheetBrown] at (14.7,0.35) {few files hold most of the change + defects};
+\end{tikzpicture}
+
+\vspace{2pt}
+\noindent{\footnotesize\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.05}%
+\begin{tabularx}{\linewidth}{@{}l>{\raggedright\arraybackslash}p{57mm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Smell} & \textbf{Tell-tale} & \textbf{Refactoring (Fowler 2nd ed.) · Swift form} \\
+\midrule
+Long Function & scroll to read; comments label the blocks & \rf{Extract Function}, Decompose Conditional, Split Phase \\
+Large Class / god object & many fields, many reasons to change; Massive VC & \rf{Extract Class} $\to$ ViewModel, data source, Coordinator \\
+Long Parameter List & 5+ args; the same group repeats & \rf{Introduce Parameter Object}, Preserve Whole Object; a \texttt{struct} with defaults \\
+Data Clumps & \texttt{lat, lon, accuracy} always travel together & \rf{Extract Class} / Parameter Object — the clump \emph{is} a type \\
+Primitive Obsession & \texttt{String} email, \texttt{Double} money, \texttt{Int} status & \rf{Replace Primitive with Object}: \texttt{struct Email} validating in \texttt{init?}, \texttt{Decimal}, \texttt{enum} \\
+Feature Envy & a method uses another object's data more than its own & \rf{Move Function} to the data (tell, don't ask) \\
+Divergent Change & ONE class edited for MANY unrelated reasons & \rf{Extract Class}, Split Phase (SRP) \\
+Shotgun Surgery & ONE change edits MANY classes & \rf{Move Function/Field}, Combine Functions into Class, Inline Class \\
+Repeated Switches & the same \texttt{switch type} in many places & \rf{Replace Conditional with Polymorphism} — or an \texttt{enum} + exhaustive \texttt{switch} (compiler finds every site) \\
+Speculative Generality & protocol with one conformer, unused hooks ``for later'' & \rf{Collapse Hierarchy}, Inline Function/Class, Remove Dead Code \\
+Message Chains & \texttt{a.b.c.d} — the caller knows the whole path & \rf{Hide Delegate} (overdone $\to$ Middle Man $\to$ \rf{Remove Middle Man}) \\
+Temporary Field & an optional that is \texttt{nil} except in one flow & \rf{Extract Class}; Swift: an \texttt{enum} state with associated values \\
+Refused Bequest & subclass ignores or crashes on what it inherits & \rf{Replace Subclass/Superclass with Delegate} (compose), Push Down \\
+Comments (deodorant) & a comment explains \emph{what} the code does & \rf{Extract Function} with that name, Rename \\
+\bottomrule
+\end{tabularx}}
+
+\begin{multicols}{2}
+\raggedright
+
+\pat{The discipline}{\textbf{No tests $\to$ write characterization tests first} (Feathers: legacy = code without tests): pin \emph{today's} behaviour, bugs included — assert a wrong value, read the actual from the failure, paste it in; snapshot/golden master for big outputs. Then: \textbf{one tiny behaviour-preserving step} $\to$ run tests $\to$ \textbf{commit}; red $\to$ \textbf{revert}, don't debug. \textbf{Two hats} (Beck): refactoring \emph{or} adding behaviour, never both in one step/PR. \textbf{Preparatory refactoring}: \emph{``make the change easy (warning: this may be hard), then make the easy change''} (Beck). Prefer IDE refactors (Xcode Rename, Extract to Method) — mechanical = safe. Public interface: \textbf{parallel change} (expand $\to$ migrate callers $\to$ contract), with \texttt{@available(*, deprecated, renamed:)}.}
+
+\pat{Big rewrites — strangler fig}{Put a facade/router in front; send one feature at a time to the new code; the legacy shrinks until nothing routes to it. iOS: new SwiftUI screens in \texttt{UIHostingController} inside the UIKit app; a protocol in front of the old service with a feature flag choosing the implementation (\textbf{branch by abstraction}). Every step ships and can be rolled back. The warning against big-bang: Spolsky, \emph{``Things You Should Never Do''} (Netscape's rewrite).}
+
+\begin{lstlisting}[language=SwiftSheet]
+// BEFORE: primitive obsession + long list + type code
+func book(from: String, to: String, date: Date,
+  adults: Int, kids: Int, cabin: Int, email: String)
+// AFTER: value object, parameter object, enum
+struct Email { let raw: String
+  init?(_ s: String) { guard s.contains("@") else { return nil }
+    raw = s } }
+enum Cabin { case economy, business, first }
+struct Trip { var from, to: Airport; var date: Date
+  var adults = 1, kids = 0; var cabin = Cabin.economy }
+func book(_ trip: Trip, contact: Email)
+\end{lstlisting}
+
+\pat[sheetOrange]{Remember}{\textbf{Name the smell, name the refactoring · pin behaviour first · one step, green, commit · strangle, don't rewrite · refactor the hotspots.}}
+
+\columnbreak
+
+\pat{When NOT to refactor}{Code nobody needs to change (ugly but stable: leave it — refactor where you \emph{work}; boy-scout rule applies to the area you touch) · no tests and no cheap way to get them · right before a release · a published API without a deprecation path · taste alone. A refactoring needs a \emph{payoff}: the next feature, a bug class, onboarding.}
+
+\pat{Measure, don't guess}{\textbf{Cyclomatic complexity} (McCabe, 1976) = $E - N + 2P$ on the control-flow graph $\approx$ 1 + decision points (\texttt{if}, \texttt{guard}, loops, \texttt{case}, \texttt{\hbox{\&}\hbox{\&}}, \texttt{\hbox{|}\hbox{|}}, \texttt{?:}, \texttt{catch}); = the minimum number of test paths. McCabe's limit 10; SwiftLint \texttt{cyclomatic\_complexity} warns at 10, errors at 20. \textbf{Cognitive complexity} (SonarSource) also penalises nesting. \textbf{Hotspots} (Tornhill, \emph{Your Code as a Crime Scene}): change frequency from \texttt{git log} × complexity — refactor the top-right, not the whole codebase. Also: SwiftLint \texttt{type\_body\_length}, \texttt{function\_parameter\_count}; coverage at the change point.}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{Shotgun surgery} (one change, many classes) $\ne$ \textbf{divergent change} (one class, many reasons) — opposites.}
+  \trap{Refactoring without tests is just \emph{changing code}; ``refactor'' a feature in = two hats.}
+  \trap{In Swift a switch over an \texttt{enum} is not the smell — a switch over a \emph{type code} (\texttt{Int}, \texttt{String}) repeated everywhere is.}
+  \trap{``Moved the VC's code into a Manager'' relocated the smell (god object), not fixed it.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} design-principles · SOLID · testable-design-seams · testing-fundamentals · mvc-mvp-mvvm (Massive VC) · gof-behavioural (Strategy, State)}
+
+\end{document}

@@ -1,0 +1,106 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>iOS idioms and anti-patterns — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/design/ios-idioms-antipatterns.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">81</span></a></li><li><a class="side-area current" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">iOS idioms and anti-patterns</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">design · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Cocoa gives you a small set of <strong>communication idioms</strong> — delegate, data source,
+target–action, closure, NotificationCenter, KVO, responder chain — and choosing one is a
+question of <strong>how many listeners</strong>, <strong>whether the sender needs an answer</strong>, and
+<strong>who owns whom</strong>. Most iOS anti-patterns are one mistake: <strong>responsibilities and
+dependencies that nobody can see</strong>.</p>
+<p class="sheet-tools"><a class="sheet-download" href="ios-idioms-antipatterns.pdf" download>Download PDF</a> <a href="ios-idioms-antipatterns.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/design/ios-idioms-antipatterns.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="ios-idioms-antipatterns-fig1.svg" width="619" height="146" class="wide" alt="iOS idioms and anti-patterns — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>The idioms</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>Idiom</strong></th><th><strong>Shape</strong></th><th><strong>Mechanism · rule</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>Delegate</td><td>1:1</td><td>protocol <code>: AnyObject</code>, <code>weak var delegate</code>; can answer
+(<code>shouldSelect</code>), <code>did/will/should</code> names, sender first</td></tr>
+<tr><td>Data source</td><td>1:1</td><td>delegate that <em>supplies data</em> (<code>numberOfRows</code>); UIKit holds
+both <code>weak</code></td></tr>
+<tr><td>Target–action</td><td>1:N</td><td><code>addTarget(_:action:for:)</code> + <code>@objc</code> selector; the control
+does <strong>not</strong> retain the target; <code>UIAction</code> closure (iOS 14)</td></tr>
+<tr><td>Closure</td><td>1:1</td><td><code>onSelect: (Item) -&gt; Void</code>; stored <span class="math">→</span> <code>[weak self]</code>; best
+for one event</td></tr>
+<tr><td>NotificationCenter</td><td>1:N</td><td>broadcast by name, untyped <code>userInfo</code>;
+<strong>synchronous, on the posting thread</strong></td></tr>
+<tr><td>KVO</td><td>1:N</td><td><code>observe(\.x, options:)</code> <span class="math">→</span>
+<code>NSKeyValueObservation</code>; needs <code>NSObject</code> + <code>@objc dynamic</code></td></tr>
+<tr><td>Responder chain</td><td>1:?</td><td><code>sendAction(_:to: nil, …)</code>: first responder up via
+<code>next</code> (see gof-behavioural)</td></tr>
+<tr><td>Combine / <code>@Observable</code></td><td>1:N</td><td>typed streams / per-property tracking (iOS 17);
+the modern default in-app</td></tr>
+</tbody>
+</table></p>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">protocol</span> <span class="hljs-title class_">PickerDelegate</span>: <span class="hljs-title class_ inherited__">AnyObject</span> {        <span class="hljs-comment">// so it can be weak</span>
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">picker</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">p</span>: <span class="hljs-type">Picker</span>, <span class="hljs-params">didPick</span> <span class="hljs-params">item</span>: <span class="hljs-type">String</span>)
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">pickerShouldClose</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">p</span>: <span class="hljs-type">Picker</span>) -&gt; <span class="hljs-type">Bool</span>   <span class="hljs-comment">// answer back</span>
+}
+<span class="hljs-keyword">final</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">Picker</span> {
+  <span class="hljs-keyword">weak</span> <span class="hljs-keyword">var</span> delegate: <span class="hljs-type">PickerDelegate</span>?        <span class="hljs-comment">// Picker never owns it</span>
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">pick</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">item</span>: <span class="hljs-type">String</span>) {
+    delegate<span class="hljs-operator">?</span>.picker(<span class="hljs-keyword">self</span>, didPick: item)
+    <span class="hljs-keyword">if</span> delegate<span class="hljs-operator">?</span>.pickerShouldClose(<span class="hljs-keyword">self</span>) <span class="hljs-operator">??</span> <span class="hljs-literal">true</span> { <span class="hljs-comment">/* close */</span> }
+  }
+}
+<span class="hljs-comment">// load(true, false) -- what? Name the choice instead:</span>
+<span class="hljs-keyword">enum</span> <span class="hljs-title class_">CachePolicy</span> { <span class="hljs-keyword">case</span> useCache, reload }
+<span class="hljs-keyword">func</span> <span class="hljs-title function_">load</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">policy</span>: <span class="hljs-type">CachePolicy</span>) {}         <span class="hljs-comment">// load(.reload)</span></code></pre>
+</section>
+<section class="sheet-section">
+<h2>Massive VC — the recipe</h2>
+<p>Characterisation/snapshot tests first, then steps 1–6 as drawn, one safe move at a time (child VCs: <code>addChild</code> + <code>didMove(toParent:)</code>). It is an <strong>SRP</strong> problem, not an MVC one — moving the mass into the model or a <code>Manager</code> only relocates it.</p>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">“Singletons are always bad” — no (<code>FileManager.default</code>). The damage is  <strong>hidden lookup</strong> (<code>.shared</code> inside logic) + <strong>global mutable
+ state</strong>: keep one instance, <strong>inject</strong> it.</li>
+<li class="trap">A service locator still hides dependencies — a missing registration fails at run  time, not compile time (Mark Seemann).</li>
+<li class="trap">NotificationCenter for a 1:1 flow = invisible coupling: no contract, no “who  listens?”.</li>
+<li class="trap">“Duplication is far cheaper than the wrong abstraction” (Sandi Metz).</li>
+<li class="trap"><code>UIAction</code>/<code>sink</code>/timer closures are <em>stored</em>: <code>[weak self]</code>;  <code>unowned</code> only when the lifetime is guaranteed.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>Answer back <span class="math">→</span> delegate · one <span class="math">→</span> closure · many <span class="math">→</span> Combine/Notification ·
+unknown <span class="math">→</span> responder chain. Make responsibilities and dependencies visible.</strong></p>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>Anti-pattern</strong></th><th><strong>Symptom</strong></th><th><strong>Damage</strong></th><th><strong>Fix</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>Massive VC</td><td>1 000+ lines, everything in <code>viewDidLoad</code></td><td>untestable, merge conflicts</td><td>the recipe above; VC becomes glue</td></tr>
+<tr><td>God object</td><td><code>AppManager</code>, <code>Utils</code>; everyone imports it</td><td>every
+change ripples</td><td>split by responsibility; inject small collaborators</td></tr>
+<tr><td>Singleton / locator</td><td><code>.shared</code> / <code>resolve()</code> inside logic</td><td>hidden deps,
+order-dependent tests</td><td>init injection; <code>.shared</code> only at the composition root</td></tr>
+<tr><td>Stringly-typed</td><td>segue ids, <code>userInfo[&quot;k&quot;]</code>, <code>[String: Any]</code></td><td>typos crash at run
+time</td><td>enums, <code>Notification.Name</code> constants, <code>Codable</code></td></tr>
+<tr><td>Boolean flags</td><td><code>load(true, false)</code></td><td>unreadable calls, <span class="math">2<sup>n</sup></span> branches</td><td>two functions,
+an <code>enum</code>, or an <code>OptionSet</code></td></tr>
+<tr><td>Deep inheritance</td><td><code>BaseViewController</code> with 30 hooks</td><td>fragile base class, LSP
+breaks</td><td>protocols + extensions, composition, child VCs</td></tr>
+<tr><td>Copy-paste reuse</td><td>the same fix needed in 5 places</td><td>shotgun surgery, drift</td><td>extract once it
+repeats 3×</td></tr>
+<tr><td>Premature abstraction</td><td>a protocol with one conformer</td><td>indirection, harder
+to read</td><td>YAGNI; abstract at the 2nd–3rd case (a test seam counts)</td></tr>
+<tr><td>Callback pyramid</td><td>nested completions; a path never calls back</td><td>lost errors, hangs</td><td><code>async</code>/<code>await</code>, structured concurrency</td></tr>
+<tr><td>UIKit in models</td><td><code>UIColor</code>/<code>UIImage</code> in domain types</td><td>no widget/test
+reuse, main-thread ties</td><td>Foundation-only domain; map in the ViewModel</td></tr>
+<tr><td>Over-modularization</td><td>60 modules, one file each</td><td>build graph + API churn cost</td><td>module by feature/team, measure build times</td></tr>
+</tbody>
+</table></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> gof-behavioural (responder chain,
+Observer) · observation-and-combine · arc-ownership · solid · mvc-mvp-mvvm ·
+coordinator-repository-di-clean · testable-design-seams · modularization-spm</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=design" title="area">design</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=pattern" title="kind">pattern</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=ios" title="platform">ios</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=patterns" title="topic">patterns</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=architecture" title="topic">architecture</a></li><li class="sheet-tag"><a href="/folios.html?tag=delegate">delegate</a></li><li class="sheet-tag"><a href="/folios.html?tag=data-source">data-source</a></li><li class="sheet-tag"><a href="/folios.html?tag=target-action">target-action</a></li><li class="sheet-tag"><a href="/folios.html?tag=notificationcenter">notificationcenter</a></li><li class="sheet-tag"><a href="/folios.html?tag=kvo">kvo</a></li><li class="sheet-tag"><a href="/folios.html?tag=responder-chain">responder-chain</a></li><li class="sheet-tag"><a href="/folios.html?tag=weak-delegate">weak-delegate</a></li><li class="sheet-tag"><a href="/folios.html?tag=massive-view-controller">massive-view-controller</a></li><li class="sheet-tag"><a href="/folios.html?tag=anti-patterns">anti-patterns</a></li><li class="sheet-tag"><a href="/folios.html?tag=god-object">god-object</a></li><li class="sheet-tag"><a href="/folios.html?tag=service-locator">service-locator</a></li><li class="sheet-tag"><a href="/folios.html?tag=stringly-typed">stringly-typed</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=design%2Fios-idioms-antipatterns.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/101">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

@@ -1,0 +1,163 @@
+% design-principles.tex — the principles beneath the patterns (beyond SOLID): coupling/cohesion,
+% connascence, Law of Demeter, tell-don't-ask, composition over inheritance, DRY/KISS/YAGNI,
+% GRASP, least astonishment, separation of concerns, dependency direction (SDP/SAP/ADP).
+% Sources (checked 2026-10-06):
+%   Stevens, Myers, Constantine, "Structured Design", IBM Systems Journal 13(2), 1974 (coupling +
+%     cohesion levels) · Page-Jones, "Comparing techniques by means of encapsulation and
+%     connascence", CACM 35(9), 1992 · connascence.io (the nine kinds; strength, locality, degree)
+%   Lieberherr, Holland, Riel, OOPSLA 1988 ("Law of Demeter", formulated at Northeastern, 1987)
+%   Gamma et al., Design Patterns (1994): "Favor object composition over class inheritance"
+%   Bloch, Effective Java 3rd ed. (2018), Item 18 (InstrumentedHashSet)
+%   Hunt + Thomas, The Pragmatic Programmer (1999): DRY, quoted verbatim
+%   sandimetz.com/blog/2016/1/20/the-wrong-abstraction · martinfowler.com/bliki/Yagni.html
+%   Dijkstra, EWD 447 "On the role of scientific thought" (1974: separation of concerns)
+%   swift.org/documentation/api-design-guidelines ("Document the complexity of any computed
+%     property that is not O(1)") · Martin, Agile Software Development (2002: ADP, SDP, SAP,
+%     I = Ce/(Ca+Ce), main sequence) · Larman, Applying UML and Patterns (GRASP, nine patterns)
+% @labels: area=design kind=concept platform=general topic=patterns,architecture discussion=96
+% @tags: coupling, cohesion, connascence, law-of-demeter, tell-dont-ask, composition-over-inheritance, fragile-base-class, grasp, dry, kiss, yagni, stable-dependencies-principle
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,case,switch,
+    mutating,if,else,return,guard,self,nil,try,throw,throws,private,some,
+    true,false,AnyObject,Void,String,Bool,Int,Decimal},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\newcommand\pat[3][sheetBlue]{\par\noindent\fcolorbox{#1}{#1!5}{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{\raggedright{\bfseries\color{#1}#2}\enspace #3}}\par\vspace{2pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small, text=sheetBlue},
+  q/.style={draw=sheetGrey, minimum width=17mm, minimum height=9mm, font=\tiny, align=center, inner sep=1pt},
+  rung/.style={draw=sheetGrey, minimum width=15mm, minimum height=3.3mm, font=\tiny, inner sep=0.5pt},
+}
+
+\begin{document}
+
+\sheettitle{Design principles — the rules beneath the patterns}{design · folio}
+
+\oneliner{Patterns trade \textbf{indirection} for \textbf{changeability}; these principles say
+what changeable code looks like: \textbf{high cohesion, low coupling} (named by kind —
+connascence), \textbf{talk to friends, tell don't ask}, \textbf{compose}, one home per
+\emph{piece of knowledge}, build only what's needed, the right class for each responsibility
+(\textbf{GRASP}), dependencies \textbf{toward stability}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {4.3,8.25,12.55} \draw[sheetGrey!40] (\x,3.5) -- (\x,-0.05);
+  % ───────── coupling × cohesion 2×2
+  \node[ttl] at (2.15,3.35) {coupling × cohesion};
+  \node[q, fill=sheetGreen!15] at (1.55,2.45) {\textbf{modular}\\the goal};
+  \node[q, fill=sheetOrange!12] at (3.35,2.45) {good modules,\\tangled wiring:\\changes ripple};
+  \node[q, fill=sheetOrange!12] at (1.55,1.5) {over-split: one\\concept smeared\\across modules};
+  \node[q, fill=sheetRed!12] at (3.35,1.5) {\textbf{big ball of mud}\\god object};
+  \node[lbl, rotate=90] at (0.5,2.45) {HIGH};
+  \node[lbl, rotate=90] at (0.5,1.5) {LOW};
+  \node[lbl, rotate=90, text=sheetBlue] at (0.25,1.97) {cohesion};
+  \node[lbl] at (1.55,0.9) {LOW};
+  \node[lbl] at (3.35,0.9) {HIGH};
+  \node[lbl, text=sheetBlue] at (2.45,0.72) {coupling};
+  \node[lbl, text=sheetBrown] at (2.2,0.3) {cohesion: \emph{within} a module · coupling:\\\emph{between} modules (how far a change spreads)};
+  % ───────── connascence ladder
+  \node[ttl] at (6.3,3.35) {connascence (Page-Jones)};
+  \foreach \i/\n/\c in {0/Name/5, 1/Type/10, 2/Meaning/16, 3/Position/22, 4/Algorithm/28}
+    \node[rung, fill=sheetRed!\c] at (5.3,2.85-0.36*\i) {\n};
+  \foreach \i/\n/\c in {0/Execution/34, 1/Timing/40, 2/Value/46, 3/Identity/52}
+    \node[rung, fill=sheetRed!\c] at (7.25,2.85-0.36*\i) {\n};
+  \node[lbl, text=sheetBlue] at (5.3,3.1) {STATIC};
+  \node[lbl, text=sheetBlue] at (7.25,3.1) {DYNAMIC};
+  \draw[hot, very thick] (4.45,2.95) -- (4.45,1.05);
+  \node[lbl, text=sheetOrange] at (7.25,1.25) {down = weak $\to$ strong};
+  \node[lbl] at (6.3,0.5) {\textbf{strength} · \textbf{locality} (strong is OK close by)\\· \textbf{degree} (how many elements)\\refactor: strong $\to$ weak, distant $\to$ local};
+  % ───────── Law of Demeter
+  \node[ttl] at (10.4,3.35) {Demeter + tell, don't ask};
+  \node[font=\tiny\ttfamily, text=sheetRed, anchor=west] at (8.35,2.85) {order.customer.wallet.balance};
+  \draw[sheetRed, thick, decorate, decoration={brace, amplitude=3pt, mirror}] (9.05,2.72) -- (11.26,2.72);
+  \node[lbl, text=sheetRed] at (10.15,2.45) {strangers: caller knows 3 structures};
+  \node[font=\tiny\ttfamily, text=sheetGreen!60!black, anchor=west] at (8.35,2.05) {try order.pay(total)};
+  \node[lbl, text=sheetGreen!60!black, anchor=west] at (10.5,2.05) {tell; Order delegates};
+  \node[lbl, anchor=north west, align=left] at (8.35,1.7) {method \texttt{m} of \texttt{O} may call only:\\
+    \textbf{1} \texttt{O} itself \quad \textbf{2} \texttt{m}'s parameters\\
+    \textbf{3} objects \texttt{m} creates \quad \textbf{4} \texttt{O}'s own fields};
+  \node[lbl, text=sheetBrown] at (10.4,0.35) {not ``count the dots'': \texttt{xs.map.filter}\\on values/fluent APIs is fine};
+  % ───────── A–I main sequence
+  \node[ttl] at (14.65,3.35) {stability (Martin)};
+  \draw[->, sheetGrey] (12.95,0.75) -- (15.45,0.75) node[lbl, right]{$I$};
+  \draw[->, sheetGrey] (12.95,0.75) -- (12.95,3.1) node[lbl, above]{$A$};
+  \draw[sheetGreen!60!black, thick] (12.95,2.95) -- node[lbl, sloped, above, text=sheetGreen!60!black]{main sequence $A{+}I{=}1$} (15.15,0.75);
+  \fill[sheetRed!15] (12.95,0.75) rectangle (13.65,1.4);
+  \node[lbl, text=sheetRed] at (13.3,1.08) {pain};
+  \fill[sheetOrange!15] (14.45,2.3) rectangle (15.15,2.95);
+  \node[lbl, text=sheetOrange] at (14.8,2.62) {useless};
+  \node[lbl, anchor=west, align=left] at (15.35,2.3) {$I = \frac{C_e}{C_a + C_e}$\\out / (in+out)};
+  \node[lbl, anchor=west, align=left] at (15.35,1.55) {$A$ = abstract\\\ \ / total types};
+  \node[lbl, text=sheetBrown] at (14.65,0.35) {pain = stable + concrete (hard to change,\\everyone depends on it); useless = abstract, unused};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\pat{Coupling \& cohesion (Constantine, structured design)}{\textbf{Coupling}, worst$\to$best: \textbf{content} (reach into internals) · \textbf{common} (shared globals — \texttt{.shared} state) · \textbf{external} (shared format/device) · \textbf{control} (pass a flag that picks the callee's branch) · \textbf{stamp} (pass a whole struct, use one field) · \textbf{data} (pass only what's used).
+\textbf{Cohesion}, worst$\to$best: \textbf{coincidental} (\texttt{Utils}) · \textbf{logical} (same category: \texttt{handle(type:)}) · \textbf{temporal} (runs at the same time: \texttt{setUpEverything}) · \textbf{procedural} · \textbf{communicational} (same data) · \textbf{sequential} (output feeds next) · \textbf{functional} (one well-defined task).}
+
+\pat{Connascence — a vocabulary for coupling}{Connascent = changing one forces changing the other. \textbf{Name} (rename $\to$ callers), \textbf{Type}, \textbf{Meaning} (\texttt{status \hbox{=}\hbox{=} 2} means shipped $\to$ use an \texttt{enum}), \textbf{Position} (argument order $\to$ labels, a struct), \textbf{Algorithm} (client + server hash the same way $\to$ share one implementation), \textbf{Execution} (\texttt{configure()} before \texttt{start()} $\to$ make it an \texttt{init}), \textbf{Timing} (races), \textbf{Value} (values that must change together — invariants), \textbf{Identity} (must be the \emph{same} instance, e.g. one \texttt{NSManagedObjectContext}).}
+
+\pat{Law of Demeter · tell, don't ask}{\textbf{LoD} (Holland/Lieberherr, 1987): ``only talk to your immediate friends'' — the 4 allowed targets in the picture. A train wreck couples the caller to every intermediate type. Fix: \textbf{hide delegate} (\texttt{order.pay}) or pass in what is needed. \textbf{Tell, don't ask}: don't pull state out, decide and push it back — tell the data's owner to do it (= Information Expert).}
+
+\pat{Composition over inheritance (GoF, 1994)}{Inheritance is \textbf{white-box reuse}: the subclass depends on the base's \emph{implementation}. \textbf{Fragile base class}: a harmless base change breaks subclasses (Bloch's \texttt{InstrumentedHashSet}: \texttt{addAll} calls \texttt{add}, so the override counts twice). Composition = black-box, swappable at runtime, no LSP traps. Swift nudges you: \texttt{final}, \texttt{open} to subclass across modules, protocols + extensions, value types. Inherit only for a true is-a with a stable contract.}
+
+\begin{lstlisting}[language=SwiftSheet]
+// ASK: train wreck, logic outside the data
+if order.customer.wallet.balance >= total {
+  order.customer.wallet.balance -= total }
+// TELL: the data's owner does it (Information Expert)
+struct Wallet { private(set) var balance: Decimal
+  mutating func pay(_ x: Decimal) throws {
+    guard balance >= x else { throw PayError.insufficient }
+    balance -= x } }
+try order.pay(total)   // Order -> customer -> wallet, hidden
+\end{lstlisting}
+
+\pat[sheetOrange]{Remember}{\textbf{Cohesion in, coupling out · weak and local connascence · talk to friends, tell them · compose · one home per fact · build what's needed · point at stability.}}
+
+\columnbreak
+
+\section{GRASP — Larman's 9: who gets the job?}
+{\footnotesize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{56mm}@{}}
+\toprule
+\textbf{Information Expert} & the class that \emph{has the data}: \texttt{Cart.total}, not the VC \\
+\textbf{Creator} & B makes A if B contains, uses or has A's init data \\
+\textbf{Controller} & first non-UI object handling a system event (use case, VM) \\
+\textbf{Low Coupling} & pick the assignment that adds the fewest dependencies \\
+\textbf{High Cohesion} & keep each class focused; reject what dilutes it \\
+\textbf{Polymorphism} & varies by type $\to$ polymorphic call, not a type \texttt{switch} \\
+\textbf{Pure Fabrication} & invented non-domain class: \texttt{Repository}, \texttt{ImageCache} \\
+\textbf{Indirection} & an intermediary to decouple: protocol, Adapter, Coordinator \\
+\textbf{Protected Var.} & hide each \emph{predicted} change behind a stable interface \\
+\bottomrule
+\end{tabular}}
+
+\pat{DRY · KISS · YAGNI}{\textbf{DRY} (Hunt \& Thomas, 1999): \emph{``every piece of \textbf{knowledge} must have a single, unambiguous, authoritative representation''} — knowledge, not text: identical lines encoding \emph{different} rules stay separate. \textbf{The wrong abstraction} (Sandi Metz): \emph{``duplication is far cheaper than the wrong abstraction''} — a shared helper growing per-caller flags: inline it back. Abstract at the \textbf{rule of three}.
+\textbf{KISS}: the simplest design that works. \textbf{YAGNI} (XP): don't build for a guessed future (Fowler: cost of build, delay, carry, repair) — but keep code easy to change.}
+
+\pat{Least astonishment · separation of concerns}{\textbf{POLA}: code does what its name promises — no network I/O in a getter; \texttt{sort()} mutates, \texttt{sorted()} returns (Swift API Design Guidelines, which also require documenting a computed property that is not O(1)). \textbf{SoC} (Dijkstra, 1974): one concern per part — view / state / domain / persistence; the root of SRP and layering.}
+
+\pat{Dependency direction (Martin's package principles)}{\textbf{ADP}: no cycles in the module graph. \textbf{SDP}: depend in the direction of \emph{stability} (towards low $I$). \textbf{SAP}: as \emph{abstract} as it is stable, so it can still be extended. \emph{Stable} = many dependents, hard to change — not ``rarely edited''. iOS: \texttt{Feature} $\to$ \texttt{DomainInterfaces} $\leftarrow$ \texttt{Networking}.}
+
+\section{Traps}
+\begin{itemize}
+  \trap{LoD $\ne$ ``count the dots''; DRY $\ne$ ``no repeated lines''.}
+  \trap{GRASP \textbf{Controller} $\ne$ \texttt{UIViewController}.}
+  \trap{Name the \emph{kind}: control coupling, temporal cohesion, connascence of position.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} SOLID · code-smells-refactoring · coordinator-repository-di-clean · modularization-spm · gof-creational-structural · gof-behavioural}
+
+\end{document}

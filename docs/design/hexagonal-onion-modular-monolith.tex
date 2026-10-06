@@ -1,0 +1,197 @@
+% hexagonal-onion-modular-monolith.tex — ports & adapters (Cockburn 2005), onion
+% (Palermo 2008), how they relate to Clean (Martin 2012), modular monolith vs
+% microservices, and the iOS mapping.
+% Sources (checked 2026-10-06):
+%   alistair.cockburn.us/hexagonal-architecture (2005-09-04, v0.9; intent: "Allow an application
+%     to equally be driven by users, programs, automated test or batch scripts, and to be
+%     developed and tested in isolation from its eventual run-time devices and databases")
+%   jeffreypalermo.com/2008/07/the-onion-architecture-part-1 (Palermo, July 2008)
+%   blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html (Dependency Rule)
+%   martinfowler.com/bliki/MonolithFirst.html (2015) · microservices.io/patterns/data/saga.html +
+%     transactional-outbox.html (Richardson)
+% @labels: area=design kind=architecture platform=general topic=architecture,system-design discussion=100
+% @tags: hexagonal-architecture, ports-and-adapters, driving-port, driven-port, onion-architecture, clean-architecture, dependency-rule, modular-monolith, microservices, distributed-monolith, composition-root
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false,AnyObject,Void,String,Bool,Date,import,extension},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  hex/.style={regular polygon, regular polygon sides=6, draw=sheetBlue, very thick,
+              fill=sheetBlue!6, minimum size=40mm, inner sep=0pt},
+  port/.style={draw=sheetGreen!60!black, fill=sheetGreen!14, font=\tiny, inner sep=1.5pt,
+               align=center, minimum height=4mm, rounded corners=1pt},
+  ad/.style={draw=sheetBrown, fill=sheetBrown!10, font=\tiny, inner sep=1.5pt,
+             align=center, minimum width=15mm, minimum height=4.5mm, rounded corners=2pt},
+  fake/.style={ad, draw=sheetOrange, fill=sheetOrange!8, dashed},
+  conf/.style={-{Latex[open,length=4pt]}, thick, dashed, draw=sheetGreen!60!black},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small},
+  rl/.style={font=\tiny\bfseries, text=sheetBlue},
+}
+
+\begin{document}
+
+\sheettitle{Hexagonal · Onion · Modular monolith}{design · folio}
+
+\oneliner{Put the \textbf{domain in the middle} and make everything else — UI, HTTP,
+database, clock, push — a replaceable \textbf{adapter} plugged into a \textbf{port} the
+application defines. Hexagonal (Cockburn 2005), Onion (Palermo 2008) and Clean (Martin
+2012) are \emph{one} dependency rule in three vocabularies: \textbf{source dependencies
+point inward}. A \textbf{modular monolith} applies the same boundaries between modules in
+one deployable, before (or instead of) paying for microservices.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── hexagon ────────────────────────────────────────────
+  \node[ttl, anchor=west] at (-0.3,2.35) {Ports \& adapters};
+  \node[hex] (h) at (4.6,0) {};
+  \fill[sheetGreen!20] (4.6,0) circle (0.85);
+  \draw[sheetGreen!60!black, thick] (4.6,0) circle (0.85);
+  \node[font=\scriptsize\bfseries, text=sheetGreen!40!black, align=center] at (4.6,0.1) {domain};
+  \node[lbl] at (4.6,-0.25) {entities, rules};
+  \node[lbl, text=sheetBlue] at (4.6,1.45) {application (use cases)};
+  % driving side
+  \node[port] (dp1) at (3.05,0.45) {\texttt{PlaceOrder}};
+  \node[port] (dp2) at (3.05,-0.45) {\texttt{ListDevices}};
+  \node[ad] (a1) at (0.6,1.0) {SwiftUI view / VM};
+  \node[ad] (a2) at (0.6,0.0) {REST controller};
+  \node[fake] (a3) at (0.6,-1.0) {XCTest / CLI};
+  \draw[flow] (a1) -- (dp1); \draw[flow] (a2) -- (dp1); \draw[flow] (a2) -- (dp2);
+  \draw[flow, sheetOrange] (a3) -- (dp2);
+  \node[lbl, text=sheetBrown, align=center] at (0.6,-1.65) {\textbf{driving / primary}\\they call \emph{us}};
+  % driven side
+  \node[port] (np1) at (6.15,0.55) {\texttt{OrderRepo}};
+  \node[port] (np2) at (6.15,0.0) {\texttt{Clock}};
+  \node[port] (np3) at (6.15,-0.55) {\texttt{Notifier}};
+  \node[ad] (b1) at (8.8,1.15) {Postgres / Core Data};
+  \node[fake] (b1f) at (8.8,0.6) {InMemoryRepo};
+  \node[ad] (b2) at (8.8,0.0) {SystemClock};
+  \node[fake] (b2f) at (8.8,-0.55) {FakeClock};
+  \node[ad] (b3) at (8.8,-1.1) {APNs / MQTT};
+  \draw[conf] (b1.west) -- (np1.east); \draw[conf] (b1f.west) -- (np1.east);
+  \draw[conf] (b2.west) -- (np2.east); \draw[conf] (b2f.west) -- (np2.east);
+  \draw[conf] (b3.west) -- (np3.east);
+  \node[lbl, text=sheetBrown, align=center] at (8.8,-1.65) {\textbf{driven / secondary}\\\emph{we} call them};
+  \node[lbl, text=sheetGreen!50!black] at (4.6,-1.2) {ports = protocols the app owns};
+  \node[lbl, text=sheetOrange] at (8.8,1.7) {dashed = test adapters};
+
+  % ── onion ──────────────────────────────────────────────
+  \node[ttl, anchor=west] at (10.2,2.35) {Onion rings};
+  \begin{scope}[shift={(11.9,0)}]
+    \fill[sheetBlue!5] (0,0) circle (1.8);
+    \fill[sheetBlue!11] (0,0) circle (1.35);
+    \fill[sheetGreen!14] (0,0) circle (0.9);
+    \fill[sheetGreen!28] (0,0) circle (0.45);
+    \foreach \r in {0.45,0.9,1.35,1.8} \draw[sheetBlue, thick] (0,0) circle (\r);
+    \draw[hot, very thick] (-1.75,-0.3) -- (-0.5,-0.08);
+    \draw[hot, very thick] (0,-1.75) -- (0,-0.5);
+    \foreach \r/\y/\t in {0.22/1.2/Domain model, 0.67/0.7/Domain services,
+        1.12/0.2/Application services, 1.57/-0.3/UI · Infrastructure · Tests} {
+      \fill[sheetBlue] (30:\r) circle (0.7pt);
+      \draw[sheetBlue, thin] (30:\r) -- (2.05,\y) node[rl, anchor=west] {\t};
+    }
+  \end{scope}
+  \node[lbl, text=sheetOrange, anchor=west, align=left] at (13.9,-1.1) {deps point inward;\\repo \emph{interfaces} in the core,\\implementations outermost};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Port} = an interface at the application boundary, named in domain terms
+        (\texttt{OrderRepository}, not \texttt{PostgresDAO}). \textbf{Adapter} = code
+        that converts between a technology and a port.
+  \item \textbf{Driving (primary) ports} — what the app \emph{offers}: use-case
+        interfaces called by UI, HTTP, CLI, tests. \textbf{Driven (secondary) ports} —
+        what the app \emph{needs}: persistence, messaging, time, payments. The app
+        declares them; infrastructure implements them (DIP).
+  \item Cockburn's goal: the app can be \textbf{driven equally by users, programs,
+        automated tests or batch scripts}, and developed/tested \textbf{in isolation}
+        from its devices and databases. Six sides mean nothing — just room to draw ports.
+  \item \textbf{Onion} — concentric rings; the core has no outward deps; Palermo
+        stresses that \textbf{infrastructure is outer}, not the bottom layer (a
+        classic 3-tier stack has UI $\to$ BLL $\to$ DAL, so the domain depends on the DB).
+  \item \textbf{Relation:} same rule, different emphasis — hexagonal: inside vs
+        outside + symmetric left/right; onion: rings inside the core; Clean: named rings
+        + the \textbf{Dependency Rule} (see coordinator-repository-di-clean).
+  \item \textbf{Testability payoff:} the domain + use cases run in unit tests with an
+        \texttt{InMemoryRepo} and a \texttt{FakeClock} — no simulator, DB or network;
+        same use case, adapter swapped at the composition root.
+\end{itemize}
+
+\section{Example — a use case with two driven ports}
+\begin{lstlisting}[language=SwiftSheet]
+protocol DeviceRepository { func all() async throws -> [Device] }
+protocol Clock { func now() -> Date }              // driven ports
+struct ListStaleDevices {                           // driving port
+  let repo: DeviceRepository; let clock: Clock
+  func callAsFunction() async throws -> [Device] {
+    let now = clock.now()
+    return try await repo.all().filter {
+      now.timeIntervalSince($0.lastSeen) > 900 } } }
+// adapters live in OTHER modules:
+struct APIDeviceRepository: DeviceRepository { /* URLSession */ }
+struct FakeClock: Clock { var t: Date; func now() -> Date { t } }
+\end{lstlisting}
+
+\columnbreak
+
+\section{On iOS}
+Feature SPM packages expose a small public API (driving port) and declare what they
+need as protocols (driven ports: \texttt{DeviceRepository}, \texttt{Analytics},
+\texttt{Clock}); a \texttt{Networking} package adapts \texttt{URLSession} to them; the
+\textbf{app target} is the composition root wiring adapters in. The app \emph{is} a
+modular monolith: one binary, compiler-enforced boundaries (\texttt{internal} vs
+\texttt{public}). See modularization-spm.
+
+\section{Modular monolith vs microservices}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{29mm}>{\raggedright\arraybackslash}p{31mm}@{}}
+\toprule
+ & \textbf{Modular monolith} & \textbf{Microservices} \\
+\midrule
+deploy & one unit, one version & independent per service \\
+boundary & module API, enforced by build/lint & network API — hard, can't cheat \\
+calls & in-process, typed, free & network: latency, partial failure \\
+data & one DB, schema per module & DB per service \\
+consistency & local ACID transactions & sagas + outbox; eventual \\
+ops & one pipeline, one log & tracing, discovery, versioning \\
+scales & whole app & per service, per team \\
+\bottomrule
+\end{tabular}}
+
+\textbf{When to split} a module out: it needs \textbf{independent deploy cadence} (a team
+blocked by others' releases), \textbf{different scaling} or runtime, \textbf{fault
+isolation}, or a hard security boundary. Not because ``it's cleaner'' — a bad boundary
+across a network is a \textbf{distributed monolith}. Fowler's \emph{MonolithFirst}: find
+the boundaries in-process, then extract. Modules talk via public APIs or in-process
+events, never another module's tables.
+
+\section{Traps}
+\begin{itemize}
+  \trap{``Hexagonal = six layers'' — no; two sides (driving/driven), N ports.}
+  \trap{The \emph{port} belongs to the app, not to the adapter; an interface generated
+        from the DB or SDK is not a port.}
+  \trap{A port per class ``for testability'' is ceremony; ports go at \emph{I/O}
+        boundaries. A CRUD screen needs no hexagon.}
+  \trap{Microservices don't fix a tangled model — they distribute it.}
+\end{itemize}
+
+\section{Remember}
+\textbf{App owns the ports; adapters plug in on both sides; arrows point in; split the
+deploy only when a boundary has earned it.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} coordinator-repository-di-clean
+(Clean, DI) · modularization-spm · SOLID (DIP) ·
+Adapter pattern · ios-client-system-design}
+
+\end{document}
