@@ -1,0 +1,193 @@
+% cloud-vs-on-device.tex — deciding where computation (and ML inference) runs: latency, cost,
+% privacy, offline, battery, model/data size, freshness, security of logic, coverage,
+% observability; on-device ML (Foundation Models, Core ML / Core AI, Vision; Gemini Nano via
+% AICore / ML Kit GenAI on Android) vs Private Cloud Compute vs your own server LLM; hybrid
+% patterns (on-device first + server fallback, router/cascade, split pre-processing, server
+% trains / device infers, precompute + cache, speculative draft); model delivery; syncing and
+% versioning results. A decision tree and a decision table.
+% Not repeated (neighbours): the Foundation Models API itself; Core ML formats / compute units /
+% compression, Vision, Speech (coreml-vision-on-device).
+% Sources (checked 2026-09-25): security.apple.com/blog/private-cloud-compute (five core
+% requirements; device wraps the request key only to nodes whose attested measurements are in
+% the public transparency log; third-party OHTTP relay hides the source IP);
+% developer.android.com/ai/gemini-nano (AICore system service; ML Kit GenAI APIs: Prompt,
+% Summarization, Proofreading, Rewriting, Image Description, Speech Recognition; AICore
+% distributes and updates the model); developer.apple.com/documentation/backgroundassets (iOS 16+;
+% managed asset packs via AssetPackManager, optional Apple hosting; essential before launch,
+% prefetch, on demand);
+%   machinelearning.apple.com/research/apple-foundation-models-2025-updates (on-device model
+%     ~3B parameters, 2 bits per weight via QAT) — checked 2026-10-06
+%   developer.apple.com/videos/play/wwdc2026/241 (PrivateCloudComputeLanguageModel needs an
+%     entitlement; no cloud API cost under 2M first-time downloads; per-user daily limit, higher
+%     with iCloud+; 32,000-token context; contextSize + tokenCount(for:) shipped in iOS 26.4)
+%     — checked 2026-10-06
+% @labels: area=architecture kind=architecture platform=general topic=ai,system-design,architecture discussion=77
+% @tags: on-device-ml, cloud-inference, private-cloud-compute, foundation-models, core-ml, gemini-nano, hybrid-inference, model-delivery, background-assets, privacy, latency, trust-boundary
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,public,static,
+    if,else,return,guard,self,Self,nil,try,await,async,throws,throw,private,catch,do,
+    true,false,some,any,Sendable,Error,String,Int,Void},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2 {<=}{{\hbox{<}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcommand\yes{\textcolor{sheetGreen!60!black}{\ensuremath{\checkmark}}}
+\newcommand\no{\textcolor{sheetRed}{×}}
+
+\tikzset{
+  q/.style={box, font=\scriptsize, draw=sheetGrey, fill=black!3, text width=27mm, align=center,
+            inner sep=2pt, minimum height=11mm},
+  srv/.style={box, font=\scriptsize\bfseries, draw=sheetBlue, fill=sheetBlue!10, text width=27mm,
+              align=center, inner sep=2pt},
+  dev/.style={box, font=\scriptsize\bfseries, draw=sheetGreen!60!black, fill=sheetGreen!12,
+              text width=27mm, align=center, inner sep=2pt},
+  hyb/.style={box, font=\scriptsize\bfseries, draw=sheetOrange, fill=sheetOrange!12,
+              text width=27mm, align=center, inner sep=2pt},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Cloud vs on-device — where should it run?}{architecture · folio}
+
+\oneliner{Place each computation where its \textbf{binding constraint} is cheapest: \textbf{trust}
+(anything authoritative runs on a server — the client is attacker-controlled), \textbf{knowledge
+and size} (world knowledge, big models, live data $\to$ cloud), \textbf{privacy, offline and
+latency} (personal data, per-frame work, no network $\to$ device). Most real features are
+\textbf{hybrid}: device first, server (or Private Cloud Compute) as the fallback, results cached
+and \textbf{versioned}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-1.5,0.9) {Ask in this order — the first ``yes'' decides};
+  \node[q] (q1) at (0,0) {\textbf{1} Must the result be \textbf{trusted}? (money, entitlements, fraud, shared state)};
+  \node[q] (q2) at (3.35,0) {\textbf{2} Needs \textbf{world knowledge}, live data or a model too big for a phone?};
+  \node[q] (q3) at (6.7,0) {\textbf{3} Is the input \textbf{personal} (health, messages, photos, location)?};
+  \node[q] (q4) at (10.05,0) {\textbf{4} Must it work \textbf{offline} or per frame / per keystroke?};
+  \node[hyb] (h) at (13.45,0) {\textbf{HYBRID}\\\mdseries\tiny device first · server fallback;\\cost + coverage decide};
+  \node[srv] (a1) at (0,-1.45) {SERVER\\\mdseries\tiny authoritative; client only displays};
+  \node[srv] (a2) at (3.35,-1.45) {SERVER LLM / API\\\mdseries\tiny or PCC for private reasoning};
+  \node[dev] (a3) at (6.7,-1.45) {DEVICE\\\mdseries\tiny PCC if it doesn't fit; never your logs};
+  \node[dev] (a4) at (10.05,-1.45) {DEVICE\\\mdseries\tiny Core ML / Vision / system LLM};
+  \foreach \a/\b in {q1/q2,q2/q3,q3/q4,q4/h} \draw[flow] (\a) -- node[lbl, above]{no} (\b);
+  \foreach \a/\b in {q1/a1,q2/a2,q3/a3,q4/a4} \draw[hot] (\a) -- node[lbl, right]{yes} (\b);
+  \node[lbl, anchor=north west, align=left, text=sheetRed] at (11.9,-1.0) {a ``yes'' at 1 \textbf{and} 3 (e.g. fraud score on\\private data): server decides, device\\pre-processes and redacts first};
+\end{tikzpicture}
+
+\vspace{2pt}
+{\footnotesize\setlength\tabcolsep{3pt}
+\noindent\begin{tabular}{@{}>{\bfseries\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{47mm}>{\raggedright\arraybackslash}p{43mm}>{\raggedright\arraybackslash}p{50mm}@{}}
+\toprule
+factor & \textbf{on-device} & \textbf{Private Cloud Compute} (Apple) & \textbf{your server / cloud LLM} \\ \midrule
+latency & no network; first model load is slow — load early, reuse & network round trip & round trip + queue; radio wake-up on cellular \\
+cost per call & free to you; paid in the user's battery + heat & Apple's servers; quota + entitlement (iOS 27 API) & you pay per request / GPU hour, scales with users \\
+privacy & data never leaves the phone & leaves, but stateless, no privileged access, verifiable & leaves: consent, retention, region, subprocessors \\
+offline & \yes & \no & \no \\
+model / quality & small (system LLM $\approx$3B, 2-bit; your Core ML model) & much larger; 32K-token context, reasoning & any size, frontier models, tools, RAG over your data \\
+freshness & updates with the OS / app / asset pack & Apple-managed & instant; live data; world knowledge \\
+coverage & AI-capable devices only; memory + thermal limits & Apple Intelligence devices only\unverified & every device, Android, web — one behaviour \\
+logic security & \textbf{untrusted}: code + weights extractable, results forgeable & not your server — no custom logic & \textbf{authoritative}; secrets stay here \\
+observability & no server logs; on-device evals, opt-in telemetry & none for you & full logs, A/B, evals — mind PII \\
+\bottomrule
+\end{tabular}}
+
+\begin{multicols}{2}
+\raggedright\small\setstretch{1.0}
+
+\hd{The options}
+\begin{itemize}
+  \item \textbf{Apple on-device}: Foundation Models (system LLM, offline, free; check
+        \ct{availability}); Core ML / Core AI for \emph{your} model; Vision, Natural Language,
+        Speech for common tasks — try these first.
+  \item \textbf{Android on-device}: Gemini Nano runs in the \textbf{AICore} system service; apps
+        use \textbf{ML Kit GenAI} APIs (Prompt, Summarization, Proofreading, Rewriting, Image
+        Description, Speech Recognition). AICore ships and updates the model — no model in your APK.
+  \item \textbf{Private Cloud Compute}: Apple's server extension of on-device AI. Five
+        requirements — \textbf{stateless} computation, \textbf{enforceable} guarantees,
+        \textbf{no privileged runtime access}, \textbf{non-targetability}, \textbf{verifiable
+        transparency}. The device encrypts only to nodes whose \textbf{attested} software is in a
+        public \textbf{transparency log}; an \textbf{OHTTP relay} run by a third party hides the IP.
+  \item \textbf{Your server}: any model, tools and data; you own cost, keys, logs and legal basis.
+        API keys never ship in the app — the app calls \emph{your} backend, which calls the model.
+\end{itemize}
+
+\hd{Hybrid patterns}
+\begin{itemize}
+  \item \textbf{Device first, server fallback}: unavailable device, context too long, low
+        confidence, guardrail refusal $\to$ escalate (with consent).
+  \item \textbf{Router / cascade}: a cheap on-device classifier decides which requests are
+        ``hard'' and need the big model.
+  \item \textbf{Split}: device pre-processes — OCR, speech-to-text, embeddings, \textbf{PII
+        redaction}, downscaling — and sends less, safer data.
+  \item \textbf{Server trains, device infers}: ship or download the model; personalise on device
+        (Core ML \ct{MLUpdateTask}); only the model moves, not the data.
+  \item \textbf{Precompute + cache}: shared results (recommendations, translations of shared
+        content) computed once on the server, cached on devices.
+  \item \textbf{Speculative}: show the on-device draft now, replace it if the server's answer
+        arrives and differs — label which one the user sees.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``On-device is free'' — battery, heat, memory (jetsam), app size, device coverage.}
+  \trap{Validating a purchase, score or discount on the client — anything on the device can be
+        patched; the server decides.}
+  \trap{A vendor LLM key in the app ``to save a backend'' — extracted in minutes; proxy it.}
+  \trap{Server fallback that silently uploads personal data — fallback needs consent + redaction.}
+  \trap{No unavailable path: the system model is missing on older or ineligible devices.}
+\end{itemize}
+
+\columnbreak
+
+\hd{Example — device first, server fallback}
+\begin{lstlisting}[language=SwiftSheet]
+protocol Summarizer: Sendable {
+  func summarize(_ text: String) async throws -> String }
+struct HybridSummarizer: Summarizer {
+  let local: any Summarizer          // Foundation Models session
+  let remote: any Summarizer         // YOUR backend, not a vendor key
+  let consented: @Sendable () -> Bool
+  func summarize(_ text: String) async throws -> String {
+    if SystemLanguageModel.default.isAvailable,
+       text.count < 6_000 {          // rough fit; 26.4+: tokenCount(for:)
+      do { return try await local.summarize(text) }
+      catch { /* context / guardrail / refusal: escalate */ }
+    }
+    guard consented() else { throw SummaryError.needsConsent }
+    return try await remote.summarize(redactPII(text))
+  }
+}
+\end{lstlisting}
+
+\hd{Model delivery and results}
+\begin{itemize}
+  \item \textbf{Bundle} the model (app size, every user pays) \emph{or} \textbf{download} it:
+        Background Assets managed asset packs (essential before launch, prefetch, or on demand;
+        optional Apple hosting), then \ct{MLModel.compileModel(at:)} for a Core ML file.
+  \item Store \textbf{model id + version} beside every output; cache results keyed by
+        \ct{hash(input) + modelVersion}; a new model invalidates, never silently mixes.
+  \item Results are \emph{data}: sync them through the normal sync path (private $\to$ the
+        user's devices only). Compute \textbf{shared} results once on the server, \textbf{private}
+        ones per device.
+  \item Same feature, different engines $\to$ different answers on iOS, Android, old phones:
+        design the UI for variable quality, evaluate each path separately.
+\end{itemize}
+
+\hd{Remember}
+\textbf{Trust $\to$ server · knowledge $\to$ cloud · private, offline, per-frame $\to$ device ·
+everything else: device first, cloud fallback, version the results.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} coreml-vision-on-device · app-hardening-privacy · sync-engines (syncing results) ·
+app-size-and-energy · distributed-system-design}
+
+\end{document}

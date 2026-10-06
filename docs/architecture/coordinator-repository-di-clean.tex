@@ -1,0 +1,192 @@
+% coordinator-repository-di-clean.tex — Coordinator, Repository, Dependency
+% Injection, Clean Architecture + VIPER.
+% Sources (checked 2026-10-06):
+%   khanlou.com/2015/01/the-coordinator/ (Soroush Khanlou, "The Coordinator", 2015)
+%   martinfowler.com/eaaCatalog/repository.html (Fowler, PoEAA) · martinfowler.com/articles/injection.html
+%     (constructor / setter / interface injection; Service Locator)
+%   blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html (the Dependency Rule, 4 rings)
+%   objc.io/issues/13-architecture/viper (Gilbert, Stoll, 2014: interactor passes plain data, wireframe)
+%   blog.ploeh.dk/2011/07/28/CompositionRoot · blog.ploeh.dk/2010/02/03/ServiceLocatorisanAnti-Pattern
+%   developer.apple.com/documentation/swiftui/navigationstack · .../environmentvalues
+% @labels: area=architecture kind=architecture platform=ios topic=architecture,patterns discussion=78
+% @tags: coordinator, repository, dependency-injection, clean-architecture, viper, dependency-rule, composition-root, service-locator, constructor-injection, single-source-of-truth
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false,AnyObject,Void,String,Bool},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  ring/.style={draw=sheetBlue, thick},
+  rl/.style={font=\tiny\bfseries, text=sheetBlue},
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  tl/.style={font=\tiny, inner sep=1pt},
+  ttl/.style={font=\bfseries\small},
+  dom/.style={box, draw=sheetGreen, fill=sheetGreen!10, dashed},
+  dat/.style={box, draw=sheetBrown, fill=sheetBrown!10},
+  conf/.style={-{Latex[open,length=5pt]}, thick, dashed, draw=sheetGreen!70!black},
+  vip/.style={box, minimum width=14mm, minimum height=7mm, font=\footnotesize},
+}
+
+\begin{document}
+
+\sheettitle{Coordinator · Repository · DI · Clean / VIPER}{architecture · folio}
+
+\oneliner{Four ways to stop one object knowing too much. \textbf{Coordinator} —
+\emph{where to go next} (navigation out of VCs). \textbf{Repository} — \emph{where data
+comes from} (hide network/cache/DB behind one protocol). \textbf{DI} — \emph{who builds
+my collaborators} (someone outside, at the composition root). \textbf{Clean} — \emph{which
+way dependencies point} (always inward, towards business rules).}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── Clean Architecture rings ───────────────────────────
+  \node[ttl] at (2.6,2.7) {Clean — the Dependency Rule};
+  \begin{scope}[shift={(2.6,0)}]
+    \fill[sheetBlue!4]  (0,0) circle (2.3);
+    \fill[sheetBlue!9]  (0,0) circle (1.72);
+    \fill[sheetGreen!12] (0,0) circle (1.15);
+    \fill[sheetGreen!24] (0,0) circle (0.56);
+    \foreach \r in {0.56,1.15,1.72,2.3} \draw[ring] (0,0) circle (\r);
+    \node[rl, align=center] at (0,0.12) {Entities};
+    \node[tl] at (0,-0.14) {business rules};
+    \node[rl] at (0,0.85) {Use Cases};
+    \node[rl] at (0,1.44) {Interface Adapters};
+    \node[rl] at (0,2.0) {Frameworks \& Drivers};
+    \node[tl] at (0,-1.99) {UIKit · network · DB};
+    \node[tl, text=sheetGreen!60!black, font=\tiny\bfseries] (p) at (0,-0.8) {UserRepository};
+    \node[tl, text=sheetGreen!60!black] at (0,-0.97) {protocol};
+    \node[tl, text=sheetBrown, font=\tiny\bfseries] (i) at (0,-1.42) {APIUserRepository};
+    \draw[conf] (0.02,-1.34) -- (0.02,-1.06);
+    \node[tl, text=sheetGreen!60!black, anchor=west] at (0.1,-1.2) {conforms};
+    \draw[hot, very thick] (180:2.25) -- (180:0.62);
+    \draw[hot, very thick] (0:2.25) -- (0:0.62);
+    \node[font=\scriptsize\bfseries, text=sheetOrange, align=left, anchor=north west] at (-2.6,2.45) {source deps\\point \emph{inward}};
+    \node[font=\scriptsize, text=sheetGrey, align=right, anchor=north east] at (2.75,2.45) {inner = stable\\outer = volatile};
+  \end{scope}
+
+  % ── Repository read flow ───────────────────────────────
+  \node[ttl] at (11.3,2.7) {Repository — the read flow};
+  \node[box, minimum width=20mm] (vm) at (7.1,1.75) {ViewModel /\\UseCase};
+  \node[dom, minimum width=26mm] (pr) at (10.6,1.75) {\texttt{ArticleRepository}\\[-1pt]{\scriptsize protocol — domain layer}};
+  \node[dat, minimum width=26mm] (im) at (10.6,0.0) {\texttt{DefaultArticleRepo}\\[-1pt]{\scriptsize data layer — the policy}};
+  \node[dat, minimum width=24mm] (ca) at (15.0,1.05) {Cache / DB\\[-1pt]{\scriptsize single source of truth}};
+  \node[dat, minimum width=24mm] (ap) at (15.0,-1.05) {API client\\[-1pt]{\scriptsize URLSession}};
+  \draw[flow] (vm) -- node[lbl, above]{\texttt{articles()}} (pr);
+  \draw[conf] (im) -- node[lbl, right]{conforms (DIP)} (pr);
+  \draw[flow] ([yshift=1.5mm]im.east) -- node[lbl, above, sloped]{\textbf{1} fresh? return} (ca.west);
+  \draw[flow] ([yshift=-1.5mm]im.east) -- node[lbl, below, sloped]{\textbf{2} miss: fetch} (ap.west);
+  \draw[hot] (ap.north) -- node[lbl, right, align=left]{\textbf{3} write\\back} (ca.south);
+  \draw[hot] (im.west) -| node[lbl, pos=0.3, below, align=center]{\textbf{4} domain entities\\(not DTOs)} (vm.south);
+  \node[note, align=left, anchor=north west] at (5.85,-1.25) {Caller never knows \emph{which} source answered.\\
+    Offline-first: UI reads the local store; the network only \emph{refreshes} it.\\
+    DAO / data source = \textbf{one} store. Repository = \textbf{several} + policy.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\textbf{Coordinator.} \emph{Problem:} VCs that push/present each other are coupled to
+their siblings, cannot be reused in another flow, bloat with routing, and make deep
+links scatter. \emph{3 jobs:} (1) \textbf{build} screens — VC+VM, inject deps
+(assembly); (2) \textbf{navigate} — push/present/dismiss on its presenter
+(\texttt{UINavigationController}); (3) \textbf{own child flows} —
+\texttt{childCoordinators}, \texttt{start()}, remove on finish (forget it $\to$ the flow leaks). The VC only reports
+intent (closure \texttt{onSelect}, delegate) — it is a \emph{Mediator} for navigation.
+SwiftUI: a router owning \texttt{NavigationPath}/\texttt{[Route]} +
+\texttt{navigationDestination(for:)}.
+
+\textbf{Repository.} One source-agnostic API over \emph{several} sources (network,
+cache, DB); orchestrates them with a policy (cache $\to$ API $\to$ write-back, merge,
+staleness); returns \textbf{domain entities}; is swappable behind a protocol the
+\emph{domain} owns. Caching/offline lives \emph{here}.
+
+\textbf{Dependency Injection} = collaborators handed in from outside.
+\begin{itemize}
+  \item \textbf{Constructor} (\texttt{init}) — default: non-optional, \texttt{let},
+        compiler-enforced. \textbf{Property} — optional deps, storyboard VCs (a
+        \texttt{nil} window). \textbf{Method} — per-call dependency.
+  \item \textbf{Default arg:} \texttt{init(s: URLSession = .shared)} — tests inject.
+  \item \textbf{Containers:} Swinject, Resolver, Factory, Needle (compile-time);
+        scopes: transient · singleton · scoped/weak.
+  \item \textbf{SwiftUI:} \texttt{.environment(\textbackslash.key, v)} /
+        \texttt{.environmentObject(o)} — DI by context; missing $\Rightarrow$
+        \emph{runtime} crash.
+  \item \textbf{Composition root:} the one place near launch that wires concretes.
+        \textbf{Service locator} (a container resolved \emph{inside} a type) =
+        anti-pattern: hidden deps, global state.
+  \item \textbf{IoC} = idea · \textbf{DIP} = principle · \textbf{DI} = technique implementing DIP.
+\end{itemize}
+
+\section{Remember}
+\textbf{Coordinator = where \emph{to} · Repository = where \emph{from} · DI = who
+\emph{builds} · Clean = which \emph{way}.} VIPER = V·I·P·E·R.
+
+
+\columnbreak
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+protocol ArticleRepository {        // owned by the DOMAIN
+  func articles() async throws -> [Article] }
+final class DefaultArticleRepo: ArticleRepository {
+  let api: APIClient; let cache: ArticleCache
+  init(api: APIClient, cache: ArticleCache) { // ctor DI
+    self.api = api; self.cache = cache }
+  func articles() async throws -> [Article] {
+    if let c = cache.load(), !c.isStale { return c.items }
+    let fresh = try await api.fetch().map(Article.init)
+    cache.save(fresh); return fresh }         // write back
+}
+// composition root: the ONLY place that picks concretes
+FeedVM(repo: DefaultArticleRepo(api: LiveAPI(), cache: Disk()))
+\end{lstlisting}
+
+\section{VIPER, one module per screen}
+\begin{tikzpicture}[sheet]
+  \node[vip] (v) at (0,0) {\textbf{V}iew};
+  \node[vip, draw=sheetGreen, fill=sheetGreen!10] (p) at (2.45,0) {\textbf{P}resenter};
+  \node[vip, draw=sheetBrown, fill=sheetBrown!10] (i) at (4.9,0) {\textbf{I}nteractor};
+  \node[vip, draw=sheetBrown, fill=sheetBrown!20] (e) at (7.05,0) {\textbf{E}ntity};
+  \node[vip, draw=sheetOrange, fill=sheetOrange!10] (r) at (2.45,-1.25) {\textbf{R}outer};
+  \draw[flow] ([yshift=1mm]v.east) -- node[lbl, above]{events} ([yshift=1mm]p.west);
+  \draw[hot] ([yshift=-1mm]p.west) -- node[lbl, below]{display} ([yshift=-1mm]v.east);
+  \draw[flow] ([yshift=1mm]p.east) -- node[lbl, above]{fetch} ([yshift=1mm]i.west);
+  \draw[hot] ([yshift=-1mm]i.west) -- node[lbl, below]{result} ([yshift=-1mm]p.east);
+  \draw[flow] (i) -- node[lbl, above]{uses} (e);
+  \draw[flow] (p) -- node[lbl, right]{navigate} (r);
+  \draw[flow, dashed] (r.west) -- ++(-0.9,0) node[lbl, left, align=right]{builds next\\module + DI};
+  \node[note, anchor=west] at (4.0,-1.25) {all links = protocols;\\orange back-refs weak};
+\end{tikzpicture}
+
+{\footnotesize \textbf{I} = business logic (use case) · \textbf{P} = formatting ·
+\textbf{R} = navigation + assembly · \textbf{E} = plain models. \textbf{I} $\approx$ Clean's
+Use Case, \textbf{P} $\approx$ Interface Adapter. objc.io's original: I hands P
+\textbf{plain data, never Entities} (so P can only format); the wireframe (R) owns the
+window / \texttt{UINavigationController}. Ownership: V$\to$P$\to$I and P$\to$R strong;
+P$\to$V, I$\to$P, R$\to$VC \textbf{weak} (protocols \texttt{: AnyObject}) or the module never
+frees. Cost: $\sim$5 types + protocols \emph{per screen} — only for large, multi-team apps.}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Repository is \textbf{not mainly about testing}: it hides \emph{multiple}
+        sources · read flow \textbf{cache $\to$ API $\to$ write-back} · \textbf{single
+        source of truth}. Testability falls out.}
+  \trap{A class that just forwards \texttt{api.get()} is a renamed network client,
+        not a Repository — the value is orchestration.}
+  \trap{Coordinator as ``a class that pushes VCs'' misses the point — the
+        \textbf{problem} is VCs knowing each other (coupling, no reuse); the 3 jobs follow.}
+  \trap{\texttt{.shared} called inside a type defeats DI — inject it.}
+  \trap{``Use case needs network so it imports URLSession'' — no: it declares a
+        protocol; the outer layer conforms and is injected.}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} MVC/MVP/MVVM-C · SOLID (DIP, SRP, OCP) · Mediator · Facade · Decorator (caching repo) · TCA}
+
+\end{document}

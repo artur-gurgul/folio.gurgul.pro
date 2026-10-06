@@ -1,0 +1,231 @@
+% large-rn-app-architecture.tex — structuring a large React Native codebase: workspaces +
+% monorepo task runners (Nx / Turborepo), package layers and the dependency rule, feature
+% packages with a public API ("exports"), enforcing boundaries with lint, code ownership,
+% Metro in a monorepo (one react-native copy, package exports, autolinking), navigation
+% assembled from features (React Navigation / Expo Router thin route files), state ownership
+% per layer, universal apps (react-native-web + Expo Router web), a native-modules package,
+% brownfield integration into existing native apps.
+% Not repeated (neighbours): state taxonomy (react-native/rn-state-and-data.tex);
+% navigator mechanics (react-native/rn-navigation.tex).
+% Sources (checked 2026-09-25): docs.expo.dev/guides/monorepos (Metro auto-configured for
+% monorepos since SDK 52; Bun/npm/pnpm/Yarn; pnpm isolated supported from SDK 54 else
+% nodeLinker: hoisted; "Duplicate React Native versions in a single monorepo are not
+% supported"; autolinkingModuleResolution SDK 54 opt-in, automatic SDK 55);
+% reactnative.dev/blog/2025/04/08/react-native-0.79 (package.json "exports"/"imports"
+% resolution on by default from RN 0.79 / Metro 0.82; opt out with
+% resolver.unstable_enablePackageExports = false); reactnative.dev/docs/integration-with-existing-apps
+% (RCTReactNativeFactory, ReactActivity/ReactHost, move the native app into ios/ + android/);
+% nx.dev enforce-module-boundaries (@nx/enforce-module-boundaries, sourceTag,
+% onlyDependOnLibsWithTags); docs.expo.dev/router/introduction (Android, iOS and web share one
+% file-based navigation structure; static rendering on web); github.com/callstack/react-native-brownfield
+% (helpers + CLI packaging RN as XCFramework / AAR).
+% @labels: area=architecture kind=architecture platform=cross-platform topic=architecture,build,tooling discussion=84
+% @tags: monorepo, workspaces, nx, turborepo, feature-modules, module-boundaries, codeowners, metro, package-exports, expo-router, react-native-web, brownfield
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={import,from,export,default,const,let,type,interface,function,return,
+    as,true,false},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]", morestring=[b]',
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {->}{{\hbox{-}\hbox{>}}}2 {--}{{\hbox{-}\hbox{-}}}2
+           {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2 {**}{{\hbox{*}\hbox{*}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  pk/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=6mm, align=center},
+  app/.style={pk, draw=sheetGrey, fill=black!5},
+  ft/.style={pk, draw=sheetBlue, fill=sheetBlue!8},
+  dt/.style={pk, draw=sheetGreen!60!black, fill=sheetGreen!10},
+  ui/.style={pk, draw=sheetOrange, fill=sheetOrange!10},
+  nt/.style={pk, draw=sheetBrown, fill=sheetBrown!10},
+  lay/.style={font=\tiny\bfseries, text=sheetGrey, anchor=east},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ok/.style={->, thick, draw=sheetGrey},
+  no/.style={->, thick, draw=sheetRed, dashed},
+}
+
+\begin{document}
+
+\sheettitle{Large React Native app architecture}{architecture · folio}
+
+\oneliner{A big RN codebase stays fast to change when it is a \textbf{monorepo of packages}
+with \textbf{one dependency direction} — apps $\to$ features $\to$ data / UI $\to$ native
+modules — each package exposing a \textbf{public API} (\ct{"exports"}), boundaries
+\textbf{enforced by lint}, an \textbf{owner} per package, a \textbf{task graph} that builds and
+tests only what changed, and exactly \textbf{one copy of \ct{react-native}}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % layers
+  \node[lay] at (1.35,2.75) {apps};
+  \node[lay] at (1.35,1.75) {features};
+  \node[lay] at (1.35,0.75) {shared};
+  \node[lay] at (1.35,-0.25) {platform};
+  \node[app] (mob) at (2.8,2.75) {\ct{apps/mobile}\\\tiny Expo / RN shell};
+  \node[app] (web) at (5.3,2.75) {\ct{apps/web}\\\tiny RN-web / Expo Router};
+  \node[app] (sb) at (7.6,2.75) {\ct{apps/storybook}};
+  \node[ft] (fa) at (2.8,1.75) {\ct{feature-feed}};
+  \node[ft] (fb) at (5.3,1.75) {\ct{feature-checkout}};
+  \node[ft] (fc) at (7.6,1.75) {\ct{feature-profile}};
+  \node[dt] (api) at (2.8,0.75) {\ct{data}: API client +\\\tiny query keys, models};
+  \node[ui] (ds) at (5.3,0.75) {\ct{ui}: design system};
+  \node[dt] (core) at (7.6,0.75) {\ct{core}: auth, i18n,\\\tiny analytics facade};
+  \node[nt] (nat) at (3.9,-0.25) {\ct{native-*}: Expo / Turbo modules};
+  \node[nt, draw=sheetGrey, fill=white] (cfg) at (7.0,-0.25) {\ct{config}: eslint, tsconfig};
+  \foreach \a/\b in {mob/fa,mob/fb,mob/fc,web/fa,web/fb,sb/ds,fa/api,fa/ds,fb/api,fb/ds,fb/core,fc/ds,fc/core,api/nat,core/nat}
+    \draw[ok] (\a) -- (\b);
+  \draw[no] (fb.east) -- node[lbl, above=1pt, text=sheetRed, font=\scriptsize\bfseries]{×} (fc.west);
+  \draw[no] (ds.east) -- node[lbl, above=1pt, text=sheetRed, font=\scriptsize\bfseries]{×} (core.west);
+  \node[lbl, anchor=west, text=sheetGrey] at (0.0,-0.85) {grey = allowed imports, always \textbf{downward}; \textcolor{sheetRed}{red dashed} (feature$\to$feature, ui$\to$core) fails CI};
+  \draw[sheetGrey!50] (9.0,3.2) -- (9.0,-1.0);
+  % affected graph
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (9.15,3.05) {PR touches \ct{ui} $\to$ what runs?};
+  \node[ui, very thick] (u2) at (10.4,2.25) {\ct{ui} changed};
+  \node[ft, fill=sheetOrange!20] (a1) at (9.8,1.3) {feed};
+  \node[ft, fill=sheetOrange!20] (a2) at (11.0,1.3) {checkout};
+  \node[ft, fill=sheetOrange!20] (a3) at (12.2,1.3) {profile};
+  \node[app, fill=sheetOrange!20] (a4) at (10.4,0.35) {mobile · web · storybook};
+  \node[dt, fill=black!3, draw=sheetGrey] (c1) at (13.6,2.25) {\ct{data}};
+  \node[nt, fill=black!3, draw=sheetGrey] (c2) at (13.6,1.3) {\ct{native-*}};
+  \draw[hot] (u2) -- (a1); \draw[hot] (u2) -- (a2); \draw[hot] (u2) -- (a3);
+  \draw[hot] (a1) -- (a4); \draw[hot] (a2) -- (a4);
+  \node[lbl, anchor=west, align=left] at (13.0,0.55) {untouched: \textbf{cache hit}\\(content hash of inputs)};
+  \node[lbl, anchor=west, align=left, text=sheetOrange] at (9.15,-0.35) {\ct{nx affected -t lint test typecheck} · Turborepo \ct{\hbox{-}\hbox{-}filter}\\= the \emph{reverse} dependency graph of the diff; remote cache shared by CI + laptops};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\footnotesize\setstretch{1.0}
+
+\hd{The repo}
+\begin{itemize}
+  \item \textbf{Workspaces} (Yarn, pnpm, npm, Bun) symlink \ct{packages/*} into
+        \ct{node\_modules}; \textbf{Nx} or \textbf{Turborepo} add a \textbf{task graph} from those
+        dependencies, input hashing, local + \textbf{remote cache}, and ``affected'' runs.
+  \item \textbf{One \ct{react-native}, one \ct{react}}: Expo — ``duplicate React Native versions
+        in a single monorepo are not supported''. Pin them in the app, \ct{peerDependencies} in
+        packages; check \ct{npm why react-native} / \ct{pnpm why}.
+  \item \textbf{Metro}: Expo SDK 52+ configures a monorepo automatically; bare RN adds the root
+        to \ct{watchFolders}. RN 0.79 (Metro 0.82) resolves \ct{package.json} \ct{"exports"}
+        and \ct{"imports"} by default (opt out: \ct{resolver.unstable\_enablePackageExports}).
+  \item \textbf{pnpm}: isolated \ct{node\_modules} catches \emph{phantom} (undeclared) deps;
+        Expo supports it from SDK 54, else \ct{nodeLinker: hoisted}.
+  \item \textbf{Native code autolinks from the app}: a native dependency must be resolvable from
+        \ct{apps/mobile} (Expo SDK 54 \ct{autolinkingModuleResolution}, automatic in SDK 55).
+\end{itemize}
+
+\hd{Packages and boundaries}
+\begin{itemize}
+  \item \textbf{Feature package} = vertical slice: screens, its navigator, hooks, query keys,
+        analytics events. Public surface = \ct{index.ts} + \ct{"exports"}; deep imports
+        (\ct{feature-feed/src/x}) are not resolvable.
+  \item \textbf{Features never import features.} Cross-feature needs go \emph{down} (a shared
+        \ct{data}/\ct{core} package), \emph{through navigation} (route + params), or through an
+        injected interface the app shell wires up.
+  \item \textbf{Enforce}: Nx tags (\ct{type:feature}, \ct{type:ui}, \ct{scope:checkout}) +
+        \ct{@nx/enforce-module-boundaries} \ct{depConstraints}; or \ct{no-restricted-imports},
+        \ct{import/no-cycle}; TS project references for build order.
+  \item \textbf{Ownership}: \ct{CODEOWNERS} per package path $\to$ the owning team must approve;
+        a package without an owner is where rot starts.
+  \item \textbf{State by owner}: server cache (TanStack Query) keys \emph{owned by} the data
+        package — invalidation from any feature uses the same key factory; client stores
+        (Zustand) \emph{per feature}; truly global = session, theme, flags only.
+\end{itemize}
+
+\hd{Example — public API, boundary rule, thin route}
+\begin{lstlisting}[language=TSSheet]
+// packages/feature-feed/package.json
+{ "name": "@acme/feature-feed",
+  "exports": { ".": "./src/index.ts" },           // nothing else
+  "peerDependencies": { "react": "*", "react-native": "*" } }
+// eslint.config.mjs (root)
+'@nx/enforce-module-boundaries': ['error', { depConstraints: [
+  { sourceTag: 'type:feature',
+    onlyDependOnLibsWithTags: ['type:data', 'type:ui', 'type:core'] },
+  { sourceTag: 'type:ui', onlyDependOnLibsWithTags: ['type:ui'] } ] }]
+// apps/mobile/app/(tabs)/feed.tsx  -- Expo Router route file
+export { FeedScreen as default } from '@acme/feature-feed';
+\end{lstlisting}
+
+\hd{Versioning, build, release}
+\begin{itemize}
+  \item Internal packages: \ct{"workspace:*"} — no versions, always head; only packages
+        \emph{published} outside (an SDK, the design system for another repo) get semver +
+        Changesets.
+  \item \ct{tsc -b} with project references (or Nx \ct{typecheck}) per package — incremental,
+        and a cycle is a build error.
+  \item One native build per app; OTA channel per app + \ct{runtimeVersion}; a feature flag per
+        risky feature so a bad feature is switched off, not hot-fixed.
+  \item \textbf{Polyrepo} instead? Only when teams must release independently — the price is
+        version skew, cross-repo PRs and a published package for every shared change.
+  \item \textbf{Migrating a big app in}: start with \ct{config} + \ct{ui}, then carve one
+        feature at a time out of \ct{apps/mobile/src} (strangler) — boundaries as
+        \emph{warnings} first, errors once the count reaches zero.
+\end{itemize}
+
+\columnbreak
+
+\hd{Navigation architecture}
+\begin{itemize}
+  \item The \textbf{app shell owns the root} (auth gate, tabs, modals); each feature exports its
+        screens or a nested stack + typed \ct{ParamList}; the shell composes them and merges the
+        features' deep-link config.
+  \item \textbf{Expo Router}: routes are files in the \emph{app}'s \ct{app/}; keep them one-line
+        re-exports so features stay router-agnostic and testable.
+  \item Cross-feature jumps by \textbf{route name + params} (or a URL), never by importing a
+        screen component.
+\end{itemize}
+
+\hd{Universal (iOS · Android · web)}
+\begin{itemize}
+  \item \textbf{react-native-web} renders \ct{View}/\ct{Text}/\ct{Pressable} as DOM;
+        \textbf{Expo Router} gives Android, iOS and web one file-based navigation, with
+        \textbf{static rendering} on web (SEO).
+  \item Platform files: \ct{Map.native.tsx} / \ct{Map.web.tsx} (also \ct{.ios} / \ct{.android})
+        — the bundler picks; the \emph{interface} lives in the shared file's types.
+  \item Share logic and UI primitives; accept per-platform screens where UX differs (hover,
+        keyboard, URL bar). Web bundle size and SSR-unsafe code (\ct{window}) are the tax.
+\end{itemize}
+
+\hd{Native modules package}
+\ct{packages/native-*}: Expo Modules API (Swift/Kotlin) or a TurboModule spec + Codegen; a
+typed JS facade, a \textbf{web / Jest fallback}, its own changelog. Native changes bump the app's
+\ct{runtimeVersion} — OTA updates can't ship them.
+
+\hd{Brownfield — RN inside an existing native app}
+\begin{itemize}
+  \item Official path: native project moves into \ct{ios/} + \ct{android/} of an RN project;
+        host screens via \ct{RCTReactNativeFactory} (iOS) / \ct{ReactActivity} +
+        \ct{ReactHost} (Android). One shared runtime; each RN screen is an
+        \ct{AppRegistry} name.
+  \item At scale: ship RN as a \textbf{prebuilt XCFramework / AAR} (e.g. Callstack's
+        react-native-brownfield CLI) so native teams need no Node toolchain; native keeps the
+        navigation; data via initial props + a native-module/event contract.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Two \ct{react} copies $\to$ ``Invalid hook call''; two \ct{react-native} $\to$ native
+        module / view registered twice. Dedupe, peer-depend.}
+  \trap{A \ct{shared}/\ct{common} package everything depends on — a hidden monolith; split by
+        purpose (\ct{ui}, \ct{data}, \ct{core}).}
+  \trap{Barrel \ct{index.ts} re-exporting a heavy module eagerly — startup cost in every importer.}
+  \trap{Native dep declared only in a feature package — not autolinked, crash at runtime.}
+  \trap{Hoisting hides undeclared deps until a CI or pnpm install breaks them.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Apps $\to$ features $\to$ shared $\to$ native, never sideways · exports = the API · lint
+enforces · CODEOWNERS own · affected + cache · one react-native.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rn-state-and-data · rn-navigation ·
+rn-native-modules · modularization-spm (the iOS equivalent) · lint-static-analysis}
+
+\end{document}

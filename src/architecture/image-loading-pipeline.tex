@@ -1,0 +1,184 @@
+% image-loading-pipeline.tex — the "design the image feed" follow-up: request -> memory cache
+% (decoded, sized bitmaps, cost-bounded) -> disk cache (encoded bytes, LRU sweep; URLCache vs
+% custom) -> network (in-flight dedup with subscriber counts, priority, cancellation on reuse)
+% -> decode + downsample off main -> memory maths, prefetching, placeholders, formats, pressure.
+% NOT repeated here: the feed framework (architecture/ios-client-system-design.tex), the ImageIO
+% downsample code and lazy-decode mechanics (the rendering-pipeline folio).
+% Sources (checked 2026-09-26):
+%   WWDC18 219 "Image and Graphics Best Practices" (data vs image buffers, 4 B/px sRGB, 8 B/px
+%     extended range, ShouldCache false + ShouldCacheImmediately, serial decode queue vs thread
+%     explosion) — developer.apple.com/videos/play/wwdc2018/219
+%   developer.apple.com/documentation/foundation/nscache (thread-safe, auto-eviction, keys not copied)
+%   developer.apple.com/documentation/foundation/urlsessiondatadelegate/urlsession(_:datatask:willcacheresponse:completionhandler:)
+%     (cached only if 2xx, headers allow, response <= ~5% of disk cache)
+%   developer.apple.com/documentation/uikit/uicollectionviewdatasourceprefetching
+% Format versions: WebP decode iOS 14 (ImageIO, widely reported), JPEG XL iOS 17 (Apple);
+% AVIF iOS 16 not confirmed on an Apple page -> marked unverified.
+% @labels: area=architecture kind=architecture platform=ios topic=system-design,performance,memory discussion=82
+% @tags: image-pipeline, nscache, disk-cache, urlcache, request-coalescing, cancellation, prefetching, downsampling, imageio, blurhash, memory-warning, image-formats
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,override,super,
+    if,else,return,guard,self,nil,try,await,async,throws,private,actor,
+    true,false,in,Task},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+
+\tikzset{
+  st/.style={box, font=\scriptsize, minimum height=11mm, text width=21mm, inner sep=1.5pt},
+  mem/.style={st, draw=sheetGreen!70!black, fill=sheetGreen!10},
+  dsk/.style={st, draw=sheetBrown, fill=sheetBrown!10},
+  net/.style={st, draw=sheetGrey, fill=black!5},
+  dec/.style={st, draw=sheetOrange, fill=sheetOrange!10},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  miss/.style={->, thick, draw=sheetRed!80},
+  hit/.style={->, thick, draw=sheetGreen!60!black},
+}
+
+\begin{document}
+
+\sheettitle{Image loading pipeline — memory, disk, network, decode}{architecture · folio}
+
+\oneliner{A request walks \textbf{memory} (decoded, \emph{sized} bitmaps) $\to$ \textbf{disk}
+(encoded bytes) $\to$ \textbf{network} (deduplicated, prioritised, cancellable) and comes back
+through \textbf{decode + downsample off the main thread}. What matters: the cache \textbf{key},
+the \textbf{memory maths}, \textbf{one download per key} with cancellation only when the
+\emph{last} subscriber leaves, an \textbf{identity check} before assigning, and \textbf{prefetch}
+at low priority.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[st, text width=17mm] (req) at (0,0) {\textbf{request}\\URL + max px\\+ priority};
+  \node[mem] (m) at (2.7,0) {\textbf{1 memory}\\\ct{NSCache}, key =\\URL@px, cost = bytes};
+  \node[dsk] (d) at (5.6,0) {\textbf{2 disk}\\\ct{Caches/}, file\\= SHA-256(URL)};
+  \node[net] (f) at (8.5,0) {\textbf{3 in-flight table}\\key $\to$ job +\\subscriber count};
+  \node[net] (n) at (11.4,0) {\textbf{4 network}\\\ct{URLSession}, CDN\\variant \ct{?w=390}};
+  \node[dec] (dc) at (8.5,-2.0) {\textbf{5 decode}\\bounded queue,\\ImageIO thumbnail};
+  \node[st, text width=17mm, draw=sheetBlue, fill=sheetBlue!14] (ui) at (0,-2.0) {\textbf{main}: same\\id? assign\\(fade if net)};
+  \draw[miss] (req) -- (m);
+  \draw[miss] (m) -- node[lbl, above]{miss} (d);
+  \draw[miss] (d) -- node[lbl, above]{miss} (f);
+  \draw[miss] (f) -- node[lbl, above]{new key} (n);
+  \draw[hot] (n.south) |- node[lbl, pos=0.25, right]{bytes} (dc.east);
+  \draw[flow, dashed] (n.north) -- ++(0,0.45) -| node[lbl, pos=0.25, above]{write bytes async (temp file + rename)} (d.north);
+  \draw[hit] (d.south) |- node[lbl, pos=0.3, left]{hit: bytes} ([yshift=2mm]dc.west);
+  \draw[hit] ([yshift=-2mm]dc.west) -- node[lbl, below, pos=0.35]{decoded, sized $\to$ insert (cost)} ([yshift=-2mm]dc.west -| m.east) |- ([yshift=-2mm]ui.east);
+  \draw[hit] (m.south) |- node[lbl, pos=0.35, left]{hit: sync} ([yshift=2mm]ui.east);
+  \draw[flow, dashed, sheetOrange] ([xshift=-4mm]f.south) -- node[lbl, left, text=sheetOrange]{join} ([xshift=-4mm]dc.north);
+  % side notes
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (12.75,-1.05) {\textbf{cancel}: cell reused /\\off-screen $\to$ subscribers $-$1;\\at \textbf{0} cancel the download};
+  \node[lbl, anchor=west, align=left, text=sheetGreen!40!black] at (12.75,-2.0) {\textbf{prefetch} enters at \emph{low}\\priority; raise it when\\the row appears};
+  \node[lbl, anchor=west, align=left, text=sheetGrey] at (12.75,-2.9) {memory warning $\to$ NSCache\\purges + \ct{removeAllObjects()};\\background $\to$ trim};
+  \node[lbl, anchor=north west, align=left] at (-0.95,-2.75) {decoded bytes = px w × px h × \textbf{4} (sRGB) or \textbf{8} (extended range);
+    disk holds the \emph{encoded} file — often 10$\times$ smaller};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\small\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Key} = URL + target \emph{pixel} size (+ transforms: crop, rounding, blur). Same
+        URL at 2 sizes = 2 memory entries; disk keeps one set of bytes per URL.
+  \item \textbf{Memory}: \ct{NSCache<Key, UIImage>} — thread-safe, keys not copied, evicts
+        on its own under pressure. Set \ct{totalCostLimit} with cost = decoded bytes;
+        \ct{countLimit} alone lets 10 huge images blow the budget. Apple: eviction order ``not
+        guaranteed'', limit ``not strict'' — so not an LRU; size it, don't rely on order.
+  \item \textbf{Disk}: encoded bytes in \ct{Caches/} (purgeable, not backed up); index of
+        size + last-access; sweep to a byte cap + max age, off main (launch, background); write
+        atomically. \textbf{\ct{URLCache} vs custom}: \ct{URLCache} gives HTTP semantics
+        (\ct{Cache-Control}, \ct{ETag} revalidation) but only stores 2xx responses whose
+        headers allow it and that are $\leq$ \textasciitilde5\,\% of its disk capacity, and you
+        do not choose eviction. Custom: your key, LRU, size cap, pinning of prefetched
+        items. Neither holds a \emph{decoded} tier.
+  \item \textbf{Network}: \textbf{coalesce} — N cells asking for one key share one job;
+        each caller is a subscriber; cancel the transfer only when the count reaches 0.
+        \textbf{Priority}: \ct{URLSessionTask.priority} (0–1; \ct{lowPriority} 0.25,
+        \ct{highPriority} 0.75; only a \emph{hint}) — visible high, prefetch low. Cap concurrency. Ask the CDN
+        for the size you need (\ct{?w=390}, \ct{Accept: image/webp}) — the cheapest byte is
+        the one never sent.
+  \item \textbf{Decode}: off main on a \emph{bounded} queue (WWDC18: a serial queue, not
+        one global-queue block per image $\to$ thread explosion). ImageIO
+        \ct{CGImageSourceCreateThumbnailAtIndex} + \ct{kCGImageSourceThumbnailMaxPixelSize},
+        or iOS 15 \ct{byPreparingThumbnail(ofSize:)}. A plain \ct{UIImage(data:)} decodes
+        \emph{later}, full size, on main, in the commit's prepare phase.
+  \item \textbf{Cancellation}: \ct{prepareForReuse} / \ct{didEndDisplaying}; SwiftUI
+        \ct{.task(id: url)} cancels on disappear or id change. Then \textbf{check identity}
+        before assigning — a late result must not land in a reused cell.
+  \item \textbf{Prefetch}: \ct{UICollectionViewDataSourcePrefetching} (iOS 10)
+        \ct{prefetchItemsAt} / \ct{cancelPrefetchingForItemsAt}; it is a \emph{hint} —
+        not called for every row on a fast fling, so display must work without it. SwiftUI
+        lazy stacks have no prefetch hook: warm row $n{+}k$ from row $n$'s \ct{onAppear}.
+  \item \textbf{Placeholders}: dominant colour or \textbf{BlurHash} (a \textasciitilde20–30
+        char string in the JSON, decoded to a tiny image) $\to$ progressive JPEG
+        (\ct{CGImageSourceCreateIncremental}) $\to$ final. Fade in only on a network load,
+        never on a memory hit (flicker on every scroll).
+  \item \textbf{Formats}: HEIC iOS 11 · WebP decode iOS 14 · AVIF iOS 16\unverified{} ·
+        JPEG XL iOS 17. Check at runtime: \ct{CGImageSourceCopyTypeIdentifiers()}.
+        Animated GIF/WebP = one bitmap per frame in memory.
+\end{itemize}
+
+\columnbreak
+
+\section{Example — the cell side}
+\begin{lstlisting}[language=SwiftSheet]
+final class PhotoCell: UICollectionViewCell {    // @MainActor
+  private var load: Task<Void, Never>?; private var shownID: Photo.ID?
+  func show(_ p: Photo, _ pipe: ImagePipeline) {
+    shownID = p.id; imageView.image = p.blurHash  // instant
+    let px = max(bounds.width, bounds.height)
+             * traitCollection.displayScale      // PIXELS
+    load = Task {                                 // inherits main actor
+      let img = try? await pipe.image(p.url, maxPixel: px, .high)
+      guard !Task.isCancelled, shownID == p.id, let img else { return }
+      imageView.image = img }                     // right cell, main
+  }
+  override func prepareForReuse() {
+    super.prepareForReuse(); load?.cancel(); imageView.image = nil }
+}
+\end{lstlisting}
+{\scriptsize\ct{pipe.image} must translate the caller's cancellation into
+``subscriber $-$1'' — cancelling the \emph{shared} task would kill the other cells' load.\par}
+
+\section{Memory maths — say the numbers}
+{\scriptsize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{33mm}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{18mm}@{}}
+\toprule
+\textbf{image} & \textbf{decoded} & \textbf{× 60 cells} \\
+\midrule
+12 MP photo, 4032×3024 & 4032·3024·4 = \textbf{48.8 MB} & 2.9 GB — jetsam \\
+3-col grid, 130 pt @3x = 390 px & 390·390·4 = \textbf{608 KB} & 36 MB \\
+same, extended range (8 B/px) & 1.2 MB & 73 MB \\
+\bottomrule
+\end{tabular}}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Memory cache of \emph{encoded} data or full-size \ct{UIImage(data:)} — decode on main,
+        every first display, at full resolution.}
+  \trap{Cancelling the download when \emph{one} of three cells showing it is reused.}
+  \trap{Prefetch at default priority — it competes with what is on screen.}
+  \trap{50 decodes dispatched at once on global queues — thread explosion, worse latency.}
+  \trap{``Just use \ct{URLCache}'' — no decoded tier, the \textasciitilde5\,\% size rule,
+        eviction you do not control.}
+  \trap{Fade-in animation on a memory hit; no identity check $\to$ wrong image flashes.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Key · tier · dedupe · decode small off main · check identity · prefetch low.}
+Memory = pixels × 4; disk = bytes; network = the size you need.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} ios-client-system-design (feed) ·
+rendering-pipeline (downsample code, lazy decode) · instruments-performance (memory) ·
+collectionview-compositional · data-transfer-optimisation (formats)}
+
+\end{document}

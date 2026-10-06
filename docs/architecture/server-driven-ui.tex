@@ -1,0 +1,206 @@
+% server-driven-ui.tex — server-driven UI (SDUI) for a mobile app: why, the
+% parameterisation spectrum, component schema + client registry, versioning + capability
+% negotiation, fallbacks for unknown components, the action model, layout vs content,
+% caching/offline, performance, testing/preview, accessibility, when NOT to, App Review.
+% Sources (checked 2026-09-26):
+%   App Review Guidelines 2.5.2, 2.3.1(a), 2.1(a), 4.7 (quoted wording) —
+%     developer.apple.com/app-store/review/guidelines/
+%   Airbnb Tech Blog, R. Brooks, "A Deep Dive into Airbnb's Server-Driven UI System" (2021) +
+%     InfoQ summary infoq.com/news/2021/07/airbnb-server-driven-ui/ (Ghost Platform: sections,
+%     screens, actions; one shared GraphQL schema for web/iOS/Android; SectionComponentType;
+%     IAction; Viaduct)
+%   Lyft Engineering, A. Hartwell & T. Miko, "The Journey to Server Driven UI At Lyft Bikes and
+%     Scooters" (2023-03) — eng.lyft.com
+%   github.com/MobileNativeFoundation/discussions/discussions/47 (Airbnb + Lyft engineers:
+%     payload size, testing difficulty, high upfront cost, no coordinated animations)
+%   Developer Program License Agreement executable-code clause (interpreted code allowed if it does
+%     not change the app's primary purpose) — wording via the agreement text; section number
+%     varies between versions, so none is printed.
+% The rest is general engineering practice, stated as practice, not as a standard.
+% @labels: area=architecture kind=architecture platform=cross-platform topic=system-design,architecture,ui discussion=86
+% @tags: server-driven-ui, sdui, component-registry, schema-versioning, capability-negotiation, fallback, action-model, backend-for-frontend, app-review-2-5-2, airbnb-ghost-platform, experimentation
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,case,default,switch,
+    if,else,return,guard,self,nil,try,await,async,throws,private,static,some,any,
+    true,false,in,catch,do},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+
+\tikzset{
+  sv/.style={box, font=\scriptsize, inner sep=1.5pt, draw=sheetGrey, fill=black!5, minimum height=6mm},
+  js/.style={draw=sheetBrown, fill=sheetBrown!6, rounded corners=2pt, font=\ttfamily\tiny,
+             align=left, inner sep=2pt},
+  rg/.style={box, font=\scriptsize, inner sep=1.2pt, minimum height=5mm, text width=17mm},
+  ok/.style={rg, draw=sheetGreen!70!black, fill=sheetGreen!10},
+  bad/.style={rg, draw=sheetRed, fill=sheetRed!8},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Server-driven UI — schema, registry, versions, fallbacks}{architecture · folio}
+
+\oneliner{The server sends a typed \textbf{description} of a screen — \emph{layout} +
+\emph{components with their data} + \emph{actions} — and the app renders it with
+\textbf{native components it already ships}. You gain release independence (change a screen
+without a store release, run experiments, one backend for iOS/Android/web); you pay with a schema
+to design, \textbf{every old app version} to keep working, and a weaker compile-time contract.
+It moves \textbf{data and composition}, never code.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  % server side
+  \node[font=\bfseries\scriptsize, text=sheetGrey, anchor=west] at (-0.25,2.55) {server (BFF / screen service)};
+  \node[sv] (fs) at (0.55,1.85) {feature\\services};
+  \node[sv] (ex) at (0.55,0.95) {experiments\\flags};
+  \node[sv, draw=sheetBlue, fill=sheetBlue!8] (bld) at (2.6,1.4) {screen\\builder};
+  \node[sv] (cap) at (2.6,0.1) {capabilities\\of \emph{this} client};
+  \draw[flow] (fs) -- (bld); \draw[flow] (ex) -- (bld); \draw[flow] (cap) -- (bld);
+  % request
+  \node[js, anchor=west] (rq) at (-0.25,-0.85) {GET /screens/home\\X-App-Version: 7.4.0\\X-Components: hero@2,list@1,carousel@1};
+  \draw[hot] (rq.north -| cap.south) -- (cap.south);
+  % payload
+  \node[js, anchor=west, text width=46mm] (pl) at (4.0,1.0) {\{ "screen": \{ "layout": "list",\\
+\ \ "placements": ["s1","s2","s3"] \},\\
+\ \ "sections": [\\
+\ \ \ \{"id":"s1","type":"hero@2","data":\{…\}\},\\
+\ \ \ \{"id":"s2","type":"quiz@1","data":\{…\},\\
+\ \ \ \ "fallback":\{"type":"banner@1",…\}\},\\
+\ \ \ \{"id":"s3","type":"carousel@1",…,\\
+\ \ \ \ "onTap":\{"navigate":"/room/42"\}\} ],\\
+\ \ "ttl": 300 \}};
+  \draw[hot] (bld.east) -- (pl.west |- bld.east);
+  \node[lbl, text=sheetBrown] at (6.3,2.55) {\textbf{JSON / GraphQL / protobuf}: data, not code};
+  % client
+  \node[font=\bfseries\scriptsize, text=sheetBlue, anchor=west] at (9.1,2.55) {client};
+  \node[box, font=\scriptsize, inner sep=1.5pt, text width=16mm] (dec) at (9.95,1.45) {decode\\\emph{per section}\\(lossy)};
+  \node[box, font=\scriptsize, inner sep=1.5pt, text width=16mm, draw=sheetOrange, fill=sheetOrange!10] (reg) at (9.95,0.05) {\textbf{registry}\\type $\to$ renderer};
+  \draw[hot] (pl.east |- dec.west) -- (dec.west);
+  \draw[hot] (dec) -- (reg);
+  \node[ok]  (r1) at (12.45,1.9) {\ct{hero@2} $\to$ HeroView};
+  \node[bad] (r2) at (12.45,1.05) {\ct{quiz@1}: unknown};
+  \node[ok]  (r2b) at (14.6,1.05) {\ct{banner@1} fallback};
+  \node[ok]  (r3) at (12.45,0.2) {\ct{carousel@1}};
+  \node[box, font=\scriptsize, inner sep=1.2pt, draw=sheetGreen!70!black, fill=sheetGreen!5, text width=19mm] (act) at (12.45,-0.85) {action handler\\navigate · open URL\\request · track};
+  \node[sv, text width=15mm] (rt) at (14.8,-0.85) {router (same as\\deep links)};
+  \draw[flow] (reg.east) -- ++(0.25,0) |- (r1.west);
+  \draw[flow] (reg.east) -- ++(0.25,0) |- (r2.west);
+  \draw[flow] (reg.east) -- ++(0.25,0) |- (r3.west);
+  \draw[hot, sheetRed] (r2) -- node[lbl, above]{use} (r2b);
+  \draw[flow, sheetGreen!60!black] (r3) -- node[lbl, right]{tap} (act);
+  \draw[flow] (act) -- (rt);
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (13.7,1.95) {no fallback $\to$ skip + log;\\critical $\to$ ``update app''};
+  \node[lbl, anchor=north west, align=left, text=sheetGrey] at (-0.25,-1.55) {cache the last good response per screen (ETag) $\to$ render it at once, refresh behind · bundle a default for first launch · the server must answer \emph{every} supported app version};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\small\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{How much is driven?} A spectrum: \emph{flags/config} $\to$ \emph{content}
+        (copy, images) $\to$ \textbf{composition} (which known sections, in what order,
+        with what data) $\to$ \emph{primitives} (stack/text/image = a browser). Most
+        production systems sit at composition of \emph{product-level} sections; primitives
+        rebuild HTML with worse tooling.
+  \item \textbf{Schema}: a typed contract with a \textbf{type discriminator} per component
+        (GraphQL union/interface, protobuf \ct{oneof}, JSON + JSON Schema); models
+        \textbf{codegen}'d for each client. Data arrives \emph{ready to show} — translated,
+        localised, formatted — so clients stay dumb.
+  \item \textbf{Layout vs content}: the \emph{screen} says where things go (placements,
+        list/grid, modal vs push); a \emph{section} carries only its data and knows nothing
+        of the screen, so it can be reused on any screen.
+  \item \textbf{Registry}: \ct{type $\to$ renderer}; each renderer decodes \emph{its own}
+        payload, so one malformed section cannot blank the screen.
+  \item \textbf{Versioning}: a type's shape is frozen once shipped; a breaking change is a
+        \textbf{new type} (\ct{hero@2}). Only add optional fields. Old app versions live for
+        years — the server must serve all of them.
+  \item \textbf{Capability negotiation}: the client sends app version + the component
+        types/versions it renders; the server emits only those, or attaches a
+        \ct{fallback}. The client still defends itself: unknown type $\to$ fallback
+        $\to$ skip + log; unknown action / enum case $\to$ no-op default.
+  \item \textbf{Actions} are \emph{declarative intents}, not code: \ct{navigate(route)},
+        \ct{openURL}, \ct{request(endpoint, then:)}, \ct{track(event)}, \ct{dismiss},
+        \ct{sequence}. The client owns execution; routes go through the \textbf{same
+        router as universal links}. Local UI state (toggles, text fields) stays on the
+        client; the server re-validates.
+  \item \textbf{Cache + offline}: store the last good response per screen, render it
+        immediately, refresh behind (stale-while-revalidate); ship a bundled default.
+  \item \textbf{Performance}: a round trip before first paint $\to$ prefetch, cache,
+        skeletons, paginate sections, stable ids for diffing, decode off main. Big payloads
+        were a named pain point at Airbnb.
+  \item \textbf{Testing}: snapshot every component × fixtures (incl. long text, RTL,
+        Dynamic Type); contract tests on the schema; a \textbf{compat matrix} (oldest
+        supported app × new server response); a preview tool for authors.
+  \item \textbf{Accessibility}: native components keep VoiceOver, Dynamic Type, RTL — a win
+        over web views; the server must still send labels and semantics (heading, button).
+\end{itemize}
+
+\section{When NOT to}
+Bespoke, animated, gesture-heavy UI (editors, camera, games — coordinated animations were a
+named limit at Lyft); offline-first core flows; small teams (high upfront cost); a
+latency-critical first screen with no cache; when a web view would do.
+
+\columnbreak
+
+\section{Example — a defensive registry}
+\begin{lstlisting}[language=SwiftSheet]
+struct Section: Decodable { let id: String; let type: String
+  let data: JSONValue; let fallback: [Section]? }
+protocol Renderer { static var type: String { get }   // "hero@2"
+  func view(_ data: JSONValue, _ on: ActionHandler) throws -> AnyView }
+@MainActor final class Registry {
+  var renderers: [String: any Renderer] = [:]
+  var supported: String { renderers.keys.sorted().joined(separator: ",") }
+  func render(_ s: Section, _ on: ActionHandler) -> AnyView? {
+    if let r = renderers[s.type], let v = try? r.view(s.data, on) { return v }
+    if let f = s.fallback?.first { return render(f, on) }  // server's plan B
+    on.log(.unrendered(s.type, s.id)); return nil }       // skip, never crash
+}
+enum Action: Decodable { case navigate(String), openURL(URL),
+  track(String), unknown }            // custom init: unknown keys -> .unknown
+\end{lstlisting}
+{\scriptsize \ct{supported} goes into the capabilities header; the list of sections is decoded
+as \ct{[Section]} with \ct{data} kept raw, so a bad section fails alone.\par}
+
+\section{App Review — what Apple actually says}
+\begin{itemize}
+  \item \textbf{2.5.2}: apps ``may not \dots\ download, install, or execute code which
+        introduces or changes features or functionality of the app''. SDUI ships
+        \emph{data} rendered by reviewed native code — that is the defensible line.
+  \item \textbf{2.3.1(a)}: no ``hidden, dormant, or undocumented features''; new features
+        described in Review Notes — so a server flag must not switch on something App Review
+        never saw.
+  \item \textbf{2.1(a)}: backend on, demo account ready — review sees the server's output.
+  \item The license agreement's executable-code clause allows \emph{interpreted} code only if
+        it does not change the app's primary purpose (the basis for JS OTA updates, not SDUI).
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``SDUI skips App Review'' — no: it recombines \emph{reviewed} features.}
+  \trap{Changing a shipped type's payload in place $\to$ old clients break.}
+  \trap{Strict decode of the whole screen: one unknown case = empty screen.}
+  \trap{Going down to primitives: a browser without the browser's tooling.}
+  \trap{No cache $\to$ spinner on every launch; testing only the newest client.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Server says \emph{what}, client owns \emph{how}.} Freeze types, add versions,
+negotiate capabilities, fall back, never crash.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} ios-client-system-design ·
+typed-contracts-across-teams · graphql-apollo · flags-experiments-observability ·
+deep-links-universal-links · store-policy-and-deadlines}
+
+\end{document}

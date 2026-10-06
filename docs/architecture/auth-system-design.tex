@@ -1,0 +1,186 @@
+% auth-system-design.tex — designing login for a mobile app as a SYSTEM: session vs token auth,
+% access/refresh lifetimes (idle vs absolute), biometric re-authentication (Keychain ACL vs Secure
+% Enclave challenge), device binding, SSO (OIDC federation, enterprise), passkeys in the flow, MFA
+% ranking, step-up, account recovery, logout-everywhere / revocation, rate limiting + brute force.
+% Picture: the architecture boxes (app / auth server / session store / API) + a token lifecycle timeline.
+% Sources (checked 2026-10-06) — NIST SP 800-63B-4 (pages.nist.gov/800-63-4); OWASP Authentication, Session Management,
+% Credential Stuffing cheat sheets (cheatsheetseries.owasp.org); RFC 6238, 7009, 9449, 9470, 6585;
+% OpenID Connect Core 1.0 + Back-Channel Logout 1.0; developer.apple.com (LocalAuthentication,
+% SecAccessControl, AuthenticationServices).
+% NOT repeated: PKCE flow, JWT validation, rotation reuse-detection, single-flight refresh, token
+% storage classes (networking/oauth-oidc-jwt.tex); SecAccessControl / LAContext mechanics
+% (security-build/keychain-secure-enclave.tex).
+% @labels: area=architecture kind=architecture platform=general topic=security,system-design discussion=75
+% @tags: authentication, session-management, refresh-token, biometric-reauth, device-binding, sso, passkeys, mfa, step-up-auth, account-recovery, token-revocation, rate-limiting
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SQLSheet}{
+  morekeywords={CREATE,TABLE,PRIMARY,KEY,NOT,NULL,REFERENCES,UPDATE,SET,WHERE,AND,IS,
+    text,uuid,timestamptz,int,bytea},
+  sensitive=true, morecomment=[l]{--}, morestring=[b]'}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{Designing login for a mobile app — the whole system}{architecture · folio}
+
+\oneliner{Login is a \textbf{system}, not a screen. An identity step proves \emph{who} (password + MFA,
+\textbf{passkey}, SSO); the server issues a \textbf{short-lived access token} and a \textbf{server-side,
+revocable refresh credential} bound to \emph{this device}, which the app keeps in the Keychain and
+re-opens with \textbf{biometrics}. Refresh, step-up, recovery, logout and rate limits need the same care
+as the happy path — attackers pick the weakest one.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    comp/.style={box, font=\tiny, text width=#1, align=left, inner sep=2pt},
+    comp/.default=25mm,
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    ph/.style={draw=#1, fill=#1!12, rounded corners=1pt, minimum height=3.2mm, inner sep=0pt,
+               font=\tiny, anchor=west}]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.3,3.75) {The boxes};
+  \node[comp=25mm] (app) at (1.05,2.35) {\textbf{\scriptsize App}\\
+     login in the system browser\\
+     \textbf{single-flight} refresh\\
+     \textbf{Keychain}: refresh token,\\\ \ ACL \ct{.biometryCurrentSet}\\
+     \textbf{Secure Enclave}: device key\\
+     access token: memory only};
+  \node[comp=24mm, draw=sheetOrange, fill=sheetOrange!8] (as) at (5.15,2.35) {\textbf{\scriptsize Auth server / IdP}\\
+     \ct{/authorize /token /revoke}\\
+     password + MFA · \textbf{passkeys}\\
+     federates Apple, Google,\\\ \ enterprise OIDC / SAML\\
+     \textbf{rate limiter} · risk signals\\
+     signs JWTs (key in KMS/HSM)};
+  \node[comp=21mm, draw=sheetGreen, fill=sheetGreen!8] (db) at (8.45,2.35) {\textbf{\scriptsize Session store}\\
+     1 row per device:\\RT hash · family ·\\device key · idle +\\absolute expiry ·\\revoked};
+  \node[comp=24mm, draw=sheetBrown, fill=sheetBrown!8] (api) at (5.15,0.2) {\textbf{\scriptsize API / gateway}\\
+     verifies the JWT via JWKS\\(no DB hit) · scopes · optional\\session-version = instant kill};
+  \draw[<->, thick, sheetBlue] (app.east) -- node[l, above]{code +\\PKCE} node[l, below]{AT + RT} (as.west);
+  \draw[<->, thick, sheetGreen] (as.east) -- node[l, above]{rotate} node[l, below]{revoke} (db.west);
+  \draw[->, thick, sheetBrown] (app.south) |- node[l, pos=0.75, above]{\ct{Bearer AT}} (api.west);
+  \draw[->, dashed, sheetGrey] (as.south) -- node[l, right]{JWKS (public keys)} (api.north);
+  \draw[->, dashed, sheetRed] (db.south) |- node[l, pos=0.25, right, text=sheetRed, align=left]{logout-\\everywhere} (api.east);
+  \draw[sheetGrey!40] (9.75,3.75) -- (9.75,-0.45);
+  % ---------- token lifecycle ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (9.9,3.65) {Token lifecycle (example policy)};
+  \draw[sheetGrey] (9.95,2.9) -- (17.2,2.9);
+  \foreach \x/\t in {10.0/login, 11.4/10 min, 12.8/20 min, 15.2/day 29, 17.1/day 90} \node[l, above] at (\x,2.9) {\t};
+  \node[l, anchor=east, text=sheetBlue] at (9.95,2.6) {AT};
+  \node[ph=sheetBlue, minimum width=13.5mm] at (10.0,2.6) {AT1};
+  \node[ph=sheetBlue, minimum width=13.5mm] at (11.4,2.6) {AT2};
+  \node[ph=sheetBlue, minimum width=13.5mm] at (12.8,2.6) {AT3};
+  \node[l, anchor=west] at (14.2,2.6) {\ldots};
+  \node[l, anchor=east, text=sheetGreen!50!black] at (9.95,2.2) {RT};
+  \node[ph=sheetGreen, minimum width=14mm] at (10.0,2.2) {RT1};
+  \node[ph=sheetGreen, minimum width=14mm] at (11.4,2.2) {RT2};
+  \node[ph=sheetGreen, minimum width=10mm] at (12.8,2.2) {RT3};
+  \node[l, anchor=west, text=sheetGreen!50!black] at (13.85,2.2) {rotated on every refresh};
+  \draw[sheetGreen, very thick] (10.0,1.85) -- (17.1,1.85);
+  \node[l, anchor=west, fill=white] at (10.05,1.85) {\textbf{session}: idle limit 30 d (sliding) · absolute 90 d};
+  \draw[->, thick, sheetRed] (17.1,1.7) -- (17.1,1.35) node[l, below, text=sheetRed]{re-login};
+  \draw[->, thick, sheetOrange] (15.2,2.85) -- (15.2,1.5) node[l, below, text=sheetOrange!80!black, align=center]{send money:\\step-up\\\ct{max\_age=300}};
+  \node[l, anchor=west, align=left] at (9.9,0.95) {app opened after 3 days: \textbf{Face ID} $\to$ Keychain releases RT $\to$\\\ct{/token} $\to$ new AT + RT. Face never leaves the phone.};
+  \node[l, anchor=west, align=left, text=sheetRed] at (9.9,0.3) {\textbf{logout-everywhere}: revoke every RT family of the user now;\\each AT still works until its \ct{exp} ($\leq$ 10 min) unless the API\\checks a session version / deny-list.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Session vs token — the real choice}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{28mm}>{\raggedright\arraybackslash}p{30mm}@{}}
+\toprule
+& \textbf{server session} & \textbf{self-contained JWT} \\ \midrule
+credential & opaque random id & signed claims \\
+per request & store lookup & signature check only \\
+revoke & delete the row: instant & wait for \ct{exp} \\
+scales by & shared store & stateless verifiers \\
+\bottomrule
+\end{tabular}}\par
+Mobile default = \textbf{hybrid}: short JWT \emph{access} (stateless, 5–15 min) + opaque \emph{refresh}
+stored server-side = the \textbf{revocation point}. Web: HttpOnly cookie session or a BFF — no tokens in JS.
+
+\hd{Re-authentication with biometrics — two designs}
+\begin{itemize}
+  \item \textbf{A. Biometry-gated secret}: RT in the Keychain with \ct{SecAccessControl}
+        \ct{.biometryCurrentSet}; Face ID makes \ct{securityd} release it, then a normal refresh. Simple;
+        re-enrolment destroys the item $\to$ full login.
+  \item \textbf{B. Device key + challenge} (stronger): at login the app registers a Secure Enclave
+        P-256 public key; unlock = server nonce $\to$ SE signs after Face ID $\to$ server verifies $\to$
+        tokens. Proves possession \emph{and} presence; a copied RT alone is useless.
+  \item Either way biometry is \emph{local}; the server trusts a key, never a \ct{Bool}. Fallback:
+        passcode (\ct{.userPresence}) or full login. \ct{touchIDAuthenticationAllowableReuseDuration}
+        lets a recent biometric \emph{device unlock} count — not an earlier in-app check.
+\end{itemize}
+
+\hd{Device binding \& step-up}
+Bind tokens to a key the device holds — \textbf{DPoP} (RFC 9449) proofs, mTLS, or design B — so a
+leaked token can't be replayed elsewhere; add App Attest / Play Integrity to vouch for the \emph{app}.
+\textbf{Step-up} for money, email or password change: OIDC \ct{max\_age} / \ct{prompt=login} /
+\ct{acr\_values}, check \ct{auth\_time}; APIs answer \ct{insufficient\_user\_authentication} (RFC 9470).
+
+\hd{Example — the session store is the revocation point}
+\begin{lstlisting}[language=SQLSheet]
+CREATE TABLE session (
+  id uuid PRIMARY KEY, user_id uuid NOT NULL,
+  rt_hash bytea NOT NULL,     -- never the raw token
+  family uuid NOT NULL,       -- reuse -> kill family
+  device_pubkey bytea,        -- design B / DPoP
+  last_used timestamptz, absolute_exp timestamptz,
+  revoked_at timestamptz);
+-- log out everywhere (also on password reset):
+UPDATE session SET revoked_at = now()
+ WHERE user_id = $1 AND revoked_at IS NULL;
+\end{lstlisting}
+
+\hd{Remember}
+\textbf{``Short access, revocable refresh, bound to the device, opened by biometrics — and recovery
+as strong as login.''}
+
+\columnbreak
+
+\hd{Identity step — passkeys, SSO, MFA}
+\begin{itemize}
+  \item \textbf{Passkeys} first: WebAuthn key pair per site, phishing-resistant, nothing to steal
+        server-side. iOS: AutoFill sign-in (16) · auto-upgrade after a password login (18) ·
+        passkey sign-up \ct{ASAuthorizationAccountCreationProvider} (26). Keep recovery.
+  \item \textbf{SSO}: social or enterprise — your IdP \textbf{federates} (OIDC/SAML) and still issues
+        \emph{your} tokens; the app talks only to your auth server (\ct{ASWebAuthenticationSession}).
+  \item \textbf{MFA strength}: passkey / security key (phishing-resistant) $>$ TOTP (RFC 6238, 30 s)
+        $>$ push (\textbf{number matching} vs fatigue) $>$ SMS OTP (SIM swap; NIST ``restricted'').
+\end{itemize}
+
+\hd{Brute force \& rate limiting}
+Limit per \textbf{account} \emph{and} per IP/device, plus globally; progressive delays + risk
+challenges, not hard lockout. \textbf{Credential stuffing}
+(breached pairs, one try per account) beats per-account limits — OWASP: MFA is ``by far the best
+defense''. Same answer and timing for ``no such user'' and ``wrong password''. \ct{429} (+ \ct{Retry-After}).
+\textbf{NIST SP 800-63B-4} (Aug 2025): $\geq$ 15 chars if the password is the only factor ($\geq$ 8 with
+MFA), \emph{no} composition rules, \emph{no} periodic change, check a breached/common blocklist,
+$\leq$ 100 consecutive failures per account.
+
+\hd{Recovery \& logout}
+\textbf{Recovery is the real front door}: single-use short-lived email link or recovery codes, a second
+factor if enrolled, a cool-down, a notice to every device; never weaker than login, never reveals
+whether an account exists. \textbf{Logout}: \ct{/revoke} the RT (RFC 7009) + wipe Keychain + end the IdP
+session (else the next login is silent). \textbf{Everywhere}: revoke all rows, bump the session version;
+OIDC back-channel logout tells relying parties.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``JWTs can't be logged out'' — put the kill at the refresh token; keep ATs short.}
+  \trap{Face ID as \ct{if ok \{ showHome() \}} — gate a key or a secret, not a screen.}
+  \trap{Password reset that leaves old sessions alive — the attacker stays in.}
+  \trap{Hard lockout after 5 tries = a denial-of-service button.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} oauth-oidc-jwt (PKCE, JWT checks, rotation,
+single-flight) · keychain-secure-enclave (ACL, LAContext) · passkeys · app-hardening-privacy · api-design}
+
+\end{document}
