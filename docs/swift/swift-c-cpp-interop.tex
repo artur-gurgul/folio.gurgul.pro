@@ -1,0 +1,193 @@
+% swift-c-cpp-interop.tex — importing C (module map / bridging header), the C→Swift
+% type map, C callbacks + Unmanaged context, strings across the boundary, C++ interop
+% (Swift 5.9+), exposing Swift to C with @_cdecl.
+% Sources (checked 2026-10-06):
+%   developer.apple.com/documentation/swift/using-imported-c-enums-in-swift (a plain C enum
+%     imports as a RawRepresentable struct + constants; NS_ENUM / NS_CLOSED_ENUM as Swift enums)
+%     · /using-imported-c-macros-in-swift (simple #define constants -> global lets) ·
+%     /designating-nullability-in-objective-c-apis (nonnull/nullable -> Optional, else IUO)
+%   swift.org/documentation/cxx-interop (Swift 5.9+; <swift/bridging>; C++ exceptions are not
+%     caught — terminate; templates via typealias; const vs mutating methods)
+%   swift.org/blog/swift-6.3-released (@c, @c(Name), @c + @implementation, 2026-03-24) ·
+%     swift-evolution SE-0495 (C-compatible functions and enums, formalises @_cdecl)
+% @labels: area=swift kind=concept platform=apple topic=language,memory discussion=152
+% @tags: clang-importer, bridging-header, module-map, c-callback, convention-c, unmanaged, opaquepointer, withcstring, cxx-interop, swift-shared-reference, cdecl, nullability
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false,AnyObject,Void,String,Bool,public,in,defer},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=6mm},
+  cside/.style={sb, draw=sheetBrown, fill=sheetBrown!10},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcommand\dc{\hbox{:}\hbox{:}}      % "::" without the 0xProto ligature
+
+\begin{document}
+
+\sheettitle{Swift $\leftrightarrow$ C / C++ interop}{swift · folio}
+
+\oneliner{Swift reads C headers through its built-in \textbf{Clang importer}: a header
+exposed as a \textbf{module} (module map; or a \textbf{bridging header} in an app target)
+becomes global Swift functions and types — C scalars map to \texttt{CInt}/\texttt{CChar}…,
+pointers to \texttt{Unsafe*Pointer}. \textbf{C++} (Swift 5.9+, opt-in) imports copyable
+classes as \textbf{value types}. The other way, \texttt{@c} (Swift 6.3; before it the
+unofficial \texttt{@\_cdecl}) exports a Swift function under a C symbol.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── panel 1: C callback with a context pointer ──
+  \node[font=\bfseries\small, anchor=west] at (-0.1,2.75) {C callback + context: the retain has to be balanced by hand};
+  \draw[sheetGrey, dashed] (5.35,2.5) -- (5.35,-0.3);
+  \node[lbl, text=sheetBlue] at (2.2,2.4) {Swift (ARC)};
+  \node[lbl, text=sheetBrown] at (7.9,2.4) {C library (no ARC, no closures)};
+  \node[sb, minimum width=24mm] (obj) at (1.2,1.85) {\texttt{Sensor} object\\retain count 1};
+  \node[sb, draw=sheetOrange, fill=sheetOrange!10, minimum width=30mm] (pr) at (4.0,1.85)
+    {\texttt{passRetained(self)}\\\texttt{.toOpaque()} $\to$ rc 2};
+  \node[cside, minimum width=30mm] (lib) at (7.9,1.85) {stores \texttt{cb} + \texttt{void *ctx}};
+  \node[cside, minimum width=30mm] (ev) at (7.9,0.9) {event: \texttt{cb(ctx, value)}};
+  \node[sb, minimum width=36mm] (tr) at (2.9,0.9)
+    {\texttt{@convention(c)} trampoline\\captures \textbf{nothing}};
+  \node[sb, draw=sheetGreen!70!black, fill=sheetGreen!10, minimum width=36mm] (tu) at (2.9,-0.05)
+    {\texttt{fromOpaque(ctx).takeUnretainedValue()}\\$\to$ \texttt{me.didRead(value)} (rc stays 2)};
+  \node[sb, draw=sheetRed, fill=sheetRed!7, minimum width=30mm] (rel) at (7.9,-0.05)
+    {unregister $\to$ \texttt{.release()}\\rc back to 1 (else \textbf{leak})};
+  \draw[hot] (obj) -- (pr); \draw[hot] (pr) -- node[lbl, above]{\texttt{void *}} (lib);
+  \draw[flow] (lib) -- (ev); \draw[hot] (ev) -- node[lbl, below, pos=0.35, fill=white]{bare code address} (tr);
+  \draw[flow] (tr) -- (tu);
+  \draw[flow, sheetRed] (tu.east) -- (rel.west);
+  % ── panel 2: pointer lifetimes ──
+  \draw[sheetGrey!40] (10.25,2.8) -- (10.25,-0.3);
+  \node[font=\bfseries\small, anchor=west] at (10.35,2.75) {A pointer lives only as long as its scope};
+  \node[lbl, anchor=west] at (10.45,2.4) {\texttt{s.withCString \{ p in \ldots \}}};
+  \draw[->, thick, sheetGrey] (10.5,2.05) -- (16.4,2.05);
+  \node[lbl, anchor=east] at (16.4,2.3) {time};
+  \fill[sheetGreen!25] (10.9,1.92) rectangle (13.3,2.18);
+  \fill[sheetRed!20] (13.3,1.92) rectangle (16.0,2.18);
+  \node[lbl, text=sheetGreen!50!black] at (12.1,1.75) {inside the closure: \texttt{p} valid};
+  \node[lbl, text=sheetRed] at (14.65,1.75) {escaped \texttt{p} = dangling (UB)};
+  \node[lbl, anchor=west, align=left] at (10.45,1.2)
+    {\texttt{c\_take(\&array)} / \texttt{c\_take("text")}: implicit pointer is\\
+     valid for \textbf{that one call} — C must not store it};
+  \node[lbl, anchor=west, align=left] at (10.45,0.55)
+    {C \textbf{returns} \texttt{malloc}'d \texttt{char *}: copy with \texttt{String(cString:)},\\
+     then \texttt{free(p)} — the importer does not know who owns it};
+  \node[lbl, anchor=west, align=left, text=sheetBlue] at (10.45,-0.1)
+    {need it longer? \texttt{strdup} / \texttt{allocate} + own the \texttt{free},\\
+     or keep \emph{everything} inside the closure};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Importing C}
+\begin{itemize}
+  \item \textbf{App target}: a \textbf{bridging header} \texttt{\#import}s the headers;
+        visible target-wide, no \texttt{import}. Unsupported in \textbf{framework}
+        targets → module map / umbrella header.
+  \item \textbf{SwiftPM}: a C target's \texttt{include/} gets a generated module map, or
+        write \texttt{module CFoo \{ header "foo.h" export * \}}; then \texttt{import CFoo}.
+  \item \textbf{Nullability}: \texttt{\_Nonnull} → non-optional, \texttt{\_Nullable}
+        → \texttt{?}, unannotated → IUO \texttt{!} (\texttt{NS\_ASSUME\_NONNULL\_BEGIN}).
+  \item \textbf{Not imported}: function-like macros, variadic functions (call the
+        \texttt{va\_list} twin via \texttt{withVaList}).
+\end{itemize}
+
+\section{How C types map}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}L{25mm}L{48mm}@{}}
+\toprule
+\textbf{C} & \textbf{Swift} \\
+\midrule
+\texttt{int} · \texttt{long} · \texttt{char} & \texttt{Int32}(\texttt{CInt}) · \texttt{Int}(\texttt{CLong}, LP64) · \texttt{CChar} \\
+\texttt{const T *} / \texttt{T *} & \texttt{UnsafePointer<T>} / \texttt{UnsafeMutablePointer<T>} \\
+\texttt{const void *} / \texttt{void *} & \texttt{UnsafeRawPointer} / \texttt{UnsafeMutableRawPointer} \\
+\texttt{Foo *}, \texttt{Foo} incomplete & \texttt{OpaquePointer} — pass back, never deref \\
+\texttt{struct} & struct: memberwise init + zero \texttt{init()} \\
+\texttt{T a[4]} (field) & tuple \texttt{(T, T, T, T)} \\
+plain \texttt{enum} & \textbf{struct} \texttt{RawRepresentable} + global constants \\
+\texttt{NS\_ENUM} / \texttt{CF\_ENUM} & Swift \texttt{enum}, non-frozen → \texttt{@unknown default} \\
+\texttt{NS\_CLOSED\_ENUM} & frozen \texttt{enum} (exhaustive switch) \\
+\texttt{NS\_OPTIONS} & \texttt{OptionSet} \\
+\texttt{\#define N 42} & \texttt{let N: Int32} (literals only) \\
+\texttt{void (*)(int)} & \texttt{@convention(c) (Int32) \hbox{-}\hbox{>} Void} \\
+\bottomrule
+\end{tabular}}
+
+\section{Example — callback with context}
+\begin{lstlisting}[language=SwiftSheet]
+// C: void sensor_start(void (*cb)(void *, int32_t), void *ctx);
+final class Sensor {
+  private var ctx: UnsafeMutableRawPointer?
+  func start() {
+    let c = Unmanaged.passRetained(self).toOpaque() // +1
+    sensor_start({ ctx, v in       // captures nothing
+      Unmanaged<Sensor>.fromOpaque(ctx!)
+        .takeUnretainedValue().didRead(v) }, c)   // borrow
+    ctx = c }
+  func stop() {
+    sensor_stop()                  // C forgets cb first
+    if let c = ctx { Unmanaged<Sensor>.fromOpaque(c).release() } }
+}
+\end{lstlisting}
+
+\section{Swift → C: \texttt{@c} (6.3) · \texttt{@\_cdecl}}
+\texttt{@c public func sum(\_ a: Int32, \_ b: Int32) \hbox{-}\hbox{>} Int32} emits the C symbol
+\texttt{sum} \emph{and} a declaration in the generated header; \texttt{@c(MyLib\_sum)} renames;
+\texttt{@c @implementation} implements a function a C header already declares. Before 6.3:
+\texttt{@\_cdecl("sum")} — underscored, unofficial, hand-written prototype. Only
+C-representable types either way.
+
+\columnbreak
+
+\section{C++ interop (Swift 5.9 / Xcode 15+)}
+\begin{itemize}
+  \item \textbf{Enable}: SwiftPM \texttt{swiftSettings: [.interoperabilityMode(.Cxx)]};
+        Xcode ``C++ and Objective-C Interoperability'' = C++/Objective-C++. Opt-in per
+        module, and viral: a module whose interface exposes C++ needs importers to
+        enable it too.
+  \item \textbf{Copyable class/struct} (copy ctor + dtor) → Swift \textbf{value type}:
+        a Swift copy runs the copy ctor, end of lifetime runs the destructor.
+        \texttt{const} methods → non-mutating; others → \texttt{mutating}.
+  \item \textbf{Reference semantics}: annotate from \texttt{<swift/bridging>} —
+        \texttt{SWIFT\_SHARED\_REFERENCE(retain, release)} → a Swift class, ARC calls your
+        retain/release; \texttt{SWIFT\_IMMORTAL\_REFERENCE} → never freed.
+  \item \textbf{std}: \texttt{String(cxxStr)} / \texttt{std\dc string(swiftStr)} (copies);
+        \texttt{std\dc vector} is a \texttt{RandomAccessCollection} (via a
+        \texttt{typealias}); \texttt{begin/end} types iterate in \texttt{for-in}.
+  \item \textbf{Limits}: class templates only as a specialised \texttt{using}/\texttt{typedef};
+        a C++ \textbf{exception} escaping into Swift \textbf{terminates}; Swift → C++
+        goes through the generated \texttt{-Swift.h} header.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{A closure capturing \texttt{self} as a C function pointer does not compile —
+        context goes through \texttt{void *} + \texttt{Unmanaged}.}
+  \trap{\texttt{passRetained} with no \texttt{release()} = leak; \texttt{passUnretained}
+        and the object dies while C holds \texttt{ctx} = use-after-free.}
+  \trap{Returning the \texttt{withCString} / \texttt{withUnsafeBufferPointer} pointer out of the closure.}
+  \trap{C++ type owning a raw pointer with the default copy ctor → Swift copies it →
+        \textbf{double free}. Fix the C++ (rule of 3/5) or make it a shared reference.}
+  \trap{A plain C \texttt{enum} is a struct: \texttt{switch} needs \texttt{default}.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Module in, pointers scoped, context via Unmanaged, C++ copies are real copies.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} ownership-and-memory-layout
+(\texttt{Unsafe*}, \texttt{MemoryLayout}) · arc-ownership (\texttt{Unmanaged}) ·
+modularization-spm (targets) · Objective-C interop · c-pointers-const-restrict ·
+strings-and-collections}
+
+\end{document}

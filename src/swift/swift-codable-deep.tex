@@ -1,0 +1,206 @@
+% swift-codable-deep.tex — Codable beyond the basics: synthesis rules, containers,
+% flattening, missing keys, polymorphic JSON, strategies, userInfo, reading errors.
+% Basics (CodingKeys, keyDecodingStrategy, the 3 error layers) live on urlsession-networking.
+% Sources (checked 2026-10-06):
+%   developer.apple.com/documentation/swift/encoding-and-decoding-custom-types · /swift/decodingerror
+%     (keyNotFound, typeMismatch, valueNotFound, dataCorrupted; codingPath) ·
+%     /swift/unkeyeddecodingcontainer · /foundation/jsondecoder/datedecodingstrategy
+%   swift-evolution SE-0166 (Codable, 4.0) · SE-0295 (enum Codable synthesis, 5.5) ·
+%     SE-0320 (CodingKeyRepresentable, 5.6) — checked against the evolution index
+%   developer.apple.com/library/archive/qa/qa1480 (en_US_POSIX for fixed-format dates)
+% @labels: area=swift kind=api platform=apple topic=data,networking discussion=154
+% @tags: codable, codingkeys, decodingerror, codingpath, nestedcontainer, unkeyedcontainer, decodeifpresent, polymorphic-decoding, datedecodingstrategy, iso8601, keydecodingstrategy, codingkeyrepresentable
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,
+    if,else,return,guard,self,nil,private,true,false,in,throws,try,throw,
+    switch,where,some,Self,String,Int,Double,Date},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  ct/.style={box, font=\ttfamily\tiny, inner sep=1.5pt, minimum height=4.2mm},
+  kc/.style={ct, draw=sheetBlue, fill=sheetBlue!8},
+  uc/.style={ct, draw=sheetOrange, fill=sheetOrange!10},
+  sv/.style={ct, draw=sheetGreen!70!black, fill=sheetGreen!10},
+  bad/.style={ct, draw=sheetRed, fill=sheetRed!8},
+  ign/.style={ct, draw=sheetGrey, dashed, fill=white, text=sheetGrey},
+  e/.style={->, thick, draw=sheetGrey},
+}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\sheettitle{Codable in depth — containers, polymorphism, strategies, errors}{swift · folio}
+
+\oneliner{\texttt{Codable = Encodable \& Decodable}. The compiler \emph{synthesises}
+\texttt{CodingKeys} + \texttt{init(from:)} + \texttt{encode(to:)} from the stored properties;
+you write them by hand when the JSON's \textbf{shape} differs from the type's. A
+\texttt{Decoder} hands out \textbf{containers} (keyed · unkeyed · single-value) and every
+failure is a \texttt{DecodingError} whose \texttt{codingPath} says \emph{where}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet, yscale=0.8]
+  % ── JSON ──
+  \node[draw=sheetGrey, fill=black!3, rounded corners=2pt, font=\ttfamily\tiny, align=left,
+        inner sep=3pt, anchor=north west] (json) at (0,3.45) {%
+\{ "id": 7,\\
+\ \ "meta": \{ "created\_at":\\
+\ \ \ \ \ \ \ "2024-05-01T10:00:00.123Z" \},\\
+\ \ "shapes": [\\
+\ \ \ \ \{ "type": "circle", "radius": 1 \},\\
+\ \ \ \ \{ "type": "rect", "w": 2 \} ],\\
+\ \ "extra": true \}};
+  \node[lbl, anchor=north west, text=sheetGrey] at (0,0.95) {JSON in};
+  % ── container tree ──
+  \node[kc] (root) at (7.2,3.2) {decoder.container(keyedBy: K.self)};
+  \node[sv] (id) at (4.85,2.35) {.id $\to$ Int};
+  \node[kc] (meta) at (6.65,2.35) {nestedContainer .meta};
+  \node[uc] (sh) at (9.05,2.35) {nestedUnkeyed .shapes};
+  \node[ign] (ex) at (10.95,2.35) {.extra};
+  \node[bad] (cr) at (6.65,1.5) {.created $\to$ Date};
+  \node[kc] (i0) at (8.35,1.5) {Index 0};
+  \node[kc] (i1) at (9.75,1.5) {Index 1};
+  \node[sv] (t0) at (8.35,0.7) {type=circle};
+  \node[bad] (h1) at (9.75,0.7) {.h missing};
+  \draw[e] (root) -- (id); \draw[e] (root) -- (meta); \draw[e] (root) -- (sh);
+  \draw[e, dashed] (root) -- (ex);
+  \draw[e] (meta) -- (cr); \draw[e] (sh) -- (i0); \draw[e] (sh) -- (i1);
+  \draw[e] (i0) -- (t0); \draw[e] (i1) -- (h1);
+  \node[lbl, text=sheetGrey] at (11.0,1.75) {unknown keys\\silently ignored};
+  \node[lbl, text=sheetBlue] at (4.5,1.5) {flatten: 2 levels\\$\to$ 1 property};
+  \node[lbl, text=sheetOrange] at (9.05,0.05) {cursor: \texttt{currentIndex}, \texttt{isAtEnd}};
+  \tikzset{num/.style={circle, fill=sheetRed, text=white, font=\bfseries\tiny,
+                       inner sep=0.5pt, minimum size=3mm}}
+  \node[num] at ([xshift=-2.5mm]cr.west) {1};
+  \node[num] at ([xshift=2.5mm]h1.east) {2};
+  % ── errors, in the order they fire ──
+  \node[draw=sheetRed, thick, rounded corners=2pt, fill=sheetRed!5, font=\tiny, align=left,
+        text width=44mm, inner sep=2.5pt, anchor=north west] (err) at (12.05,3.45) {%
+\textbf{Decoding stops at the FIRST error:}\\[1pt]
+\textbf{1} with \texttt{.iso8601}: \texttt{.dataCorrupted}\\
+\ \ path \texttt{[meta, created\_at]} — the \texttt{.123}\\
+\ \ fraction is rejected. Fix: \texttt{.custom}.\\[1pt]
+\textbf{2} then: \texttt{.keyNotFound(K.h, ctx)}\\
+\ \ \texttt{ctx.codingPath = [shapes, Index 1]}\\
+\ \ = path to the \emph{container}; the key is separate.\\[1pt]
+\texttt{typeMismatch}/\texttt{valueNotFound}: the path\\
+\ \ \emph{includes} the key. Log it:\\
+\texttt{path.map(\textbackslash.stringValue).joined(separator:".")}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{The rules}
+\begin{itemize}
+  \item \textbf{Synthesis}: every \emph{stored} property Codable (computed ignored). In an
+        \textbf{extension} only in the \textbf{same file}; a non-\texttt{final} \textbf{class}
+        can't get \texttt{Decodable} from one (\texttt{init(from:)} must be \texttt{required}).
+  \item \textbf{\texttt{CodingKeys} is all-or-nothing}: list a property or give it a default
+        (then never decoded). \textbf{Synthesised decoding ignores defaults}: \texttt{var n = 0}
+        still throws \texttt{keyNotFound}; only optionals tolerate a missing key.
+  \item \textbf{Enums} (5.5): raw-value = single value; associated values = keyed by case:
+        \texttt{circle(radius:)} $\to$ \texttt{\{"circle":\{"radius":1\}\}} (unlabeled
+        \texttt{"\_0"}) — rarely the API's shape.
+  \item \textbf{Containers}: keyed · unkeyed (a cursor) · single-value;
+        \texttt{nestedContainer(keyedBy:\allowbreak forKey:)} / \texttt{nestedUnkeyed\-Container}
+        walk \emph{into} JSON with no nested type. Dynamic keys: \texttt{struct AnyKey:
+        CodingKey} + \texttt{c.allKeys}.
+  \item \textbf{Strategies}: \texttt{date*} (default \texttt{.deferredToDate} = seconds since
+        \textbf{2001}; \texttt{.iso8601}, \texttt{.secondsSince1970}, \texttt{.milliseconds\-Since1970},
+        \texttt{.formatted}, \texttt{.custom}) · \texttt{data*} (default \texttt{.base64}) ·
+        \texttt{key*} · \texttt{nonConformingFloat*} (default \texttt{.throw} on \texttt{nan}).
+  \item \textbf{\texttt{decoder.userInfo}}: inject a Core Data context / schema version.
+\end{itemize}
+
+{\footnotesize
+\begin{tabular}{@{}L{17mm}L{15mm}L{15mm}L{19mm}@{}}
+\toprule
+JSON has\ldots & \texttt{decode} & \texttt{decodeIfPresent} & synthesised \texttt{T?} \\
+\midrule
+key absent & \texttt{keyNotFound} & \texttt{nil} & \texttt{nil} \\
+\texttt{null} & \texttt{valueNotFound} & \texttt{nil} & \texttt{nil} \\
+wrong type & \texttt{typeMismatch} & \textbf{throws too} & throws \\
+\bottomrule
+\end{tabular}}
+
+\section{Example — flatten, default, discriminator}
+\begin{lstlisting}[language=SwiftSheet]
+enum Shape: Decodable {          // "type" picks the case
+  case circle(r: Double), rect(w: Double, h: Double)
+  enum K: String, CodingKey { case type, radius, w, h }
+  init(from d: Decoder) throws {
+    let c = try d.container(keyedBy: K.self)
+    func num(_ k: K) throws -> Double {
+      try c.decode(Double.self, forKey: k) }
+    switch try c.decode(String.self, forKey: .type) {
+    case "circle": self = .circle(r: try num(.radius))
+    case "rect":   self = .rect(w: try num(.w), h: try num(.h))
+    case let t: throw DecodingError.dataCorruptedError(
+      forKey: .type, in: c, debugDescription: "type \(t)") }
+  }
+}
+// in Post.init(from:) -- flatten + default for a missing key
+let m = try c.nestedContainer(keyedBy: M.self, forKey: .meta)
+created = try m.decode(Date.self, forKey: .created)
+tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
+\end{lstlisting}
+
+\columnbreak
+
+\section{Example — dates with and without fractions}
+\begin{lstlisting}[language=SwiftSheet]
+let frac = ISO8601DateFormatter()
+frac.formatOptions = [.withInternetDateTime,
+                      .withFractionalSeconds]
+let plain = ISO8601DateFormatter()   // rejects ".123"
+decoder.dateDecodingStrategy = .custom { d in
+  let c = try d.singleValueContainer()
+  let s = try c.decode(String.self)
+  if let x = frac.date(from: s) { return x }
+  if let x = plain.date(from: s) { return x }
+  throw DecodingError.dataCorruptedError(in: c,
+        debugDescription: "bad date \(s)") }
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{\texttt{.iso8601} rejects fractional seconds}, and a formatter
+        \emph{with} \texttt{.withFractionalSeconds} rejects strings \emph{without} them
+        — try both. \texttt{.formatted(DateFormatter)} needs \texttt{locale = en\_US\_POSIX}
+        + an explicit \texttt{timeZone}, or a 12-hour/Buddhist-calendar device breaks it.}
+  \trap{\textbf{Snake case + acronyms}: \texttt{user\_id} is converted to \texttt{userId}
+        \emph{before} matching, so \texttt{userID} never matches $\to$
+        \texttt{case userID = "userId"}.}
+  \trap{\textbf{One bad element fails the whole array.} Lossy decoding: wrap each
+        element in a box whose \texttt{init} does \texttt{try?} — never a bare
+        \texttt{try?} in an unkeyed loop: a failed decode does \textbf{not} advance the
+        cursor $\to$ infinite loop.}
+  \trap{\textbf{Dictionary keys}: only \texttt{String}/\texttt{Int} keys encode as a JSON
+        object; \texttt{[MyEnum: V]} (even \texttt{String}-backed) becomes a flat array
+        \texttt{["a",1,"b",2]} unless the key adopts \texttt{CodingKeyRepresentable} (5.6).}
+  \trap{\textbf{\texttt{[any Animal]}} cannot be decoded — no static \texttt{init(from:)}
+        on an existential. Decode an enum, then map.}
+  \trap{\textbf{Subclass of a Codable class}: inherits \texttt{init(from:)}/\texttt{encode(to:)},
+        so new stored properties (with defaults) are \textbf{silently skipped}. Override both;
+        call \texttt{super.init(from: c.superDecoder())} or \texttt{super.encode(to:)}.}
+  \trap{\textbf{Persisted Codable = a schema.} A new non-optional field breaks decoding of old
+        data: make new fields optional or \texttt{decodeIfPresent} + default; version it.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Shape differs $\to$ containers; kind varies $\to$ discriminator enum; failure
+$\to$ read the path.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} URLSession networking (basic keys,
+3 error layers) · protocols \& generics (why \texttt{any P} resists Codable) · error handling ·
+persistence · property wrappers}
+
+\end{document}

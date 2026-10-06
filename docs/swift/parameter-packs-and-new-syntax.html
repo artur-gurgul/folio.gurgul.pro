@@ -1,0 +1,103 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Parameter packs &amp; the new syntax (5.9 → 6.4) — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/swift/parameter-packs-and-new-syntax.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">157</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Parameter packs &amp; the new syntax (5.9 → 6.4)</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">swift · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A <strong>parameter pack</strong> (5.9) lets one generic declaration take
+<em>any number</em> of type parameters: <code>&lt;each T&gt;</code> declares the pack,
+<code>repeat <em>pattern</em></code> expands the pattern once per element, and
+<code>each x</code> names the current element — no more 1…10 overloads. Around it, every
+release since added small syntax that deletes boilerplate: expression
+<code>if</code>/<code>switch</code>, trailing commas, raw identifiers, <code>weak let</code>,
+module selectors, <code>some P?</code>, <code>@diagnose</code>, <code>await</code> in <code>defer</code>.</p>
+<p class="sheet-tools"><a class="sheet-download" href="parameter-packs-and-new-syntax.pdf" download>Download PDF</a> <a href="parameter-packs-and-new-syntax.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/swift/parameter-packs-and-new-syntax.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<h2>How packs work</h2>
+<ul>
+<li><code>func f&lt;each T&gt;(_ v: repeat each T)</code>: <code>T</code> is a  <strong>type pack</strong>, <code>v</code> a <strong>value pack</strong>; a call  <code>f(1, &quot;a&quot;, true)</code> binds <code>T = {Int, String, Bool}</code>.  Constraints apply per element: <code>&lt;each T: Equatable&gt;</code>.</li>
+<li><code>repeat P</code> is a <strong>pack expansion</strong>: <code>P</code> must mention a  pack with <code>each</code>; it becomes a comma list —  <code>repeat [each T]</code> <span class="math">→</span> <code>[Int], [String], [Bool]</code>.  Values: <code>(repeat each v)</code> builds a tuple (SE-0399).</li>
+<li><strong>Same shape</strong>: two packs in one expansion  (<code>repeat (each L, each R)</code>) must have the same length — the  compiler infers and enforces it.</li>
+<li><strong>No <code>count</code>, no subscript</strong>: you cannot index a pack. You  expand it, or (<strong>6.0</strong>, SE-0408) iterate it: <code>for x in repeat
+ each v</code>, one element per iteration, <em>lazily</em> — <code>break</code> stops  evaluating the rest. In 5.9: a local generic func +  <code>repeat try f(each v)</code>.</li>
+<li><strong>Variadic types</strong> (SE-0398, 5.9): <code>struct Zip&lt;each S:
+ Sequence&gt;</code>; at most <strong>one</strong> pack per type; store it as a tuple  <code>(repeat each S)</code>.</li>
+<li>Where you meet them: SwiftUI’s <code>ViewBuilder</code> (no 10-child  limit), <code>zip</code>-style APIs over any arity, typed tuple helpers.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>One pattern, stamped per element</h2>
+<figure class="sheet-figure"><img src="parameter-packs-and-new-syntax-fig1.svg" width="251" height="141" alt="Parameter packs &amp; the new syntax (5.9 → 6.4) — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Example — packs</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">func</span> <span class="hljs-title function_">tuplify</span>&lt;<span class="hljs-keyword">each</span> <span class="hljs-type">T</span>&gt;(<span class="hljs-keyword">_</span> <span class="hljs-params">v</span>: <span class="hljs-keyword">repeat</span> <span class="hljs-keyword">each</span> <span class="hljs-type">T</span>) -&gt; (<span class="hljs-keyword">repeat</span> <span class="hljs-keyword">each</span> <span class="hljs-type">T</span>) {
+  (<span class="hljs-keyword">repeat</span> <span class="hljs-keyword">each</span> v)                        <span class="hljs-comment">// 5.9: tuple expansion</span>
+}
+<span class="hljs-keyword">let</span> t <span class="hljs-operator">=</span> tuplify(<span class="hljs-number">1</span>, <span class="hljs-string">&quot;a&quot;</span>, <span class="hljs-literal">true</span>)            <span class="hljs-comment">// (Int, String, Bool)</span>
+
+<span class="hljs-keyword">func</span> <span class="hljs-title function_">allEqual</span>&lt;<span class="hljs-keyword">each</span> <span class="hljs-type">E</span>: <span class="hljs-type">Equatable</span>&gt;(<span class="hljs-keyword">_</span> <span class="hljs-params">l</span>: (<span class="hljs-keyword">repeat</span> <span class="hljs-keyword">each</span> <span class="hljs-type">E</span>),
+                                 <span class="hljs-keyword">_</span> <span class="hljs-params">r</span>: (<span class="hljs-keyword">repeat</span> <span class="hljs-keyword">each</span> <span class="hljs-type">E</span>)) -&gt; <span class="hljs-type">Bool</span> {
+  <span class="hljs-keyword">for</span> (a, b) <span class="hljs-keyword">in</span> <span class="hljs-keyword">repeat</span> (<span class="hljs-keyword">each</span> l, <span class="hljs-keyword">each</span> r) { <span class="hljs-comment">// 6.0 pack iteration</span>
+    <span class="hljs-keyword">guard</span> a <span class="hljs-operator">==</span> b <span class="hljs-keyword">else</span> { <span class="hljs-keyword">return</span> <span class="hljs-literal">false</span> }    <span class="hljs-comment">// rest never evaluated</span>
+  }
+  <span class="hljs-keyword">return</span> <span class="hljs-literal">true</span>
+}
+allEqual((<span class="hljs-number">1</span>, <span class="hljs-string">&quot;a&quot;</span>), (<span class="hljs-number">1</span>, <span class="hljs-string">&quot;b&quot;</span>))             <span class="hljs-comment">// false; E = Int, String</span>
+<span class="hljs-keyword">struct</span> <span class="hljs-title class_">Zip</span>&lt;<span class="hljs-keyword">each</span> <span class="hljs-type">S</span>: <span class="hljs-type">Sequence</span>&gt; { <span class="hljs-keyword">let</span> seqs: (<span class="hljs-keyword">repeat</span> <span class="hljs-keyword">each</span> <span class="hljs-type">S</span>) }</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Example — the new syntax</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">let</span> tint: <span class="hljs-type">Color</span> <span class="hljs-operator">=</span> <span class="hljs-keyword">if</span> ok { .green } <span class="hljs-keyword">else</span> { .red }       <span class="hljs-comment">// 5.9</span>
+<span class="hljs-keyword">let</span> p <span class="hljs-operator">=</span> <span class="hljs-type">Point</span>(x: <span class="hljs-number">1</span>, y: <span class="hljs-number">2</span>,)                             <span class="hljs-comment">// 6.1</span>
+<span class="hljs-meta">@Test</span> <span class="hljs-keyword">func</span> `rejects an empty email`() {}               <span class="hljs-comment">// 6.2</span>
+<span class="hljs-keyword">enum</span> <span class="hljs-title class_">Shade</span> { <span class="hljs-keyword">case</span> `<span class="hljs-number">50</span>`, `<span class="hljs-number">100</span>` }; <span class="hljs-keyword">let</span> s <span class="hljs-operator">=</span> <span class="hljs-type">Shade</span>.`<span class="hljs-number">50</span>`    <span class="hljs-comment">// 6.2</span>
+<span class="hljs-keyword">final</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">Tag</span>: <span class="hljs-title class_ inherited__">Sendable</span> { <span class="hljs-keyword">weak</span> <span class="hljs-keyword">let</span> owner: <span class="hljs-type">Owner</span>? }   <span class="hljs-comment">// 6.3</span>
+<span class="hljs-keyword">let</span> x <span class="hljs-operator">=</span> <span class="hljs-type">ModuleA</span>::getValue()                            <span class="hljs-comment">// 6.3</span>
+<span class="hljs-keyword">weak</span> <span class="hljs-keyword">var</span> delegate: <span class="hljs-keyword">any</span> <span class="hljs-type">CellDelegate</span>?                   <span class="hljs-comment">// 6.4</span>
+<span class="hljs-meta">@diagnose</span>(<span class="hljs-type">DeprecatedDeclaration</span>, as: warning,
+          reason: <span class="hljs-string">&quot;legacy bridge until 3.0&quot;</span>)           <span class="hljs-comment">// 6.4</span>
+<span class="hljs-keyword">func</span> <span class="hljs-title function_">bridge</span>() { oldAPI() }
+<span class="hljs-keyword">func</span> <span class="hljs-title function_">upload</span>() <span class="hljs-keyword">async</span> <span class="hljs-keyword">throws</span> {
+  <span class="hljs-keyword">let</span> h <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> <span class="hljs-keyword">open</span>()
+  <span class="hljs-keyword">defer</span> { <span class="hljs-keyword">await</span> withTaskCancellationShield { <span class="hljs-keyword">await</span> h.close() } }
+  <span class="hljs-keyword">try</span> <span class="hljs-keyword">await</span> h.send(payload)                            <span class="hljs-comment">// 6.4</span>
+}</code></pre>
+<p><em><span class="c-sheetbrown"> (<code>Owner</code>: a Sendable class;
+<code>CellDelegate</code>: <code>AnyObject</code>-bound.)</span></em></p>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>Feature</strong></th><th><strong>Swift</strong></th><th><strong>SE</strong></th><th><strong>The rule that bites</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>if</code>/<code>switch</code> expression</td><td>5.9</td><td>0380</td><td>only as <code>return</code> value, assignment, <code>let</code>/<code>var</code> init — not inside a larger expression; <code>else</code> mandatory; one expression per branch; branches type-checked <strong>independently</strong> (<code>if c { 0 } else { 1.0 }</code> fails — annotate the type); a <code>throw</code>/<code>fatalError</code> branch is fine</td></tr>
+<tr><td>trailing commas</td><td>6.1</td><td>0439</td><td>in <code>( )</code>, <code>[ ]</code>, <code>&lt; &gt;</code> lists: args, params, tuples, subscripts, capture lists, generics, interpolation. <strong>Not</strong> in <code>if</code>/<code>guard</code> conditions, inheritance clauses, <code>where</code>, <code>case a, b</code></td></tr>
+<tr><td>raw identifiers</td><td>6.2</td><td>0451</td><td>any characters between backticks except backtick, backslash, newline; not all whitespace, not only operator characters; <strong>use sites need the backticks too</strong></td></tr>
+<tr><td><code>weak let</code></td><td>6.3</td><td>0481</td><td>still becomes <code>nil</code> when the object dies, but cannot be reassigned <span class="math">⇒</span> a <code>final class</code> with it can be <code>Sendable</code></td></tr>
+<tr><td>module selectors <code>M::x</code></td><td>6.3</td><td>0491</td><td>pick the module when two imports export the same name (also on members: <code>s.Foundation::data(using:)</code>); lookup starts at module top level, so locals/generic params are unreachable; never on a new declaration’s name</td></tr>
+<tr><td><code>some P?</code> / <code>any P?</code></td><td>6.4</td><td>0521</td><td>= <code>(some P)?</code> / <code>(any P)?</code> — the optional wraps the opaque/existential, no parentheses needed</td></tr>
+<tr><td><code>@diagnose</code></td><td>6.4</td><td>0522</td><td><code>@diagnose(Group, as: error|warning|ignored, reason: &quot;…&quot;)</code> on one declaration (func, type, extension, <code>import</code>…); order-sensitive; module flag <code>-suppress-warnings</code> still wins</td></tr>
+<tr><td><code>await</code> in <code>defer</code></td><td>6.4</td><td>0493</td><td>only in an <code>async</code> context; awaited on <strong>every</strong> scope exit (a hidden suspension point); cancellation is <strong>not</strong> suppressed — wrap in <code>withTaskCancellationShield</code> (SE-0504)</td></tr>
+<tr><td>access-level imports</td><td>6.0</td><td>0409</td><td><code>internal import X</code> keeps X out of your public API (error if a public signature uses it); a bare <code>import</code> stays <code>public</code> in modes 5 and 6 unless <code>InternalImportsByDefault</code></td></tr>
+<tr><td><code>package</code> access</td><td>5.9</td><td>0386</td><td>visible to other modules built with the same <code>-package-name</code> (SwiftPM sets it); between <code>public</code> and <code>internal</code>; no subclassing outside the module</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">“Just use <code>v.count</code>” — a pack has no count or index;  iterate (6.0) or expand.</li>
+<li class="trap"><code>some P?</code> is an <em>optional of an opaque type</em>, not an  opaque optional: the underlying type is still fixed.</li>
+<li class="trap"><code>defer { await … }</code> in a cancelled task: <code>Task.sleep</code>,  network calls inside it fail at once — shield the cleanup.</li>
+<li class="trap"><code>weak let</code> is <strong>6.3</strong>, not 6.2 (proposal header).</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>“<code>each</code> names it, <code>repeat</code> stamps it, <code>for</code> walks it.”</strong></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> swift-syntax-generics-protocols ·
+macros-and-result-builders · error-handling (typed throws) ·
+swift-keypaths-access-control · modularization-spm</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=swift" title="area">swift</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=language" title="topic">language</a></li><li class="sheet-tag"><a href="/folios.html?tag=parameter-packs">parameter-packs</a></li><li class="sheet-tag"><a href="/folios.html?tag=each">each</a></li><li class="sheet-tag"><a href="/folios.html?tag=repeat">repeat</a></li><li class="sheet-tag"><a href="/folios.html?tag=pack-iteration">pack-iteration</a></li><li class="sheet-tag"><a href="/folios.html?tag=variadic-generics">variadic-generics</a></li><li class="sheet-tag"><a href="/folios.html?tag=if-expression">if-expression</a></li><li class="sheet-tag"><a href="/folios.html?tag=trailing-commas">trailing-commas</a></li><li class="sheet-tag"><a href="/folios.html?tag=raw-identifiers">raw-identifiers</a></li><li class="sheet-tag"><a href="/folios.html?tag=weak-let">weak-let</a></li><li class="sheet-tag"><a href="/folios.html?tag=module-selectors">module-selectors</a></li><li class="sheet-tag"><a href="/folios.html?tag=diagnose">diagnose</a></li><li class="sheet-tag"><a href="/folios.html?tag=withtaskcancellationshield">withtaskcancellationshield</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=swift%2Fparameter-packs-and-new-syntax.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/149">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

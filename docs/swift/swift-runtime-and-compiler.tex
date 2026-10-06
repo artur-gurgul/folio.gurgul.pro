@@ -1,0 +1,187 @@
+% swift-runtime-and-compiler.tex — compiler pipeline (parse -> Sema -> SILGen
+% -> mandatory + performance SIL passes -> IRGen -> LLVM), WMO, @inlinable /
+% @usableFromInline, library evolution + ABI / module stability, then the
+% runtime: type metadata, value + protocol witness tables, existentials,
+% specialisation vs witness dispatch, type-checker performance traps.
+% Sources (checked 2026-10-06):
+%   github.com/swiftlang/swift docs/SIL/SIL.md (SILGen, mandatory vs performance passes, OSSA)
+%     · docs/ABI/TypeLayout.rst + docs/ABI/TypeMetadata.rst (metadata, value / protocol witness
+%     tables, existential containers; (Int8, Int64) size 16 vs (Int64, Int8) size 9, stride 16)
+%     · docs/LibraryEvolution.rst (-enable-library-evolution, resilience)
+%   swift.org/blog/abi-stability-and-more (ABI 5.0 shipped in the OS from iOS 12.2; module
+%     stability 5.1) · swift-evolution SE-0193 (@inlinable / @usableFromInline, 4.2)
+%   developer.apple.com/documentation/xcode/improving-the-speed-of-incremental-builds
+%     (Build With Timing Summary; -warn-long-expression-type-checking)
+%   developer.apple.com/videos/play/wwdc2022/110362 (iOS 16 dyld precomputes protocol
+%     conformances)
+% @labels: area=swift kind=concept platform=apple topic=build,performance,language discussion=164
+% @tags: sil, irgen, llvm, whole-module-optimization, specialization, inlinable, usablefrominline, abi-stability, library-evolution, value-witness-table, protocol-witness-table, type-metadata
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,public,
+    internal,mutating,if,else,return,guard,self,nil,true,false,in,case,
+    switch,default,Double,Element},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  st/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=9mm,
+             text width=17mm},
+  sil/.style={st, draw=sheetGreen, fill=sheetGreen!8},
+  llv/.style={st, draw=sheetOrange, fill=sheetOrange!8},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.6mm},
+  ttl/.style={font=\bfseries\small, anchor=west},
+  w/.style={draw=sheetGrey, minimum width=16mm, minimum height=4.4mm,
+            font=\ttfamily\scriptsize, inner sep=1pt},
+}
+
+\begin{document}
+
+\sheettitle{Swift compiler pipeline + runtime internals}{swift · folio}
+
+\oneliner{The frontend parses, \textbf{type-checks} (a constraint solver),
+lowers to \textbf{SIL} — Swift's own IR that still sees generics, ownership
+and ARC — runs \emph{mandatory} then \emph{performance} passes, then emits LLVM
+IR. At run time every type has \textbf{metadata}; generic and protocol code
+goes through \textbf{value/protocol witness tables} unless the optimiser could
+\textbf{specialise} it, which needs the body visible.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[st] (src) at (0,0) {\texttt{.swift}\\files};
+  \node[st] (p) at (2.0,0) {\textbf{Parse}\\$\to$ AST};
+  \node[st] (s) at (4.0,0) {\textbf{Sema}\\type-check,\\macros};
+  \node[sil] (g) at (6.0,0) {\textbf{SILGen}\\$\to$ raw SIL};
+  \node[sil] (m) at (8.0,0) {\textbf{mandatory}\\passes $\to$\\canonical SIL};
+  \node[sil] (o) at (10.0,0) {\textbf{performance}\\passes\\(\texttt{-O} only)};
+  \node[llv] (i) at (12.0,0) {\textbf{IRGen}\\$\to$ LLVM IR};
+  \node[llv] (l) at (14.0,0) {\textbf{LLVM}\\opt + codegen\\$\to$ \texttt{.o}};
+  \node[st, text width=9mm] (ld) at (15.75,0) {\textbf{ld}};
+  \foreach \a/\b in {src/p,p/s,s/g,g/m,m/o,o/i,i/l,l/ld} \draw[flow] (\a) -- (\b);
+  \node[lbl, text=sheetRed, anchor=north] at (4.0,-0.55) {type errors;\\slow expressions\\live here};
+  \node[lbl, text=sheetRed, anchor=north] at (8.0,-0.55) {definite init ·\\static exclusivity ·\\ownership checks ·\\constant overflow};
+  \node[lbl, text=sheetGreen!50!black, anchor=north] at (10.0,-0.55) {specialisation ·\\devirtualisation ·\\inlining ·\\ARC pair removal};
+  \node[lbl, anchor=north] at (6.0,-0.55) {ownership SSA\\(OSSA): explicit\\copies/destroys};
+  \node[lbl, anchor=north] at (12.0,-0.55) {layout, metadata,\\witness tables\\emitted};
+  \node[lbl, anchor=north] at (14.0,-0.55) {machine code;\\knows nothing\\of Swift};
+  \draw[decorate, decoration={brace, amplitude=3pt}] (5.1,0.6) -- (10.9,0.6)
+     node[lbl, midway, above=3pt]{\textbf{SIL} — Swift-aware IR: generics, protocols, value types, ARC are still visible};
+  \draw[decorate, decoration={brace, amplitude=3pt}] (1.1,0.6) -- (4.9,0.6)
+     node[lbl, midway, above=3pt]{emits \texttt{.swiftmodule} / \texttt{.swiftinterface}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Compiler}
+\begin{itemize}
+  \item \textbf{Per-file vs WMO.} Debug: one frontend job per file
+        (``primary file''), incremental via a dependency graph — fast
+        edits, no cross-file optimisation. Release: \textbf{whole-module
+        optimisation} — one job sees every file: cross-file inlining,
+        devirtualisation, specialisation, dead-code removal.
+  \item \texttt{-Onone} keeps every check and no inlining;
+        \texttt{-O} speed; \texttt{-Osize}; \texttt{-Ounchecked} drops
+        overflow/precondition checks. Never benchmark Debug.
+  \item \textbf{Module boundary} hides bodies. \texttt{@inlinable} ships the
+        body (SIL / in the \texttt{.swiftinterface}) so clients can inline and
+        specialise; every \texttt{internal} symbol it touches needs
+        \texttt{@usableFromInline}. The body is then part of your ABI —
+        old clients keep the old copy until they rebuild.
+  \item \textbf{ABI stability} (Swift 5.0, Apple platforms): calling
+        convention, mangling (\texttt{\$s…}), metadata and witness-table
+        layout frozen — the runtime ships \emph{in the OS} (iOS 12.2+), apps
+        stopped bundling \texttt{libswiftCore}.
+  \item \textbf{Module stability} (Swift 5.1): the textual
+        \texttt{.swiftinterface} imports into \emph{later} compilers. Build
+        setting \texttt{BUILD\_LIBRARY\_FOR\_\allowbreak DISTRIBUTION} turns on both it and
+        \textbf{library evolution}.
+  \item \textbf{Library evolution / resilience:} clients may not bake in a
+        type's layout — they ask metadata for size and use accessors, so the
+        library can add stored properties or cases. Public non-\texttt{@frozen}
+        enums force \texttt{@unknown default}. \texttt{@frozen} = layout
+        promise forever. Apps and source packages pay nothing.
+  \item Lexical lifetimes (5.7): \texttt{-O} no longer ends a variable's life
+        early, so ``deinit fires sooner in Release'' is mostly gone.
+\end{itemize}
+
+\section{Example — a library that ships to clients}
+\begin{lstlisting}[language=SwiftSheet]
+public struct Stack<Element> {
+  @usableFromInline internal var items: [Element] = []
+  public init() {}
+  @inlinable public mutating func push(_ e: Element) {
+    items.append(e) }       // body ships: client specialises
+  public mutating func pop() -> Element? {
+    items.popLast() }       // opaque: witness-table path
+}
+@frozen public enum Axis { case x, y }  // exhaustive switch OK
+// type-checker: annotate + split one giant expression
+let part: Double = a * 2 + b / 3
+let total: Double = part - Double(c) + e * 1.5
+\end{lstlisting}
+
+\columnbreak
+
+\section{An unspecialised generic call}
+\begin{tikzpicture}[sheet]
+  \node[font=\ttfamily\scriptsize, anchor=west] at (-0.1,0.55) {func area<T: Shape>(\_ s: T)};
+  \node[w, fill=sheetBlue!10] (a1) at (0.7,0) {value s};
+  \node[w, fill=sheetBlue!10] (a2) at (0.7,-0.45) {T metadata};
+  \node[w, fill=sheetOrange!15] (a3) at (0.7,-0.9) {T: Shape PWT};
+  \node[lbl, anchor=east] at (-0.15,-0.45) {hidden\\args};
+  \node[box, font=\scriptsize, fill=sheetGreen!8, draw=sheetGreen, text width=25mm, align=left] (vwt) at (3.6,-0.2) {\textbf{VWT}: size · stride · align\\copy · take (move) · destroy};
+  \node[box, font=\scriptsize, fill=sheetOrange!8, draw=sheetOrange, text width=25mm, align=left] (pwt) at (3.6,-1.15) {\textbf{PWT}: \texttt{area} $\to$ \texttt{Circle.area}};
+  \draw[flow] (a2.east) -- (vwt.west);
+  \draw[flow] (a3.east) -- (pwt.west);
+  \node[box, font=\scriptsize, draw=sheetGreen, fill=sheetGreen!15, text width=16mm] at (6.35,-0.65) {\textbf{specialised}\\\texttt{area<Circle>}:\\direct call,\\inlined, no tables};
+\end{tikzpicture}
+
+\section{Runtime}
+\begin{itemize}
+  \item \textbf{Type metadata}: one record per type — kind, VWT pointer,
+        generic arguments; classes add superclass + vtable and are
+        ObjC-\texttt{isa} compatible (the instance's first word). Generic
+        instantiations (\texttt{Array<User>}) are built \emph{lazily} by the
+        runtime and cached.
+  \item \textbf{VWT}: how to copy/move/destroy a value of unknown type. For a
+        trivial specialised type these become \texttt{memcpy} or vanish.
+  \item \textbf{PWT}: one per (type, protocol) conformance, an entry per
+        requirement. Conformance records live in the binary; \texttt{as? P}
+        searches them (cached; iOS 16's dyld precomputes them).
+  \item \textbf{Dispatch}: \texttt{final}/\texttt{private}/structs/extension
+        methods = direct · class = vtable · protocol/generic = PWT ·
+        \texttt{dynamic} = \texttt{objc\_msgSend}.
+  \item \texttt{any P} = 3-word inline buffer + metadata + 1 PWT per protocol
+        (boxed if larger) — see \texttt{ownership-and-memory-layout}.
+  \item Swift generics are \textbf{not} C++ templates: zero-cost only when
+        specialised (same module, WMO, or \texttt{@inlinable}).
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``Compiles forever'': long mixed-literal / overloaded-operator
+        expressions (huge SwiftUI bodies too) explode the solver. Find:
+        \texttt{-Xfrontend} \texttt{-warn-long-expression-type-checking=100},
+        Build With Timing Summary. Fix: annotate, split.}
+  \trap{ARC reasoning belongs to \textbf{SIL}, not LLVM IR. A bug fix in an
+        \texttt{@inlinable} body never reaches clients that inlined the old one.}
+  \trap{Stride $\neq$ size: \texttt{(Int64, Int8)} is size 9, stride 16.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Parse, check, SIL twice, IR, link.''} Metadata says \emph{what},
+VWT says \emph{how to copy}, PWT says \emph{which method}.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:}
+\texttt{protocols-generics} (dispatch, \texttt{some}/\texttt{any}) ·
+\texttt{ownership-and-memory-layout} (existentials, layout) ·
+\texttt{modularization-spm} · \texttt{linking-and-launch-time} ·
+\texttt{macros-and-result-builders} · \texttt{objc-interop}}
+
+\end{document}

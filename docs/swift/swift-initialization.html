@@ -1,0 +1,71 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Initialization — two phases, three delegation rules — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/swift/swift-initialization.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">157</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Initialization — two phases, three delegation rules</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">swift · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> An initializer must give <strong>every stored property</strong> a value before the instance
+is used. Structs get a free <strong>memberwise init</strong>; classes split init into
+<strong>designated</strong> (initialise own properties, <strong>delegate up</strong> to <code>super</code>) and
+<strong>convenience</strong> (<strong>delegate across</strong> to <code>self.init</code>), and run
+<strong>two-phase initialization</strong>: phase 1 fills memory bottom-up, phase 2 customises top-down.</p>
+<p class="sheet-tools"><a class="sheet-download" href="swift-initialization.pdf" download>Download PDF</a> <a href="swift-initialization.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/swift/swift-initialization.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="swift-initialization-fig1.svg" width="591" height="153" class="wide" alt="Initialization — two phases, three delegation rules — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>How it works</h2>
+<ul>
+<li><strong>Memberwise init</strong> (structs only): synthesized if the <em>main declaration</em>  has no init. <code>var</code> props with a default become defaulted params (SE-0242,  Swift 5.1); a <code>let</code> with a default is excluded. Access: <code>internal</code>  at most, <code>private</code> if any stored prop is. Custom init in an  <strong>extension</strong> keeps it. Struct inits delegate with <code>self.init</code>, no  <code>convenience</code> keyword.</li>
+<li><strong>Four safety checks</strong> (TSPL): (1) designated sets all own props  <em>before</em> delegating up; (2) designated delegates up <em>before</em>  assigning an inherited prop; (3) convenience delegates <em>before</em> assigning  anything; (4) no methods, no prop reads, no <code>self</code> as a value until phase 1 ends.</li>
+<li>Overriding a super designated init: <code>override init</code>. A <strong><code>required</code></strong>  init must exist in every subclass (written <code>required</code>, not <code>override</code>);  satisfied by inheritance too. Protocol <code>init</code> requirements force  <code>required</code> unless the class is <code>final</code>.</li>
+<li><strong>Failable</strong> <code>init?</code> (returns <code>nil</code>) / <code>init!</code> (IUO result).  Classes may <code>return nil</code> anywhere, even before all props are set (Swift 2.2+).  A failable may delegate to a non-failable; a non-failable override may replace a  failable one, never the reverse. <code>init() throws</code> when the caller needs <em>why</em>.</li>
+<li><strong><code>let</code></strong> props: assigned exactly once per path during init.</li>
+<li><strong>Observers</strong> <code>willSet</code>/<code>didSet</code> do <strong>not</strong> fire for assignments in  the class’s own init (nor for defaults); they <strong>do</strong> fire when a subclass sets  an inherited prop in its phase 2.</li>
+<li><strong><code>lazy var</code></strong>: computed on first access, may use <code>self</code>; not  thread-safe (two threads can both run it); on a struct the first access mutates, so  it needs a <code>var</code> instance.</li>
+<li><strong><code>deinit</code></strong>: classes (and <code>~Copyable</code> structs/enums, Swift 5.9).  Runs subclass-first, super’s deinit is called automatically; never call it yourself.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>“Designated up, convenience across. Phase 1 fills (bottom-up), phase 2 uses
+(top-down). Own props before <code>super</code>.”</strong></p>
+</section>
+<section class="sheet-section">
+<h2>Example — phase 1 protects an override</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">class</span> <span class="hljs-title class_">Vehicle</span> {
+  <span class="hljs-keyword">let</span> wheels: <span class="hljs-type">Int</span>
+  <span class="hljs-keyword">init</span>(<span class="hljs-params">wheels</span>: <span class="hljs-type">Int</span>) { <span class="hljs-keyword">self</span>.wheels <span class="hljs-operator">=</span> wheels; setup() } <span class="hljs-comment">// designated</span>
+  <span class="hljs-keyword">convenience</span> <span class="hljs-keyword">init</span>() { <span class="hljs-keyword">self</span>.<span class="hljs-keyword">init</span>(wheels: <span class="hljs-number">4</span>) }          <span class="hljs-comment">// across</span>
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">setup</span>() {}
+}
+<span class="hljs-keyword">final</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">Bike</span>: <span class="hljs-title class_ inherited__">Vehicle</span> {
+  <span class="hljs-keyword">var</span> rider: <span class="hljs-type">String</span>                     <span class="hljs-comment">// no default</span>
+  <span class="hljs-keyword">init</span>(<span class="hljs-params">rider</span>: <span class="hljs-type">String</span>) {
+    <span class="hljs-keyword">self</span>.rider <span class="hljs-operator">=</span> rider                  <span class="hljs-comment">// phase 1: own props FIRST</span>
+    <span class="hljs-keyword">super</span>.<span class="hljs-keyword">init</span>(wheels: <span class="hljs-number">2</span>)               <span class="hljs-comment">// then up</span>
+    <span class="hljs-built_in">print</span>(wheels)                       <span class="hljs-comment">// phase 2: self usable</span>
+  }
+  <span class="hljs-keyword">override</span> <span class="hljs-keyword">func</span> <span class="hljs-title function_">setup</span>() { <span class="hljs-built_in">print</span>(rider) } <span class="hljs-comment">// runs INSIDE super.init</span>
+}
+<span class="hljs-comment">// Bike() is an error: Bike has its own designated init,</span>
+<span class="hljs-comment">// so Vehicle&#x27;s convenience init() is not inherited.</span></code></pre>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">UIKit subclass with <code>init(viewModel:)</code> stops inheritance <span class="math">→</span> you must write  <code>required init?(coder:)</code> (usually <code>fatalError</code> / <code>@available(*, unavailable)</code>).</li>
+<li class="trap"><code>self.method()</code> before <code>super.init</code> — compile error (check 4).  Assign own props, call <code>super.init</code>, <em>then</em> configure.</li>
+<li class="trap">Setup in <code>didSet</code> “does nothing” in <code>init</code> — observers skip the own init.  Call the setup explicitly.</li>
+<li class="trap"><code>public struct</code> in a package: the memberwise init is <strong>internal</strong> —  clients cannot call it; write a <code>public init</code>.</li>
+<li class="trap">Adding one init to a struct body silently deletes the memberwise init for every caller.</li>
+<li class="trap">Convenience init cannot call <code>super.init</code> — only <code>self.init</code>.</li>
+<li class="trap">A super init calling an overridable method = a subclass sees phase-1 state;  keep init bodies side-effect-light.</li>
+</ul>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> value-vs-reference · arc-ownership
+(<code>deinit</code>) · swift-optionals (<code>init!</code>) · swift-enums-pattern-matching
+(<code>init?(rawValue:)</code>) · swift-property-wrappers (<code>init(wrappedValue:)</code>) ·
+app-and-vc-lifecycle (<code>init(coder:)</code>)</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=swift" title="area">swift</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=language" title="topic">language</a></li><li class="sheet-tag"><a href="/folios.html?tag=designated-init">designated-init</a></li><li class="sheet-tag"><a href="/folios.html?tag=convenience-init">convenience-init</a></li><li class="sheet-tag"><a href="/folios.html?tag=two-phase-initialization">two-phase-initialization</a></li><li class="sheet-tag"><a href="/folios.html?tag=memberwise-init">memberwise-init</a></li><li class="sheet-tag"><a href="/folios.html?tag=required-init">required-init</a></li><li class="sheet-tag"><a href="/folios.html?tag=failable-init">failable-init</a></li><li class="sheet-tag"><a href="/folios.html?tag=init-coder">init-coder</a></li><li class="sheet-tag"><a href="/folios.html?tag=initializer-inheritance">initializer-inheritance</a></li><li class="sheet-tag"><a href="/folios.html?tag=lazy-var">lazy-var</a></li><li class="sheet-tag"><a href="/folios.html?tag=deinit">deinit</a></li><li class="sheet-tag"><a href="/folios.html?tag=didset">didset</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=swift%2Fswift-initialization.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/157">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

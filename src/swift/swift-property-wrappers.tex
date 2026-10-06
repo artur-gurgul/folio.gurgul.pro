@@ -1,0 +1,182 @@
+% swift-property-wrappers.tex — @propertyWrapper under the hood: wrappedValue,
+% projectedValue ($), init(wrappedValue:), the synthesized _name storage,
+% composition, parameter/local wrappers, the enclosing-instance subscript
+% (@Published), how @State / @Binding / @AppStorage are built, limits.
+% SwiftUI usage is on swiftui-state — this folio is the mechanism.
+% Sources (checked 2026-10-06):
+%   swift-evolution SE-0258 (property wrappers, 5.1: wrappedValue, projectedValue, _name
+%     storage, composition — the outermost wrapper owns $, the static enclosing-instance
+%     subscript) · SE-0293 (wrappers on parameters + init(projectedValue:), 5.5) — checked
+%     against the evolution index
+%   docs.swift.org/swift-book Properties › Property Wrappers (local wrappers allowed)
+%   developer.apple.com/documentation/combine/published ("publishes … in the property's
+%     willSet block"; the publisher emits the current value on subscription) ·
+%     /swiftui/binding · /swiftui/state/init(initialvalue:)
+% @labels: area=swift kind=concept platform=apple topic=language,ui discussion=162
+% @tags: propertywrapper, wrappedvalue, projectedvalue, published, state, binding, appstorage, dynamicproperty, enclosing-instance, objectwillchange
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,static,
+    subscript,get,set,nonmutating,private,extension,
+    if,else,return,guard,self,nil,some,switch,default,in,true,false},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={??}{{\hbox{?}\hbox{?}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2}
+
+\newcommand\arr{\hbox{-}\hbox{>}}
+
+\tikzset{
+  sb/.style={box, font=\ttfamily\scriptsize, inner sep=2pt, minimum height=5mm, align=left},
+  src/.style={sb, draw=sheetBrown, fill=sheetBrown!8},
+  gen/.style={sb, draw=sheetGreen, fill=sheetGreen!8},
+  ext/.style={sb, draw=sheetOrange, fill=sheetOrange!10},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\small, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Property wrappers — what the compiler writes for you}{swift · folio}
+
+\oneliner{\texttt{@propertyWrapper} (SE-0258, Swift 5.1) is a type with a \texttt{wrappedValue};
+annotating \texttt{@W var x} makes the compiler store a hidden \textbf{\texttt{\_x: W}} and turn
+\texttt{x} into a \textbf{computed property} forwarding to \texttt{\_x.wrappedValue} —
+plus \textbf{\texttt{\$x}} for \texttt{projectedValue}. SwiftUI's \texttt{@State},
+\texttt{@Binding}, \texttt{@AppStorage} and Combine's \texttt{@Published} are just such types.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \draw[sheetGrey!40] (6.9,1.5) -- (6.9,-2.5);
+  \draw[sheetGrey!40] (11.55,1.5) -- (11.55,-2.5);
+  % ── A: desugaring ──
+  \node[hd] at (0,1.35) {\textcolor{sheetBlue}{A} you write $\to$ the compiler writes};
+  \node[src, anchor=west] (s) at (0,0.75) {@Clamped(0...100) var volume = 50};
+  \node[gen, anchor=west, text width=62mm] (g) at (0,-0.6) {private var \_volume =
+    Clamped(wrappedValue: 50, 0...100)\\[1pt]
+    var volume: Int \{\\
+    \ \ get \{ \_volume.wrappedValue \}\\
+    \ \ set \{ \_volume.wrappedValue = newValue \} \}\\[1pt]
+    var \$volume: \ldots\ \{ \_volume.projectedValue \}};
+  \draw[flow] (s.south) ++(-1.6,0) -- ++(0,-0.33);
+  \node[lbl, anchor=north west, align=left, text width=64mm] at (0,-1.75) {\texttt{= 50} feeds
+    \texttt{init(wrappedValue:)}, attribute args follow it. \texttt{\_x} is private; \texttt{\$x} exists
+    only if \texttt{projectedValue} does. Memberwise init takes \texttt{volume: Int} when the wrapper
+    has \texttt{init(wrappedValue:)}, else the wrapper type.};
+  % ── B: @Published ──
+  \node[hd] at (7.0,1.35) {\textcolor{sheetBlue}{B} \texttt{@Published} reaches its owner};
+  \node[src, anchor=west] (w) at (7.0,0.8) {vm.name = "Ann"};
+  \node[gen, anchor=west, text width=40mm] (sub) at (7.0,-0.1) {static subscript(\_enclosingInstance: vm,\\
+    \ wrapped: \textbackslash.name, storage: \textbackslash.\_name)};
+  \node[ext, anchor=west] (ow) at (7.0,-1.05) {vm.objectWillChange.send()};
+  \node[ext, anchor=west] (pub) at (7.0,-1.65) {\$name subscribers get "Ann"};
+  \draw[flow] (w.south) ++(-0.5,0) -- ++(0,-0.22);
+  \draw[flow] (sub.south) ++(-1.4,0) -- ++(0,-0.3);
+  \node[lbl, anchor=west, text=sheetRed] at (7.0,-2.2) {both in \textbf{willSet}: \texttt{vm.name} still old here\\
+    no \texttt{self} in a struct $\to$ \texttt{@Published} is class-only};
+  % ── C: @State ──
+  \node[hd] at (11.65,1.35) {\textcolor{sheetBlue}{C} \texttt{@State}: handle vs storage};
+  \node[src, anchor=west, text width=19mm, fill=white, opacity=0.6, text opacity=0] at (11.83,0.83) {Counter()\\\_n: State<Int>};
+  \node[src, anchor=west, text width=19mm, fill=white, opacity=0.8, text opacity=0] at (11.74,0.74) {Counter()\\\_n: State<Int>};
+  \node[src, anchor=west, text width=19mm, fill=white] (v1) at (11.65,0.65) {Counter()\\\_n: State<Int>};
+  \node[ext, anchor=west, text width=16mm] (gr) at (14.55,0.55) {graph storage\\n = 3};
+  \draw[flow] ([xshift=1mm]v1.east) -- node[lbl, below]{finds} (gr.west |- v1.east);
+  \node[gen, anchor=west] (bd) at (11.65,-0.65) {\$n: Binding<Int>};
+  \draw[flow] (gr.south) |- node[lbl, right, pos=0.3]{get/set} (bd.east);
+  \node[lbl, anchor=west] at (11.65,-1.45) {view struct is rebuilt every update;\\
+    storage lives in SwiftUI, keyed by identity.\\\texttt{nonmutating set}: writable from \texttt{body}.\\
+    Initial value used only the \textbf{first} time.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Required:} \texttt{var wrappedValue}. Optional: \texttt{projectedValue} (any
+        type — \texttt{Binding}, a publisher, the wrapper itself),
+        \texttt{init(wrappedValue:)} (enables \texttt{= default}),
+        \texttt{init(projectedValue:)} (enables passing \texttt{\$arg}).
+  \item \textbf{Composition} \texttt{@A @B var x: T}: storage \texttt{\_x: A<B<T>>}, access
+        \texttt{\_x.wrappedValue.wrappedValue}; outer to inner, left to right;
+        \texttt{\$x} is the \textbf{outermost} wrapper's projection.
+  \item \textbf{Where:} stored \texttt{var} properties of types; \textbf{locals} (Swift 5.4);
+        function and closure \textbf{parameters} (SE-0293, 5.5) — that is how
+        \texttt{ForEach(\$items) \{ \$item in TextField("", text: \$item.name) \}} works
+        (\texttt{Binding} has \texttt{init(projectedValue:)}).
+  \item \textbf{Enclosing-instance subscript} (underscored, used by \texttt{@Published}):
+        if the wrapper declares \texttt{static subscript(\_enclosingInstance:wrapped:storage:)},
+        the compiler routes access through it with the \textbf{owning object} and two key
+        paths — so the wrapper can reach \texttt{self} (e.g. \texttt{objectWillChange}).
+        Class-only: \texttt{Published.wrappedValue} is marked unavailable,
+        \emph{``@Published is only available on properties of classes''}.
+  \item \textbf{\texttt{@State}}: a \texttt{DynamicProperty} holding a handle; SwiftUI finds it
+        on the view, allocates storage in its graph (per view \emph{identity}), updates the
+        handle before \texttt{body}. \texttt{\$n} = \texttt{Binding}.
+  \item \textbf{\texttt{@Binding}}: a struct of \texttt{get}/\texttt{set} closures to someone
+        else's storage; \texttt{@dynamicMemberLookup}, so \texttt{\$user.name} is a
+        \texttt{Binding<String>}. No \texttt{init(wrappedValue:)} $\to$ the child's
+        memberwise init takes a \texttt{Binding}: \texttt{Child(n: \$count)}.
+  \item \textbf{\texttt{@AppStorage("key")}}: a \texttt{DynamicProperty} over
+        \texttt{UserDefaults}; the view re-renders when that key changes; \texttt{\$} =
+        \texttt{Binding}. Bool/Int/Double/String/URL/Data + \texttt{RawRepresentable}.
+\end{itemize}
+
+\section{Limits}
+\begin{itemize}
+  \item Not on \texttt{let}, \texttt{lazy}, \texttt{weak}/\texttt{unowned}, computed
+        properties, or a property with its own \texttt{get}/\texttt{set}
+        (\texttt{willSet}/\texttt{didSet} are allowed).
+  \item A protocol cannot require a wrapper — only the plain property.
+  \item Inline storage (\texttt{@Clamped}): the setter is \texttt{mutating} — needs a
+        \texttt{var} owner; external storage (\texttt{@State}) uses \texttt{nonmutating set}.
+\end{itemize}
+
+\columnbreak
+
+\section{Example — a wrapper + the enclosing subscript}
+\begin{lstlisting}[language=SwiftSheet]
+@propertyWrapper struct Clamped<V: Comparable> {
+  private var value: V; let range: ClosedRange<V>
+  init(wrappedValue v: V, _ r: ClosedRange<V>) {
+    range = r; value = Self.clamp(v, r) }       // = 50 lands here
+  var wrappedValue: V {
+    get { value }
+    set { value = Self.clamp(newValue, range) } } // mutating set
+  var projectedValue: ClosedRange<V> { range }   // $volume
+  static func clamp(_ v: V, _ r: ClosedRange<V>) -> V {
+    min(max(v, r.lowerBound), r.upperBound) }
+}
+// the shape @Published uses to reach its owner:
+static subscript<Owner: AnyObject>(_enclosingInstance o: Owner,
+  wrapped: ReferenceWritableKeyPath<Owner, Value>,
+  storage: ReferenceWritableKeyPath<Owner, Self>) -> Value
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{self.count = 5} in a View's \texttt{init} does not seed \texttt{@State} —
+        write \texttt{\_count = State(initialValue: 5)}; and only the first init wins.}
+  \trap{\texttt{@State var items = load()} runs \texttt{load()} on \emph{every} view init,
+        result discarded after the first.}
+  \trap{\texttt{\$vm.name.sink \{ \}} reading \texttt{vm.name} inside gets the \textbf{old}
+        value (willSet); use the closure's parameter.}
+  \trap{Two wrappers: \texttt{\$x} projects only the outermost one.}
+  \trap{Wrappers hide semantics (persistence, threading) at the call site — great for
+        cross-cutting concerns, costly when overused.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``\texttt{x} is a computed façade, \texttt{\_x} is the wrapper, \texttt{\$x} is the
+projection. Storage inside = value; storage outside = survives the struct.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} swiftui-state (which wrapper to use) ·
+observation-and-combine (\texttt{@Published}, \texttt{@Observable} macro) · macros-and-result-builders ·
+swiftui-performance-identity · swift-initialization (memberwise)}
+
+\end{document}

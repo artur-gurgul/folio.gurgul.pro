@@ -1,0 +1,186 @@
+% swift-unsafe-and-reflection.tex — the Unsafe pointer family (2x2x2),
+% withUnsafe* scoping + the escaping-pointer trap, memory states and
+% binding/rebinding, Unmanaged for C callbacks, then metatypes, Mirror and its
+% limits, dynamic casting.
+% Sources (checked 2026-10-06):
+%   developer.apple.com/documentation/swift/unsafemutablepointer (memory states: uninitialized /
+%     initialized / deinitialized; bindMemory, withMemoryRebound) · /swift/calling-functions-
+%     with-pointer-parameters (implicit &x, array and String bridging) · /swift/unmanaged
+%     (Create/Copy rule -> takeRetainedValue, Get -> takeUnretainedValue) · /swift/mirror
+%   swift-evolution SE-0107 (UnsafeRawPointer, 3.0) · SE-0335 (any, 5.6: (any P).Type vs
+%     any P.Type) · SE-0309 (existentials for all protocols, 5.7 — as? any Sequence) · SE-0353
+%     (constrained existentials, 5.7) · SE-0447 (Span, 6.2) — checked against the evolution
+%     index
+% @labels: area=swift kind=concept platform=apple topic=memory,language discussion=169
+% @tags: unsafepointer, unsafemutablerawpointer, unsafebufferpointer, withunsafebytes, bindmemory, withmemoryrebound, unmanaged, dangling-pointer, metatype, type-of, mirror, dynamic-cast
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,defer,
+    if,else,return,guard,self,nil,true,false,in,Int,UInt32,Unmanaged,
+    Mirror,Any,some,any},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  pt/.style={box, font=\ttfamily\tiny, inner sep=1.2pt, minimum height=4.4mm,
+             minimum width=27mm},
+  bp/.style={pt, draw=sheetGreen, fill=sheetGreen!8},
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.6mm},
+  lbl/.style={font=\scriptsize, text=black!80, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small, anchor=west},
+  ev/.style={circle, fill=sheetBlue, inner sep=1.2pt},
+}
+
+\begin{document}
+
+\sheettitle{Unsafe pointers · Unmanaged · metatypes · Mirror · casts}{swift · folio}
+
+\oneliner{\textbf{Unsafe} = you, not the compiler, own lifetime,
+initialisation, alignment, type binding and bounds. \textbf{Reflection} is
+deliberately thin: metatypes are values (\texttt{T.Type}), \texttt{Mirror} only
+\emph{reads} stored properties, casts query runtime metadata.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── the 2x2x2: back face (buffer) offset up-right ──
+  \node[ttl] at (-0.1,3.05) {the family: typed/raw × read/mutable × single/buffer};
+  \def\dx{1.05} \def\dy{0.55}
+  \node[bp] (b00) at (1.55+\dx,1.85+\dy) {UnsafeBufferPointer<T>};
+  \node[bp] (b01) at (4.6+\dx,1.85+\dy) {UnsafeMutableBufferPointer<T>};
+  \node[bp] (b10) at (1.55+\dx,0.65+\dy) {UnsafeRawBufferPointer};
+  \node[bp] (b11) at (4.6+\dx,0.65+\dy) {UnsafeMutableRawBufferPointer};
+  \foreach \a/\b in {b00/b01,b00/b10,b01/b11,b10/b11} \draw[sheetGreen!50] (\a) -- (\b);
+  \node[pt] (p00) at (1.55,1.85) {UnsafePointer<T>};
+  \node[pt] (p01) at (4.6,1.85) {UnsafeMutablePointer<T>};
+  \node[pt, draw=sheetOrange, fill=sheetOrange!8] (p10) at (1.55,0.65) {UnsafeRawPointer};
+  \node[pt, draw=sheetOrange, fill=sheetOrange!8] (p11) at (4.6,0.65) {UnsafeMutableRawPointer};
+  \draw[flow] (0.3,0.1) -- node[lbl, below]{+ Mutable (write)} (5.6,0.1);
+  \draw[flow] (-0.05,2.1) -- node[lbl, left, align=right]{+ Raw\\(bytes)} (-0.05,0.4);
+  \draw[flow, draw=sheetGreen] (6.1,0.2) -- (6.9,0.6) node[lbl, anchor=west, align=left, text=sheetGreen!50!black]{+ Buffer\\(+ \texttt{count},\\\texttt{Collection})};
+  \node[lbl, anchor=west, align=left] at (-0.1,-0.45) {typed \texttt{p[i]} steps by \textbf{stride} · raw \texttt{load(fromByteOffset:as:)} must be aligned,\\else \texttt{loadUnaligned} · a C struct you can't see into $\to$ \texttt{OpaquePointer}};
+  % ── Unmanaged round trip ──
+  \draw[sheetGrey!40] (8.95,3.15) -- (8.95,-0.7);
+  \node[ttl] at (9.0,3.05) {\texttt{Unmanaged}: a Swift object through a C \texttt{void *}};
+  \draw[thick, black!60] (9.2,1.6) -- (16.5,1.6);
+  \foreach \x in {9.9, 12.3, 12.9, 15.4} \node[ev] at (\x,1.6) {};
+  \node[lbl, above, align=center] at (9.9,1.7) {\texttt{passRetained(obj)}\\\texttt{.toOpaque()}};
+  \node[lbl, below, text=sheetGreen!60!black] at (9.9,1.5) {rc +1};
+  \node[lbl, above, align=center] at (12.6,1.7) {each callback: \texttt{fromOpaque}\\\texttt{(ctx).takeUnretainedValue()}};
+  \node[lbl, below] at (12.6,1.5) {rc +0, many times};
+  \node[lbl, above, align=center] at (15.3,1.7) {unregister, once:\\\texttt{.release()}};
+  \node[lbl, below, text=sheetRed] at (15.4,1.5) {rc $-1$};
+  \node[sb, fill=sheetOrange!8, draw=sheetOrange, anchor=west] at (9.1,0.6) {C library holds \texttt{void *ctx} — it cannot retain};
+  \node[lbl, anchor=west, text=sheetRed, align=left] at (9.05,-0.1) {miss the $-1$ = leak\\\texttt{passUnretained} + object dies first = use-after-free};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Pointers}
+\begin{itemize}
+  \item \textbf{States:} \texttt{allocate} $\to$ \texttt{initialize(to:)} $\to$
+        use $\to$ \texttt{deinitialize(count:)} (releases refs) $\to$
+        \texttt{deallocate()}. Skipping deinitialise on class refs = leak.
+  \item \textbf{Scoped:} \texttt{withUnsafePointer(to:)},
+        \texttt{withUnsafeBytes(of:)}, \texttt{withUnsafeBufferPointer} — the
+        pointer is valid \textbf{only inside the closure} (the value may move,
+        COW-copy or die). Implicit \texttt{\&x} / array / \texttt{String} to a
+        C param: valid for \emph{that call}; keeping one draws a
+        ``dangling pointer'' warning (5.2+).
+  \item \textbf{Binding:} memory is bound to one type at a time; typed
+        access through an unrelated type = strict-aliasing UB.
+        \texttt{bindMemory(to:capacity:)} rebinds; \texttt{withMemoryRebound}
+        rebinds for a scope (e.g. \texttt{sockaddr\_in} $\to$
+        \texttt{sockaddr}); \texttt{assumingMemoryBound(to:)} only
+        \emph{asserts}, unchecked. For reinterpretation, prefer raw +
+        \texttt{load(as:)}.
+  \item No bounds checks on \texttt{p[i]} / \texttt{buf[i]} in release.
+        C fixed arrays import as \textbf{tuples}; \texttt{withExtendedLifetime(obj)}
+        stops ARC releasing an object whose pointer C still uses.
+  \item \textbf{\texttt{Unmanaged<T>}}: manual retain counts across
+        \texttt{void *}. CF naming rule: \emph{Create/Copy} returns +1
+        $\to$ \texttt{takeRetainedValue()}; \emph{Get} $\to$
+        \texttt{takeUnretainedValue()}.
+\end{itemize}
+
+\section{Example — C callback with context}
+\begin{lstlisting}[language=SwiftSheet]
+final class Counter { var hits = 0 }
+let ctx = Unmanaged.passRetained(Counter()).toOpaque()    // +1
+register_cb({ raw in              // @convention(c): no captures
+  let c = Unmanaged<Counter>.fromOpaque(raw!)
+                            .takeUnretainedValue()   // +0 borrow
+  c.hits += 1 }, ctx)
+// later, exactly once:
+Unmanaged<Counter>.fromOpaque(ctx).release()              // -1
+var n: UInt32 = 0xDEADBEEF
+let b = withUnsafeBytes(of: &n) { Array($0) }  // EF BE AD DE
+\end{lstlisting}
+
+\section{When to reach for it}
+C/C++ interop, zero-copy binary parsing, a \emph{measured} hot loop. Keep it
+small, audited, behind a safe API. Swift 6.2's \texttt{Span}/\texttt{RawSpan}
+are bounds-checked, non-escaping views that replace many
+\texttt{withUnsafe…} uses.
+
+\columnbreak
+
+\section{Metatypes}
+\begin{tikzpicture}[sheet]
+  \node[sb] (v) at (0,0) {\texttt{let d: Animal = Dog()}};
+  \node[sb, draw=sheetGreen, fill=sheetGreen!8] (dt) at (4.3,0) {\texttt{Dog.self} : \texttt{Dog.Type}};
+  \node[sb] (st) at (4.3,-0.75) {\texttt{Animal.self} : \texttt{Animal.Type}};
+  \draw[flow] (v) -- node[lbl, above]{\texttt{type(of: d)} dynamic} (dt);
+  \draw[flow] (v.south) |- node[lbl, below, pos=0.75]{static type} (st);
+  \node[sb, draw=sheetOrange, fill=sheetOrange!8] (pp) at (0.6,-1.55) {\texttt{P.self} : \texttt{(any P).Type}};
+  \node[sb, draw=sheetOrange, fill=sheetOrange!8] (ep) at (4.3,-1.55) {\texttt{Dog.self} : \texttt{any P.Type}};
+  \node[lbl, align=left, anchor=north west] at (-1.0,-1.95) {the protocol's \emph{own} metatype (was \texttt{P.Protocol}) vs.\\``some conforming type's'' metatype (was \texttt{P.Type}) — SE-0335};
+\end{tikzpicture}
+
+\section{Reflection \& casts}
+\begin{itemize}
+  \item \texttt{T.self} is the \emph{value} of \texttt{T.Type}: call
+        \texttt{static} members and \texttt{required init} through it
+        (\texttt{decode(User.self, from:)}). \texttt{AnyClass} =
+        \texttt{AnyObject.Type}; \texttt{ObjectIdentifier(T.self)} keys by type.
+        \texttt{some P} = one hidden type, static; \texttt{any P} = box.
+  \item \texttt{Mirror(reflecting:)}: \texttt{children} (label, value),
+        \texttt{displayStyle}, \texttt{superclassMirror} (inherited props).
+        Stored properties only — \textbf{no methods, computed props,
+        setting or construction}. Slow; \texttt{dump()} uses it.
+  \item \texttt{is}/\texttt{as?}: classes walk the superclass chain;
+        protocols look up conformance records (cached, first lookup slow).
+        Casts see through \texttt{Optional} inside \texttt{Any}; \texttt{Int}
+        in \texttt{Any} is \emph{not} a \texttt{Double}; \texttt{as? any
+        Sequence} works since 5.7, \texttt{any Collection<Int>} needs the
+        iOS 16 runtime.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{withUnsafePointer(to: \&x) \{ \$0 \}} — returns a dangling
+        pointer. Do the work inside, or copy out.}
+  \trap{\texttt{size} instead of \texttt{stride} for pointer maths;
+        \texttt{withUnsafeBytes} is \textbf{host} (little-endian) order — use
+        \texttt{.bigEndian} for the wire.}
+  \trap{\texttt{x as? AnyObject} always succeeds (boxes a struct).
+        \texttt{is Dog} includes subclasses; comparing \texttt{type(of: x)} to
+        \texttt{Dog.self} is exact.}
+  \trap{Mirror for serialisation or setting — use \texttt{Codable}, key paths.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Typed? Mutable? Buffer? — then: in scope, initialised, bound,
+aligned, in bounds.''} Metatype is a value; Mirror only reads.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:}
+\texttt{ownership-and-memory-layout} (stride, existentials, \texttt{Span}
+(Swift 6.2) as the safe view) · \texttt{protocols-generics} (\texttt{some}/\texttt{any})
+· \texttt{objc-interop} (KVC, \texttt{\_\_bridge}) · \texttt{c-pointers-const-restrict}
+· \texttt{swift-runtime-and-compiler} (metadata)}
+
+\end{document}

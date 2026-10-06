@@ -1,0 +1,97 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Swift ↔ C / C++ interop — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/swift/swift-c-cpp-interop.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">157</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Swift ↔ C / C++ interop</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">swift · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Swift reads C headers through its built-in <strong>Clang importer</strong>: a header
+exposed as a <strong>module</strong> (module map; or a <strong>bridging header</strong> in an app target)
+becomes global Swift functions and types — C scalars map to <code>CInt</code>/<code>CChar</code>…,
+pointers to <code>Unsafe*Pointer</code>. <strong>C++</strong> (Swift 5.9+, opt-in) imports copyable
+classes as <strong>value types</strong>. The other way, <code>@c</code> (Swift 6.3; before it the
+unofficial <code>@_cdecl</code>) exports a Swift function under a C symbol.</p>
+<p class="sheet-tools"><a class="sheet-download" href="swift-c-cpp-interop.pdf" download>Download PDF</a> <a href="swift-c-cpp-interop.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/swift/swift-c-cpp-interop.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="swift-c-cpp-interop-fig1.svg" width="629" height="131" class="wide" alt="Swift ↔ C / C++ interop — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Importing C</h2>
+<ul>
+<li><strong>App target</strong>: a <strong>bridging header</strong> <code>#import</code>s the headers;  visible target-wide, no <code>import</code>. Unsupported in <strong>framework</strong>  targets → module map / umbrella header.</li>
+<li><strong>SwiftPM</strong>: a C target’s <code>include/</code> gets a generated module map, or  write <code>module CFoo { header &quot;foo.h&quot; export * }</code>; then <code>import CFoo</code>.</li>
+<li><strong>Nullability</strong>: <code>_Nonnull</code> → non-optional, <code>_Nullable</code>  → <code>?</code>, unannotated → IUO <code>!</code> (<code>NS_ASSUME_NONNULL_BEGIN</code>).</li>
+<li><strong>Not imported</strong>: function-like macros, variadic functions (call the  <code>va_list</code> twin via <code>withVaList</code>).</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>How C types map</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>C</strong></th><th><strong>Swift</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>int</code> · <code>long</code> · <code>char</code></td><td><code>Int32</code>(<code>CInt</code>) · <code>Int</code>(<code>CLong</code>, LP64) · <code>CChar</code></td></tr>
+<tr><td><code>const T *</code> / <code>T *</code></td><td><code>UnsafePointer&lt;T&gt;</code> / <code>UnsafeMutablePointer&lt;T&gt;</code></td></tr>
+<tr><td><code>const void *</code> / <code>void *</code></td><td><code>UnsafeRawPointer</code> / <code>UnsafeMutableRawPointer</code></td></tr>
+<tr><td><code>Foo *</code>, <code>Foo</code> incomplete</td><td><code>OpaquePointer</code> — pass back, never deref</td></tr>
+<tr><td><code>struct</code></td><td>struct: memberwise init + zero <code>init()</code></td></tr>
+<tr><td><code>T a[4]</code> (field)</td><td>tuple <code>(T, T, T, T)</code></td></tr>
+<tr><td>plain <code>enum</code></td><td><strong>struct</strong> <code>RawRepresentable</code> + global constants</td></tr>
+<tr><td><code>NS_ENUM</code> / <code>CF_ENUM</code></td><td>Swift <code>enum</code>, non-frozen → <code>@unknown default</code></td></tr>
+<tr><td><code>NS_CLOSED_ENUM</code></td><td>frozen <code>enum</code> (exhaustive switch)</td></tr>
+<tr><td><code>NS_OPTIONS</code></td><td><code>OptionSet</code></td></tr>
+<tr><td><code>#define N 42</code></td><td><code>let N: Int32</code> (literals only)</td></tr>
+<tr><td><code>void (*)(int)</code></td><td><code>@convention(c) (Int32) -&gt; Void</code></td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Example — callback with context</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-comment">// C: void sensor_start(void (*cb)(void *, int32_t), void *ctx);</span>
+<span class="hljs-keyword">final</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">Sensor</span> {
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">var</span> ctx: <span class="hljs-type">UnsafeMutableRawPointer</span>?
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">start</span>() {
+    <span class="hljs-keyword">let</span> c <span class="hljs-operator">=</span> <span class="hljs-type">Unmanaged</span>.passRetained(<span class="hljs-keyword">self</span>).toOpaque() <span class="hljs-comment">// +1</span>
+    sensor_start({ ctx, v <span class="hljs-keyword">in</span>       <span class="hljs-comment">// captures nothing</span>
+      <span class="hljs-type">Unmanaged</span>&lt;<span class="hljs-type">Sensor</span>&gt;.fromOpaque(ctx<span class="hljs-operator">!</span>)
+        .takeUnretainedValue().didRead(v) }, c)   <span class="hljs-comment">// borrow</span>
+    ctx <span class="hljs-operator">=</span> c }
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">stop</span>() {
+    sensor_stop()                  <span class="hljs-comment">// C forgets cb first</span>
+    <span class="hljs-keyword">if</span> <span class="hljs-keyword">let</span> c <span class="hljs-operator">=</span> ctx { <span class="hljs-type">Unmanaged</span>&lt;<span class="hljs-type">Sensor</span>&gt;.fromOpaque(c).release() } }
+}</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Swift → C: <code>@c</code> (6.3) · <code>@_cdecl</code></h2>
+<p><code>@c public func sum(_ a: Int32, _ b: Int32) -&gt; Int32</code> emits the C symbol <code>sum</code> <em>and</em> a declaration in the generated header; <code>@c(MyLib_sum)</code> renames; <code>@c @implementation</code> implements a function a C header already declares. Before 6.3: <code>@_cdecl(&quot;sum&quot;)</code> — underscored, unofficial, hand-written prototype. Only C-representable types either way.</p>
+</section>
+<section class="sheet-section">
+<h2>C++ interop (Swift 5.9 / Xcode 15+)</h2>
+<ul>
+<li><strong>Enable</strong>: SwiftPM <code>swiftSettings: [.interoperabilityMode(.Cxx)]</code>;  Xcode “C++ and Objective-C Interoperability” = C++/Objective-C++. Opt-in per  module, and viral: a module whose interface exposes C++ needs importers to  enable it too.</li>
+<li><strong>Copyable class/struct</strong> (copy ctor + dtor) → Swift <strong>value type</strong>:  a Swift copy runs the copy ctor, end of lifetime runs the destructor.  <code>const</code> methods → non-mutating; others → <code>mutating</code>.</li>
+<li><strong>Reference semantics</strong>: annotate from <code>&lt;swift/bridging&gt;</code> —  <code>SWIFT_SHARED_REFERENCE(retain, release)</code> → a Swift class, ARC calls your  retain/release; <code>SWIFT_IMMORTAL_REFERENCE</code> → never freed.</li>
+<li><strong>std</strong>: <code>String(cxxStr)</code> / <code>std::string(swiftStr)</code> (copies);  <code>std::vector</code> is a <code>RandomAccessCollection</code> (via a  <code>typealias</code>); <code>begin/end</code> types iterate in <code>for-in</code>.</li>
+<li><strong>Limits</strong>: class templates only as a specialised <code>using</code>/<code>typedef</code>;  a C++ <strong>exception</strong> escaping into Swift <strong>terminates</strong>; Swift → C++  goes through the generated <code>-Swift.h</code> header.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">A closure capturing <code>self</code> as a C function pointer does not compile —  context goes through <code>void *</code> + <code>Unmanaged</code>.</li>
+<li class="trap"><code>passRetained</code> with no <code>release()</code> = leak; <code>passUnretained</code>  and the object dies while C holds <code>ctx</code> = use-after-free.</li>
+<li class="trap">Returning the <code>withCString</code> / <code>withUnsafeBufferPointer</code> pointer out of the closure.</li>
+<li class="trap">C++ type owning a raw pointer with the default copy ctor → Swift copies it →  <strong>double free</strong>. Fix the C++ (rule of 3/5) or make it a shared reference.</li>
+<li class="trap">A plain C <code>enum</code> is a struct: <code>switch</code> needs <code>default</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<h3 class="sheet-hd">Module in, pointers scoped, context via Unmanaged, C++ copies are real copies.</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> ownership-and-memory-layout
+(<code>Unsafe*</code>, <code>MemoryLayout</code>) · arc-ownership (<code>Unmanaged</code>) ·
+modularization-spm (targets) · Objective-C interop · c-pointers-const-restrict ·
+strings-and-collections</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=swift" title="area">swift</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=language" title="topic">language</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=memory" title="topic">memory</a></li><li class="sheet-tag"><a href="/folios.html?tag=clang-importer">clang-importer</a></li><li class="sheet-tag"><a href="/folios.html?tag=bridging-header">bridging-header</a></li><li class="sheet-tag"><a href="/folios.html?tag=module-map">module-map</a></li><li class="sheet-tag"><a href="/folios.html?tag=c-callback">c-callback</a></li><li class="sheet-tag"><a href="/folios.html?tag=convention-c">convention-c</a></li><li class="sheet-tag"><a href="/folios.html?tag=unmanaged">unmanaged</a></li><li class="sheet-tag"><a href="/folios.html?tag=opaquepointer">opaquepointer</a></li><li class="sheet-tag"><a href="/folios.html?tag=withcstring">withcstring</a></li><li class="sheet-tag"><a href="/folios.html?tag=cxx-interop">cxx-interop</a></li><li class="sheet-tag"><a href="/folios.html?tag=swift-shared-reference">swift-shared-reference</a></li><li class="sheet-tag"><a href="/folios.html?tag=cdecl">cdecl</a></li><li class="sheet-tag"><a href="/folios.html?tag=nullability">nullability</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=swift%2Fswift-c-cpp-interop.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/152">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

@@ -1,0 +1,201 @@
+% ownership-and-memory-layout.tex — law of exclusivity, ~Copyable, consuming /
+% borrowing, struct deinit, MemoryLayout + padding, existential containers,
+% ARC refcount storage (inline vs side table), retain/release cost, Unmanaged.
+% Sources (checked 2026-10-06):
+%   docs.swift.org/swift-book Memory Safety (law of exclusivity) · swift-evolution SE-0176
+%     (exclusivity, 4.0) · SE-0390 (~Copyable, struct deinit, 5.9) · SE-0377 (borrowing /
+%     consuming, 5.9) · SE-0366 (consume, 5.9) — checked against the evolution index
+%   github.com/swiftlang/swift docs/ABI/TypeLayout.rst (existential container: 3-word buffer +
+%     metadata + witness tables; struct layout, padding) · stdlib/public/SwiftShims/swift/shims/
+%     RefCount.h (inline refcount vs side table for weak refs)
+%   developer.apple.com/documentation/swift/memorylayout · /swift/unmanaged
+% @labels: area=swift kind=concept platform=apple topic=memory,performance,language discussion=148
+% @tags: exclusivity, noncopyable, borrowing, consuming, memorylayout, stride, padding, existential-container, witness-table, side-table, refcount, unmanaged
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,deinit,
+    if,else,return,guard,self,nil,true,false,in,inout,consuming,borrowing,
+    consume,copy,discard,mutating,Int32,Int64,UInt8,Bool,Int,Void},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  byte/.style={draw=sheetGrey, minimum width=3.3mm, minimum height=4.6mm,
+               inner sep=0pt, font=\ttfamily\tiny},
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  ttl/.style={font=\bfseries\small},
+  word/.style={draw=sheetGrey, minimum width=12mm, minimum height=5mm,
+               font=\ttfamily\scriptsize, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Ownership · exclusivity · memory layout}{swift · folio}
+
+\oneliner{\textbf{Exclusivity} is the rule (no overlapping access where one is a
+\emph{write}); \textbf{ownership} (\texttt{borrowing}/\texttt{consuming}/%
+\texttt{\textasciitilde Copyable}) is the vocabulary for who owns a value and when it
+dies; \textbf{layout} (\texttt{MemoryLayout}, existentials, refcount headers) is
+what all of it costs in bytes and atomic ops.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Law of Exclusivity:} two accesses to the same storage may not
+        overlap in time if at least one \emph{writes}. Reads overlap freely.
+        A \texttt{mutating} call or \texttt{inout} argument is \emph{one}
+        write access lasting the \textbf{whole call}.
+  \item \textbf{Static} check (local vars, provable aliasing) = compile error,
+        zero cost. \textbf{Dynamic} check (class properties, globals, vars
+        captured by escaping closures) = runtime begin/end markers, trap
+        ``Simultaneous accesses''. On in \textbf{Debug and Release} since Swift~5;
+        \texttt{-enforce-exclusivity=unchecked} turns the trap into UB.
+        It is \emph{not} a thread-race detector.
+  \item \textbf{\texttt{\textasciitilde Copyable}} (5.9) \emph{suppresses} the implicit
+        \texttt{Copyable} — not a protocol. Structs/enums only (not classes or
+        actors). Values are \emph{moved} or \emph{borrowed}, never copied
+        $\Rightarrow$ single owner $\Rightarrow$ a \textbf{struct can have
+        \texttt{deinit}}, run exactly once when the owner ends or is consumed.
+  \item \textbf{Parameter ownership:} \texttt{borrowing} = +0 / guaranteed,
+        read-only, caller keeps it (default for most params);
+        \texttt{consuming} = +1 / owned, caller's binding is dead after;
+        \texttt{inout} = exclusive write, handed back.
+        \texttt{consume x} ends \texttt{x}'s lifetime explicitly;
+        \texttt{consuming func close()} consumes \texttt{self};
+        \texttt{discard self} ends it \emph{without} \texttt{deinit}.
+  \item Generics: \texttt{<T: \textasciitilde Copyable>} widens (6.0).
+        \texttt{Optional}, \texttt{UnsafePointer} accept noncopyables;
+        \texttt{Array} still requires \texttt{Copyable}.
+  \item \textbf{\texttt{MemoryLayout<T>}}: \texttt{size} = bytes used;
+        \texttt{alignment} = start boundary; \texttt{stride} = \texttt{size}
+        rounded up to \texttt{alignment} = distance between array elements.
+        Swift keeps \textbf{declaration order}, so field order sets padding.
+  \item \textbf{Existential \texttt{any P}} = 5 words (40 B): 3-word inline
+        buffer + type metadata + 1 witness table per protocol
+        (\texttt{any P \& Q} = 48 B; \texttt{Any} = 32 B; class-bound = ref +
+        PWTs). Value > 3 words $\to$ \textbf{boxed on the heap}, buffer holds the
+        pointer. Generics / \texttt{some P} specialise and skip the box.
+  \item \textbf{ARC header} = 16 B: metadata (\texttt{isa}) + one 64-bit
+        \textbf{inline} refcount word (strong + unowned counts + flags). A
+        \texttt{weak} ref or overflow moves counts to a \textbf{side table};
+        the word then points to it. \texttt{swift\_retain}/\texttt{release}
+        are \textbf{atomic} RMWs — cheap once, costly as traffic, worse under
+        contention. \texttt{borrowing}/+0 and the optimiser remove pairs.
+  \item \textbf{\texttt{Unmanaged<T>}}: manual ARC across a C \texttt{void*}
+        context. \texttt{passRetained}~(+1) $\leftrightarrow$
+        \texttt{takeRetainedValue}~($-1$); \texttt{passUnretained} $\leftrightarrow$
+        \texttt{takeUnretainedValue} (+0). \texttt{toOpaque}/\texttt{fromOpaque}.
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+struct FileHandle: ~Copyable {
+  let fd: Int32
+  deinit { close(fd) }                  // runs exactly once
+  consuming func detach() -> Int32 {
+    let f = fd; discard self; return f }  // no deinit
+}
+func read(_ h: borrowing FileHandle) {}   // lend, +0
+func store(_ h: consuming FileHandle) {}  // take, +1
+let h = FileHandle(fd: 3)
+read(h); store(h)
+// read(h)   error: 'h' used after consume
+var x = 1
+swap(&x, &x)    // error: overlapping accesses to 'x'
+\end{lstlisting}
+
+\columnbreak
+
+\section{Padding: same fields, new order}
+\begin{tikzpicture}[sheet]
+  \tikzset{byte/.append style={minimum width=2.8mm}}
+  % S1: Bool, Int64, Bool
+  \node[lbl, anchor=west] at (-0.2,0.5) {\texttt{struct A \{ a: Bool; b: Int64; c: Bool \}}};
+  \foreach \i in {0,...,23} {
+    \pgfmathsetmacro\x{\i*0.28}
+    \ifnum\i=0 \node[byte, fill=sheetGreen!30] at (\x,0) {a};
+    \else\ifnum\i<8 \node[byte, fill=sheetRed!18] at (\x,0) {p};
+    \else\ifnum\i<16 \node[byte, fill=sheetBlue!25] at (\x,0) {b};
+    \else\ifnum\i=16 \node[byte, fill=sheetOrange!35] at (\x,0) {c};
+    \else \node[byte, fill=black!18] at (\x,0) {};
+    \fi\fi\fi\fi
+  }
+  \draw[decorate, decoration={brace, mirror, amplitude=3pt}] (-0.14,-0.3) -- (4.62,-0.3)
+    node[lbl, midway, below=3pt]{size 17 (7 B inner padding after \texttt{a})};
+  \draw[decorate, decoration={brace, mirror, amplitude=3pt}] (-0.14,-0.75) -- (6.58,-0.75)
+    node[lbl, midway, below=3pt]{stride 24 · alignment 8};
+  % S2: Int64, Bool, Bool
+  \node[lbl, anchor=west] at (-0.2,-1.5) {\texttt{struct B \{ b: Int64; a: Bool; c: Bool \}}};
+  \foreach \i in {0,...,15} {
+    \pgfmathsetmacro\x{\i*0.28}
+    \ifnum\i<8 \node[byte, fill=sheetBlue!25] at (\x,-2.0) {b};
+    \else\ifnum\i=8 \node[byte, fill=sheetGreen!30] at (\x,-2.0) {a};
+    \else\ifnum\i=9 \node[byte, fill=sheetOrange!35] at (\x,-2.0) {c};
+    \else \node[byte, fill=black!18] at (\x,-2.0) {};
+    \fi\fi\fi
+  }
+  \draw[decorate, decoration={brace, mirror, amplitude=3pt}] (-0.14,-2.3) -- (2.66,-2.3)
+    node[lbl, midway, below=3pt]{size 10};
+  \draw[decorate, decoration={brace, mirror, amplitude=3pt}] (-0.14,-2.75) -- (4.34,-2.75)
+    node[lbl, midway, below=3pt]{stride 16 · alignment 8};
+  \node[note, anchor=west] at (4.6,-2.0) {biggest alignment first:\\saves 8 B per element};
+  % legend
+  \node[byte, fill=sheetRed!18] at (4.75,-1.0) {p};
+  \node[lbl, anchor=west] at (4.9,-1.0) {inner pad};
+  \node[byte, fill=black!18] at (5.95,-1.0) {};
+  \node[lbl, anchor=west] at (6.1,-1.0) {tail pad};
+\end{tikzpicture}
+
+\section{\texttt{any P} and the object header}
+\begin{tikzpicture}[sheet]
+  \node[ttl, anchor=west] at (-0.2,0.5) {existential (40 B)};
+  \node[word, fill=sheetGreen!15] (w0) at (0.4,0) {buf 0};
+  \node[word, fill=sheetGreen!15] (w1) at (0.4,-0.5) {buf 1};
+  \node[word, fill=sheetGreen!15] (w2) at (0.4,-1.0) {buf 2};
+  \node[word, fill=sheetBlue!12] at (0.4,-1.5) {metadata};
+  \node[word, fill=sheetOrange!15] at (0.4,-2.0) {PWT (P)};
+  \node[box, fill=sheetRed!8, draw=sheetRed, font=\scriptsize] (heap) at (2.55,-0.25) {heap box\\value > 24 B};
+  \draw[hot] (w0.east) -- (heap.west);
+  \node[note, anchor=west] at (1.2,-1.35) {\(\le\) 3 words:\\stored inline};
+  % object header
+  \node[ttl, anchor=west] at (3.9,0.5) {class instance};
+  \node[word, fill=sheetBlue!12, minimum width=17mm] (isa) at (4.75,0) {metadata};
+  \node[word, fill=sheetOrange!15, minimum width=17mm] (rc) at (4.75,-0.5) {refcount word};
+  \node[word, minimum width=17mm] at (4.75,-1.0) {stored props};
+  \node[lbl, anchor=west, align=left] at (5.7,-0.5) {strong | unowned\\| flags};
+  \node[box, font=\scriptsize, fill=sheetGreen!10, draw=sheetGreen] (st) at (4.75,-2.0) {side table};
+  \draw[flow, dashed] (rc.west) to[out=180, in=180, looseness=1.6] node[lbl, right, align=left, pos=0.6]{1st \texttt{weak} / overflow} (st.west);
+  \node[lbl, anchor=west, align=left] at (5.45,-2.0) {weak refs point here;\\outlives object memory};
+\end{tikzpicture}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Array indexing / pointer maths uses \textbf{stride}, not size
+        (\texttt{Int?}: size 9, stride 16).}
+  \trap{Exclusivity $\neq$ data-race safety — that is actors /
+        \texttt{Sendable}. It catches single-threaded reentrancy.}
+  \trap{\texttt{\&a[0], \&a[1]} conflict: subscript \texttt{inout} accesses
+        the \emph{whole array}. Use \texttt{swapAt}.}
+  \trap{\texttt{\textasciitilde Copyable} is suppression, not conformance; a
+        \texttt{borrowing} param cannot be returned or stored (escapes the borrow).}
+  \trap{\texttt{any P} in a hot loop may \texttt{malloc} (box) and adds
+        dynamic dispatch — prefer \texttt{some P} / generics.}
+  \trap{\texttt{passRetained} + \texttt{takeUnretainedValue} = leak; the
+        reverse = over-release crash.}
+  \trap{``Value type = no ARC'' — a struct holding a class ref retains it on copy.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``One writer, whole call.''} \textbf{B}orrow reads, \textbf{C}onsume
+takes, \textbf{I}nout rents — ``BCI''. Pack fields \textbf{big-to-small}.
+\textbf{3 words} fit in an existential; \textbf{weak} buys a side table.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} ARC strong/weak/unowned · copy-on-write \& \texttt{isKnownUniquelyReferenced} · \texttt{some} vs \texttt{any} · \texttt{\textasciitilde Escapable} / \texttt{Span} · \texttt{withUnsafe*} pointers · \texttt{Sendable}}
+
+\end{document}
