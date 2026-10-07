@@ -1,0 +1,196 @@
+% threat-modelling.tex — threat modelling a mobile feature: the four questions, a data-flow
+% diagram with trust boundaries, assets and data classification, STRIDE (per element),
+% risk rating (and why DREAD fell out of favour), responses, "enforce on the server",
+% and a worked example: paying with a saved card through a payment provider.
+% Sources (checked 2026-10-07) — re-read today: the manifesto's four questions: Threat Modeling Manifesto (threatmodelingmanifesto.org, the four questions);
+% A. Shostack, "Uncover Security Design Flaws Using the STRIDE Approach", MSDN Magazine,
+% Nov 2006 (STRIDE per element) and "Experiences Threat Modeling at Microsoft" (2008);
+% OWASP Threat Modeling Cheat Sheet and OWASP Risk Rating Methodology (owasp.org);
+% OWASP API Security Top 10 2023 (API1 Broken Object Level Authorization); mas.owasp.org (MASVS).
+% @labels: area=security kind=process platform=general topic=security,architecture discussion=246
+% @tags: threat-modelling, stride, data-flow-diagram, trust-boundary, dread, risk-rating, attack-surface, server-side-enforcement, bola, idempotency, data-classification
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{YamlSheet}{
+  morekeywords={id,element,stride,threat,risk,mitigation,verify,status},
+  sensitive=true, morecomment=[l]{\#},
+  literate={->}{{\hbox{-}\hbox{>}}}2 {=>}{{\hbox{=}\hbox{>}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\tikzset{
+  ph/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  l/.style={font=\tiny, text=black!75, align=left, inner sep=1pt},
+  ext/.style={draw=sheetGrey, thick, fill=black!4, font=\tiny, align=center, inner sep=2pt, minimum height=6mm},
+  proc/.style={circle, draw=sheetBlue, thick, fill=sheetBlue!8, font=\tiny, align=center, inner sep=0.5pt, minimum size=11mm},
+  num/.style={circle, fill=sheetOrange, text=white, font=\sffamily\tiny\bfseries, inner sep=0.6pt, minimum size=3mm},
+  st/.style={font=\sffamily\tiny\bfseries, text=sheetRed, inner sep=1pt},
+  tb/.style={draw=sheetRed, thick, dashed},
+  zone/.style={font=\tiny\itshape, text=sheetRed, anchor=north west, align=left},
+}
+% a data store: two horizontal lines with a label
+\newcommand\store[3]{% name, position, text
+  \node[font=\tiny, align=center, inner sep=2pt, minimum width=18mm] (#1) at (#2) {#3};
+  \draw[sheetBrown, thick] (#1.north west) -- (#1.north east);
+  \draw[sheetBrown, thick] (#1.south west) -- (#1.south east);}
+
+\begin{document}
+
+\sheettitle{Threat modelling a mobile feature — DFD, trust boundaries, STRIDE}{security · folio}
+
+\oneliner{Threat modelling is answering four questions \emph{while designing}: \textbf{What are we
+working on?} (draw the data flow) · \textbf{What can go wrong?} (STRIDE at every \textbf{trust
+boundary}) · \textbf{What are we going to do about it?} (mitigate, eliminate, transfer, accept) ·
+\textbf{Did we do a good enough job?} (tests, review). On mobile the first boundary is the
+device itself: the client is in the attacker's hands, so \textbf{the server enforces}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[ph] at (-0.1,3.85) {Worked DFD — ``pay with a saved card''};
+  % legend
+  \node[ext, minimum height=3.5mm, font=\tiny] at (7.6,3.85) {external};
+  \node[proc, minimum size=4mm, font=\tiny] at (8.55,3.85) {};
+  \node[l] at (9.1,3.85) {process};
+  \node[font=\tiny, inner sep=1pt] (lg) at (10.15,3.85) {store};
+  \draw[sheetBrown, thick] (lg.north west) -- (lg.north east); \draw[sheetBrown, thick] (lg.south west) -- (lg.south east);
+  \draw[flow] (10.7,3.85) -- (11.3,3.85); \node[l] at (11.65,3.85) {flow};
+  \draw[tb] (12.1,3.7) -- (12.1,4.0); \node[l, text=sheetRed] at (12.85,3.85) {trust boundary};
+  % zones
+  \node[zone] at (-0.1,3.45) {user's device — \textbf{attacker-controlled}\\(jailbreak, Frida, proxy, repackaging)};
+  \node[zone] at (5.75,3.45) {our backend};
+  \node[zone] at (11.95,3.45) {third party};
+  \draw[tb] (5.55,3.55) -- (5.55,-0.6) node[below, l, text=sheetRed]{TB1 device $\leftrightarrow$ internet};
+  \draw[tb] (11.75,3.55) -- (11.75,-0.6) node[below, l, text=sheetRed]{TB2 ours $\leftrightarrow$ PSP};
+  % elements
+  \node[ext] (user) at (0.4,2.1) {User};
+  \node[proc] (app) at (2.75,2.1) {Mobile\\app};
+  \store{kc}{2.6,0.6}{Keychain:\\refresh token}
+  \node[proc, minimum size=9mm, draw=sheetGreen, fill=sheetGreen!8] (sdk) at (4.35,0.85) {PSP\\SDK};
+  \node[proc] (api) at (7.25,2.1) {API +\\authN/Z};
+  \node[proc] (ord) at (9.85,2.1) {Orders +\\payments};
+  \store{db}{9.85,0.6}{Orders DB}
+  \store{audit}{7.25,0.6}{Audit log}
+  \node[ext, text width=17mm] (psp) at (14.95,2.1) {Payment provider\\(PSP)};
+  % flows
+  \draw[hot] (user) -- node[num, above=1pt]{1} node[l, below, align=center]{tap Pay\\+ Face ID} (app);
+  \draw[hot] (app) -- node[num, below=1pt, pos=0.2]{2} node[l, above, pos=0.36, align=center]{POST /orders: cart\\+ Idempotency-Key\\+ access token} (api);
+  \draw[flow] (app) -- (app |- kc.north);
+  \draw[flow] (app) -- (sdk);
+  \draw[hot] (api) -- node[num, above=1pt]{3} node[l, below]{authorised call} (ord);
+  \draw[flow] (api) -- (audit); \draw[flow] (ord) -- (db);
+  \draw[hot] ([yshift=2mm]ord.east) -- node[num, above=1pt, pos=0.13]{4} node[l, above=1pt, pos=0.68, align=center]{create PaymentIntent,\\\textbf{server-computed amount}} ([yshift=2mm]psp.west);
+  \draw[hot, draw=sheetGreen] ([yshift=-2mm]psp.west) -- node[num, below=1pt, pos=0.87, fill=sheetGreen]{6} node[l, below=1pt, pos=0.32, align=center]{webhook ``succeeded'':\\\textbf{HMAC-signed}, idempotent} ([yshift=-2mm]ord.east);
+  \draw[hot, draw=sheetGreen!70!black] (sdk.south) -- (sdk.south |- 0,-0.3) -| node[num, pos=0.02, fill=sheetGreen!60!black]{5} (psp.south);
+  \node[l, text=sheetGreen!45!black] at (8.75,-0.12) {card data: SDK $\to$ PSP directly — never on our servers (PCI scope shrinks)};
+  % STRIDE tags on boundary-crossing flows
+  \node[st] at (6.12,2.52) {S T R I D E};
+  \node[st] at (11.3,2.1) {S T I D};
+  \node[st] at (0.4,1.6) {S R};
+  \node[l, text=sheetRed] at (4.3,3.05) {client total = display only};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\footnotesize\setstretch{1.0}\raggedright
+
+\hd{The process}
+\begin{enumerate}
+  \item \textbf{Scope + DFD}: one feature, level-0/1 data-flow diagram: external entities,
+        processes, data stores, flows. Include the unglamorous paths: push, deep links, WebViews,
+        analytics SDKs, logs, backups, support tools.
+  \item \textbf{Assets + classification}: secrets (tokens, keys), regulated (card data, health),
+        personal (PII, location), internal, public. The class sets the controls.
+  \item \textbf{Trust boundaries}: wherever data changes privilege — device $\leftrightarrow$
+        network, app $\leftrightarrow$ other apps (URL schemes, pasteboard, extensions),
+        WebView $\leftrightarrow$ native, backend $\leftrightarrow$ third party.
+  \item \textbf{Enumerate threats}: STRIDE per element, hardest at boundary crossings; attack
+        trees for the crown jewels; abuse cases (``a user who \dots'').
+  \item \textbf{Rate + respond}: likelihood $\times$ impact $\to$ \textbf{mitigate},
+        \textbf{eliminate} (drop the data or feature), \textbf{transfer} (PSP, insurer),
+        \textbf{accept} (written down, owner signs).
+  \item \textbf{Validate}: each mitigation gets a test or review item; the model lives in the
+        repo and is revisited when the design changes.
+\end{enumerate}
+
+\hd{STRIDE — six threats, six properties}
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{25mm}@{}}
+\toprule
+\textbf{threat} & \textbf{violates} & \textbf{mobile example} & \textbf{mitigation}\\ \midrule
+\textbf{S}poofing & authentication & stolen token, fake server, other user & OAuth + PKCE, short tokens, TLS, App Attest\\
+\textbf{T}ampering & integrity & edited price, patched app & server-side rules, signed data, AEAD\\
+\textbf{R}epudiation & non-repudiation & ``I never paid'' & server audit log, signed receipts\\
+\textbf{I}nfo disclosure & confidentiality & PAN in logs, snapshot, IDOR & tokenize, redact, object-level authZ\\
+\textbf{D}enial of service & availability & retry storms, card testing, SMS pumping & rate limits, backoff, quotas\\
+\textbf{E}levation of privilege & authorization & \ct{isAdmin} in the client, hidden debug menu & authZ on \emph{every} request\\
+\bottomrule
+\end{tabular}}
+
+\hd{STRIDE per element (Shostack)}
+{\scriptsize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{24mm}cccccc@{}}
+\toprule
+& S & T & R & I & D & E\\ \midrule
+external entity & \checkmark & & \checkmark & & & \\
+process & \checkmark & \checkmark & \checkmark & \checkmark & \checkmark & \checkmark\\
+data store & & \checkmark & (logs) & \checkmark & \checkmark & \\
+data flow & & \checkmark & & \checkmark & \checkmark & \\
+\bottomrule
+\end{tabular}}\par
+Cuts the checklist: ask only the questions that apply to each shape.
+
+\hd{Rating risk — and the DREAD debate}
+\textbf{DREAD} (Damage, Reproducibility, Exploitability, Affected users, Discoverability) scores
+each 1–10; Microsoft dropped it — ``different people selected very different numbers''
+(Shostack, 2008). Prefer \textbf{likelihood $\times$ impact} on a 3-level scale (OWASP Risk
+Rating), CVSS for concrete vulnerabilities, and a ranked top-N. Related methods: \textbf{PASTA}
+(risk-centric), \textbf{LINDDUN} (privacy threats), \textbf{attack trees}.
+
+\columnbreak
+
+\hd{Enforce on the server}
+The device owner controls the binary, memory, storage and network (own CA $\to$ pinning
+bypassed). So anything the client \emph{decides} is a suggestion: price, discount, role,
+entitlement, ``OTP already verified'', rate limit, feature flag for paid features. Client checks
+are UX; attestation (App Attest / Play Integrity) raises the cost, it does not create trust.
+Check object ownership on every ID (\ct{GET /orders/123} of another user = BOLA, OWASP API1).
+
+\hd{Example — one row of the threat register}
+\begin{lstlisting}[language=YamlSheet]
+- id: T3
+  element: flow 2 (app -> API, crosses TB1)
+  stride: Tampering
+  threat: user edits price/total in POST /orders (proxy, Frida)
+  risk: likelihood high x impact high => HIGH
+  mitigation: server prices the cart from its catalogue;
+              client total is display-only; Idempotency-Key
+              stops double charges on retry
+  verify: API test posts a tampered total, expects server price
+  status: mitigated
+\end{lstlisting}
+More rows for this DFD: token theft from a backup (S) $\to$ Keychain
+\ct{ThisDeviceOnly} + rotation; forged webhook (S/T) $\to$ verify HMAC + timestamp; replayed
+payment (T) $\to$ idempotency; PAN in logs/analytics (I) $\to$ PSP SDK + redaction.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``It's our app, so the client is trusted'' — TB1 sits \emph{at the device}.}
+  \trap{A one-off document at the end — it is a design activity, redone when the flow changes.}
+  \trap{Only the happy path: forgetting deep links, push payloads, backups, logs, SDKs, support tools.}
+  \trap{Everything rated ``High'' — no priority; DREAD decimals are false precision.}
+  \trap{Pinning or obfuscation as \emph{the} mitigation — they slow an attacker, the server decides.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Draw it, box the boundaries, STRIDE every crossing, rank, fix, test — and never let the
+client decide what the server must enforce.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} encoding-encryption-hashing-signing
+(HMAC webhooks) · oauth-oidc-jwt · keychain-secure-enclave · app-hardening-privacy (App Attest) ·
+api-design (idempotency) · tls-pki}
+
+\end{document}

@@ -1,0 +1,162 @@
+% jwt-attacks-token-hardening.tex — the JWT attack catalogue (alg:none, RS256->HS256 key confusion, kid
+% injection / path traversal, jku / x5u / embedded jwk, weak HMAC secrets, psychic signatures, token
+% confusion), validation hardening per RFC 8725, JWS vs JWE, DPoP (RFC 9449, drawn), the OAuth 2.0
+% Security BCP (RFC 9700) rules for public clients, and token storage on mobile.
+% OAuth flow, PKCE, JWT anatomy, basic validation list, rotation + single-flight refresh live in
+% networking/oauth-oidc-jwt.tex — not repeated.
+% Sources (checked 2026-10-07) — RFC 9700 re-read today (public clients MUST use PKCE; exact redirect
+%   string match; public-client refresh tokens MUST be sender-constrained or rotated): RFC 7515 (JWS header params) · RFC 7516 (JWE) · RFC 7518 §3.2 (HMAC key size) ·
+% RFC 7519 · RFC 8725 (JWT BCP) · RFC 9068 (at+jwt) · RFC 9449 (DPoP, Sept 2023) ·
+% RFC 9700 (OAuth 2.0 Security BCP, Jan 2025) · https://github.com/panva/jose (jwtVerify options) ·
+% https://nvd.nist.gov/vuln/detail/CVE-2022-21449 (Java SE 17.0.2, 18) ·
+% https://nvd.nist.gov/vuln/detail/CVE-2018-0114 · https://hashcat.net/wiki/doku.php?id=example_hashes (16500) ·
+% https://reactnative.dev/docs/security (AsyncStorage unencrypted).
+% @labels: area=security kind=concept platform=general topic=security,networking discussion=240
+% @tags: jwt, jws, jwe, alg-none, key-confusion, kid-injection, jku, dpop, rfc-9700, rfc-8725, sender-constrained-tokens, token-storage
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt,
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2 {//}{{\hbox{/}\hbox{/}}}2}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcommand\dotdot{\texttt{\hbox{.}\hbox{.}\hbox{/}}}
+
+\begin{document}
+
+\sheettitle{JWT attacks \& token hardening — RFC 8725, DPoP, RFC 9700}{security · folio}
+
+\oneliner{Every classic JWT break is the verifier \textbf{trusting the token to describe how to verify itself}:
+the header's \ct{alg}, \ct{kid}, \ct{jku}, \ct{jwk} are \emph{attacker input}. Fix: the server decides algorithm,
+key and token type (RFC 8725). A signed bearer token is still stealable — \textbf{DPoP} (RFC 9449) binds it to a
+key the client holds, and the \textbf{OAuth Security BCP} (RFC 9700, Jan 2025) requires public clients' refresh
+tokens to be \textbf{sender-constrained or rotated}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=left},
+    f/.style={font=\tiny\ttfamily, anchor=west, inner sep=1pt},
+    atk/.style={box, draw=sheetRed, fill=sheetRed!5, font=\tiny, anchor=west, align=left, text width=56mm, inner sep=1.5pt},
+    act/.style={box, font=\scriptsize\bfseries, minimum width=13mm, inner sep=2pt},
+    m/.style={font=\tiny, inner sep=1pt, align=center, fill=white}]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.2,4.05) {Every header field is attacker input};
+  \node[box, anchor=north west, text width=19mm, minimum height=33mm, align=left, font=\tiny] (hdr) at (-0.2,3.8) {};
+  \node[font=\tiny\bfseries, anchor=north west] at (-0.15,3.75) {JOSE header};
+  \foreach \y/\t in {3.3/{"alg":"none"}, 2.75/{"alg":"HS256"}, 2.2/{"kid":"\dotdot{}x"}, 1.65/{"jku":"evil.io"}, 1.1/{"jwk":\{\ldots\}}, 0.55/{"typ":"JWT"}}
+    \node[f] at (-0.15,\y) {\t};
+  \node[atk] (a1) at (2.4,3.3) {\textbf{alg:none} — an unsigned token is accepted. \textcolor{sheetGreen!50!black}{Fix: an algorithm allow-list, e.g. only \ct{ES256}.}};
+  \node[atk] (a2) at (2.4,2.75) {\textbf{RS256$\to$HS256} — the \emph{public} RSA key used as the HMAC secret. \textcolor{sheetGreen!50!black}{Fix: the key object fixes its algorithm.}};
+  \node[atk] (a3) at (2.4,2.2) {\textbf{kid injection} — \ct{kid} into a path / SQL: \dotdot{}\ct{dev/null} $\to$ empty key. \textcolor{sheetGreen!50!black}{Fix: \ct{kid} only selects from \emph{your} JWKS.}};
+  \node[atk] (a4) at (2.4,1.65) {\textbf{jku / x5u} — ``my keys are here'': attacker's JWKS, or SSRF. \textcolor{sheetGreen!50!black}{Fix: ignore; use the configured JWKS URL.}};
+  \node[atk] (a5) at (2.4,1.1) {\textbf{embedded jwk / x5c} — token brings its own key (CVE-2018-0114 class). \textcolor{sheetGreen!50!black}{Fix: never trust it.}};
+  \node[atk] (a6) at (2.4,0.55) {\textbf{token confusion} — ID token / other service's JWT replayed. \textcolor{sheetGreen!50!black}{Fix: \ct{typ} \ct{at+jwt}, \ct{aud}, \ct{iss}.}};
+  \foreach \y in {3.3,2.75,2.2,1.65,1.1,0.55} \draw[->, sheetRed, thick] (1.9,\y) -- (2.35,\y);
+  \node[l, anchor=north west, text=sheetRed, text width=88mm] at (-0.2,0.2) {Payload: a weak HS256 secret falls to offline brute force of one captured token
+      (\ct{hashcat -m 16500}); RFC 7518 wants $\geq$ 256 random bits. Java SE 17/18 accepted ECDSA \ct{r=s=0} (CVE-2022-21449).};
+
+  \draw[sheetGrey!40] (8.85,4.15) -- (8.85,-0.2);
+
+  % ---------- DPoP ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (9.0,4.05) {DPoP — a token only its key holder can use};
+  \node[act] at (9.7,3.6) {app};
+  \node[act] at (12.6,3.6) {auth server};
+  \node[act] at (15.2,3.6) {API};
+  \foreach \x in {9.7,12.6,15.2} \draw[sheetGrey, thick] (\x,3.35) -- (\x,0.2);
+  \node[l, anchor=west, text=sheetBlue] at (9.8,3.12) {SE P-256 key (no export)};
+  \draw[hot, draw=sheetBlue] (9.7,2.75) -- node[m, above]{POST /token + \ct{DPoP: proof}} (12.6,2.75);
+  \node[l, anchor=west, text=black!80] at (12.65,2.4) {thumbprint of\\proof's \ct{jwk}};
+  \draw[hot, draw=sheetGreen] (12.6,2.0) -- node[m, above]{AT with \ct{cnf.jkt}, \ct{token\_type: DPoP}} (9.7,2.0);
+  \draw[hot, draw=sheetBlue] (9.7,1.35) -- node[m, above, pos=0.62]{\ct{Authorization: DPoP <AT>} + new proof (\ct{ath})} (15.2,1.35);
+  \node[l, anchor=east, text=black!80, align=right] at (15.15,0.95) {proof sig ok? \ct{htm htu iat jti}\\\ct{ath}=hash(AT)? jkt matches?};
+  \draw[hot, draw=sheetGreen] (15.2,0.45) -- node[m, above]{200 — stolen AT alone is useless} (9.7,0.45);
+  \node[box, draw=sheetOrange, fill=sheetOrange!6, anchor=north west, font=\tiny, align=left, text width=64mm] at (9.0,0.1)
+    {\textbf{proof} $=$ JWT, header \ct{typ:"dpop+jwt"}, \ct{alg:"ES256"}, \ct{jwk}\{public key\};
+     claims \ct{jti} (unique), \ct{htm} (method), \ct{htu} (URL, no query), \ct{iat}, \ct{ath}, \ct{nonce} (after
+     \ct{use\_dpop\_nonce} / \ct{DPoP-Nonce}). Refresh tokens of public clients get bound too.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Validation that cannot be steered (RFC 8725)}
+\begin{itemize}
+  \item \textbf{Algorithm from config, not from the token} (§3.1): the key object carries its one algorithm;
+        asymmetric keys can't be used as HMAC secrets.
+  \item \textbf{Keys from your trust anchor}: JWKS from the issuer's configured URL, cached; \ct{kid} only
+        \emph{selects}. Ignore \ct{jku}, \ct{x5u}, \ct{jwk}, \ct{x5c} unless pinned to an allow-list.
+  \item \textbf{Explicit typing} (§3.11): \ct{typ: at+jwt} (RFC 9068) for access tokens, \ct{dpop+jwt} for proofs;
+        mutually exclusive rules per token kind (§3.12) stop cross-JWT confusion.
+  \item \textbf{Claims}: \ct{iss} exact, \ct{aud} = me, \ct{exp}/\ct{nbf} with small leeway, \ct{sub} format;
+        \ct{crit} header you don't understand $\Rightarrow$ reject.
+  \item \textbf{Received claims are input} (§3.10): \ct{kid}, \ct{sub}, \ct{email} into SQL, paths, LDAP, logs
+        $=$ injection.
+\end{itemize}
+
+\hd{JWS vs JWE}
+\textbf{JWS} (RFC 7515, 3 parts): integrity + origin, payload \emph{readable}. \textbf{JWE} (RFC 7516, 5 parts:
+header . encrypted key . IV . ciphertext . tag): confidentiality; \ct{alg} wraps a CEK (\ct{RSA-OAEP},
+\ct{ECDH-ES}, \ct{dir}), \ct{enc} seals (\ct{A256GCM}). Avoid \ct{RSA1\_5} (Bleichenbacher oracle); validate
+ECDH-ES points (invalid-curve attack). Need both? \textbf{sign, then encrypt} (nested JWT, \ct{cty:"JWT"}).
+A JWE made with the server's \emph{public} key proves nothing about who made it.
+
+\hd{Example — a verifier the token cannot steer (\ct{jose}, Node)}
+\begin{lstlisting}
+const JWKS = createRemoteJWKSet(
+  new URL('https://auth.example.com/.well-known/jwks.json'))
+const { payload } = await jwtVerify(token, JWKS, {
+  algorithms: ['ES256'],        // allow-list: none / HS256 fail
+  issuer: 'https://auth.example.com',
+  audience: 'https://api.example.com',
+  typ: 'at+jwt',                // explicit typing, RFC 9068
+  clockTolerance: 30,           // seconds of skew
+  maxTokenAge: '15m',           // iat bound, even if exp is far
+})
+\end{lstlisting}
+
+\hd{Test your own API — each must be refused}
+\ct{alg} none/None · RS$\to$HS with the public key · \ct{kid} path/SQL · \ct{jku} to your host · embedded
+\ct{jwk} · signature stripped · expired / future \ct{nbf} · ID token or other \ct{aud} · refresh token reused after logout.
+
+\columnbreak
+
+\hd{RFC 9700 — the rules}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{22mm}>{\raggedright\arraybackslash}p{50mm}@{}}
+\toprule
+PKCE & public clients \textbf{MUST}; AS MUST reject a \ct{code\_verifier} with no challenge (downgrade) \\
+implicit / ROPC & implicit \textbf{SHOULD NOT}; password grant \textbf{MUST NOT} \\
+redirect URI & \textbf{exact string match} (except localhost port) \\
+refresh tokens, public client & \textbf{MUST} be \textbf{sender-constrained} (DPoP / mTLS) \textbf{or rotated} \\
+access tokens & SHOULD be sender-constrained; least privilege, audience-restricted \\
+\bottomrule
+\end{tabular}}\par
+\textbf{Rotation} detects theft \emph{after} both parties use the RT (reuse $\to$ revoke family);
+\textbf{sender-constraining} makes a stolen RT \emph{unusable} without the private key.
+
+\hd{Tokens on the phone}
+\textbf{iOS}: Keychain, \ct{ThisDeviceOnly}; DPoP key in the \textbf{Secure Enclave} (\ct{SecureEnclave.P256.Signing})
+— signs, never exported, so a backup/jailbreak dump does not carry it. \textbf{Android}: Android
+Keystore. \textbf{RN}: \ct{react-native-keychain} / \ct{expo-secure-store} —
+\textbf{never} \ct{AsyncStorage} (plain file). Access token in memory; log out $=$ revoke RT + wipe + drop key.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``We verify the signature'' — with which algorithm and key? If the token chose either, it's forgeable.}
+  \trap{\ct{decode()} vs \ct{verify()}: reading claims without verifying is an auth bypass.}
+  \trap{HS256 shared across services: every service can mint tokens for all the others.}
+  \trap{JWE is not authentication — anyone with your public key can encrypt to you.}
+  \trap{DPoP without \ct{jti}/\ct{iat} checks: a proof can be replayed within its window; use nonces.}
+  \trap{Blocking \ct{alg:none} by string compare: \ct{"None"} slips through\unverified — allow-list instead.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``The server picks alg, key and type; the token only picks which of \emph{my} keys (kid). Bind what you can't keep secret.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} oauth-oidc-jwt (flow, PKCE, validation list, refresh) ·
+keychain-secure-enclave · passkeys-webauthn · tls-pki (mTLS binding) · RN auth}
+
+\end{document}

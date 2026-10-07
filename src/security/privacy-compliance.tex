@@ -1,0 +1,170 @@
+% privacy-compliance.tex — privacy compliance for app developers: GDPR roles + lawful bases (drawn),
+% principles, consent, data-subject rights, processors / DPA, transfers, breaches; App Store rules
+% (5.1.1(i)(ii)(iii)(v), 5.1.2(i), 5.1.4), in-app account deletion end to end (drawn), Sign in with Apple
+% token revocation, App Privacy labels vs Google Play Data safety + Play account deletion, ATT vs consent,
+% children (COPPA 2025 amendments, GDPR Art. 8, Kids category, Declared Age Range).
+% Privacy manifests, required-reason APIs, purpose strings and the ATT prompt mechanics live in
+% security-build/app-hardening-privacy.tex — only pointed to here.
+% Sources (checked 2026-10-07) — re-read today: the COPPA amended rule (Federal Register API + full
+%   text: effective 23 Jun 2025; comply by 22 Apr 2026); the rest as listed: GDPR (Regulation (EU) 2016/679) Art. 5, 6, 7, 8, 12, 15–21, 28, 33, 35, 83 ·
+% https://developer.apple.com/app-store/review/guidelines/ (5.1.1, 5.1.2, 5.1.4) ·
+% https://developer.apple.com/support/offering-account-deletion-in-your-app/ ·
+% https://support.google.com/googleplay/android-developer/answer/13327111 (Play account deletion) ·
+% https://www.federalregister.gov/documents/2025/04/22/2025-05904/childrens-online-privacy-protection-rule ·
+% https://developer.apple.com/documentation/declaredagerange ·
+% https://developer.apple.com/documentation/signinwithapplerestapi/revoke-tokens ·
+% https://developer.apple.com/documentation/accountorganizationaldatasharing/creating-a-client-secret ·
+% https://developer.apple.com/documentation/signinwithapple/processing-changes-for-sign-in-with-apple-accounts ·
+% https://gdpr-info.eu (Art. 4, 5, 6, 7, 8, 9, 12, 15–21, 25, 28, 33, 35, 83) · eur-lex Directive 2002/58/EC Art. 5(3) ·
+% https://commission.europa.eu (EU–US Data Privacy Framework, 10 Jul 2023) · https://developer.apple.com/news/?id=ecvrtzt2 (ATT, iOS 14.5)
+% @labels: area=security kind=process platform=cross-platform topic=security,data discussion=244
+% @tags: gdpr, lawful-basis, consent, right-to-erasure, data-processing-agreement, account-deletion, sign-in-with-apple, app-privacy-labels, data-safety, app-tracking-transparency, coppa, children-privacy
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt,
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2 {//}{{\hbox{/}\hbox{/}}}2}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{Privacy compliance for app developers — GDPR, store rules, kids}{security · folio}
+
+\oneliner{The law (\textbf{GDPR}) says: every purpose needs a \textbf{lawful basis}, collect the
+\textbf{minimum}, honour \textbf{rights} (access, erasure, portability) and bind every \textbf{processor} by
+contract. The stores enforce the visible parts: \textbf{in-app account deletion} (Apple 5.1.1(v), Google
+Play), \textbf{Sign in with Apple token revocation}, honest \textbf{privacy labels / Data safety}, \textbf{ATT}
+before tracking, stricter rules for \textbf{children}. Your SDKs' data is \emph{your} data.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    rl/.style={box, font=\scriptsize, text width=18mm, inner sep=2pt},
+    lb/.style={font=\tiny, anchor=west, inner sep=1pt, align=left},
+    stp/.style={box, font=\tiny, text width=22mm, inner sep=1.5pt, minimum height=8mm},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=left}]
+  % ---------- roles ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.3,3.8) {Who is who (GDPR) and which basis};
+  \node[rl, draw=sheetGrey, fill=black!4] (ds) at (0.7,2.9) {\textbf{data subject}\\the user};
+  \node[rl, draw=sheetGreen, fill=sheetGreen!10] (c) at (3.6,2.9) {\textbf{controller}\\you: decide why, how};
+  \node[rl, draw=sheetOrange, fill=sheetOrange!8] (p) at (7.0,2.9) {\textbf{processors}\\cloud, analytics, crash, mail};
+  \draw[flow] (ds) -- node[l, above]{data} (c);
+  \draw[flow] (c) -- node[l, above]{\textbf{DPA}}  node[l, below]{Art. 28} (p);
+  \node[l, anchor=north east, align=right] at ([xshift=-1mm]p.south east) {sub-processors listed · non-EU $\to$\\SCCs / EU–US Data Privacy Framework};
+  \node[l, anchor=north] at (ds.south) {rights: access 15 · erase 17\\port 20 · object 21 — 1 month};
+  \node[lb] at (-0.3,1.6) {\textbf{Art. 6 bases} — pick one \emph{per purpose}, before collecting:};
+  \node[lb] at (-0.3,1.3) {\textcolor{sheetGreen!50!black}{\textbf{contract}}: account, orders, sync — what the user signed up for};
+  \node[lb] at (-0.3,1.03) {\textcolor{sheetGreen!50!black}{\textbf{legal obligation}}: invoices kept for tax};
+  \node[lb] at (-0.3,0.76) {\textcolor{sheetGreen!50!black}{\textbf{legitimate interests}}: fraud, security logs (balancing test, opt-out)};
+  \node[lb] at (-0.3,0.49) {\textcolor{sheetOrange!80!black}{\textbf{consent}}: marketing push, non-essential analytics, ads, precise location for ads};
+  \node[lb] at (-0.3,0.22) {vital interests · public task — rare in apps. \textbf{Art. 9} (health, biometric ID): explicit consent.};
+
+  \draw[sheetGrey!40] (8.55,3.9) -- (8.55,0.0);
+
+  % ---------- deletion flow ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (8.7,3.8) {``Delete account'' — end to end};
+  \node[stp] (s1) at (9.9,3.05) {Settings $\to$ \textbf{Delete account} (in app, easy to find)};
+  \node[stp] (s2) at (12.4,3.05) {re-auth + confirm; warn: \textbf{subscription billing continues} — cancel it};
+  \node[stp, draw=sheetGreen, fill=sheetGreen!8] (s3) at (14.9,3.05) {server deletes account + personal data + UGC};
+  \node[stp, draw=sheetOrange, fill=sheetOrange!8] (s4) at (14.9,1.75) {SIWA: \ct{POST /auth/revoke}; delete at processors (DPA)};
+  \node[stp] (s5) at (12.4,1.75) {keep only what law requires (tax), say so; backups age out};
+  \node[stp, draw=sheetBlue] (s6) at (9.9,1.75) {tell the user when it is done (time frame)};
+  \draw[flow] (s1) -- (s2); \draw[flow] (s2) -- (s3); \draw[flow] (s3) -- (s4); \draw[flow] (s4) -- (s5); \draw[flow] (s5) -- (s6);
+  \node[l, anchor=west, text=sheetRed, text width=74mm] at (8.7,0.75)
+    {\textbf{Rejected}: ``deactivate'' only · ``email support'' (allowed only for highly regulated apps,
+     5.1.1(ix)) · a link to a generic web page. A web page is fine if the app links \emph{directly} to it.
+     \textbf{Google Play}: in-app path \textbf{and} a web link (for users who uninstalled).};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{GDPR in one column}
+\begin{itemize}
+  \item \textbf{Art. 5 principles}: lawful/fair/transparent · purpose limitation · \textbf{data minimisation} ·
+        accuracy · storage limitation · integrity \& confidentiality · \textbf{accountability} (prove it).
+  \item \textbf{Consent} (Art. 4(11), 7): freely given, specific, informed, unambiguous, an affirmative act;
+        withdrawing must be as easy as giving; no pre-ticked boxes, no bundling. Record who, when, what text.
+  \item \textbf{ePrivacy} Art. 5(3): reading/writing on the device (SDK identifiers too) needs consent unless
+        strictly necessary — that, not only GDPR, is why analytics/ads SDKs wait for opt-in in the EU.
+  \item \textbf{Personal data} includes device IDs, IPs, hashed e-mails (pseudonymised $\neq$ anonymous)\unverified.
+  \item \textbf{Breach}: tell the authority within \textbf{72 h} (Art. 33). \textbf{DPIA} (Art. 35) before high-risk
+        processing (large-scale location, health). Privacy by design/default (Art. 25). Fines up to
+        \textbf{€20 M or 4\%} of worldwide turnover.
+\end{itemize}
+
+\hd{Example — revoke Sign in with Apple on deletion}
+\begin{lstlisting}
+POST https://appleid.apple.com/auth/revoke
+Content-Type: application/x-www-form-urlencoded
+
+client_id=com.example.app
+&client_secret=<JWT: ES256, your .p8 key; iss=Team ID,
+                sub=client_id, aud=https://appleid.apple.com>
+&token=<refresh_token stored at sign-in>
+&token_type_hint=refresh_token
+# 200 = revoked (also if already invalid), empty body.
+# client_secret: ES256, exp at most 6 months. Also handle
+# the server-to-server events consent-revoked, account-deleted
+\end{lstlisting}
+
+\hd{Apple guideline 5.1 — the lines to quote}
+\begin{itemize}
+  \item \textbf{5.1.1(i)} privacy policy linked in App Store Connect \emph{and} in the app; says what, how, retention, how to delete.
+  \item \textbf{(ii)} consent even for ``anonymous'' data; paid features can't depend on it; easy withdrawal.
+  \item \textbf{(iii)} minimisation: prefer the out-of-process picker or share sheet over full access.
+  \item \textbf{(v)} ``If your app supports account creation, you must also offer account deletion within the app'' (since 30 Jun 2022).
+  \item \textbf{5.1.2(i)} tracking only with ATT permission; never gate features on it.
+\end{itemize}
+
+\hd{ATT is not consent}
+ATT (iOS 14.5+) is Apple's gate for \textbf{tracking} (linking with other companies' data) and the IDFA.
+GDPR/ePrivacy consent is a separate legal duty with its own UI and records — one does not satisfy the other;
+a user can allow ATT and still refuse analytics.
+
+\columnbreak
+
+\hd{Labels: Apple vs Google}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{29mm}@{}}
+\toprule
+& \textbf{App Privacy (Apple)} & \textbf{Data safety (Play)} \\ \midrule
+groups & used to \textbf{track} you · \textbf{linked} to you · not linked & \textbf{collected} · \textbf{shared} (to third parties) \\
+extra & per data type: purposes & encryption in transit, deletion requests, independent review \\
+source & your answers + SDKs'; Xcode privacy report aggregates manifests & your answers + SDKs' \\
+\bottomrule
+\end{tabular}}\par
+Wrong labels are a review/enforcement issue and a regulator's evidence. Manifests, required-reason APIs,
+purpose strings, ATT mechanics: see \emph{app-hardening-privacy}.
+
+\hd{Children}
+\begin{itemize}
+  \item \textbf{COPPA} (US, under 13): verifiable parental consent. 2025 amendments — effective 23 Jun 2025,
+        comply by \textbf{22 Apr 2026}: \textbf{separate} consent to disclose to third parties (ads), written
+        retention policy, no indefinite retention, security programme.
+  \item \textbf{GDPR Art. 8}: consent age 16 by default; countries may lower it to 13.
+  \item \textbf{Apple Kids category} (1.3, 5.1.4): no third-party analytics/ads (narrow exceptions), parental
+        gate. \textbf{Declared Age Range} (iOS 26): the user shares an age \emph{range}, not a birthday —
+        for age-assurance laws (US states); Play Age Signals on Android\unverified.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``The analytics SDK collects it, not us'' — you are the controller; it is on your label and your DPA.}
+  \trap{Deletion that leaves the SIWA link, CRM row, analytics profile and logs behind.}
+  \trap{Legitimate interest for ad tracking or a consent screen with only ``Accept''.}
+  \trap{``We hash e-mails, so it's anonymous'' — still personal data.}
+  \trap{Collect ``in case we need it later'' — breaks purpose limitation and minimisation.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``A basis per purpose, the minimum, a way out (withdraw, delete) — and every SDK counts as you.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} app-hardening-privacy (manifests, ATT prompt) ·
+oauth-oidc-jwt (SIWA) · flags-experiments-observability · store policy · threat modelling}
+
+\end{document}

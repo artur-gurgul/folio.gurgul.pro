@@ -1,0 +1,195 @@
+% deep-link-attack-surface.tex — deep links as attacker-controlled input: custom-scheme
+% hijacking, what Universal Links / App Links do and do NOT prove, parameter validation in the
+% router, never secrets in links (magic links done right), OAuth redirect interception + PKCE,
+% Android intent filters / App Links autoVerify / exported components, sourceApplication nil.
+% Deeper than ios-platform/deep-links-universal-links.tex (AASA format, entry points,
+% "why did it open Safari" are there and NOT repeated here).
+% Sources (checked 2026-09-25):
+%   https://developer.apple.com/documentation/xcode/defining-a-custom-url-scheme-for-your-app
+%     ("if multiple apps register the same scheme, the app the system targets is undefined")
+%   https://developer.apple.com/documentation/uikit/uiapplication/openurloptionskey/sourceapplication
+%     (nil when the sender's team differs; the app-delegate key is deprecated in iOS 26)
+%   https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession/callback (iOS 17.4)
+%   https://developer.android.com/training/app-links/verify-android-applinks (autoVerify, assetlinks, Android 12)
+%   https://www.rfc-editor.org/rfc/rfc7636 (PKCE), rfc8252 (native apps), rfc9700 (BCP 240, Jan 2025)
+% @labels: area=security kind=concept platform=cross-platform topic=security,platform-apis discussion=237
+% @tags: deep-links, url-scheme-hijacking, universal-links, app-links, autoverify, pkce, oauth-redirect, magic-link, input-validation, sourceapplication, intent-filter, open-redirect
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={enum,case,func,let,var,guard,else,return,switch,default,where,nil,true,false,in},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2 {->}{{\hbox{-}\hbox{>}}}2
+           {<=}{{\hbox{<}\hbox{=}}}2 {...}{{\hbox{.}\hbox{.}\hbox{.}}}3}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\css{\hbox{:}\hbox{/}\hbox{/}}   % "://" without the mono font's ligature
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  snd/.style={draw=sheetGrey, rounded corners=2pt, fill=black!4, font=\tiny, text width=19mm,
+              align=left, inner sep=1.5pt},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ll/.style={box, font=\tiny\bfseries, inner sep=1.5pt, minimum width=14mm},
+  msg/.style={font=\tiny, inner sep=0.8pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Deep-link attack surface — hijacking, validation, PKCE}{security · folio}
+
+\oneliner{A deep link is a request \textbf{from a stranger}: any app, web page, QR code, SMS or
+push can fire it with any parameters. A \textbf{custom scheme} proves nothing — another app can
+register it and \emph{receive} your links. A \textbf{Universal Link / App Link} proves the
+\emph{destination} (your domain names your app), never the \emph{sender}. So: parse and allowlist
+every parameter, confirm every action, carry no secrets — and protect OAuth redirects with
+\textbf{PKCE}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------------- left: who sends, who receives ----------------
+  \node[font=\bfseries\scriptsize, text=sheetBlue, anchor=west] at (0,0.35) {Anyone sends — who receives?};
+  \node[snd] (s1) at (1.0,-0.1)  {an app: \ct{open(url)}};
+  \node[snd] (s2) at (1.0,-0.62) {web page, iframe, ad};
+  \node[snd] (s3) at (1.0,-1.14) {QR · SMS · email · NFC};
+  \node[snd] (s4) at (1.0,-1.66) {push payload, Spotlight};
+  \node[box, font=\tiny, text width=22mm, align=center] (lk) at (3.75,-0.88)
+      {\ct{…/pay?to=eve}\\\ct{\&cents=50000}\\\textcolor{sheetRed}{attacker-chosen values}};
+  \foreach \s in {s1,s2,s3,s4} \draw[flow] (\s.east) -- (lk.west);
+  % scheme path
+  \node[draw=sheetRed, thick, rounded corners=2pt, fill=sheetRed!7, font=\tiny, text width=24mm, align=left, inner sep=1.5pt]
+      (sc) at (6.25,-0.2) {\textbf{\ct{myapp\css}} custom scheme:\\any app may register it — iOS:\\winner \emph{undefined}; Android:\\chooser or the other app};
+  \node[draw=sheetRed, very thick, rounded corners=2pt, fill=white, font=\tiny\bfseries, text=sheetRed] (ev) at (6.25,-1.25) {malicious app gets it};
+  \draw[hot, draw=sheetRed] (lk.east) -- (sc.west);
+  \draw[flow, draw=sheetRed] (sc) -- (ev);
+  % UL path
+  \node[draw=sheetGreen!70!black, thick, rounded corners=2pt, fill=sheetGreen!8, font=\tiny, text width=24mm, align=left, inner sep=1.5pt]
+      (ul) at (6.25,-2.25) {\textbf{\ct{https\css}} UL / App Link:\\OS checked AASA /\\\ct{assetlinks.json} $\to$ only your app};
+  \draw[hot, draw=sheetGreen!70!black] (lk.south) |- (ul.west);
+  \node[draw=sheetBlue, thick, rounded corners=2pt, fill=sheetBlue!8, font=\tiny, text width=41mm, align=left, inner sep=1.5pt]
+      (rt) at (2.2,-2.95) {\textbf{your router} — still untrusted input: parse $\to$ allowlist route $\to$
+      typed + bounded params $\to$ require login $\to$ \textbf{user confirms} $\to$ server re-authorises};
+  \draw[flow, draw=sheetBlue] (ul.south) |- (rt.east);
+  \node[lbl, anchor=north west, text=sheetRed, align=left] at (0,-3.5)
+      {UL proves \emph{where} it lands, never \emph{who} sent it or \emph{what} it asks.};
+
+  \draw[sheetGrey!40] (7.95,0.45) -- (7.95,-3.7);
+
+  % ---------------- right: OAuth code interception + PKCE ----------------
+  \node[font=\bfseries\scriptsize, text=sheetRed, anchor=west] at (8.1,0.35) {OAuth code interception — and why PKCE stops it};
+  \foreach \x/\n/\t/\c in {8.85/a/your app/sheetBlue, 10.75/b/browser (ASWeb\ldots)/sheetGrey, 12.85/s/auth server/sheetGreen!70!black, 15.55/m/malicious app/sheetRed}
+  { \node[ll, draw=\c, fill=\c!8] (h\n) at (\x,-0.05) {\t};
+    \draw[\c, thick] (\x,-0.25) -- (\x,-3.8); }
+  \node[msg, anchor=west, text=sheetBlue, align=left, fill=white] at (8.0,-0.45)
+      {\ct{v} = random 43–128 chars · \ct{c} = BASE64URL(SHA-256(\ct{v}))};
+  \draw[hot, draw=sheetBlue] (8.85,-1.05) -- node[msg, above, fill=white]{\ct{/authorize?code\_challenge=c}\\\ct{\&code\_challenge\_method=S256\&state=s}} (10.75,-1.05);
+  \draw[hot, draw=sheetGrey] (10.75,-1.42) -- node[msg, above, fill=white]{user signs in} (12.85,-1.42);
+  \draw[hot, draw=sheetGreen!70!black] (12.85,-1.8) -- node[msg, above, fill=white]{302 \ct{com.example.app:/cb?code=C}} (10.75,-1.8);
+  \draw[hot, draw=sheetRed, dashed] (10.75,-2.18) -- node[msg, above, text=sheetRed, fill=white]{same scheme registered $\to$ steals \ct{C}} (15.55,-2.18);
+  \draw[hot, draw=sheetRed] (15.55,-2.56) -- node[msg, above, text=sheetRed, fill=white]{\ct{POST /token code=C} (no \ct{v})} (12.85,-2.56);
+  \draw[hot, draw=sheetRed] (12.85,-2.88) -- node[msg, below, text=sheetRed, fill=white]{\textbf{400 invalid\_grant}} (15.55,-2.88);
+  \draw[hot, draw=sheetGreen!60!black, very thick] (8.85,-3.35) -- node[msg, above, text=sheetGreen!40!black, fill=white]{\ct{POST /token code=C \&code\_verifier=v}} (12.85,-3.35);
+  \node[msg, anchor=north, text=sheetGreen!40!black, fill=white] at (10.85,-3.42) {server: SHA-256(\ct{v}) matches \ct{c} $\to$ tokens};
+  \node[lbl, anchor=north west, align=left, text=sheetGrey, fill=white] at (13.0,-3.42) {+ \ct{state} vs CSRF · exact\\redirect-URI match};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Custom scheme} (\ct{CFBundleURLTypes}): no ownership. Apple: if several apps
+        register a scheme, \emph{which one opens is undefined}. Android: a custom-scheme
+        intent filter anyone can copy $\to$ disambiguation dialog or the wrong app.
+  \item \textbf{Verified links}: iOS AASA (+ Associated Domains entitlement); Android
+        \ct{<intent-filter android:autoVerify="true">} + \ct{/.well-known/assetlinks.json}
+        (\ct{delegate\_permission/common.handle\_all\_urls}, SHA-256 of the \emph{Play App
+        Signing} cert, not the upload key). Android 12+: an unverified web link opens the
+        browser. Test: \ct{adb shell pm get-app-links <pkg>}.
+  \item \textbf{Who called?} \ct{sourceApplication} = the caller's bundle ID only when it is
+        \emph{your team}; another team $\to$ \ct{nil}. A Universal Link carries no sender.
+        You cannot authenticate the caller — authenticate the \emph{user} and the \emph{action}.
+  \item \textbf{Validate like an API endpoint}: \ct{URLComponents}; exact scheme + host;
+        allowlisted paths $\to$ a typed \ct{Route}; bounded values; unknown $\to$ ignore / web.
+        Never forward a \ct{?next=} / \ct{?url=} into a WebView or \ct{open(\_:)} (open redirect,
+        phishing, WebView XSS); never a file name into a path (traversal).
+  \item \textbf{State-changing links} (\ct{/pay}, \ct{/follow}, \ct{/logout}, \ct{/delete}) are
+        CSRF for apps: show a confirmation screen with the real details; the server re-checks
+        authorization. Hold the route until login completes.
+  \item \textbf{No secrets in links}: URLs land in history, logs, analytics, referrers,
+        screenshots, clipboard, notification previews. \textbf{Magic link}: single-use,
+        minutes-long TTL, bound to the device/session that asked, exchanged over TLS for a
+        session — the link is a claim ticket, not the session.
+  \item \textbf{OAuth for native apps} (RFC 8252): system browser
+        (\ct{ASWebAuthenticationSession}), never an embedded WebView; redirect = claimed https,
+        reverse-DNS scheme \ct{com.example.app:/cb}, or loopback. \textbf{PKCE} (RFC 7636)
+        is a MUST for public clients (RFC 9700, BCP 240, Jan 2025) + exact redirect-URI
+        matching + no implicit grant. iOS 17.4: \ct{Callback.https(host:path:)}.
+  \item \textbf{Android extras}: an exported activity is an entry point — treat
+        \ct{intent.data} \emph{and} extras as input; never re-launch an \ct{Intent} taken from
+        extras (intent redirection $\to$ your unexported components).
+\end{itemize}
+
+\columnbreak
+
+\hd{Example — one router, every entry point}
+\begin{lstlisting}[language=SwiftSheet]
+enum Route { case product(Int), pay(to: String, cents: Int) }
+func route(_ url: URL) -> Route? {
+  guard let c = URLComponents(url: url, resolvingAgainstBaseURL: false),
+        c.scheme == "https", c.host == "example.com" else { return nil }
+  let q = Dictionary((c.queryItems ?? []).map { ($0.name, $0.value ?? "") },
+                     uniquingKeysWith: { first, _ in first }) // dup keys
+  let p = c.path.split(separator: "/").map(String.init)
+  switch p.first {
+  case "p"? where p.count == 2: return Int(p[1]).map(Route.product)
+  case "pay"? where p.count == 1:
+    guard let to = q["to"], to.count <= 64,
+          let cents = Int(q["cents"] ?? ""), (1...100_000).contains(cents)
+    else { return nil }
+    return .pay(to: to, cents: cents)  // UI confirms; server re-authorises
+  default: return nil                  // unknown: web page, never guess
+  }
+}
+\end{lstlisting}
+
+\hd{Attack $\to$ defence}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{28mm}>{\raggedright\arraybackslash}p{46mm}@{}}
+\toprule
+scheme hijack & verified https links; nothing secret in the URL \\
+OAuth code theft & PKCE S256 + \ct{state} + system browser \\
+action by link (CSRF) & confirmation screen + server authZ \\
+open redirect & allowlist hosts; never forward \ct{?url=} \\
+crash by crafted link & total parser, no \ct{!}, fuzz the router \\
+token in link leaks & single-use, short TTL, device-bound \\
+phishing lookalike & show the real payee / amount in-app \\
+\bottomrule
+\end{tabular}}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``It's a Universal Link, so it's trusted'' — the domain vouches for the app, not for
+        the parameters.}
+  \trap{\ct{Dictionary(uniqueKeysWithValues:)} on query items traps on \ct{?to=a\&to=b} — one
+        crafted link crashes the app. Use \ct{uniquingKeysWith}.}
+  \trap{Using \ct{sourceApplication} as authentication — \ct{nil} for every other team.}
+  \trap{Password-reset or session tokens in \ct{myapp\css} links — hijackable \emph{and} logged.}
+  \trap{PKCE with \ct{plain} — the challenge \emph{is} the verifier; use \ct{S256}.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Stranger's request: parse, allowlist, confirm — carry nothing secret.''}
+UL = right \emph{door}; PKCE = stolen \emph{key} is useless.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} deep-links-universal-links (AASA,
+entry points) · oauth-oidc-jwt · webview-bridge-security · owasp-masvs-mobile-top10
+(PLATFORM-1, CODE-4) · rn-navigation (linking config)}
+
+\end{document}

@@ -1,0 +1,177 @@
+% owasp-masvs-mobile-top10.tex — the OWASP MAS family (MASVS v2.1 controls, MASWE,
+% MASTG), the MAS testing profiles (L1 / L2 / R / P), the OWASP Mobile Top 10 (2024),
+% and how to map a real app / feature onto them for a security review.
+% Sources (checked 2026-09-25):
+%   https://mas.owasp.org/MASVS/                       (8 groups, control pages)
+%   https://github.com/OWASP/masvs/tree/master/controls (control statements verbatim)
+%   https://mas.owasp.org/news/2024/01/18/masvs-v210-release--masvs-privacy/ (v2.1.0, Jan 2024)
+%   https://mas.owasp.org/news/2026/08/17/maswe-v100-release/ (MASWE v1.0.0, 78 weaknesses)
+%   https://github.com/OWASP/mastg/pull/3968           (profiles L1, L2, R, P → own "MAS Profiles" section)
+%   https://owasp.org/www-project-mobile-top-10/2023-risks/ (Mobile Top 10 2024 final)
+% The Top 10 ↔ layer mapping in the picture is this sheet's own mapping, not an OWASP table.
+% @labels: area=security kind=concept platform=general topic=security discussion=242
+% @tags: owasp, masvs, mastg, maswe, mobile-top-10, mas-profiles, security-review, threat-mapping, resilience, privacy
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lay/.style={box, font=\scriptsize, text width=48mm, align=left, minimum height=5.2mm, inner sep=1.5pt},
+  grp/.style={draw=#1, thick, rounded corners=2pt, fill=#1!10, font=\scriptsize\bfseries,
+              text width=33mm, align=center, minimum height=5.2mm, inner sep=1pt},
+  top/.style={draw=sheetRed, rounded corners=2pt, fill=sheetRed!8, font=\scriptsize,
+              text width=10mm, align=center, minimum height=5.2mm, inner sep=1pt},
+  att/.style={font=\tiny, text=sheetRed!80!black, align=right, text width=29mm, inner sep=1pt},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{OWASP MASVS · MAS profiles · Mobile Top 10}{security · folio}
+
+\oneliner{\textbf{MASVS} v2.1.0 (Jan 2024) is the standard: \textbf{24 controls in 8 groups} saying
+\emph{what} a secure app does. \textbf{MASWE} catalogues \emph{how it fails} (78 weaknesses, v1.0.0
+Aug 2026), \textbf{MASTG} says \emph{how to test}, and a \textbf{MAS profile} (L1 · L2 · R · P) says
+\emph{how much} to test. The \textbf{Mobile Top 10} (2024) is an awareness list of risks, not a checklist.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[lbl, font=\tiny\bfseries, anchor=east] at (3.0,0.45) {who attacks this layer};
+  \node[lbl, font=\scriptsize\bfseries, text=sheetBlue] at (5.7,0.45) {app layer (what to inventory)};
+  \node[lbl, font=\scriptsize\bfseries, text=sheetBlue] at (10.15,0.45) {MASVS controls};
+  \node[lbl, font=\scriptsize\bfseries, text=sheetRed] at (12.6,0.45) {Top 10};
+  \foreach \i/\lay/\grp/\c/\tp/\att in {
+    0/{\textbf{UI \& user}\ \ {\tiny screens, fields, snapshots, notifications}}/{PLATFORM-3 · PRIVACY-1–4}/sheetBrown/{M6}/{shoulder surfer, screen recorder},
+    1/{\textbf{Web \& IPC}\ \ {\tiny WebViews, deep links, extensions, pasteboard}}/{PLATFORM-1 · PLATFORM-2 · CODE-4}/sheetOrange/{M4 · M8}/{malicious app, hostile web page},
+    2/{\textbf{Session \& auth}\ \ {\tiny login, tokens, biometrics, step-up}}/{AUTH-1 · AUTH-2 · AUTH-3}/sheetBlue/{M1 · M3}/{a user replaying your API},
+    3/{\textbf{Data at rest}\ \ {\tiny files, DB, caches, logs, backups, Keychain}}/{STORAGE-1 · STORAGE-2}/sheetGreen!70!black/{M9}/{lost phone, backup, forensics},
+    4/{\textbf{Crypto \& keys}\ \ {\tiny algorithms, RNG, key storage + rotation}}/{CRYPTO-1 · CRYPTO-2}/sheetGreen!70!black/{M10}/{offline attack on stolen data},
+    5/{\textbf{Network}\ \ {\tiny TLS, ATS / Network Security Config, pinning}}/{NETWORK-1 · NETWORK-2}/sheetBlue/{M5}/{Wi-Fi / proxy MITM},
+    6/{\textbf{Binary \& runtime}\ \ {\tiny code, SDKs, OS version, updates, integrity}}/{CODE-1–3 · RESILIENCE-1–4}/sheetRed/{M2·M7·M8}/{\textbf{device owner}: Frida, repackaging}}
+  {
+    \node[lay] (L\i) at (5.7,-0.62*\i) {\lay};
+    \node[grp=\c] (G\i) at (10.15,-0.62*\i) {\grp};
+    \node[top] (T\i) at (12.6,-0.62*\i) {\tp};
+    \node[att, anchor=east] (A\i) at (2.95,-0.62*\i) {\att};
+    \draw[hot, draw=sheetRed!70] (A\i.east) -- (L\i.west);
+    \draw[sheetGrey] (L\i.east) -- (G\i.west);
+    \draw[sheetGrey] (G\i.east) -- (T\i.west);
+  }
+  \draw[sheetGreen!70!black, thick, dashed, rounded corners=3pt] (3.05,0.25) rectangle (13.3,-4.03);
+  \node[lbl, anchor=north west, text=sheetGreen!50!black] at (3.1,-4.05) {one app on one device — every layer here runs where the attacker may be root};
+  % backend
+  \node[box, draw=sheetGreen, fill=sheetGreen!10, text width=25mm, font=\scriptsize, align=center,
+        minimum height=26mm] (be) at (15.25,-1.85)
+     {\textbf{your backend}\\the only side you\\control: authZ, rate\\limits, business rules,\\attestation checks\\[3pt]
+      {\tiny\color{sheetRed} M3: assume every client-\\side authN/authZ check\\is bypassed}};
+  \draw[hot, draw=sheetGreen] (T5.east) -- node[lbl, above]{TLS} (be.west |- T5.east);
+  \draw[flow, sheetBlue] (T2.east) -- node[lbl, above]{token} (be.west |- T2.east);
+  \node[lbl, anchor=north, text=sheetGrey, text width=29mm] at (15.25,-3.55) {PRIVACY spans every layer:\\minimise, don't identify,\\be transparent, give control};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{The MAS family}
+\begin{itemize}
+  \item \textbf{MASVS} = \emph{what} (controls) $\to$ \textbf{MASWE} = \emph{how it fails}
+        (weakness IDs \ct{MASWE-0001…0078}) $\to$ \textbf{MASTG} = \emph{how to test}
+        (tests, techniques, tools, demos, per iOS/Android).
+  \item \textbf{v2.0.0} (Apr 2023) rewrote v1: short, platform-agnostic controls and
+        \textbf{no verification levels} in the standard. \textbf{v2.1.0} (Jan 2024) added only
+        \textbf{MASVS-PRIVACY} (+ CycloneDX format).
+  \item Levels became \textbf{MAS testing profiles} (2026: own ``MAS Profiles'' section):
+        \textbf{MAS-L1} baseline for every app · \textbf{MAS-L2} defence in depth for sensitive
+        data (banking, health) · \textbf{MAS-R} resilience against reverse engineering +
+        tampering, \emph{on top of} L1/L2 · \textbf{MAS-P} privacy. OWASP prefers a profile
+        cut from \emph{your} threat model over the defaults.
+  \item Same control, different depth per profile: pinning (NETWORK-2) or
+        anti-debugging (RESILIENCE-4) are L2 / R territory.
+\end{itemize}
+
+\hd{The 24 controls ({\normalfont\footnotesize ``The app …'', condensed})}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{60mm}@{}}
+\toprule
+STORAGE & 1 stores sensitive data securely · 2 prevents its leakage \\
+CRYPTO & 1 current strong crypto, used per best practice · 2 key management \\
+AUTH & 1 secure authN/authZ protocols · 2 local auth per platform practice · 3 extra auth for sensitive operations \\
+NETWORK & 1 secures all traffic · 2 identity pinning for endpoints \emph{under the developer's control} \\
+PLATFORM & 1 IPC used securely · 2 WebViews used securely · 3 UI used securely \\
+CODE & 1 requires an up-to-date platform · 2 can enforce updates · 3 no components with known vulns · 4 validates + sanitises untrusted input \\
+RESILIENCE & 1 validates platform integrity · 2 anti-tampering · 3 anti-static analysis · 4 anti-dynamic analysis \\
+PRIVACY & 1 minimises access · 2 prevents identification of the user · 3 transparent · 4 user control \\
+\bottomrule
+\end{tabular}}
+
+\hd{Example — map one feature (``pay a friend'', profile L2 + R)}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{48mm}@{}}
+\toprule
+\textbf{inventory item} & \textbf{control $\to$ what you verify} \\ \midrule
+refresh token & STORAGE-1: Keychain, \ct{ThisDeviceOnly}; AUTH-1: server revokes \\
+payee list cache & STORAGE-2: not in backups, logs, \ct{Cache.db} \\
+\ct{pay\hbox{:}\hbox{/}\hbox{/}send?to=} link & PLATFORM-1 + CODE-4: parse, allowlist, confirm screen \\
+T\&C WebView & PLATFORM-2: no bridge, HTTPS only, own domain \\
+payment API & NETWORK-1/2: ATS on, pinned; AUTH-3: biometric-bound key signs \\
+cloned / hooked app & RESILIENCE-1/2 as \emph{signals}; server checks attestation \\
+\bottomrule
+\end{tabular}}
+Findings are written as \textbf{MASWE id $\to$ MASVS control}, rolled up to Top 10 buckets for managers.
+
+\columnbreak
+
+\hd{OWASP Mobile Top 10 — 2024 (final)}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{5mm}>{\raggedright\arraybackslash}p{31mm}>{\raggedright\arraybackslash}p{39mm}@{}}
+\toprule
+M1 & Improper Credential Usage & hard-coded keys, creds stored/sent badly \\
+M2 & Inadequate Supply Chain Security & bad SDKs, build + signing compromise \\
+M3 & Insecure Authentication / Authorization & client-side checks, spoofable IDs \\
+M4 & Insufficient Input/Output Validation & injection via links, WebViews, IPC \\
+M5 & Insecure Communication & cleartext, broken cert validation \\
+M6 & Inadequate Privacy Controls & PII over-collected, leaked, undeletable \\
+M7 & Insufficient Binary Protections & reverse engineering, tampering, repacks \\
+M8 & Security Misconfiguration & exported components, debug flags, backups \\
+M9 & Insecure Data Storage & plaintext files, prefs, DB, logs, caches \\
+M10 & Insufficient Cryptography & weak algorithms, ECB, static IV, DIY \\
+\bottomrule
+\end{tabular}}\par
+vs 2016: \textbf{credentials}, \textbf{supply chain}, \textbf{input/output validation} and
+\textbf{privacy} are new headline risks; 2016's separate authentication and authorization
+merged into M3. Top 10 = \emph{what to talk about}; MASVS = \emph{what to verify}.
+
+\hd{How to run the review}
+\begin{enumerate}
+  \item Inventory: data, entry points (links, IPC, WebViews, push), SDKs, endpoints.
+  \item Threat model $\to$ profile: L1 always; L2 sensitive data; +R if the client itself
+        holds value; +P personal data.
+  \item Map items to controls; run that profile's MASTG tests on both platforms.
+  \item Report MASWE-tagged findings; fix server-side first; re-test.
+\end{enumerate}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``We're MASVS-L2 compliant'' — v2 has no levels; say ``MASVS v2.1, tested
+        against the MAS-L2 profile''.}
+  \trap{The Top 10 is not a standard you ``comply'' with; audits use MASVS/MASTG.}
+  \trap{RESILIENCE never replaces L1/L2: an obfuscated app that logs tokens is still M9.}
+  \trap{NETWORK-2 covers endpoints \emph{you} control — not an analytics SDK's host.}
+  \trap{M1 is not ``weak passwords'': it is \emph{secrets in the client} — anything shipped is public.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{MASVS says \emph{what}, MASWE \emph{how it fails}, MASTG \emph{how to test}, the
+profile \emph{how much}, the Top 10 \emph{what to talk about}.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} mobile-data-leakage ·
+ios-reverse-engineering · webview-bridge-security · deep-link-attack-surface ·
+device-attestation · app-hardening-privacy · tls-pki}
+
+\end{document}

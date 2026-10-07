@@ -1,0 +1,186 @@
+% ios-reverse-engineering.tex — how an iOS app is read and changed by its owner, from the
+% defender's side: what is inside an IPA and a Mach-O, FairPlay encryption and why decrypted
+% dumps exist (concept only), static analysis (strings, class-dump, Swift metadata),
+% dynamic instrumentation (Frida), pinning bypass, jailbreak detection and anti-debugging and
+% their limits, what hardening can and cannot do. Deeper than security-build/
+% app-hardening-privacy.tex (which only says "readable, hookable" and lists App Attest).
+% Educational / defensive: it teaches what to audit in your own release build.
+% Sources (checked 2026-10-07): Apple xnu open source (EXTERNAL_HEADERS/mach-o/loader.h:
+%   MH_MAGIC_64 0xfeedfacf, LC_ENCRYPTION_INFO_64, cryptid; bsd/sys/ptrace.h: PT_DENY_ATTACH 31),
+%   Apple Technical Q&A QA1361 "Detecting the Debugger" (sysctl P_TRACED),
+%   https://frida.re/docs/ios/ , https://mas.owasp.org/MASVS/ (MASVS-RESILIENCE-1…4),
+%   https://owasp.org/www-project-mobile-top-10/ (M7 Insufficient Binary Protections).
+% @labels: area=security kind=concept platform=ios topic=security,tooling discussion=239
+% @tags: reverse-engineering, mach-o, ipa, fairplay, class-dump, frida, pinning-bypass, jailbreak-detection, anti-debugging, pt-deny-attach, obfuscation, masvs-resilience
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,return,import,true,false,nil},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2}
+\lstdefinelanguage{ShSheet}{
+  morekeywords={otool,strings,codesign,nm,unzip,grep,cd},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]',
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  seg/.style={draw=sheetGrey, fill=white, font=\tiny, text width=#1, align=left, inner sep=1.2pt},
+  stg/.style={box, font=\scriptsize, text width=19.5mm, align=left, inner sep=1.5pt, anchor=north,
+              minimum height=19mm},
+  dfn/.style={draw=sheetGreen, fill=sheetGreen!8, rounded corners=2pt, font=\tiny, text width=19.5mm,
+              align=left, inner sep=1.5pt, anchor=north, minimum height=12mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{iOS reverse engineering \& tampering — the defender's view}{security · folio}
+
+\oneliner{A shipped app runs on a device its \textbf{owner} controls. The IPA is a zip, the Mach-O
+lists every class and string, App Store \textbf{FairPlay} encryption only stops \emph{copying} (the
+code is decrypted in memory to run), and \textbf{Frida} rewrites any function at runtime — so
+jailbreak checks, pinning and anti-debugging are \textbf{costs you impose, not boundaries}.
+Assume the client is compromised: secrets and decisions live on the server.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------------- IPA / Mach-O anatomy ----------------
+  \node[font=\bfseries\scriptsize, text=sheetBlue, anchor=west] at (0,0.35) {What the attacker unzips};
+  \node[font=\tiny\bfseries, anchor=north west] (ipa) at (0.1,0.05) {App.ipa = zip · Payload/App.app/};
+  \node[seg=48mm, anchor=north west] (res) at ([yshift=-1pt]ipa.south west)
+    {\ct{Info.plist} · \ct{embedded.mobileprovision} · \ct{\_CodeSignature/} ·
+     \ct{Frameworks/} · \ct{PlugIns/} · \ct{Assets.car} · \ct{SC\_Info/} (FairPlay) ·
+     \textbf{\ct{main.jsbundle}} (RN: JS / Hermes bytecode — a resource, \emph{not encrypted})};
+  \node[font=\tiny\bfseries, anchor=north west] (mo) at ([yshift=-2pt]res.south west) {\ct{App} — the Mach-O executable:};
+  \node[seg=46mm, anchor=north west, fill=sheetGrey!10] (h) at ([xshift=6pt, yshift=-1pt]mo.south west)
+    {header \ct{0xFEEDFACF} (64-bit) · CPU \ct{arm64}};
+  \node[seg=46mm, anchor=north west] (lc) at (h.south west)
+    {load commands: \ct{LC\_SEGMENT\_64} · \ct{LC\_LOAD\_DYLIB} · \textbf{\ct{LC\_ENCRYPTION\_INFO\_64}}
+     (\ct{cryptoff}, \ct{cryptsize}, \textbf{\ct{cryptid}}) · \ct{LC\_CODE\_SIGNATURE}};
+  \node[seg=46mm, anchor=north west, fill=sheetRed!8] (tx) at (lc.south west)
+    {\ct{\_\_TEXT}: code (FairPlay range) · \ct{\_\_cstring} literals · \ct{\_\_objc\_methname}
+     selectors · \ct{\_\_swift5\_*} type + field names};
+  \node[seg=46mm, anchor=north west] (dt) at (tx.south west)
+    {\ct{\_\_DATA\_CONST} / \ct{\_\_DATA}: \ct{\_\_objc\_classlist}, selector refs};
+  \node[seg=46mm, anchor=north west] (le) at (dt.south west)
+    {\ct{\_\_LINKEDIT}: symbols, strings, code signature};
+  \node[lbl, anchor=north west, text=sheetRed, align=left] (nt) at ([xshift=-6pt, yshift=-2pt]le.south west)
+    {ObjC is self-describing (the runtime needs names)\\$\to$ class-dump. Swift keeps mangled symbols +\\reflection names.};
+  \begin{scope}[on background layer]
+    \node[draw=sheetBlue, thick, rounded corners=3pt, fill=sheetBlue!4, inner sep=2pt, fit=(ipa)(res)(le)(nt)] {};
+  \end{scope}
+
+  % ---------------- attack pipeline ----------------
+  \node[font=\bfseries\scriptsize, text=sheetRed, anchor=west] at (5.5,0.35) {The attack pipeline $\to$ and what each defence costs it};
+  \foreach \i/\t/\c/\d in {
+    0/{\textbf{1 Acquire}\\IPA from a device or store. \ct{cryptid 1}: run it on a \textbf{jailbroken} device, read decrypted pages, write them back, set \ct{cryptid 0}.}/sheetBrown/{Resources are plain: keep nothing secret in plists, JS, assets.},
+    1/{\textbf{2 Static}\\\ct{strings}, \ct{otool}, \ct{nm}, class-dump, Ghidra / Hopper / IDA: endpoints, keys, flags, logic.}/sheetBlue/{No secrets in the binary; strip symbols; less metadata; obfuscators \emph{slow} it.},
+    2/{\textbf{3 Dynamic}\\Frida (server on jailbreak, or \emph{Gadget} dylib in a re-signed IPA), LLDB: hook, trace, read arguments.}/sheetOrange/{Detect debugger / hooks / injected dylibs — as \emph{signals}.},
+    3/{\textbf{4 Tamper}\\patch a branch, inject a dylib, bypass pinning + jailbreak checks, \textbf{re-sign} and sideload.}/sheetRed/{Integrity checks; a re-signed app \textbf{fails App Attest}.},
+    4/{\textbf{5 Abuse}\\script your API with stolen keys, cheats, clones, promo / payment fraud.}/sheetGrey/{\textbf{Server}: authZ, rate limits, attestation, anomaly rules.}}
+  {
+    \node[stg, draw=\c, fill=\c!6] (s\i) at (6.55+2.2*\i,0.1) {\t};
+    \node[dfn] (d\i) at (6.55+2.2*\i,-2.1) {\d};
+  }
+  \foreach \i/\j in {0/1,1/2,2/3,3/4} \draw[hot] (s\i.east) -- (s\j.west);
+  \node[lbl, anchor=east, text=sheetGreen!45!black, rotate=90] at (5.45,-2.7) {defence};
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}, sheetGreen!60!black, thick]
+       (5.5,-3.45) -- (16.55,-3.45) node[midway, below=2pt, lbl, text=sheetGreen!40!black, align=center, text width=105mm]
+       {client-side defences (1–4) raise the \textbf{cost} and produce \textbf{signals}; only the server (5) can \textbf{refuse}.\\
+        MASVS-RESILIENCE-1 platform integrity · -2 anti-tampering · -3 anti-static · -4 anti-dynamic (profile MAS-R)};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{FairPlay}: the App Store encrypts each executable's code range
+        (\ct{LC\_ENCRYPTION\_INFO\_64}); the kernel decrypts pages as they are mapped on an
+        authorised device. It is \textbf{DRM against copying}, not against reading — a decrypted
+        dump is the standard first step.
+  \item \textbf{Static}: ObjC keeps class, method, ivar and protocol names (dynamic dispatch needs
+        them) $\to$ full headers. Swift keeps mangled symbols and reflection metadata
+        (type + field names; \ct{SWIFT\_REFLECTION\_METADATA\_LEVEL} trims it, breaking
+        \ct{Mirror}). An ``obfuscated'' literal is decoded at use — hook the decoder.
+  \item \textbf{Frida} injects a JS runtime into the process: \ct{Interceptor.attach} on any
+        C/Swift address, replace any ObjC \ct{implementation}, call functions, dump memory.
+        No jailbreak needed if the attacker re-signs the IPA with \emph{FridaGadget} inside.
+  \item \textbf{Pinning bypass}: hook the trust decision (\ct{SecTrustEvaluateWithError}, your
+        delegate, or the TLS layer below) to return ``trusted'', or patch the pinned hash.
+        Pinning stops a \emph{network} attacker, never the device owner.
+  \item \textbf{Jailbreak detection}: files (\ct{/Applications/Cydia.app}, \ct{/etc/apt},
+        rootless \ct{/var/jb}), writes outside the sandbox, \ct{fork()} succeeding, suspicious
+        dylibs in \ct{\_dyld\_get\_image\_name}, Frida's port. Each check is a function —
+        hiding tweaks hook them all; rootless jailbreaks moved the paths.
+  \item \textbf{Anti-debug}: \ct{ptrace(PT\_DENY\_ATTACH)} (31; not in the iOS SDK header —
+        via \ct{dlsym} or an inline \ct{svc}), \ct{sysctl} \ct{P\_TRACED} check. Release builds
+        lack \ct{get-task-allow}, so a stock device can't attach anyway; attackers re-sign or
+        jailbreak, then hook \ct{ptrace} / patch the \ct{svc}.
+\end{itemize}
+
+\columnbreak
+
+\hd{Example — audit your own release IPA before shipping}
+\begin{lstlisting}[language=ShSheet]
+unzip -q App.ipa && cd Payload/App.app
+otool -l App | grep -A4 LC_ENCRYPTION_INFO # cryptid 0 here
+otool -L App                   # every linked SDK/framework
+strings -a App | grep -iE 'secret|api[_-]?key|BEGIN PRIV'
+nm -gU App | wc -l             # exported symbols left in
+codesign -d --entitlements - . # get-task-allow must be false
+grep -c 'sk_live' main.jsbundle  # RN bundle is plain text
+\end{lstlisting}
+\begin{lstlisting}[language=SwiftSheet]
+func debuggerAttached() -> Bool {        // Apple QA1361
+  var info = kinfo_proc(); var size = MemoryLayout<kinfo_proc>.stride
+  var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+  return sysctl(&mib, 4, &info, &size, nil, 0) == 0
+      && (info.kp_proc.p_flag & P_TRACED) != 0
+}
+// report, don't crash: the server decides (step-up, limit, review)
+api.report(RiskSignals(debugger: debuggerAttached(), jailbreak: jb()))
+\end{lstlisting}
+
+\hd{What hardening can — and cannot — do}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{36mm}>{\raggedright\arraybackslash}p{38mm}@{}}
+\toprule
+\textbf{can} & \textbf{cannot} \\ \midrule
+raise time + skill needed & keep a secret inside the app \\
+make mass-scripting harder & stop a determined device owner \\
+feed risk signals to the server & be the authorisation decision \\
+detect repackaging (with App Attest) & make a jailbroken device trustworthy \\
+\bottomrule
+\end{tabular}}\par
+\textbf{Layering}: several independent checks, spread and inlined, reported silently; pair with
+\textbf{App Attest} (proves genuine app + device) and server rules. Crashing on detection shows
+the attacker exactly where the check is.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``The binary is encrypted by Apple'' — FairPlay is DRM; decrypted dumps are routine.}
+  \trap{``We detect jailbreak, so pinning can't be bypassed'' — both are hookable code in the
+        same process.}
+  \trap{XOR'd / split API key — plaintext in memory at the call; Frida prints the argument.}
+  \trap{``Swift can't be class-dumped'' — \ct{@objc} / \ct{NSObject} types can, and Swift
+        metadata names the rest.}
+  \trap{RN: \ct{main.jsbundle} is a resource — Hermes bytecode decompiles; no secrets in JS.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Readable, hookable, re-signable.''} Hardening buys \emph{time}; the server buys \emph{safety}.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} app-hardening-privacy · device-attestation ·
+linking-and-launch-time (Mach-O, dyld) · owasp-masvs-mobile-top10 (RESILIENCE, M7) · tls-pki (pinning)}
+
+\end{document}
