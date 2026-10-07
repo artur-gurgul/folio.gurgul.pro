@@ -1,0 +1,189 @@
+% cellular-network-performance.tex — why requests are slow and expensive on cellular: RRC radio states
+% (LTE idle/connected + DRX, 3G DCH/FACH, 5G RRC_INACTIVE), promotion delay and tail energy with
+% measured numbers, latency by generation, the round trips of a cold HTTPS request (DNS, TCP, TLS,
+% slow start) vs a reused connection vs HTTP/3, connection reuse + HTTP/2 coalescing, prefetch /
+% batching / priorities, adapting (Low Data Mode, waitsForConnectivity, timeouts), measuring
+% (URLSessionTaskMetrics phases, Instruments HTTP Traffic, Network Link Conditioner).
+% Picture: LTE RRC state machine + the cold-vs-warm request timeline drawn to scale.
+% Sources (checked 2026-09-25): hpbn.co/mobile-networks/ (Tables 7-2, 7-9; 3G promotions); Huang et al.,
+% "A Close Examination of Performance and Power Characteristics of 4G LTE Networks", MobiSys 2012
+% (feng-qian.github.io/paper/lte_mobisys12.pdf); 3GPP TS 36.331 / 38.331; RFC 9113 §9.1.1, RFC 9110
+% §15.5.20 (421), RFC 6928; developer.apple.com (URLSessionTaskTransactionMetrics,
+% URLSessionConfiguration, URLSessionTask.priority); developer.apple.com/videos/play/wwdc2021/10212;
+% developer.apple.com/forums/thread/110187 (connection pool timeout is not API).
+% NOT repeated: tail-energy batching diagram, isDiscretionary, MetricKit list
+% (ios-platform/app-size-and-energy.tex); HTTP/2 vs /3 stacks, caching (networking/http-deep.tex).
+% @labels: area=networking kind=concept platform=ios topic=networking,performance discussion=218
+% @tags: cellular, rrc-states, tail-energy, promotion-delay, round-trips, tcp-slow-start, connection-reuse, http2-coalescing, prefetching, urlsessiontaskmetrics, network-link-conditioner, low-data-mode
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,for,in,where,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false,Int,Date},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{Network performance on cellular — radio states, round trips, reuse}{networking · folio}
+
+\oneliner{On cellular a small request is dominated not by bytes but by \textbf{waking the radio}
+(promotion from idle: $\sim$0.1–0.3\,s on LTE, up to 2\,s on 3G, then a \textbf{tail} of seconds at high
+power) and by \textbf{round trips}: DNS + TCP + TLS before the first byte, each one cellular
+\textbf{RTT}. So: \textbf{fewer, earlier, bigger} requests over connections you \textbf{already have} —
+and measure the phases, not the total.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    st/.style={box, font=\scriptsize, inner sep=2pt, align=center},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    sg/.style={draw=white, fill=#1, minimum height=3.6mm, inner sep=0pt, font=\tiny, anchor=west}]
+  % ---------- RRC state machine ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.3,3.7) {LTE radio (RRC) states};
+  \node[st, draw=sheetGrey, fill=black!4, minimum width=17mm, minimum height=9mm] (idle) at (0.7,1.6) {\textbf{RRC\_IDLE}\\\tiny paging only\\\tiny $\approx$ no power};
+  \node[st, draw=sheetRed, fill=sheetRed!6, text width=31mm, minimum height=20mm] (con) at (4.65,1.6) {};
+  \node[font=\scriptsize\bfseries, anchor=north] at (4.65,2.55) {RRC\_CONNECTED};
+  \node[st, draw=sheetRed, fill=sheetRed!15, font=\tiny] (cr) at (4.65,1.95) {continuous reception (data)};
+  \node[st, draw=sheetOrange, fill=sheetOrange!15, font=\tiny] (sd) at (4.65,1.35) {short DRX: sleep, wake 20 ms};
+  \node[st, draw=sheetOrange, fill=sheetOrange!8, font=\tiny] (ld) at (4.65,0.8) {long DRX: wake every 40 ms};
+  \draw[->, thin, sheetGrey] (cr) -- (sd); \draw[->, thin, sheetGrey] (sd) -- (ld);
+  \draw[hot, draw=sheetRed] ([yshift=0.25cm]idle.east) -- node[l, above, text=sheetRed]{data $\to$\\promotion} node[l, below=2pt, text=sheetRed]{$\sim$260 ms} ([yshift=0.25cm]con.west);
+  \draw[hot, draw=sheetGreen!70!black] ([yshift=-0.55cm]con.west) -- node[l, below, text=sheetGreen!50!black, align=center]{inactivity timer\\\textbf{tail $\approx$ 11.5 s}} ([yshift=-0.55cm]idle.east);
+  \node[l, anchor=west, align=left] at (-0.3,0.05) {Measured on one LTE network (Huang et al., MobiSys 2012): promotion 260 ms, tail 11.576 s; one packet\\
+     costs \textbf{12.8 J on LTE} vs 7.4 J on 3G vs 0.04 J on Wi-Fi. Timers are set by the network.};
+  \node[l, anchor=west, align=left, text=sheetBrown] at (-0.3,-0.55) {3G: IDLE $\to$ DCH up to 2 s, FACH $\to$ DCH up to 1.5 s (HPBN). 5G NR adds \textbf{RRC\_INACTIVE}:\\context kept, faster resume.};
+  \draw[sheetGrey!40] (6.95,3.8) -- (6.95,-0.8);
+  % ---------- request timeline, 1 cm = 80 ms = 1 RTT ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (7.05,3.7) {One small GET, RTT 80 ms — drawn to scale};
+  \foreach \x/\t in {8.4/0, 10.9/200, 13.4/400, 15.9/600} {\draw[sheetGrey!60] (\x,3.25) -- (\x,0.35); \node[l, above] at (\x,3.25) {\t\,ms};}
+  % cold h2
+  \node[l, anchor=east, align=right] at (8.35,2.9) {cold radio,\\TCP + TLS 1.3};
+  \node[sg=sheetRed!45, minimum width=32.5mm] at (8.4,2.9) {promotion};
+  \node[sg=sheetBrown!35, minimum width=10mm] at (11.65,2.9) {DNS};
+  \node[sg=sheetBlue!30, minimum width=10mm] at (12.65,2.9) {TCP};
+  \node[sg=sheetGreen!35, minimum width=10mm] at (13.65,2.9) {TLS};
+  \node[sg=sheetOrange!45, minimum width=10mm] at (14.65,2.9) {GET};
+  \node[sg=black!15, minimum width=6mm] at (15.65,2.9) {srv};
+  \node[l, anchor=west, text=sheetRed] at (16.3,2.9) {$\approx$630};
+  % cold h3
+  \node[l, anchor=east, align=right] at (8.35,2.2) {cold radio,\\HTTP/3 (QUIC)};
+  \node[sg=sheetRed!45, minimum width=32.5mm] at (8.4,2.2) {promotion};
+  \node[sg=sheetBrown!35, minimum width=10mm] at (11.65,2.2) {DNS};
+  \node[sg=sheetGreen!35, minimum width=10mm] at (12.65,2.2) {QUIC+TLS};
+  \node[sg=sheetOrange!45, minimum width=10mm] at (13.65,2.2) {GET};
+  \node[sg=black!15, minimum width=6mm] at (14.65,2.2) {srv};
+  \node[l, anchor=west] at (15.3,2.2) {$\approx$550 (0-RTT: 470)};
+  % warm radio, new connection
+  \node[l, anchor=east, align=right] at (8.35,1.5) {radio up,\\new connection};
+  \node[sg=sheetBrown!35, minimum width=10mm] at (8.4,1.5) {DNS};
+  \node[sg=sheetBlue!30, minimum width=10mm] at (9.4,1.5) {TCP};
+  \node[sg=sheetGreen!35, minimum width=10mm] at (10.4,1.5) {TLS};
+  \node[sg=sheetOrange!45, minimum width=10mm] at (11.4,1.5) {GET};
+  \node[sg=black!15, minimum width=6mm] at (12.4,1.5) {srv};
+  \node[l, anchor=west] at (13.05,1.5) {$\approx$370};
+  % warm reused
+  \node[l, anchor=east, align=right] at (8.3,0.8) {radio up,\\\textbf{reused} conn.};
+  \node[sg=sheetOrange!45, minimum width=10mm] at (8.4,0.8) {GET};
+  \node[sg=black!15, minimum width=6mm] at (9.4,0.8) {srv};
+  \node[l, anchor=west, text=sheetGreen!50!black] at (10.05,0.8) {\textbf{$\approx$130} — 5$\times$ faster: reuse is the win};
+  \node[l, anchor=west, align=left] at (7.05,0.05) {then the radio stays up $\approx$11.5 s (tail) whatever you do — so \textbf{piggyback}:\\send queued analytics and prefetch \emph{now}, while the tail is paid for.};
+  \node[l, anchor=west, align=left, text=sheetBrown] at (7.05,-0.55) {HPBN, active connection: 2G 300–1000 ms · 3G 100–500 ms · 4G $<$ 100 ms RTT.\\A 1 MB body adds several RTTs of TCP slow start (initial window $\approx$ 10 segments).};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Radio states} (RRC): the phone holds a dedicated channel only in CONNECTED. Getting
+        there is a signalling exchange (\textbf{promotion}); leaving is on an \textbf{inactivity
+        timer} set by the carrier, and the radio burns near-peak power during that \textbf{tail}.
+        Inside CONNECTED, DRX sleeps between short wake-ups.
+  \item \textbf{Consequence}: a 1 KB ping every 30 s keeps the radio up $\sim$40\,\% of the time
+        (a tail each); every 10 s, always. Sent together they pay \emph{one} promotion + \emph{one} tail.
+  \item \textbf{Round trips before a byte}: DNS (1, unless cached) + TCP (1) + TLS 1.3 (1; TLS 1.2: 2) +
+        request (1) — 4 RTTs. QUIC merges transport + TLS (3); a reused connection needs 1. Big
+        bodies then pay \textbf{slow start}: the window doubles per RTT from $\approx$ 14 KB (RFC 6928).
+  \item \textbf{Loss} on cellular is common: with HTTP/2 over TCP one lost packet stalls every stream;
+        HTTP/3 stalls only its own stream and \textbf{migrates} across Wi-Fi $\leftrightarrow$ cellular.
+\end{itemize}
+
+\hd{Connection reuse — the biggest lever}
+\begin{itemize}
+  \item \textbf{One shared \ct{URLSession}} per configuration: its pool holds the warm
+        connections. A session per request = full handshake every time.
+  \item \textbf{HTTP/2}: one connection, many streams — no sharding. \textbf{Coalescing} (RFC 9113
+        §9.1.1): a connection may serve another host if its certificate covers that host (browsers
+        also want the same IP); the server refuses with \textbf{421 Misdirected Request}. Put
+        \ct{api.} and \ct{img.} on one cert and one IP.
+  \item \textbf{Idle pool timeout is not API}: Apple DTS — typically 30 s on HTTP/1.1, longer on
+        HTTP/2, \textbf{a few seconds on WWAN}. ``Warm'' after a pause often means a new handshake.
+\end{itemize}
+
+\hd{Example — where did the time go?}
+\begin{lstlisting}[language=SwiftSheet]
+func urlSession(_ s: URLSession, task: URLSessionTask,
+                didFinishCollecting m: URLSessionTaskMetrics) {
+  for t in m.transactionMetrics where t.resourceFetchType == .networkLoad {
+    func ms(_ a: Date?, _ b: Date?) -> Int {   // -1 = phase skipped
+      guard let a, let b else { return -1 }
+      return Int(b.timeIntervalSince(a) * 1000) }
+    log("dns",  ms(t.domainLookupStartDate, t.domainLookupEndDate),
+        "tcp",  ms(t.connectStartDate, t.secureConnectionStartDate),
+        "tls",  ms(t.secureConnectionStartDate, t.secureConnectionEndDate),
+        "ttfb", ms(t.requestStartDate, t.responseStartDate),
+        "reused", t.isReusedConnection,        // iOS 10
+        "cell", t.isCellular, t.networkProtocolName ?? "?") // iOS 13
+  } }
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Fewer, earlier, bigger}
+\begin{itemize}
+  \item \textbf{Kill waterfalls}: 5 dependent calls = 5+ RTTs. Parallelise what is independent;
+        a screen-level endpoint / BFF or GraphQL for what is not.
+  \item \textbf{Prefetch} what the next screen almost surely needs, while the radio is already
+        up; \textbf{batch} analytics and flush on a user-triggered request.
+  \item \textbf{Priorities}: \ct{URLSessionTask.priority} (0–1, default 0.5) — a hint;
+        \textbf{cancel} off-screen image loads; defer bulk work to a background session.
+  \item \textbf{Warm up early}: start the first API call (its DNS + TLS) at launch, in parallel
+        with UI setup.
+\end{itemize}
+
+\hd{Adapt to the network}
+\ct{NWPathMonitor}: \ct{isExpensive} (cellular, hotspot), \ct{isConstrained} = \textbf{Low Data Mode}
+(iOS 13) $\to$ skip prefetch, smaller images; per request \ct{allowsConstrainedNetworkAccess}.
+\ct{waitsForConnectivity} (iOS 11) waits for a path instead of failing. \ct{timeoutIntervalForRequest}
+(60 s) = max \emph{idle gap}; \ct{timeoutIntervalForResource} (7 days) = whole task.
+
+\hd{Measure}
+Metrics per phase (example) from the field · \textbf{Instruments $\to$ Network $\to$ HTTP Traffic}
+(Xcode 13): sessions $\to$ tasks $\to$ transactions, on device · \textbf{Network Link Conditioner}
+(Settings $\to$ Developer): 3G, LTE, \emph{Very Bad Network}, 100\% loss.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Fast on office Wi-Fi'' — test on Link Conditioner and a real cell.}
+  \trap{``Need more bandwidth'' — API calls are latency-bound: count RTTs.}
+  \trap{A new \ct{URLSession} per request — a handshake every time.}
+  \trap{Polling every 10 s — the radio never leaves the tail. Push or batch.}
+  \trap{\ct{timeoutIntervalForRequest} resets on every packet: not a total.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Wake once, round-trip less, reuse always, measure the phases.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} app-size-and-energy (tail diagram, batching,
+isDiscretionary) · http-deep (h2 vs h3) · tls-pki (0-RTT) · resumable-uploads · nat-ipv4-ipv6}
+
+\end{document}

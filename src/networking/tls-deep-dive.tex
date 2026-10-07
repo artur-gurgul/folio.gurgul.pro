@@ -1,0 +1,192 @@
+% tls-deep-dive.tex — TLS 1.3 beyond the handshake: the HKDF key schedule (drawn), the record layer,
+% session tickets + PSK resumption, 0-RTT replay, SNI and ECH, revocation (CRL / OCSP / stapling /
+% short-lived certs), ALPN, RTT cost on mobile, connection reuse, TLS inside QUIC.
+% The handshake itself, the chain of trust and pinning live in networking/tls-pki.tex — not repeated.
+% Sources (checked 2026-10-06) — re-read today: RFC 9849 "TLS Encrypted Client Hello", March 2026:
+% RFC 8446 (TLS 1.3; §4.6.1, §5, §7, §8) · RFC 8470 (early data in HTTP) · RFC 9001
+% (TLS in QUIC) · RFC 9849 + RFC 9848 (ECH, March 2026) · RFC 7301 (ALPN) · RFC 5869 (HKDF) · RFC 9114 ·
+% https://docs.openssl.org/master/man1/openssl-s_client/ · draft-ietf-tls-keylogfile (SSLKEYLOGFILE labels) ·
+% https://developer.apple.com/documentation/security/sec_protocol_options_set_enable_encrypted_client_hello ·
+% https://support.apple.com/en-us/122756 (X25519MLKEM768 in iOS 26) ·
+% https://letsencrypt.org/2025/08/06/ocsp-service-has-reached-end-of-life ·
+% https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability ·
+% https://cabforum.org/2025/04/11/ballot-sc081v3-introduce-schedule-of-reducing-validity-and-data-reuse-periods/
+% @labels: area=networking kind=concept platform=general topic=networking,security,protocols discussion=231
+% @tags: tls13, key-schedule, hkdf, record-layer, session-tickets, psk-resumption, 0-rtt, sni, ech, ocsp-stapling, alpn, quic
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{TLS 1.3 in depth — key schedule, records, resumption, ECH}{networking · folio}
+
+\oneliner{TLS 1.3 (RFC 8446) feeds its input secrets — a \textbf{PSK} and the \textbf{ECDHE} result — through
+three \textbf{HKDF-Extract} stages (\textbf{Early $\to$ Handshake $\to$ Master}); every key is an
+\textbf{HKDF-Expand-Label} of one of them \emph{bound to the transcript hash}, so each phase and direction has
+independent keys. Records are AEAD-sealed with a \textbf{per-record nonce}. A \textbf{ticket} makes a PSK for
+resumption; \textbf{0-RTT} data is \textbf{replayable}; \textbf{ECH} hides the SNI.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    ex/.style={box, font=\scriptsize\bfseries, minimum width=20mm, inner sep=1.5pt},
+    sc/.style={box, draw=sheetGreen, fill=sheetGreen!10, font=\scriptsize\bfseries, minimum width=22mm, inner sep=1.5pt},
+    ou/.style={font=\tiny, inner sep=1pt, anchor=west, align=left},
+    lb/.style={font=\tiny\ttfamily, text=sheetBrown, inner sep=1pt},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=left}]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-1.9,3.85) {Key schedule (RFC 8446 §7.1)};
+  % inputs
+  \node[l, anchor=east] (psk) at (-0.35,3.3) {salt 0, IKM \textbf{PSK} or 0};
+  \node[l, anchor=east] (dh) at (-0.35,1.9) {IKM \textbf{(EC)DHE} secret};
+  \node[l, anchor=east] (zero) at (-0.35,0.5) {IKM 0};
+  % extracts
+  \node[ex] (e1) at (0.9,3.3) {HKDF-Extract};
+  \node[sc] (es) at (0.9,2.75) {Early Secret};
+  \node[ex] (e2) at (0.9,1.9) {HKDF-Extract};
+  \node[sc] (hs) at (0.9,1.35) {Handshake Secret};
+  \node[ex] (e3) at (0.9,0.5) {HKDF-Extract};
+  \node[sc] (ms) at (0.9,-0.05) {Master Secret};
+  \draw[flow] (psk) -- (e1); \draw[flow] (dh) -- (e2); \draw[flow] (zero) -- (e3);
+  \draw[flow] (e1) -- (es); \draw[flow] (e2) -- (hs); \draw[flow] (e3) -- (ms);
+  \draw[flow, draw=sheetBrown] (es) -- node[lb, left, pos=0.45]{"derived"} node[l, right, pos=0.45]{salt} (e2);
+  \draw[flow, draw=sheetBrown] (hs) -- node[lb, left, pos=0.45]{"derived"} node[l, right, pos=0.45]{salt} (e3);
+  % early branches
+  \foreach \y in {3.2,2.82,2.44} \draw[hot] (es.east) -- ++(0.35,0) |- (2.6,\y);
+  \node[ou] at (2.6,3.2) {\ct{"res binder"} $\to$ binder\_key {\color{black!60}(HMAC proving the client holds the PSK)}};
+  \node[ou] at (2.6,2.82) {\ct{"c e traffic"}(CH) $\to$ \textbf{client\_early\_traffic\_secret} $\to$ \textcolor{sheetRed}{\textbf{0-RTT keys}: PSK only}};
+  \node[ou] at (2.6,2.44) {\ct{"e exp master"} $\to$ early exporter};
+  % handshake branches
+  \foreach \y in {1.58,1.2} \draw[hot] (hs.east) -- ++(0.35,0) |- (2.6,\y);
+  \node[ou] at (2.6,1.58) {\ct{"c hs traffic"}(CH\ldots SH) $\to$ client handshake secret};
+  \node[ou] at (2.6,1.2) {\ct{"s hs traffic"}(CH\ldots SH) $\to$ server handshake secret {\color{black!60}(encrypts EE, Certificate, CV, Fin)}};
+  % master branches
+  \foreach \y in {0.55,0.17,-0.21} \draw[hot] (ms.east) -- ++(0.35,0) |- (2.6,\y);
+  \node[ou] at (2.6,0.55) {\ct{"c ap traffic"} / \ct{"s ap traffic"}(CH\ldots server Fin) $\to$ \textbf{application traffic secrets}};
+  \node[ou] at (2.6,0.17) {\ct{"exp master"} $\to$ exporter {\color{black!60}(channel binding)}};
+  \node[ou] at (2.6,-0.21) {\ct{"res master"}(CH\ldots client Fin) $\to$ resumption secret $\to$ \textcolor{sheetGreen!50!black}{\textbf{next PSK} (top)}};
+  \node[l, anchor=north west, text width=118mm, text=black!80] at (-1.9,-0.5)
+    {\textbf{Each traffic secret} $\to$ \ct{Expand-Label(s,"key")} + \ct{("iv")} $=$ write key + IV · \ct{("finished")} $=$ Finished HMAC key ·
+     KeyUpdate: \ct{("traffic upd")} $\to$ next secret. Real labels carry the prefix \ct{"tls13 "};
+     Derive-Secret(S, label, msgs) $=$ Expand-Label(S, label, Hash(msgs)).};
+
+  \draw[sheetGrey!40] (10.35,3.95) -- (10.35,-1.1);
+
+  % ---------- record ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (10.5,3.85) {One record on the wire (§5.2)};
+  \node[cell, minimum width=6mm, fill=black!6] (t) at (10.8,3.35) {17};
+  \node[cell, minimum width=9mm, fill=black!6, right=0pt of t] (v) {03 03};
+  \node[cell, minimum width=7mm, fill=black!6, right=0pt of v] (n) {len};
+  \node[cell, minimum width=19mm, fill=sheetOrange!15, right=0pt of n] (c) {AEAD ciphertext};
+  \node[cell, minimum width=8mm, fill=sheetRed!12, right=0pt of c] (g) {tag};
+  \node[l, anchor=north west, text width=21mm] at (10.5,3.05) {5-byte header, clear: always ``app data, TLS 1.2''};
+  \node[l, anchor=north west, text width=30mm] at (12.95,3.05) {sealed: content $\Vert$ \textbf{real type} $\Vert$ zero padding (hides length)};
+  \node[l, anchor=west] at (10.5,2.45) {plaintext $\leq 2^{14}$ B · ciphertext $\leq 2^{14}{+}256$ · the header is the AAD};
+  \node[box, draw=sheetOrange, fill=sheetOrange!6, font=\tiny, anchor=north west, align=left, text width=53mm] at (10.5,2.25)
+    {\textbf{nonce} $=$ write\_iv \textbf{XOR} 64-bit sequence number. Seq restarts at 0 per key and is
+     never sent $\to$ a dropped, reordered or replayed record fails the tag. \textbf{AES-GCM}:
+     KeyUpdate before $\approx 2^{24.5}$ full records (§5.5).};
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (10.5,0.75) {RTTs to the response (100 ms RTT)};
+  \node[l, anchor=north west, font=\tiny] at (10.5,0.58) {%
+    \begin{tabular}{@{}l r r@{}}
+    TCP + TLS 1.2 full & 4 & 400 ms\\
+    TCP + TLS 1.3 & 3 & 300 ms\\
+    TCP + TLS 1.3 + 0-RTT & 2 & 200 ms\\
+    QUIC (TLS 1.3 inside) & 2 & 200 ms\\
+    QUIC + 0-RTT & \textbf{1} & \textbf{100 ms}\\
+    \end{tabular}\ \begin{minipage}[t]{16mm}\raggedright + DNS. A \textbf{reused} connection pays 1.\end{minipage}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How the key schedule works}
+\begin{itemize}
+  \item \textbf{Extract} $=$ HMAC(salt, input): concentrates entropy. \textbf{Expand-Label} derives keys with a
+        \emph{label} + \emph{transcript hash} as context — a key is valid for one role, one direction, one exact
+        conversation (tampered hello $\Rightarrow$ other keys $\Rightarrow$ Finished fails).
+  \item No ECDHE (\ct{psk\_ke}) $\Rightarrow$ input 0 $\Rightarrow$ \textbf{no forward secrecy}.
+        \textbf{Finished} $=$ HMAC(finished\_key, transcript hash).
+  \item \ct{SSLKEYLOGFILE} dumps these traffic secrets: enough to decrypt a capture, not to impersonate.
+\end{itemize}
+
+\hd{Resumption and 0-RTT (§4.6.1, §8)}
+\begin{itemize}
+  \item Post-handshake \textbf{NewSessionTicket}: lifetime $\leq$ \textbf{7 days}, \ct{ticket\_age\_add},
+        nonce, opaque ticket (usually the PSK sealed under a server \emph{ticket key} — stateless).
+  \item Next CH: \ct{pre\_shared\_key} (identity, obfuscated age, \textbf{binder}) + mode \ct{psk\_dhe\_ke}
+        (fresh ECDHE, FS) or \ct{psk\_ke}. Saves certificate + signature (\emph{CPU}), still 1 RTT.
+  \item \textbf{0-RTT} (\ct{early\_data}): app data right behind the CH, keyed from the PSK alone — a captured
+        flight can be \textbf{replayed}. Defences (§8): single-use tickets · ClientHello recording · freshness
+        window. HTTP (RFC 8470): \textbf{425 Too Early}; proxies add \ct{Early-Data: 1}.
+\end{itemize}
+
+\hd{Example — look inside a real connection}
+\begin{lstlisting}[language=bash]
+openssl s_client -connect example.com:443 -tls1_3 \
+  -servername example.com -alpn h2,http/1.1 \
+  -status -sess_out s.pem -keylogfile keys.txt
+# -status: print the stapled OCSP answer, if any
+openssl s_client -connect example.com:443 \
+  -sess_in s.pem -early_data get.txt   # resume + 0-RTT
+# keys.txt: CLIENT_TRAFFIC_SECRET_0 ... (for Wireshark)
+\end{lstlisting}
+
+\hd{SNI and ECH}
+\textbf{SNI} (RFC 6066) is \emph{cleartext}. \textbf{ECH}: RFC 9849, \textbf{March 2026} (+ RFC 9848: config
+in the DNS \textbf{HTTPS} record). An \textbf{outer} CH names the provider's \ct{public\_name}; the
+\textbf{inner} CH (real SNI, ALPN) is \textbf{HPKE}-encrypted to the provider's key; stale key $\to$
+\ct{retry\_configs}; \textbf{GREASE} ECH hides who really uses it. Plain DNS or a dedicated IP still leak.
+\textbf{Apple}: \ct{sec\_protocol\_options\_set\_enable\_} \ct{encrypted\_client\_hello} (Network framework) is
+documented ``experimental'', default off; no URLSession switch\unverified.
+
+\columnbreak
+
+\hd{Revocation — why lives got short}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{14mm}>{\raggedright\arraybackslash}p{58mm}@{}}
+\toprule
+\textbf{CRL} & signed list of revoked serials; big, stale until reissued \\
+\textbf{OCSP} & live query: leaks browsing to the CA, costs an RTT, \textbf{soft-fails} \\
+\textbf{stapling} & server attaches a signed OCSP answer (1.3: in the Certificate entry) \\
+\textbf{short-lived} & nothing to revoke — the cert dies first \\
+\bottomrule
+\end{tabular}}\par
+Let's Encrypt \textbf{shut OCSP down 6 Aug 2025} (CRLs only); \textbf{6-day certs} GA 15 Jan 2026. CA/B
+\textbf{SC-081}: max cert life \textbf{200 d} from 15 Mar 2026 $\to$ \textbf{100 d} (2027) $\to$ \textbf{47 d}
+(2029): automate renewal.
+
+\hd{ALPN, QUIC, post-quantum, reuse}
+\begin{itemize}
+  \item \textbf{ALPN} (RFC 7301): CH offers \ct{h2,http/1.1}; server picks in \textbf{EncryptedExtensions}.
+        \ct{h3}: advertised via \ct{Alt-Svc} (RFC 9114), then ALPN \ct{h3} inside QUIC.
+  \item \textbf{TLS in QUIC} (RFC 9001): no TLS records — handshake bytes in \textbf{CRYPTO} frames; packet
+        keys from the same secrets (\ct{"quic key"}, \ct{"quic iv"}, \ct{"quic hp"}). \textbf{Initial} packets
+        are keyed from the Destination Connection ID + a public salt: obfuscated, \emph{not} secret.
+  \item \textbf{iOS 26}: URLSession/Network offer hybrid \textbf{X25519MLKEM768} by default; the bigger
+        ClientHello breaks some legacy servers that can't read large ones (Apple's warning).
+  \item \textbf{Reuse beats tuning}: one long-lived \ct{URLSession} per config (its pool keeps h2/h3 alive),
+        never one per request. ARMv8 AES instructions make AES-GCM cheap on phones\unverified.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Resumption saves an RTT'' — in 1.3 only \textbf{0-RTT} does, and it is replayable: idempotent requests only.}
+  \trap{Stolen \textbf{ticket key} $\to$ every PSK $\to$ all 0-RTT data and \ct{psk\_ke} sessions. Rotate it.}
+  \trap{OCSP soft-fail stops no attacker who can block the responder.}
+  \trap{\ct{legacy\_session\_id}, \ct{0x0303} in 1.3: middlebox camouflage.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Extract ×3 — Early, Handshake, Master; every key an Expand bound to the transcript.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} tls-pki (handshake, chain, pinning basics) ·
+certificate-pinning-2026 · http-deep (HTTP/3, QUIC) · crypto-cryptokit (HKDF, AEAD) · post-quantum}
+
+\end{document}

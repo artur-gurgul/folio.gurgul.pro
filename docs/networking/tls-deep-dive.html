@@ -1,0 +1,67 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>TLS 1.3 in depth — key schedule, records, resumption, ECH — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/networking/tls-deep-dive.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">218</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area current" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">TLS 1.3 in depth — key schedule, records, resumption, ECH</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">networking · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> TLS 1.3 (RFC 8446) feeds its input secrets — a <strong>PSK</strong> and the <strong>ECDHE</strong> result — through
+three <strong>HKDF-Extract</strong> stages (<strong>Early <span class="math">→</span> Handshake <span class="math">→</span> Master</strong>); every key is an
+<strong>HKDF-Expand-Label</strong> of one of them <em>bound to the transcript hash</em>, so each phase and direction has
+independent keys. Records are AEAD-sealed with a <strong>per-record nonce</strong>. A <strong>ticket</strong> makes a PSK for
+resumption; <strong>0-RTT</strong> data is <strong>replayable</strong>; <strong>ECH</strong> hides the SNI.</p>
+<p class="sheet-tools"><a class="sheet-download" href="tls-deep-dive.pdf" download>Download PDF</a> <a href="tls-deep-dive.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/networking/tls-deep-dive.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="tls-deep-dive-fig1.svg" width="689" height="201" class="wide" alt="TLS 1.3 in depth — key schedule, records, resumption, ECH — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">How the key schedule works</span></h3>
+<ul>
+<li><strong>Extract</strong> <span class="math">=</span> HMAC(salt, input): concentrates entropy. <strong>Expand-Label</strong> derives keys with a  <em>label</em> + <em>transcript hash</em> as context — a key is valid for one role, one direction, one exact  conversation (tampered hello <span class="math">⇒</span> other keys <span class="math">⇒</span> Finished fails).</li>
+<li>No ECDHE (<code>psk_ke</code>) <span class="math">⇒</span> input 0 <span class="math">⇒</span> <strong>no forward secrecy</strong>.  <strong>Finished</strong> <span class="math">=</span> HMAC(finished_key, transcript hash).</li>
+<li><code>SSLKEYLOGFILE</code> dumps these traffic secrets: enough to decrypt a capture, not to impersonate.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Resumption and 0-RTT (§4.6.1, §8)</span></h3>
+<ul>
+<li>Post-handshake <strong>NewSessionTicket</strong>: lifetime <span class="math">≤</span> <strong>7 days</strong>, <code>ticket_age_add</code>,  nonce, opaque ticket (usually the PSK sealed under a server <em>ticket key</em> — stateless).</li>
+<li>Next CH: <code>pre_shared_key</code> (identity, obfuscated age, <strong>binder</strong>) + mode <code>psk_dhe_ke</code>  (fresh ECDHE, FS) or <code>psk_ke</code>. Saves certificate + signature (<em>CPU</em>), still 1 RTT.</li>
+<li><strong>0-RTT</strong> (<code>early_data</code>): app data right behind the CH, keyed from the PSK alone — a captured  flight can be <strong>replayed</strong>. Defences (§8): single-use tickets · ClientHello recording · freshness  window. HTTP (RFC 8470): <strong>425 Too Early</strong>; proxies add <code>Early-Data: 1</code>.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — look inside a real connection</span></h3>
+<pre class="sheet-code"><code class="hljs language-bash">openssl s_client -connect example.com:443 -tls1_3 \
+  -servername example.com -alpn h2,http/1.1 \
+  -status -sess_out s.pem -keylogfile keys.txt
+<span class="hljs-comment"># -status: print the stapled OCSP answer, if any</span>
+openssl s_client -connect example.com:443 \
+  -sess_in s.pem -early_data get.txt   <span class="hljs-comment"># resume + 0-RTT</span>
+<span class="hljs-comment"># keys.txt: CLIENT_TRAFFIC_SECRET_0 ... (for Wireshark)</span></code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">SNI and ECH</span></h3>
+<p><strong>SNI</strong> (RFC 6066) is <em>cleartext</em>. <strong>ECH</strong>: RFC 9849, <strong>March 2026</strong> (+ RFC 9848: config in the DNS <strong>HTTPS</strong> record). An <strong>outer</strong> CH names the provider’s <code>public_name</code>; the <strong>inner</strong> CH (real SNI, ALPN) is <strong>HPKE</strong>-encrypted to the provider’s key; stale key <span class="math">→</span> <code>retry_configs</code>; <strong>GREASE</strong> ECH hides who really uses it. Plain DNS or a dedicated IP still leak. <strong>Apple</strong>: <code>sec_protocol_options_set_enable_</code> <code>encrypted_client_hello</code> (Network framework) is documented “experimental”, default off; no URLSession switch<span class="unverified">(unverified)</span>.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Revocation — why lives got short</span></h3>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><strong>CRL</strong></td><td>signed list of revoked serials; big, stale until reissued</td></tr>
+<tr><td><strong>OCSP</strong></td><td>live query: leaks browsing to the CA, costs an RTT, <strong>soft-fails</strong></td></tr>
+<tr><td><strong>stapling</strong></td><td>server attaches a signed OCSP answer (1.3: in the Certificate entry)</td></tr>
+<tr><td><strong>short-lived</strong></td><td>nothing to revoke — the cert dies first</td></tr>
+</tbody>
+</table></p>
+<p>Let’s Encrypt <strong>shut OCSP down 6 Aug 2025</strong> (CRLs only); <strong>6-day certs</strong> GA 15 Jan 2026. CA/B <strong>SC-081</strong>: max cert life <strong>200 d</strong> from 15 Mar 2026 <span class="math">→</span> <strong>100 d</strong> (2027) <span class="math">→</span> <strong>47 d</strong> (2029): automate renewal.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">ALPN, QUIC, post-quantum, reuse</span></h3>
+<ul>
+<li><strong>ALPN</strong> (RFC 7301): CH offers <code>h2,http/1.1</code>; server picks in <strong>EncryptedExtensions</strong>.  <code>h3</code>: advertised via <code>Alt-Svc</code> (RFC 9114), then ALPN <code>h3</code> inside QUIC.</li>
+<li><strong>TLS in QUIC</strong> (RFC 9001): no TLS records — handshake bytes in <strong>CRYPTO</strong> frames; packet  keys from the same secrets (<code>&quot;quic key&quot;</code>, <code>&quot;quic iv&quot;</code>, <code>&quot;quic hp&quot;</code>). <strong>Initial</strong> packets  are keyed from the Destination Connection ID + a public salt: obfuscated, <em>not</em> secret.</li>
+<li><strong>iOS 26</strong>: URLSession/Network offer hybrid <strong>X25519MLKEM768</strong> by default; the bigger  ClientHello breaks some legacy servers that can’t read large ones (Apple’s warning).</li>
+<li><strong>Reuse beats tuning</strong>: one long-lived <code>URLSession</code> per config (its pool keeps h2/h3 alive),  never one per request. ARMv8 AES instructions make AES-GCM cheap on phones<span class="unverified">(unverified)</span>.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">“Resumption saves an RTT” — in 1.3 only <strong>0-RTT</strong> does, and it is replayable: idempotent requests only.</li>
+<li class="trap">Stolen <strong>ticket key</strong> <span class="math">→</span> every PSK <span class="math">→</span> all 0-RTT data and <code>psk_ke</code> sessions. Rotate it.</li>
+<li class="trap">OCSP soft-fail stops no attacker who can block the responder.</li>
+<li class="trap"><code>legacy_session_id</code>, <code>0x0303</code> in 1.3: middlebox camouflage.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<h3 class="sheet-hd">“Extract ×3 — Early, Handshake, Master; every key an Expand bound to the transcript.”</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> tls-pki (handshake, chain, pinning basics) ·
+certificate-pinning-2026 · http-deep (HTTP/3, QUIC) · crypto-cryptokit (HKDF, AEAD) · post-quantum</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=networking" title="area">networking</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=general" title="platform">general</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=networking" title="topic">networking</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=security" title="topic">security</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=protocols" title="topic">protocols</a></li><li class="sheet-tag"><a href="/folios.html?tag=tls13">tls13</a></li><li class="sheet-tag"><a href="/folios.html?tag=key-schedule">key-schedule</a></li><li class="sheet-tag"><a href="/folios.html?tag=hkdf">hkdf</a></li><li class="sheet-tag"><a href="/folios.html?tag=record-layer">record-layer</a></li><li class="sheet-tag"><a href="/folios.html?tag=session-tickets">session-tickets</a></li><li class="sheet-tag"><a href="/folios.html?tag=psk-resumption">psk-resumption</a></li><li class="sheet-tag"><a href="/folios.html?tag=0-rtt">0-rtt</a></li><li class="sheet-tag"><a href="/folios.html?tag=sni">sni</a></li><li class="sheet-tag"><a href="/folios.html?tag=ech">ech</a></li><li class="sheet-tag"><a href="/folios.html?tag=ocsp-stapling">ocsp-stapling</a></li><li class="sheet-tag"><a href="/folios.html?tag=alpn">alpn</a></li><li class="sheet-tag"><a href="/folios.html?tag=quic">quic</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=networking%2Ftls-deep-dive.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/231">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

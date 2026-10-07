@@ -1,0 +1,184 @@
+% certificate-pinning-2026.tex — pinning as it stands in 2026: what is hashed, why pins brick apps (a
+% rotation timeline, drawn), a should-you-pin decision tree, NSPinnedDomains vs URLSessionDelegate vs
+% TrustKit, Android network-security-config + OkHttp, the platform guidance AGAINST pinning, Certificate
+% Transparency, CAA, and when pinning is still justified.
+% Basics (pin table leaf/intermediate/root, >= 2 pins, the raw-key-vs-SPKI trap) live in
+% networking/tls-pki.tex; delegate mechanics in ios-swift/urlsession-networking.tex — not repeated.
+% Sources (checked 2026-10-06) — re-read today: Android security-ssl ("not recommended") and
+%   security-config (CT enabled by default from Android 17, API 37):
+% https://developer.android.com/privacy-and-security/security-ssl (pinning "not recommended")
+% https://developer.android.com/privacy-and-security/security-config (pin-set, expiration, certificateTransparency)
+% https://developer.apple.com/news/?id=g9ejcf8y (Apple: Identity Pinning; "not required … only if absolutely necessary")
+% https://developer.apple.com/documentation/bundleresources/information-property-list/nsapptransportsecurity/nspinneddomains
+% https://support.apple.com/en-us/103214 (Apple CT policy) · https://github.com/datatheorem/TrustKit
+% https://letsencrypt.org/2024/03/19/new-intermediate-certificates (rotating intermediates discourage pinning)
+% RFC 8659 (CAA) · RFC 6962 (CT) · RFC 7469 (HPKP, historic)
+% @labels: area=networking kind=concept platform=cross-platform topic=security,networking discussion=219
+% @tags: certificate-pinning, spki, backup-pin, nspinneddomains, trustkit, network-security-config, okhttp, certificate-transparency, caa, key-rotation
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt,
+  literate={/>}{{\hbox{/}\hbox{>}}}2 {</}{{\hbox{<}\hbox{/}}}2 {--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{Certificate pinning in 2026 — when, what, and how not to brick}{networking · folio}
+
+\oneliner{Pinning adds an \textbf{app-level rule on top of normal validation}: the verified chain must contain a
+\textbf{public key you chose} (its SPKI hash). It stops a \emph{mis-issued, compelled or user/MDM-installed CA}
+from intercepting you — and turns any unplanned key change into an \textbf{outage only an app update fixes}.
+Android calls it ``\textbf{not recommended}'', Apple ``\textbf{not required}''; \textbf{CT} and \textbf{CAA} now
+cover most of the mis-issuance risk. Pin only when the threat model demands it, and then with backups.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=left},
+    bar/.style={draw=none, minimum height=3.2mm, inner sep=0pt, font=\tiny\bfseries, text=white},
+    q/.style={box, font=\tiny, text width=27mm, inner sep=2pt},
+    yes/.style={box, draw=sheetGreen, fill=sheetGreen!10, font=\tiny, text width=27mm, inner sep=2pt},
+    no/.style={box, draw=sheetRed, fill=sheetRed!6, font=\tiny, text width=19mm, inner sep=2pt}]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.2,3.75) {Why pins brick apps — one year of key rotation};
+  % axis
+  \draw[sheetGrey, thick] (2.0,0.75) -- (10.0,0.75);
+  \foreach \x/\t in {2.0/Jan, 4.0/Apr, 6.0/Jul, 8.0/Oct, 10.0/Jan} {
+    \draw[sheetGrey] (\x,0.7) -- (\x,0.8); \node[l, below] at (\x,0.7) {\t}; }
+  % rows
+  \node[l, anchor=east, font=\tiny\bfseries] at (1.9,2.75) {server serves};
+  \node[bar, fill=sheetBlue, minimum width=40mm, anchor=west] at (2.0,2.75) {K1};
+  \node[bar, fill=sheetGreen!70!black, minimum width=20mm, anchor=west] at (6.0,2.75) {K2 (backup)};
+  \node[bar, fill=sheetRed, minimum width=20mm, anchor=west] at (8.0,2.75) {K4 (new host)};
+  \node[l, anchor=east, font=\tiny\bfseries] at (1.9,2.2) {v1.0 pins K1+K2};
+  \node[bar, fill=sheetGreen!55, minimum width=60mm, anchor=west, text=black] at (2.0,2.2) {connects};
+  \node[bar, fill=sheetRed!80, minimum width=20mm, anchor=west] at (8.0,2.2) {BRICKED};
+  \node[l, anchor=east, font=\tiny\bfseries] at (1.9,1.65) {v1.2 pins K2+K3};
+  \node[bar, fill=sheetGreen!55, minimum width=20mm, anchor=west, text=black] at (6.0,1.65) {connects};
+  \node[bar, fill=sheetRed!80, minimum width=20mm, anchor=west] at (8.0,1.65) {BRICKED};
+  \node[l, anchor=east, font=\tiny\bfseries] at (1.9,1.15) {users on update};
+  \node[l, anchor=west] at (2.0,1.15) {weeks to reach most users — the long tail runs \emph{years}};
+  % events
+  \draw[hot, draw=sheetGreen!50!black] (6.0,3.25) -- (6.0,2.95);
+  \node[l, anchor=south east, text=sheetGreen!50!black] at (6.1,3.25) {K1 leaked $\to$ swap to backup K2: old apps fine};
+  \draw[hot, draw=sheetRed] (8.0,3.25) -- (8.0,2.95);
+  \node[l, anchor=south west, text=sheetRed] at (7.9,3.25) {CDN / host move, new key};
+  \node[l, anchor=west, text=sheetRed, text width=98mm] at (-0.2,0.05)
+    {\textbf{Lesson}: pin keys you will \emph{move with}; generate the backup (K3) \textbf{now} and keep it offline;
+     ship an \textbf{expiry} and a \textbf{remote off-switch}; never pin a key someone else rotates.};
+
+  \draw[sheetGrey!40] (10.35,3.85) -- (10.35,-0.3);
+
+  % ---------- decision tree ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (10.5,3.75) {Should you pin?};
+  \node[q, anchor=north west] (q1) at (10.5,3.5) {You own the server \emph{and} its keys (not a CDN, SaaS, 3rd-party SDK)?};
+  \node[no, anchor=west] (n1) at (13.85,3.15) {\textbf{No}: don't — CT + ATS/NSC defaults};
+  \node[q, anchor=north west] (q2) at (10.5,2.3) {Threat model has a rogue / installed CA? (bank, health, high-value, regulator)};
+  \node[no, anchor=west] (n2) at (13.85,1.95) {\textbf{No}: don't — CAA + CT monitoring};
+  \node[yes, anchor=north west] (y) at (10.5,1.0) {\textbf{Pin SPKI}: live key + $\geq$1 offline backup · expiry · failure reports · off-switch};
+  \draw[flow] (q1.east) -- (n1.west);
+  \draw[flow] (q1.south) -- node[l, right]{yes} (q2.north);
+  \draw[flow] (q2.east) -- (n2.west);
+  \draw[flow] (q2.south) -- node[l, right]{yes} (y.north);
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{What is hashed}: the certificate's \textbf{SubjectPublicKeyInfo} (DER: algorithm OID + key)
+        $\to$ SHA-256 $\to$ base64. A \emph{key} pin survives renewal if the key is reused (e.g.
+        certbot \ct{\hbox{-}\hbox{-}reuse-key}); a \emph{certificate} pin dies at every renewal.
+  \item \textbf{When}: \emph{after} the OS validated chain, name and dates. A pin only narrows trust — Apple:
+        ``can only tighten'' it.
+  \item \textbf{Match}: passes if \textbf{any one} pinned key is found — Android/OkHttp: anywhere in the chain;
+        Apple: in the leaf (\emph{Leaf}Identities) or a CA cert (\emph{CA}Identities). That is why a backup pin works.
+  \item \textbf{Which key}: your \textbf{leaf} key (you control rotation) or your \emph{private} CA. Not a public
+        intermediate — Let's Encrypt issues from several (R10–R14, E5–E9) and rotates them \emph{on purpose}
+        to discourage pinning. Root: survives most things, protects little.
+  \item Shorter cert lives (200 $\to$ 47 days by 2029) mean more rotations — more chances to brick.
+\end{itemize}
+
+\hd{Implementations}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{53mm}@{}}
+\toprule
+\ct{NSPinnedDomains} & iOS 14+, Info.plist, no code; \ct{NSPinnedLeafIdentities} / \ct{NSPinnedCAIdentities};
+  \ct{NSIncludesSubdomains} = \emph{one} level only \\
+\ct{URLSessionDelegate} & trust challenge: \ct{SecTrustEvaluateWithError} first, then hash the chain's keys; full
+  control (per-request, remote pin lists) \\
+TrustKit & iOS 12+: pins, expiry, \textbf{failure reports} to a URL, optional swizzling \\
+Android NSC & \ct{<pin-set expiration>} (API 24+); expired $\to$ pinning \textbf{off} (fails open) \\
+OkHttp & \ct{CertificatePinner} \ct{"sha256/…"} — also what RN libraries wrap \\
+\bottomrule
+\end{tabular}}
+
+\hd{Example — the same policy, both platforms}
+\begin{lstlisting}
+<!-- res/xml/network_security_config.xml -->
+<domain-config>
+  <domain includeSubdomains="true">api.example.com</domain>
+  <pin-set expiration="2027-06-30">
+    <pin digest="SHA-256">LIVE_KEY_BASE64=</pin>
+    <pin digest="SHA-256">OFFLINE_BACKUP_BASE64=</pin>
+  </pin-set>
+</domain-config>
+Info.plist > NSAppTransportSecurity > NSPinnedDomains
+  api.example.com > NSPinnedLeafIdentities = [
+    { SPKI-SHA256-BASE64 = LIVE_KEY_BASE64= },
+    { SPKI-SHA256-BASE64 = OFFLINE_BACKUP_BASE64= } ]
+\end{lstlisting}
+\begin{lstlisting}[language=bash]
+openssl x509 -in leaf.pem -pubkey -noout | openssl pkey -pubin \
+  -outform der | openssl dgst -sha256 -binary | base64
+\end{lstlisting}
+
+\hd{What the platforms say (2026)}
+\begin{itemize}
+  \item \textbf{Android}: pinning ``is \textbf{not recommended} for Android apps'' — a CA change strands every
+        installed version. If you must: \textbf{multiple backup pins}, one key fully yours, a \textbf{short expiration}.
+  \item \textbf{Apple}: ``Pinning certificates is \textbf{not required}\ldots only if absolutely necessary'';
+        several keys per domain, plan recovery.
+  \item Browsers gave up first: HPKP (RFC 7469) left Chrome in 2019\unverified.
+\end{itemize}
+
+\columnbreak
+
+\hd{Certificate Transparency and CAA — the alternatives}
+\textbf{CT} (RFC 6962): CAs log every public cert in append-only Merkle-tree logs and embed the
+\textbf{SCTs} (signed promises of inclusion). Clients \emph{refuse} unlogged certs: Apple since certs issued after
+15 Oct 2018 (all apps, not only Safari); \textbf{Android 16} opt-in
+\ct{<certificateTransparency enabled="true"/>}, default from \textbf{Android 17}. Owners watch the logs
+(crt.sh, alerts) $\to$ a rogue cert for your name is \emph{seen}. CT is \textbf{detective}; pinning is
+\textbf{preventive}.
+\textbf{CAA} (RFC 8659): DNS \ct{example.com CAA 0 issue "letsencrypt.org"} (+ \ct{issuewild}, \ct{iodef});
+every public CA must check it before issuing. Stops honest CAs, not a compromised one.
+
+\hd{Still justified when\ldots}
+You control server \emph{and} key custody, \textbf{and} the attacker can plausibly install a CA or coerce one:
+banking, payments, health, gov, enterprise apps on managed devices, or a regulator/pentest requirement
+(OWASP MASVS-NETWORK-2\unverified). Not for: CDN/third-party hosts, web content, ``stopping reverse engineering''.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Pinning stops API reverse engineering'' — a jailbroken/rooted phone with Frida or a kill-switch tweak
+        disables it in minutes. It protects the \emph{user} from a MITM, not your API from the user.}
+  \trap{Pin check \emph{instead of} default evaluation: expired or wrong-host certs pass.}
+  \trap{Android \ct{expiration} fails \textbf{open}; an off-switch fetched over the pinned channel cannot turn
+        itself off — fetch it elsewhere.}
+  \trap{Pinning the leaf \emph{certificate} (not key) with 90-day certs: planned outages.}
+  \trap{Debug proxies (Charles, Proxyman) need the CA in \ct{debug-overrides} — debuggable builds only.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Pin keys, not certs; pin yours, not theirs; always a backup, an expiry and a way out.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} tls-pki (pin table, SPKI trap) · tls-deep-dive
+(revocation, short certs) · urlsession-networking (delegate code) · app-hardening-privacy (ATS) · proxy debugging}
+
+\end{document}

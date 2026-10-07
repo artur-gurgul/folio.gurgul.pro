@@ -1,0 +1,74 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>TCP · UDP · QUIC — handshakes, windows, and why QUIC exists — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/networking/tcp-udp-quic.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">218</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area current" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">TCP · UDP · QUIC — handshakes, windows, and why QUIC exists</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">networking · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> <strong>TCP</strong> turns lossy IP packets into one <strong>reliable, ordered byte stream</strong>: a 3-way
+handshake agrees on sequence numbers, ACKs + retransmission recover loss, the <strong>receive window</strong>
+protects the receiver (flow control), the <strong>congestion window</strong> protects the network. <strong>UDP</strong>
+is ports + checksum and nothing else. <strong>QUIC</strong> rebuilds TCP’s guarantees <em>per stream</em> on
+UDP with TLS 1.3 inside — 1-RTT setup, no cross-stream head-of-line blocking, survives an IP change.</p>
+<p class="sheet-tools"><a class="sheet-download" href="tcp-udp-quic.pdf" download>Download PDF</a> <a href="tcp-udp-quic.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/networking/tcp-udp-quic.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="tcp-udp-quic-fig1.svg" width="663" height="176" class="wide" alt="TCP · UDP · QUIC — handshakes, windows, and why QUIC exists — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">TCP</span></h3>
+<ul>
+<li><strong>Header</strong> (20–60 B): ports · <strong>seq</strong> (number of the first payload byte) ·  <strong>ack</strong> (next byte expected) · flags <code>SYN ACK FIN RST PSH URG ECE CWR</code> · 16-bit  <strong>window</strong> · checksum · options (MSS, window scale <span class="math">≤</span>14 <span class="math">⇒</span> 1 GiB, SACK,  timestamps). The 4-tuple (IPs + ports) <em>is</em> the connection.</li>
+<li><strong>Open</strong>: random ISNs (anti-spoofing); SYN and FIN each consume a sequence number;  MSS 1460 on a 1500-byte MTU (IPv4). <strong>Close</strong>: each direction separately (half-close)  <span class="math">→</span> 4 segments; the first closer holds <strong>TIME_WAIT</strong> 2<span class="math">×</span>MSL (RFC MSL 2 min;  Linux 60 s). <code>RST</code> aborts at once.</li>
+<li><strong>Loss</strong>: 3 duplicate ACKs <span class="math">→</span> fast retransmit; RTO expiry <span class="math">→</span> retransmit + slow  start from 1 segment. <strong>SACK</strong> reports which ranges arrived.</li>
+<li><strong>Flow control</strong> <span class="math">≠</span> <strong>congestion control</strong>: <strong>rwnd</strong> <span class="math">=</span> receiver’s free  buffer, in every ACK (0 <span class="math">→</span> sender stops, probes); <strong>cwnd</strong> <span class="math">=</span> sender’s guess of the  <em>network</em>. Reno, CUBIC (RFC 9438, Linux’s default) are loss-based; <strong>BBR</strong>  (Google) models bottleneck bandwidth + min RTT and paces — better on lossy radio and  against bufferbloat.</li>
+<li><strong>Nagle</strong> (RFC 896) holds small segments while data is unacked; <strong>delayed ACK</strong>  (RFC 1122: <span class="math">&lt;</span>0.5 s, every 2nd full segment) holds the ACK <span class="math">⇒</span> write-write-read  stalls tens to hundreds of ms. Fix: <code>TCP_NODELAY</code> (<code>noDelay</code>) or one write.</li>
+<li><strong>Head-of-line blocking</strong>: in-order delivery — one lost segment stalls every byte  behind it, i.e. every HTTP/2 stream on the connection.</li>
+</ul>
+<p><strong><span class="c-sheetblue">UDP — what you do <em>not</em> get</span></strong></p>
+<p>8-byte header (ports, length, checksum). No handshake, order, retransmission or congestion control; message boundaries kept; oversize datagrams fragment or drop. Used by DNS, QUIC, RTP/WebRTC, games, mDNS. NATs forget idle UDP mappings fast <span class="math">→</span> keepalives.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — Network.framework knobs</span></h3>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">import</span> Network
+<span class="hljs-keyword">let</span> tcp <span class="hljs-operator">=</span> <span class="hljs-type">NWProtocolTCP</span>.<span class="hljs-type">Options</span>()
+tcp.noDelay <span class="hljs-operator">=</span> <span class="hljs-literal">true</span>            <span class="hljs-comment">// Nagle off: small RPC-style writes</span>
+tcp.connectionTimeout <span class="hljs-operator">=</span> <span class="hljs-number">5</span>     <span class="hljs-comment">// seconds for the handshake</span>
+tcp.enableKeepalive <span class="hljs-operator">=</span> <span class="hljs-literal">true</span>; tcp.keepaliveIdle <span class="hljs-operator">=</span> <span class="hljs-number">30</span>
+<span class="hljs-keyword">let</span> conn <span class="hljs-operator">=</span> <span class="hljs-type">NWConnection</span>(host: <span class="hljs-string">&quot;api.example.com&quot;</span>, port: <span class="hljs-number">443</span>,
+               using: <span class="hljs-type">NWParameters</span>(tls: .<span class="hljs-keyword">init</span>(), tcp: tcp))
+conn.stateUpdateHandler <span class="hljs-operator">=</span> { state <span class="hljs-keyword">in</span>  <span class="hljs-comment">// preparing/ready/waiting/failed</span>
+  <span class="hljs-keyword">if</span> <span class="hljs-keyword">case</span> .waiting(<span class="hljs-keyword">let</span> err) <span class="hljs-operator">=</span> state { <span class="hljs-built_in">print</span>(<span class="hljs-string">&quot;no path yet&quot;</span>, err) } }
+conn.start(queue: .main)
+<span class="hljs-comment">// QUIC (iOS 15): NWParameters(quic: NWProtocolQUIC.Options(alpn: [&quot;h3&quot;]))</span>
+<span class="hljs-comment">// URLSession: h3 when offered (iOS 15); MPTCP: multipathServiceType</span></code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">QUIC — why it exists (RFC 9000/9001/9002, 2021)</span></h3>
+<ul>
+<li><strong>Ossification</strong>: TCP lives in kernels and middleboxes that drop the unfamiliar. QUIC  runs in user space over UDP and <strong>encrypts almost all of its header</strong> (even packet  numbers), so the network cannot come to depend on it.</li>
+<li><strong>Streams</strong> native, loss per stream. Stream-ID bit 0 <span class="math">=</span> opener (client 0 / server 1),  bit 1 <span class="math">=</span> bidi 0 / uni 1. <strong>Packet numbers never reused</strong> (a retransmission is a new  packet) <span class="math">→</span> unambiguous RTT samples; ACK ranges <span class="math">=</span> built-in SACK.</li>
+<li><strong>Migration</strong>: <strong>connection IDs</strong>, not the 4-tuple; a new IP is checked with  <code>PATH_CHALLENGE</code>/<code>PATH_RESPONSE</code> and the connection continues.</li>
+<li><strong>Anti-amplification</strong>: the client pads its first Initial to <span class="math">≥</span><strong>1200 B</strong>; an  unvalidated server sends <span class="math">≤</span><strong>3<span class="math">×</span></strong> what it received.</li>
+<li><strong>Costs</strong>: more CPU than kernel TCP; UDP blocked or throttled on some networks <span class="math">→</span>  clients race / fall back to TCP; opaque to middleboxes (by design).</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Compare</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th><strong>TCP</strong></th><th><strong>UDP</strong></th><th><strong>QUIC</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>setup</td><td>1 RTT (+1 TLS 1.3)</td><td>0</td><td>1 RTT incl. TLS; 0-RTT resume</td></tr>
+<tr><td>delivery</td><td>ordered bytes</td><td>none</td><td>ordered <em>per stream</em></td></tr>
+<tr><td>HOL</td><td>whole connection</td><td>—</td><td>per stream</td></tr>
+<tr><td>congestion</td><td>kernel: CUBIC, BBR</td><td>yours</td><td>in app (RFC 9002: NewReno)</td></tr>
+<tr><td>identity</td><td>4-tuple</td><td>—</td><td>connection ID <span class="math">→</span> migrates</td></tr>
+<tr><td>crypto</td><td>optional TLS on top</td><td>none</td><td>mandatory, headers too</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">Flow control <span class="math">≠</span> congestion control: receiver buffer (rwnd) vs network capacity (cwnd).</li>
+<li class="trap">Thousands of <code>TIME_WAIT</code>s on a server: the server closes first. Let clients close, keep  connections alive; don’t shrink MSL.</li>
+<li class="trap">Half-open sockets look alive; TCP keepalive defaults to 2 h — use app heartbeats.</li>
+<li class="trap">More bandwidth rarely speeds a small API call: it is RTT- and slow-start-bound.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<p><strong>“rwnd: receiver, cwnd: network, TIME_WAIT: who hangs up first; QUIC <span class="math">=</span> TCP per stream.”</strong></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> http-deep (h2/h3 stacks, HOL picture) · tls-pki ·
+what-happens-tap-a-url · websockets-realtime (heartbeats) · poor-network-engineering</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=networking" title="area">networking</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=general" title="platform">general</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=networking" title="topic">networking</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=protocols" title="topic">protocols</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=performance" title="topic">performance</a></li><li class="sheet-tag"><a href="/folios.html?tag=tcp">tcp</a></li><li class="sheet-tag"><a href="/folios.html?tag=udp">udp</a></li><li class="sheet-tag"><a href="/folios.html?tag=quic">quic</a></li><li class="sheet-tag"><a href="/folios.html?tag=three-way-handshake">three-way-handshake</a></li><li class="sheet-tag"><a href="/folios.html?tag=time-wait">time-wait</a></li><li class="sheet-tag"><a href="/folios.html?tag=slow-start">slow-start</a></li><li class="sheet-tag"><a href="/folios.html?tag=cwnd">cwnd</a></li><li class="sheet-tag"><a href="/folios.html?tag=cubic">cubic</a></li><li class="sheet-tag"><a href="/folios.html?tag=bbr">bbr</a></li><li class="sheet-tag"><a href="/folios.html?tag=nagle">nagle</a></li><li class="sheet-tag"><a href="/folios.html?tag=delayed-ack">delayed-ack</a></li><li class="sheet-tag"><a href="/folios.html?tag=head-of-line-blocking">head-of-line-blocking</a></li><li class="sheet-tag"><a href="/folios.html?tag=nwconnection">nwconnection</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=networking%2Ftcp-udp-quic.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/230">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>
