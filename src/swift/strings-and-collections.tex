@@ -1,0 +1,188 @@
+% strings-and-collections.tex — String as Unicode (Character = grapheme
+% cluster, views, O(n) count, String.Index, Substring retention) and the
+% collections: Array/Set/Dictionary storage + complexity, ArraySlice,
+% reserveCapacity, lazy, Hashable, swift-collections (Deque, OrderedSet,
+% OrderedDictionary, Heap).
+% Sources (checked 2026-10-06):
+%   docs.swift.org/swift-book Strings and Characters (Character = extended grapheme cluster;
+%     count walks the string; String.Index) · swift.org/blog/utf8-string (native UTF-8 storage,
+%     Swift 5; small strings up to 15 UTF-8 bytes stored inline on 64-bit)
+%   swift-evolution SE-0206 (Hasher: "SipHash-1-3 with 320 bits of state", per-run random
+%     seed, 4.2) — checked against the evolution index and the proposal text
+%   developer.apple.com/documentation/swift/array/reservecapacity(_:) · /swift/stringprotocol
+%   github.com/apple/swift-collections (Deque, OrderedSet, OrderedDictionary, Heap; ordered
+%     removal is O(n))
+% @labels: area=swift kind=concept platform=apple topic=language,performance discussion=150
+% @tags: grapheme-cluster, unicode, string-index, substring, utf8, arrayslice, copy-on-write, reservecapacity, lazy, deque, orderedset, big-o
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={class,final,struct,enum,func,var,let,init,if,else,return,
+    self,nil,true,false,in,for},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  ch/.style={draw=sheetBlue, thick, fill=sheetBlue!8, minimum height=5mm,
+             font=\ttfamily\footnotesize, inner sep=0pt},
+  sc/.style={draw=sheetGreen, fill=sheetGreen!8, minimum height=5mm,
+             font=\ttfamily\scriptsize, inner sep=0pt},
+  by/.style={draw=sheetOrange, fill=sheetOrange!8, minimum height=5mm,
+             font=\ttfamily\scriptsize, inner sep=0pt},
+  rowl/.style={font=\scriptsize\bfseries, anchor=east, align=right},
+  lbl/.style={font=\scriptsize, text=black!80, inner sep=1pt, align=center},
+}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcommand\W{3.8mm}   % width of one UTF-8 byte cell
+
+\begin{document}
+
+\sheettitle{Strings \& collections — Unicode, storage, complexity}{swift · folio}
+
+\oneliner{A Swift \texttt{String} is a \textbf{UTF-8 buffer} (since Swift 5)
+seen as a \textbf{bidirectional} collection of \texttt{Character}s, where a
+Character is an \textbf{extended grapheme cluster} — one user-perceived
+character of variable byte width. Hence no \texttt{s[3]}, \texttt{count} is
+\textbf{O(n)}, and slices (\texttt{Substring}, \texttt{ArraySlice})
+\textbf{share and pin} their parent's storage. All stdlib collections are
+value types with \textbf{copy-on-write}.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{One string, four views}
+\begin{tikzpicture}[sheet, x=\W]
+  % UTF-8 bytes: c a f e U+0301
+  \node[rowl] at (-0.3,0) {Character};
+  \node[rowl] at (-0.3,-0.7) {unicodeScalars};
+  \node[rowl] at (-0.3,-1.4) {utf8};
+  \node[rowl] at (-0.3,-2.1) {utf16};
+  % characters: widths in bytes 1,1,1,3
+  \foreach \x/\w/\t in {0/1/c, 1/1/a, 2/1/f, 3/3/\'e}
+    \node[ch, minimum width=\w*\W, anchor=west] at (\x,0) {\t};
+  \foreach \x/\w/\t in {0/1/c, 1/1/a, 2/1/f, 3/1/e, 4/2/\textasciiacute}
+    \node[sc, minimum width=\w*\W, anchor=west] at (\x,-0.7) {\t};
+  \foreach \x/\t in {0/63, 1/61, 2/66, 3/65, 4/CC, 5/81}
+    \node[by, minimum width=\W, anchor=west] at (\x,-1.4) {\t};
+  \foreach \x/\w/\t in {0/1/63, 1/1/61, 2/1/66, 3/1/65, 4/2/301}
+    \node[sc, draw=sheetGrey, fill=black!4, minimum width=\w*\W, anchor=west] at (\x,-2.1) {\t};
+  % counts
+  \node[lbl, anchor=west] at (6.4,0) {\textbf{count 4} — O(n) walk};
+  \node[lbl, anchor=west] at (6.4,-0.7) {5 scalars (e + U+0301)};
+  \node[lbl, anchor=west] at (6.4,-1.4) {6 bytes (native storage)};
+  \node[lbl, anchor=west] at (6.4,-2.1) {5 code units (hex)};
+  \draw[decorate, decoration={brace, amplitude=3pt}, sheetRed, thick]
+    (3,0.32) -- node[above=2pt, lbl, text=sheetRed]{\'e: 1 Character = 2 scalars = 3 bytes} (6,0.32);
+\end{tikzpicture}
+
+{\footnotesize\itshape\color{sheetBrown} \texttt{"cafe\textbackslash u\{301\}" ==
+"caf\textbackslash u\{E9\}"} is \textbf{true} (canonical equivalence) though the
+bytes differ. Family emoji: 1 Character, 7 scalars, 25 UTF-8 bytes, 11 UTF-16 units.}
+
+\section{Strings}
+\begin{itemize}
+  \item Native storage is \textbf{UTF-8}; strings $\le$ 15 UTF-8 bytes live
+        \textbf{inline} (small-string, no heap) on 64-bit.
+  \item \texttt{String.Index} is an opaque byte position. \texttt{index(\_:offsetBy:)}
+        is O(n). An index is valid \textbf{only for the string it came from}
+        and \textbf{until it mutates}; never reuse it across strings or edits.
+  \item \texttt{isEmpty} is O(1), \texttt{count} O(n) — never
+        \texttt{count == 0}. \texttt{s.utf8.count} is O(1) for native strings.
+  \item \texttt{Substring} (from \texttt{split}, \texttt{prefix}, ranges)
+        \textbf{shares the whole base buffer}: \texttt{String(sub)} before storing.
+        Take \texttt{some StringProtocol} to accept both.
+  \item \texttt{==}, \texttt{hasPrefix}, hashing use canonical equivalence;
+        \texttt{<} is \emph{not} locale-aware — UI sort:
+        \texttt{localizedStandardCompare}.
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+let s = "cafe\u{301}"                    // "café", decomposed
+s.count; s.unicodeScalars.count; s.utf8.count  // 4, 5, 6
+let i = s.index(s.startIndex, offsetBy: 3)    // s[3] won't compile
+s[i]                                          // "é"
+let first = log.split(separator: "\n")[0] // Substring
+cache.append(String(first))                   // copy out
+var a = [Int](); a.reserveCapacity(n)         // ONE allocation
+let hit = big.lazy.map(f).first(where: p)     // no temp array
+var q = Deque<Job>(); q.prepend(job)          // O(1) front
+var seen: OrderedSet<ID> = []; seen.append(id) // unique, ordered
+var pq = Heap<Int>(); pq.insert(5); pq.popMin() // O(log n)
+\end{lstlisting}
+
+\section{A slice pins its parent}
+\begin{tikzpicture}[sheet]
+  \foreach \i in {0,...,11}
+    \node[cell, minimum width=5.2mm, fill=black!5] (b\i) at (\i*0.52,0) {};
+  \node[lbl, anchor=west] at (6.35,0) {1 M elements};
+  \foreach \i in {2,3,4}
+    \node[cell, minimum width=5.2mm, fill=sheetOrange!25] at (\i*0.52,0) {};
+  \node[box, font=\ttfamily\scriptsize] (sl) at (1.56,-0.85) {big[2..<5]};
+  \draw[hot] (sl.north) -- (b3.south);
+  \node[lbl, anchor=west, text=sheetRed] at (2.5,-0.85) {ArraySlice: keeps the whole 1 M buffer alive};
+  \node[box, font=\ttfamily\scriptsize, draw=sheetGreen, fill=sheetGreen!8] (cp) at (1.56,-1.5) {Array(big[2..<5])};
+  \foreach \i in {0,1,2}
+    \node[cell, minimum width=5.2mm, fill=sheetGreen!20] at (3.3+\i*0.52,-1.5) {};
+  \node[lbl, anchor=west, text=sheetGreen!60!black] at (4.9,-1.5) {own 3-element copy};
+\end{tikzpicture}
+
+\columnbreak
+
+\section{Collections}
+\begin{itemize}
+  \item \textbf{Array}: one contiguous heap buffer; \texttt{append}
+        \textbf{amortised O(1)} (capacity grows geometrically, $\times$2);
+        \texttt{reserveCapacity} = one allocation. Mutation copies only if
+        the buffer is shared (COW) — capacity $\neq$ uniqueness.
+  \item \textbf{Set / Dictionary}: open-addressed hash table, per-process
+        \textbf{random seed} (SipHash, anti-HashDoS): average O(1), order
+        unspecified and \textbf{different every launch}.
+  \item \textbf{Hashable contract}: \texttt{a == b} $\Rightarrow$ equal
+        hashes. Feed \texttt{hash(into:)} exactly the fields \texttt{==} uses;
+        never mutate a key while it is inside a Set/Dictionary.
+  \item \textbf{Slices} (\texttt{ArraySlice}, \texttt{Substring}) keep the
+        parent's \textbf{indices} (\texttt{a[5..<9].startIndex == 5}) and its
+        \textbf{whole buffer} alive.
+  \item \textbf{\texttt{.lazy}} fuses \texttt{map/filter} with no temp arrays,
+        but \textbf{re-runs} the closures on every iteration.
+\end{itemize}
+
+\section{Complexity — pick the structure}
+{\scriptsize
+\begin{tabular}{@{}L{0.25\linewidth}L{0.12\linewidth}L{0.13\linewidth}L{0.13\linewidth}L{0.13\linewidth}L{0.14\linewidth}@{}}
+\toprule
+ & \textbf{[i]} & \textbf{end +} & \textbf{front +} & \textbf{contains} & \textbf{order} \\ \midrule
+\texttt{Array} & O(1) & O(1)* & O(n) & O(n) & insertion \\
+\texttt{Set}, \texttt{Dictionary} & — & O(1)* & — & O(1) avg & none \\
+\texttt{Deque} & O(1) & O(1)* & \textbf{O(1)*} & O(n) & insertion \\
+\texttt{OrderedSet}/\texttt{Dict} & O(1) & O(1)* & O(n) & \textbf{O(1)} & insertion \\
+\texttt{Heap} (min-max) & — & O(log n) & — & O(n) & min/max O(1) \\
+\texttt{String} & O(n) & O(1)* & O(n) & O(n) & — \\
+\bottomrule
+\end{tabular}}\\[1pt]
+{\scriptsize * amortised. Removing from the middle is O(n) in every array-backed one
+(incl. \texttt{OrderedSet}). swift-collections:
+\texttt{import Collections} (or \texttt{DequeModule}, \texttt{OrderedCollections},
+\texttt{HeapModule}); also \texttt{BitSet}, \texttt{TreeSet}/\texttt{TreeDictionary} (persistent).}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{split} returns \texttt{[Substring]} — store them and you keep the whole input alive.}
+  \trap{Testing or persisting \texttt{Set}/\texttt{Dictionary} order — it changes per launch.}
+  \trap{\texttt{removeFirst()} on \texttt{Array} in a queue loop = O(n$^2$) $\to$ \texttt{Deque}.}
+  \trap{Iterating a slice with \texttt{0..<slice.count} — use \texttt{slice.indices}.}
+  \trap{\texttt{reserveCapacity} inside the append loop defeats geometric growth.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Graphemes cost a walk; slices hold the whole; hashes forget order.''}
+Both ends $\to$ Deque · unique+ordered $\to$ OrderedSet · priority $\to$ Heap.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} value-vs-reference (copy-on-write) · swift-equatable-hashable-comparable · swift-unsafe-and-reflection (\texttt{withUTF8}) · swift-regex}
+
+\end{document}

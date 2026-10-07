@@ -1,0 +1,228 @@
+% swift-syntax-closures-calls.tex — a catalogue of "clever" Swift call syntax and
+% what the compiler rewrites it into: multiple trailing closures, $0 rules, key
+% paths as functions, callAsFunction, @dynamicMemberLookup / @dynamicCallable,
+% @autoclosure (how ?? is written), implicit member chains, static / labeled
+% subscripts, inout + & + exclusivity, caller-side default arguments, unapplied
+% method / initializer references, operators as functions, `_ =`.
+% Deliberately NOT repeated (see Related): capture semantics (swift-closures-deep),
+% key-path classes (swift-keypaths-access-control), precedence groups and ~=
+% (swift-operators-subscripts-literals).
+% Sources (checked 2026-10-06) — every number and version against the swift.org evolution
+% index, github.com/swiftlang/swift-evolution —
+% SE-0249 (key path as function, 5.2), SE-0253 (callAsFunction, 5.2: "function or
+% initializer call, then a callAsFunction method call, and finally a dynamic call";
+% no implicit conversion to a function type), SE-0195 / SE-0252 (dynamic member
+% lookup, string 4.2 / key path 5.1), SE-0216 (@dynamicCallable, 5.0), SE-0279
+% (multiple trailing closures, 5.3), SE-0287 (implicit member chains, 5.4), SE-0254
+% (static subscripts, 5.1), SE-0176 (exclusivity), SE-0274 (#fileID), SE-0422
+% (macros as caller-side default arguments, 6.0), SE-0479 (method key paths —
+% status "returned for revision" in download.swift.org/swift-evolution/v1/evolution.json,
+% read 2026-09-26). The Swift Programming Language (in-out parameters, observers).
+% @labels: area=swift kind=concept platform=apple topic=language discussion=165
+% @tags: trailing-closures, anonymous-arguments, keypath-as-function, callasfunction, dynamicmemberlookup, dynamiccallable, autoclosure, implicit-member-chains, inout, exclusivity, default-arguments, unapplied-method-reference
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,
+    if,else,return,guard,self,nil,true,false,in,inout,throws,rethrows,try,
+    switch,static,subscript,extension,some,any,where,for},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {??}{{\hbox{?}\hbox{?}}}2 {...}{{\hbox{.}\hbox{.}\hbox{.}}}3
+           {..<}{{\hbox{.}\hbox{.}\hbox{<}}}3 {>=}{{\hbox{>}\hbox{=}}}2
+           {<=}{{\hbox{<}\hbox{=}}}2 {+=}{{\hbox{+}\hbox{=}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstdefinestyle{cat}{language=SwiftSheet, basicstyle=\ttfamily\scriptsize,
+  aboveskip=1pt, belowskip=2pt}
+
+% One \hbox per character defeats the mono font's ligatures in prose.
+\makeatletter
+\DeclareRobustCommand\op[1]{\texttt{\@tfor\@c:=#1\do{\hbox{\@c}}}}
+\makeatother
+\newcommand\grp[1]{\par\vspace{1pt}\noindent{\color{sheetBlue}\bfseries\footnotesize #1}\par}
+
+\tikzset{
+  sug/.style={draw=sheetOrange, thick, fill=sheetOrange!10, rounded corners=2pt,
+              font=\ttfamily\scriptsize, inner sep=2pt, align=center},
+  des/.style={draw=sheetGreen!70!black, thick, fill=sheetGreen!10, rounded corners=2pt,
+              font=\ttfamily\scriptsize, inner sep=2pt, align=center},
+  rung/.style={draw=sheetBlue, fill=sheetBlue!6, rounded corners=2pt, font=\scriptsize,
+               inner sep=2pt, align=left, text width=24mm},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\scriptsize, anchor=west},
+  no/.style={->, thick, draw=sheetRed},
+}
+
+\begin{document}
+
+\sheettitle{Swift syntax tricks — closures, calls \& what they desugar to}{swift · folio}
+
+\oneliner{Almost every ``clever'' call in Swift is \textbf{sugar the type checker rewrites into
+an ordinary call}: a trailing closure is the last argument, \texttt{\textbackslash.name} becomes a
+closure, \texttt{c(x)} becomes \texttt{c.callAsFunction(x)}, \texttt{box.name} becomes
+\texttt{box[dynamicMember:]}, \op{??} receives its right side \emph{unevaluated}, and
+\texttt{\#line} in a default argument is read at the \emph{caller}. Say the rewrite and you
+have explained it.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {5.35,11.05} \draw[sheetGrey!40] (\x,3.05) -- (\x,-0.35);
+  % ── A: key path literal -> closure ──
+  \node[ttl] at (0,2.9) {A \ \texttt{users.map(\textbackslash.name)} (SE-0249, 5.2)};
+  \node[sug] (kp) at (0.9,2.25) {\textbackslash.name};
+  \node[lbl, anchor=west, align=left] at (1.55,2.25) {\texttt{map} wants \texttt{(User) }\op{->}\texttt{ T}:\\a key-path \textbf{literal} converts};
+  \node[des] (cl) at (2.55,1.35) {\{ \$0[keyPath: \textbackslash User.name] \}};
+  \draw[hot] (kp.south) |- (cl.west);
+  \node[lbl] (u1) at (0.8,0.45) {\texttt{User(Ann)}};
+  \node[lbl] (u2) at (2.5,0.45) {\texttt{User(Bob)}};
+  \node[lbl, text=sheetGreen!50!black] (r) at (4.35,0.45) {\texttt{["Ann", "Bob"]}};
+  \draw[flow] (cl.south) ++(-1.2,0) -- (u1.north);
+  \draw[flow] (cl.south) ++(-0.05,0) -- (u2.north);
+  \draw[flow] (u2.east) -- (r.west);
+  \node[lbl, text=sheetRed, anchor=west] at (0,-0.1) {\texttt{let kp = \textbackslash User.name; map(kp)} $\to$ error: not a literal};
+  % ── B: c(x) ladder ──
+  \begin{scope}[xshift=54.5mm]
+  \node[ttl] at (0,2.9) {B \ \texttt{c(x)} — tried in this order (SE-0253)};
+  \node[rung] (b1) at (1.35,2.3) {\textbf{1} \texttt{c} is a function /\\closure / type};
+  \node[des, anchor=west] at (2.95,2.3) {call · init};
+  \node[rung] (b2) at (1.35,1.4) {\textbf{2} type has\\\texttt{callAsFunction}};
+  \node[des, anchor=west] at (2.95,1.4) {c.callAsFunction(x)};
+  \node[rung] (b3) at (1.35,0.5) {\textbf{3} type is\\\texttt{@dynamicCallable}};
+  \node[des, anchor=west, text width=25mm] at (2.95,0.5) {c.dynamicallyCall(\\withArguments: [x])};
+  \draw[no] (b1) -- node[lbl, right, text=sheetRed]{no} (b2);
+  \draw[no] (b2) -- node[lbl, right, text=sheetRed]{no} (b3);
+  \node[lbl, text=sheetRed, anchor=west] at (0,-0.1) {no rung $\to$ ``cannot call value of non-function type''};
+  \end{scope}
+  % ── C: box.name ladder ──
+  \begin{scope}[xshift=111.5mm]
+  \node[ttl] at (0,2.9) {C \ \texttt{box.name} — real members win};
+  \node[rung] (c1) at (1.35,2.3) {\textbf{1} a declared\\member \texttt{name}?};
+  \node[des, anchor=west] at (2.95,2.3) {box.name};
+  \node[rung] (c2) at (1.35,1.4) {\textbf{2} key-path\\\texttt{dynamicMember:}};
+  \node[des, anchor=west, text width=24mm] at (2.95,1.4) {box[dynamicMember:\\\textbackslash W.name]};
+  \node[rung] (c3) at (1.35,0.5) {\textbf{3} String\\\texttt{dynamicMember:}};
+  \node[des, anchor=west, text width=24mm] at (2.95,0.5) {box[dynamicMember:\\"name"]};
+  \draw[no] (c1) -- node[lbl, right, text=sheetRed]{no} (c2);
+  \draw[no] (c2) -- node[lbl, right, text=sheetRed]{no} (c3);
+  \node[lbl, anchor=west, align=left] at (0,-0.1) {\textcolor{sheetGreen!50!black}{key path: type-checked, autocompletes (5.1)};
+    \textcolor{sheetRed}{String: any typo compiles (4.2)}};
+  \end{scope}
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\grp{Trailing closures \& anonymous arguments}
+\begin{lstlisting}[style=cat]
+Button { save() } label: { Text("Save") }  // 5.3: 1st unlabeled,
+              // rest labeled = Button(action: {...}, label: {...})
+xs.first { $0 > 3 }            // trailing closure = the LAST argument
+if xs.contains(where: { $0 > 3 }) { }   // in if/guard/for: keep it in ( )
+xs.sorted { $1 < $0 }          // using $1 implies 2 params -> descending
+dict.map { k, v in "\(k)=\(v)" }  // (key, value) tuple destructured
+zip(a, b).map { $0 * $1 }      // same exception: 1 tuple param, 2 names
+xs.reduce(0) { _, x in x }     // { $0 } alone: "expects 2 arguments"
+\end{lstlisting}
+{\scriptsize \textbf{\$n rules}: only in a closure \emph{without} a parameter list; each nested
+closure has its own \texttt{\$0} (the outer one is unreachable — name it); the highest
+\texttt{\$n} used fixes the minimum arity.}
+
+\grp{Key paths, initializers, methods and operators as functions}
+\begin{lstlisting}[style=cat]
+users.filter(\.isActive)        // Bool key path as a predicate
+ForEach(0..<5, id: \.self)      // \.self = the identity key path
+["1", "x"].compactMap(Int.init) // [1] - init?(_:) used as (String) -> Int?
+[1, 2].map(String.init)         // ["1", "2"]
+names.map(String.uppercased)    // [() -> String] (!): (String) -> () -> String
+User.greet(alice)()             // Type.method is curried: instance first
+let greet = alice.greet         // bound method: a closure that RETAINS alice
+names.map(User.init(name:))     // compound name picks one overload
+xs.reduce(0, +); xs.sorted(by: >)  // an operator is a function value
+let add: (Int, Int) -> Int = (+)   // parenthesise to name it
+\end{lstlisting}
+
+\grp{callAsFunction · dynamic members · dynamic calls}
+\begin{lstlisting}[style=cat]
+struct IsValid { func callAsFunction(_ s: String) -> Bool { !s.isEmpty } }
+let isValid = IsValid(); isValid("x")   // isValid.callAsFunction("x")
+xs.filter(isValid)                      // error: not implicitly a function
+xs.filter(isValid.callAsFunction)       // OK: explicit method reference
+@dynamicMemberLookup struct JSON {
+  subscript(dynamicMember k: String) -> JSON? { /* ... */ nil } }
+json.user?.name     // json[dynamicMember: "user"]?[dynamicMember: "name"]
+@dynamicCallable struct Sum {
+  func dynamicallyCall(withArguments a: [Int]) -> Int { a.reduce(0, +) } }
+let sum = Sum(); sum(1, 2, 3)           // 6; withKeywordArguments: KeyValuePairs
+\end{lstlisting}
+
+\grp{Immediately-invoked closures}
+\begin{lstlisting}[style=cat]
+let label: UILabel = {             // runs ONCE, right here; note the ()
+  let l = UILabel(); l.numberOfLines = 0; return l }()
+lazy var df: DateFormatter = {     // runs on first access; may use self
+  let f = DateFormatter(); f.dateStyle = .short; return f }()
+\end{lstlisting}
+
+\grp{Default arguments are evaluated at the CALLER}
+\begin{lstlisting}[style=cat]
+func log(_ m: String, file: String = #fileID, line: Int = #line) { }
+log("hi")        // file/line of THIS call site, e.g. "App/Feed.swift", 42
+func add(_ tags: [String] = []) { }  // fresh [] on every call (not Python)
+_ = try? save()  // discard result + error; silences unused-result warning
+\end{lstlisting}
+{\scriptsize Magic literals (\texttt{\#fileID}, \texttt{\#line}, \texttt{\#function}) as defaults
+read the call site; since 6.0 so do macros used as defaults (SE-0422).}
+
+\columnbreak
+
+\grp{@autoclosure — how \texttt{\hbox{?}\hbox{?}} and \texttt{assert} are written}
+\begin{lstlisting}[style=cat]
+func ?? <T>(v: T?, d: @autoclosure () throws -> T) rethrows -> T {
+  switch v { case .some(let x): return x; case .none: return try d() } }
+name ?? loadDefault()   // ??(name, { loadDefault() }) - runs only if nil
+assert(isSorted(xs))    // closure never called in -O: zero release cost
+\end{lstlisting}
+
+\grp{Implicit members · subscripts}
+\begin{lstlisting}[style=cat]
+let c: Color = .red.opacity(0.5)  // 5.4: chain from Color, must END in Color
+let p: Point = .init(x: 1, y: 2)  // .init = Point.init
+counts[word, default: 0] += 1     // Dictionary subscript(_:default:), in place
+extension Collection {            // labeled subscript: x[safe: 9] -> nil
+  subscript(safe i: Index) -> Element? { indices.contains(i) ? self[i] : nil } }
+enum Theme { static subscript(k: String) -> Color { .red } }  // Theme["x"]
+\end{lstlisting}
+
+\grp{inout, \texttt{\&}, exclusivity}
+\begin{lstlisting}[style=cat]
+func bump(_ n: inout Int) { n += 1 }
+bump(&score)            // copy-in, copy-out: written back when bump returns
+bump(&user.age)         // observed/computed: get, call, set; didSet ALWAYS
+swap(&a[0], &a[1])      // error: overlapping accesses to 'a' -> a.swapAt(0, 1)
+withUnsafeMutablePointer(to: &x) { $0.pointee = 1 }  // & also makes pointers
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{names.map(String.uppercased)} compiles — to an array of \emph{closures}.}
+  \trap{Only a key-path \emph{literal} converts; method key paths \texttt{\textbackslash.uppercased()}
+        (SE-0479) are \textbf{not} in the language — returned for revision.}
+  \trap{\texttt{inout} on an observed property fires \texttt{didSet} even if the value is unchanged.}
+  \trap{String-keyed \texttt{@dynamicMemberLookup} turns typos into runtime \texttt{nil}.}
+  \trap{Drop the \texttt{()} after \texttt{= \{ \ldots\ \}} and you store the \emph{closure}
+        (\texttt{() }\op{->}\texttt{ UILabel}), not a label.}
+  \trap{A \texttt{callAsFunction} value is not a function type: \texttt{filter(isValid)} fails.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Trailing = last arg · \texttt{\textbackslash.x} = closure · \texttt{c()} = callAsFunction ·
+\texttt{.x} = member lookup · \op{??} = autoclosure · \texttt{\#line} = caller.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} swift-closures-deep (capture, escaping) ·
+swift-keypaths-access-control (key-path classes) · swift-operators-subscripts-literals (precedence,
+\op{\textasciitilde=}) · swift-syntax-control-flow-errors · swift-attributes-directives}
+
+\end{document}

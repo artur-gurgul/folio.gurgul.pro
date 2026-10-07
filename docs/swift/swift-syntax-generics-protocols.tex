@@ -1,0 +1,222 @@
+% swift-syntax-generics-protocols.tex — a catalogue of generic / protocol syntax, signature
+% by signature: `some P` in parameter position,
+% [some P] vs [any P], primary associated types and constrained existentials, structural
+% opaque results, implicit existential opening, composition + class constraints, where
+% clauses (extension / member / contextual), conditional conformance, same-type and
+% superclass requirements, associatedtype defaults + constraints, generic subscripts,
+% Self / self / .Type / .self / existential metatypes, ~Copyable in a signature — and a
+% decision tree for static vs dynamic dispatch of a protocol-extension method.
+% Deliberately NOT repeated (see Related): witness tables + existential container
+% layout + the 4 dispatch kinds (protocols-generics), type erasure / phantom types
+% (swift-idiom-patterns), parameter packs (parameter-packs-and-new-syntax), noncopyable
+% details (ownership-and-memory-layout). @_implements left out on purpose (underscored).
+% Sources (checked 2026-10-06) — Swift Evolution, numbers and versions against the swift.org
+% evolution index: SE-0244 (opaque results, 5.1), SE-0335 (`any`, 5.6),
+% SE-0341 (opaque parameters, 5.7), SE-0346 (primary associated types, 5.7), SE-0353
+% (constrained existentials, 5.7), SE-0352 (implicitly opened existentials, 5.7),
+% SE-0328 (structural opaque result types, 5.7), SE-0309 (existentials for all protocols,
+% 5.7), SE-0267 (contextual where clauses, 5.3), SE-0143 (conditional conformance),
+% SE-0142 (associated type where clauses), SE-0148 (generic subscripts), SE-0427
+% (noncopyable generics, 6.0); The Swift Programming Language — Generics, Opaque and
+% Boxed Protocol Types, Protocols.
+% @labels: area=swift kind=concept platform=apple topic=language discussion=167
+% @tags: opaque-parameters, some-vs-any, primary-associated-types, constrained-existentials, existential-opening, where-clause, conditional-conformance, associatedtype, metatype, self-type, static-dispatch, noncopyable-generics
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,
+    if,else,return,guard,self,Self,nil,true,false,in,throws,try,some,any,
+    where,extension,associatedtype,subscript,static,required,borrowing,Type},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {??}{{\hbox{?}\hbox{?}}}2 {...}{{\hbox{.}\hbox{.}\hbox{.}}}3
+           {..<}{{\hbox{.}\hbox{.}\hbox{<}}}3 {>=}{{\hbox{>}\hbox{=}}}2
+           {<=}{{\hbox{<}\hbox{=}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstdefinestyle{cat}{language=SwiftSheet, basicstyle=\ttfamily\scriptsize,
+  aboveskip=1pt, belowskip=2pt}
+
+\makeatletter
+\DeclareRobustCommand\op[1]{\texttt{\@tfor\@c:=#1\do{\hbox{\@c}}}}
+\makeatother
+\newcommand\grp[1]{\par\vspace{1pt}\noindent{\color{sheetBlue}\bfseries\footnotesize #1}\par}
+
+\tikzset{
+  q/.style={draw=sheetBlue, thick, fill=sheetBlue!8, rounded corners=2pt, font=\scriptsize,
+            inner sep=2pt, align=center},
+  dyn/.style={draw=sheetGreen!70!black, thick, fill=sheetGreen!10, rounded corners=2pt,
+              font=\scriptsize, inner sep=2pt, align=center},
+  sta/.style={draw=sheetOrange, thick, fill=sheetOrange!10, rounded corners=2pt,
+              font=\scriptsize, inner sep=2pt, align=center, text width=19mm},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\scriptsize, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Swift syntax tricks — generics, protocols \& \texttt{some}/\texttt{any}}{swift · folio}
+
+\oneliner{A generic signature is a set of \textbf{requirements} the compiler checks at the call
+site: \texttt{some P} in a parameter is an \emph{unnamed} generic \texttt{<T: P>}, \texttt{any P}
+is a \emph{box} for any conformer, a primary associated type (\texttt{Collection<Int>}) constrains
+either, and \texttt{where} adds same-type / superclass / conformance rules. Which method body runs
+is decided by one question: \textbf{is it a protocol requirement?} Yes $\to$ dynamic (witness
+table); no $\to$ the \emph{static} type picks.}
+
+\vspace{2pt}
+\noindent\begin{minipage}[t]{0.33\linewidth}
+\vspace{0pt}
+\begin{lstlisting}[style=cat]
+protocol P { func req() -> String }
+extension P {
+  func req() -> String { "P.req" } // default
+  func ext() -> String { "P.ext" } // ext-only
+}
+struct S: P {
+  func req() -> String { "S.req" }
+  func ext() -> String { "S.ext" }
+}
+func gen<T: P>(_ x: T) -> String {
+  x.req() + " " + x.ext() }
+gen(S())        // "S.req P.ext" (!)
+let e: any P = S()
+e.req(); e.ext()   // "S.req", "P.ext"
+S().ext()          // "S.ext"
+\end{lstlisting}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.655\linewidth}
+\vspace{0pt}
+\begin{tikzpicture}[sheet]
+  \node[ttl] at (0,3.05) {Which body runs for \texttt{x.m()}? — static vs dynamic};
+  \node[q] (root) at (5.3,2.5) {is \texttt{m} declared in the \textbf{protocol body}?\\(a requirement, with or without a default)};
+  \node[dyn, text width=34mm] (yes) at (1.85,1.35) {\textbf{dynamic}: witness-table slot\\
+     $\to$ the \textbf{conformer's} \texttt{m}, whatever\\x's static type: \texttt{S}, \texttt{any P},
+     \texttt{some P}, \texttt{T}};
+  \node[sta, text width=40mm] (no) at (7.75,1.45) {\textbf{static}: no slot — the
+     \textbf{compile-time type} of \texttt{x} picks the body};
+  \draw[flow] (root.south west) ++(0.6,0) -- node[lbl, left]{yes} (yes.north);
+  \draw[flow] (root.south east) ++(-0.8,0) -- node[lbl, right]{no} (no.north);
+  \node[sta] (l1) at (5.55,0.35) {\texttt{let x: S}\\$\to$ \textbf{S.ext}};
+  \node[sta] (l2) at (7.75,0.35) {\texttt{any P} / \texttt{some P}\\$\to$ \textbf{P.ext}};
+  \node[sta, draw=sheetRed, fill=sheetRed!7] (l3) at (9.95,0.35) {inside \texttt{<T: P>}\\$\to$ \textbf{P.ext}, even\\when \texttt{T }\op{==}\texttt{ S}};
+  \foreach \l in {l1,l2,l3} \draw[flow] (no.south) -- (\l.north);
+  \node[lbl, anchor=north west, align=left, text=sheetRed] at (0.05,0.45)
+     {trap on the yes-side: a \textbf{superclass} that conformed\\using the default binds the slot
+      to the default —\\a subclass's \texttt{m} is never reached via \texttt{P}};
+  \node[lbl, anchor=west, align=left, text=sheetBrown] at (4.55,-0.55)
+     {generics are \emph{not} templates: \texttt{T}'s body is type-checked once, against \texttt{P} only;
+      specialisation\\is an optimisation and never changes which body runs. Fix: make \texttt{m} a requirement.};
+\end{tikzpicture}
+\end{minipage}
+
+\begin{multicols}{2}
+\raggedright
+
+\grp{\texttt{some} and \texttt{any} — one line each}
+\begin{lstlisting}[style=cat]
+func draw(_ s: some Shape)         // 5.7 SE-0341 = func draw<T: Shape>(_ s: T)
+func draw(_ a: some Shape, _ b: some Shape)  // TWO independent types
+func draw(_ xs: [some Shape])      // ONE hidden type for every element
+func draw(_ xs: [any Shape])       // a box per element: types may mix
+func make() -> some Shape          // callee picks ONE type; every return same
+func make() -> any Shape           // may differ per call; always boxed
+func ints() -> some Collection<Int>   // 5.7 SE-0346 primary associated type
+let c: any Collection<Int> = Set([1]) // 5.7 SE-0353 constrained existential
+func two() -> (some View, some View)  // 5.7 SE-0328 structural opaque result
+protocol Store<Item> { associatedtype Item }  // declares the primary type
+let a = make(), b = make(); a == b // compiles if make() -> some Equatable
+\end{lstlisting}
+
+\grp{Opening an existential (5.7, SE-0352)}
+\begin{lstlisting}[style=cat]
+func area<T: Shape>(_ s: T) -> Double { s.area }
+let s: any Shape = Circle(r: 1)
+area(s)            // OK: s is OPENED, T = its dynamic type (Circle)
+drawAll(shapes)    // [any Shape] to [some Shape]: error - opening is
+                   // top-level only; 'any Shape' cannot conform to 'Shape'
+func dup<T: Shape>(_ s: T) -> T;  dup(s)  // result erased back to any Shape
+\end{lstlisting}
+{\scriptsize \texttt{any P} does \textbf{not} conform to \texttt{P} (no self-conformance) — except
+\texttt{any Error} (and some \texttt{@objc} protocols). Opening is the way in.}
+
+\grp{Metatypes — \texttt{Self}, \texttt{self}, \texttt{.Type}, \texttt{.self}}
+\begin{lstlisting}[style=cat]
+self / Self        // this instance / its type (protocol: the conformer)
+func copy() -> Self   // in a class: the DYNAMIC type; needs required init
+Int.self           // the metatype VALUE; its type is Int.Type
+decode([User].self, from: d)   // pass a type as an argument
+type(of: view)     // dynamic type: UIButton even via a UIView variable
+any Shape.Type     // metatype of SOME conformer: .init(), static members
+(any Shape).Type   // metatype of the box itself (was Shape.Protocol)
+T.init()           // needs an init() requirement / required init
+\end{lstlisting}
+
+\grp{Requirement shapes — what satisfies what}
+\begin{lstlisting}[style=cat]
+protocol Shape {
+  var area: Double { get }        // let, var, stored or computed all satisfy
+  var name: String { get set }    // needs a settable var (not let)
+  static var unit: Self { get }   // static: reachable via any Shape.Type
+  init(size: Double)              // class conformer: `required init` (or final)
+  mutating func scale(by k: Double) }  // a class implements it WITHOUT mutating
+@objc protocol Legacy { @objc optional func tick() }  // optional = @objc only
+\end{lstlisting}
+
+\columnbreak
+
+\grp{Constraints and \texttt{where}}
+\begin{lstlisting}[style=cat]
+func save<T: Codable & Identifiable>(_ x: T)  // composition
+func style<V: UIView & Themable>(_ v: V)      // superclass + protocol
+protocol Delegate: AnyObject { }              // class-only: can be weak
+func merge<A: Sequence, B: Sequence>(_ a: A, _ b: B)
+  where A.Element == B.Element                // same-type requirement
+extension Array where Element == String { }   // concrete same-type
+extension Collection where Element: Numeric {
+  var total: Element { reduce(0, +) } }        // constrained API
+struct Box<T> { var v: [T]
+  func sorted() -> [T] where T: Comparable { v.sorted() } } // 5.3 SE-0267
+extension Box: Equatable where T: Equatable {} // conditional conformance
+extension P where Self: UIViewController { }   // only for VC conformers
+\end{lstlisting}
+
+\grp{Associated types · generic subscripts · \texttt{\hbox{\textasciitilde}Copyable}}
+\begin{lstlisting}[style=cat]
+protocol Feed {
+  associatedtype Item: Identifiable = Post     // constraint + default
+  associatedtype Page: Sequence where Page.Element == Item
+  func load() async throws -> Page }
+struct JSON { subscript<T: Decodable>(key: String) -> T? { nil } }
+let n: Int? = json["count"]                    // T inferred from the context
+struct Pipe<T: ~Copyable>: ~Copyable { var v: T } // 6.0 SE-0427
+extension Pipe: Copyable where T: Copyable {}  // copyable only if T is
+func zip<each A>(_ a: repeat each A)  // variadic: see the packs sheet
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{[some P]} is homogeneous, \texttt{[any P]} heterogeneous — different APIs.}
+  \trap{\texttt{some P} parameters can't be named or related: use \texttt{<T>} when two
+        arguments must share a type.}
+  \trap{\op{->}\texttt{ some P} with an \texttt{if} returning two types: error
+        (unless a result builder wraps it).}
+  \trap{Bare \texttt{P} as a type still means \texttt{any P}; an associated-type protocol
+        needs \texttt{any}; the upcoming feature \texttt{ExistentialAny} requires it everywhere.}
+  \trap{On \texttt{any P} a member that \emph{returns} \texttt{Self}/an associated type is erased
+        to its bound (5.7, SE-0309); one that \emph{takes} \texttt{Self} (\op{==}) can't be called
+        — open the box first.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``\texttt{some} = the callee's one type · \texttt{any} = a box · requirement = dynamic,
+extension-only = static, even in generics.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} protocols-generics (witness tables,
+4 dispatch kinds) · swift-idiom-patterns (type erasure, phantom types) ·
+parameter-packs-and-new-syntax · ownership-and-memory-layout ·
+swift-syntax-closures-calls}
+
+\end{document}

@@ -1,0 +1,214 @@
+% swift-attributes-directives.tex — a catalogue of Swift attributes, modifiers and
+% compiler directives: library evolution (@inlinable,
+% @usableFromInline, @frozen, @backDeployed, @export, @inline), API surface
+% (@discardableResult, @available forms, @main, @testable, @_spi, package, @retroactive),
+% ObjC interop (@objc, @objcMembers, @nonobjc, dynamic), concurrency markers
+% (@preconcurrency, @unchecked Sendable, @TaskLocal, closure attributes, nonisolated),
+% ownership (consuming/borrowing/consume/copy), #if conditions, #warning/#error,
+% #sourceLocation, the magic literals (#file/#fileID/#filePath/#function/#dsohandle),
+% #isolation, #externalMacro — with a diagram of what crosses a library-evolution boundary.
+% Deliberately NOT repeated (see Related): access levels and @inlinable basics
+% (swift-keypaths-access-control), @frozen enums + @unknown default
+% (swift-enums-pattern-matching), macro roles (macros-and-result-builders), isolation
+% semantics (swift6-strict-concurrency), ~Copyable (ownership-and-memory-layout).
+% @_spi, @inline(__always) are underscored/unofficial and marked so.
+% Sources (checked 2026-10-06) — Swift Evolution, every number and version against
+% download.swift.org/swift-evolution/v1/evolution.json: SE-0193
+% (@inlinable/@usableFromInline), SE-0260 (@frozen), SE-0376 (@backDeployed, 5.8),
+% SE-0496 (@inline(always), 6.3: errors when a direct call can't be inlined; implies
+% @inlinable for public), SE-0497 (@export(implementation|interface), 6.3), SE-0281
+% (@main), SE-0383 (@UIApplicationMain deprecated, error in Swift 6, 5.10), SE-0386
+% (package, 5.9), SE-0364 (@retroactive, 6.0), SE-0337 (@preconcurrency, 5.6), SE-0423
+% (@preconcurrency conformances + dynamic isolation checks, 6.0), SE-0311 (task locals),
+% SE-0377 (borrowing/consuming + copy, 5.9), SE-0366 (consume, 5.9), SE-0274 (#fileID /
+% #filePath; #file = #fileID in Swift 6 mode), SE-0362 (hasFeature, 5.8), SE-0367
+% (hasAttribute, 5.8), SE-0308 (#if around postfix members, 5.5), SE-0196 (#warning /
+% #error), SE-0420 (#isolation, 6.0), SE-0382 (#externalMacro); The Swift Programming
+% Language — Attributes, Statements ("Compiler Control Statements": inactive branches are
+% parsed except under swift()/compiler(); targetEnvironment = simulator | macCatalyst).
+% @labels: area=swift kind=concept platform=apple topic=language,build discussion=151
+% @tags: attributes, library-evolution, inlinable, usablefrominline, frozen, backdeployed, available, objcmembers, preconcurrency, tasklocal, conditional-compilation, magic-literals
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usepackage{tabularx}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,
+    if,else,return,self,nil,true,false,in,public,internal,static,import,
+    macro,some,any,isolated},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {??}{{\hbox{?}\hbox{?}}}2 {...}{{\hbox{.}\hbox{.}\hbox{.}}}3
+           {..<}{{\hbox{.}\hbox{.}\hbox{<}}}3 {>=}{{\hbox{>}\hbox{=}}}2
+           {<=}{{\hbox{<}\hbox{=}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2 {||}{{\hbox{|}\hbox{|}}}2}
+\lstdefinestyle{cat}{language=SwiftSheet, basicstyle=\ttfamily\scriptsize,
+  aboveskip=1pt, belowskip=2pt}
+
+\makeatletter
+\DeclareRobustCommand\op[1]{\texttt{\@tfor\@c:=#1\do{\hbox{\@c}}}}
+\makeatother
+\newcommand\grp[1]{\par\vspace{1pt}\noindent{\color{sheetBlue}\bfseries\footnotesize #1}\par}
+\newcommand\at[1]{\texttt{#1}}
+\newcommand\uo{\,{\tiny\itshape\textcolor{sheetRed}{(underscored, unofficial)}}}
+
+\tikzset{
+  lib/.style={draw=sheetBlue, fill=sheetBlue!7, font=\ttfamily\scriptsize, minimum height=4.3mm,
+              minimum width=46mm, inner sep=1pt, anchor=east},
+  lbl/.style={font=\scriptsize, text=black!85, inner sep=1pt, anchor=west, align=left},
+  ttl/.style={font=\bfseries\scriptsize},
+  call/.style={->, thick, draw=sheetGreen!70!black},
+  copy/.style={->, thick, draw=sheetOrange},
+  hide/.style={->, thick, dashed, draw=sheetGrey},
+}
+
+\begin{document}
+
+\sheettitle{Swift attributes \& compiler directives — a catalogue}{swift · folio}
+
+\oneliner{An \textbf{attribute} (\texttt{@name(args)}) changes how the compiler treats a declaration
+or type — what it exports, how it dispatches, what it checks — without changing its code; a
+\textbf{directive} (\texttt{\#if}, \texttt{\#warning}, \texttt{\#fileID}…) acts at compile time
+on the source itself. The ones that matter most are about \textbf{boundaries}: module/ABI
+(\texttt{@inlinable}, \texttt{@frozen}), language (\texttt{@objc}), concurrency
+(\texttt{@preconcurrency}) and build configuration (\texttt{\#if}).}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[ttl, anchor=east] at (5.2,3.2) {library, built with library evolution};
+  \node[ttl, anchor=west] at (6.0,3.2) {what a client app compiled against v1 gets — and what v2 may still change};
+  \draw[sheetRed, very thick, dashed] (5.6,3.35) -- (5.6,-0.65);
+  \node[font=\tiny\bfseries, text=sheetRed, fill=white, inner sep=1pt] at (5.6,3.5) {module boundary = \texttt{.swiftinterface} + ABI};
+  \foreach \d/\s/\t [count=\i from 0] in {
+     {public func f()}/call/{\textbf{symbol + signature}: the client \emph{calls} it; v2 may rewrite the body freely},
+     {@inlinable public func g()}/copy/{body \textbf{copied into the interface}: the client may inline it — v1's body stays in the app until it is rebuilt},
+     {@usableFromInline internal func h()}/call/{\textbf{symbol exported, name hidden}: only inlinable code can call it; client source can't},
+     {@frozen public struct Point}/copy/{\textbf{layout promised}: stored inline, fields read directly; v2 can never add/reorder stored properties},
+     {public struct Config}/hide/{layout \textbf{hidden}: size + fields via runtime metadata and accessors; v2 may add stored properties},
+     {@backDeployed(before: iOS 17)}/copy/{a \textbf{fallback copy} is emitted into the client and used when the OS's library is older (5.8)}} {
+    \node[lib] (d\i) at (5.2,2.75-\i*0.52) {\d};
+    \draw[\s] (d\i.east) -- (6.0,2.75-\i*0.52);
+    \node[lbl] at (6.05,2.75-\i*0.52) {\t};
+  }
+  \node[font=\tiny, anchor=west] at (6.05,-0.45) {\textcolor{sheetGreen!60!black}{\textbf{$\to$} called through a symbol} \quad
+     \textcolor{sheetOrange}{\textbf{$\to$} code or layout baked into the client} \quad \textcolor{sheetGrey}{\textbf{- - $\to$} resolved at run time}};
+  \node[font=\tiny, anchor=east, align=right] at (5.2,-0.45) {6.3 (SE-0497): \texttt{@export(implementation)} = body for clients,
+     no symbol\\promised · \texttt{@export(interface)} = a symbol, body hidden};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\grp{Library evolution \& optimisation}
+{\par\noindent\scriptsize\setlength{\tabcolsep}{2pt}\renewcommand{\arraystretch}{1.08}%
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}X@{}}
+\at{@inlinable} & body is part of the public interface; may use only \texttt{public} or
+  \at{@usableFromInline} declarations \\
+\at{@usableFromInline} & on \texttt{internal}/\texttt{package}: ABI-visible, source-invisible \\
+\at{@frozen} & public struct/enum: layout (or cases) fixed forever; ignored without library evolution \\
+\at{@backDeployed(before:)} & ships a copy of a new API into clients on older OSes (Apple SDK-style libraries) \\
+\at{@inline(\_\_always)} / \at{(never)} & inlining hint / forbid\uo; \at{@inline(always)} (6.3, SE-0496)
+  \emph{errors} if a direct call can't be inlined, implies \at{@inlinable} on public API \\
+\end{tabularx}\par}
+
+\grp{API surface}
+{\par\noindent\scriptsize\setlength{\tabcolsep}{2pt}\renewcommand{\arraystretch}{1.08}%
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}X@{}}
+\at{@discardableResult} & callers may ignore the return value without a warning \\
+\at{@available(*, deprecated,} \at{renamed: "load(id:)")} & warning + Xcode fix-it; \at{message:},
+  \at{unavailable} (error), \at{introduced:}/\at{obsoleted:}, \at{noasync} \\
+\at{@available(iOS 17, *)} & callers must be in an \at{if \#available} block or be gated themselves \\
+\at{@main} & the type's \at{static func main()} (may be \at{async throws}) is the entry point;
+  \at{@UIApplicationMain} is an \textbf{error} in Swift 6 mode (SE-0383) \\
+\at{@testable import M} & tests see \texttt{internal}; needs \at{ENABLE\_TESTABILITY} (Debug) \\
+\at{@\_spi(Beta) public} & visible only to \at{@\_spi(Beta) import}\uo \\
+\at{package} & access for modules of one package (5.9, SE-0386) \\
+\at{: @retroactive P} & you own neither type nor protocol (6.0, SE-0364) \\
+\end{tabularx}\par}
+
+\grp{Objective-C interop}
+{\par\noindent\scriptsize\setlength{\tabcolsep}{2pt}\renewcommand{\arraystretch}{1.08}%
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}X@{}}
+\at{@objc} / \at{@objc(name)} & exposed to the ObjC runtime (selectors, \at{\#selector}, KVC) \\
+\at{@objcMembers} & \at{@objc} on every compatible member — incl. extensions and subclasses \\
+\at{@nonobjc} & opt one member out \\
+\at{@objc dynamic} & message dispatch via \at{objc\_msgSend}: KVO, swizzling; \at{dynamic} alone
+  is not KVO-observable \\
+\at{@convention(c)} / \at{(block)} & function type with a C / ObjC-block ABI \\
+\end{tabularx}\par}
+
+\grp{Concurrency \& closures (details: concurrency sheets)}
+{\par\noindent\scriptsize\setlength{\tabcolsep}{2pt}\renewcommand{\arraystretch}{1.08}%
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}X@{}}
+\at{@preconcurrency import M} & downgrade Sendable diagnostics from an unmigrated module (5.6) \\
+\at{: @preconcurrency P} & conformance whose isolation is checked at \textbf{run time} (6.0, SE-0423) \\
+\at{@unchecked Sendable} & ``trust me'': no checking of stored properties — you own the locking \\
+\at{@TaskLocal static var id} & value bound per task tree: \at{\$id.withValue("r1") \{ \ldots\ \}};
+  child tasks inherit, \at{Task.detached} doesn't \\
+\at{@escaping @Sendable} \at{@MainActor () }\op{->}\at{ Void} & closure type: may outlive the call ·
+  may run concurrently · runs on the main actor \\
+\at{nonisolated} · \at{(unsafe)} & opt a member out of its actor · opt out of checking \\
+\at{consuming} / \at{borrowing} & parameter ownership; \at{consume x} ends a lifetime,
+  \at{copy x} copies explicitly (5.9) \\
+\end{tabularx}\par}
+
+\grp{Type roles, Interface Builder, Core Data}
+{\par\noindent\scriptsize\setlength{\tabcolsep}{2pt}\renewcommand{\arraystretch}{1.08}%
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}X@{}}
+\at{@propertyWrapper} · \at{@resultBuilder} & the type becomes a wrapper / a DSL builder (own sheets) \\
+\at{@dynamicMemberLookup} · \at{@dynamicCallable} & \at{x.name} / \at{x(1, 2)} rewritten to subscripts / calls \\
+\at{@IBOutlet} · \at{@IBAction} & storyboard connections; imply \at{@objc} \\
+\at{@NSManaged var} & Core Data supplies the accessors at run time \\
+\at{@NSCopying var} & the setter stores \at{newValue.copy()} \\
+\at{@warn\_unqualified\_access} & warn unless called as \at{self.min()} — avoids the global \at{min} \\
+\end{tabularx}\par}
+
+\columnbreak
+
+\grp{Compiler directives}
+\begin{lstlisting}[style=cat]
+#if os(iOS) || os(visionOS)       // os arch canImport targetEnvironment
+#if canImport(UIKit) && !targetEnvironment(macCatalyst)
+#if targetEnvironment(simulator)  // simulator | macCatalyst
+#if compiler(>=6.0)   // the COMPILER version (any language mode)
+#if swift(>=6.0)      // the LANGUAGE MODE (-swift-version 6)
+#if hasFeature(ExistentialAny)    // 5.8 SE-0362; hasAttribute(retroactive)
+#if DEBUG             // your -D flag (SWIFT_ACTIVE_COMPILATION_CONDITIONS)
+Text("Hi")
+#if os(iOS)
+  .padding()          // 5.5 SE-0308: #if around postfix members
+#endif
+#warning("TODO: remove")  // #error("...") stops the build
+#sourceLocation(file: "gen.swift", line: 1)  // generated code maps back
+#fileID    // "App/Feed.swift"; #file = #fileID in Swift 6 mode
+#filePath  // full build-machine path - baked into the binary!
+#function  // "load(id:)"   #line #column   #dsohandle: image handle
+func run(isolation: isolated (any Actor)? = #isolation)  // caller's actor
+macro stringify<T>(_ v: T) -> (T, String) =
+  #externalMacro(module: "Macros", type: "StringifyMacro")
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{swift(}\op{>=}\texttt{6)} is the language \emph{mode}; a Swift 6 compiler in 5
+        mode fails it but passes \texttt{compiler(}\op{>=}\texttt{6)}.}
+  \trap{Inactive \texttt{\#if} branches must still \emph{parse} — except under
+        \texttt{swift()}/\texttt{compiler()} checks.}
+  \trap{\texttt{@inlinable} fixes reach clients only when they rebuild; \texttt{@frozen} is forever.}
+  \trap{\texttt{@unchecked Sendable} silences the checker; it proves nothing.}
+  \trap{\texttt{@Observable}, \texttt{@Model} look like attributes but are \textbf{macros}
+        (they expand into code); \texttt{@MainActor} is a global-actor attribute.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Attributes move boundaries: module (\texttt{@inlinable}, \texttt{@frozen}), language
+(\texttt{@objc}), isolation (\texttt{@preconcurrency}); \texttt{\#if} moves code out of the build.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} swift-keypaths-access-control (access
+levels) · swift-enums-pattern-matching (\texttt{@frozen} enums) · macros-and-result-builders ·
+swift6-strict-concurrency · objc-interop · modularization-spm · swift-syntax-closures-calls}
+
+\end{document}
