@@ -1,0 +1,73 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Property wrappers — what the compiler writes for you — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/swift/swift-property-wrappers.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">213</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area current" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Property wrappers — what the compiler writes for you</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">swift · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> <code>@propertyWrapper</code> (SE-0258, Swift 5.1) is a type with a <code>wrappedValue</code>;
+annotating <code>@W var x</code> makes the compiler store a hidden <strong><code>_x: W</code></strong> and turn
+<code>x</code> into a <strong>computed property</strong> forwarding to <code>_x.wrappedValue</code> —
+plus <strong><code>$x</code></strong> for <code>projectedValue</code>. SwiftUI’s <code>@State</code>,
+<code>@Binding</code>, <code>@AppStorage</code> and Combine’s <code>@Published</code> are just such types.</p>
+<p class="sheet-tools"><a class="sheet-download" href="swift-property-wrappers.pdf" download>Download PDF</a> <a href="swift-property-wrappers.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/swift/swift-property-wrappers.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="swift-property-wrappers-fig1.svg" width="622" height="159" class="wide" alt="Property wrappers — what the compiler writes for you — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>How it works</h2>
+<ul>
+<li><strong>Required:</strong> <code>var wrappedValue</code>. Optional: <code>projectedValue</code> (any  type — <code>Binding</code>, a publisher, the wrapper itself),  <code>init(wrappedValue:)</code> (enables <code>= default</code>),  <code>init(projectedValue:)</code> (enables passing <code>$arg</code>).</li>
+<li><strong>Composition</strong> <code>@A @B var x: T</code>: storage <code>_x: A&lt;B&lt;T&gt;&gt;</code>, access  <code>_x.wrappedValue.wrappedValue</code>; outer to inner, left to right;  <code>$x</code> is the <strong>outermost</strong> wrapper’s projection.</li>
+<li><strong>Where:</strong> stored <code>var</code> properties of types; <strong>locals</strong> (Swift 5.4);  function and closure <strong>parameters</strong> (SE-0293, 5.5) — that is how  <code>ForEach($items) { $item in TextField(&quot;&quot;, text: $item.name) }</code> works  (<code>Binding</code> has <code>init(projectedValue:)</code>).</li>
+<li><strong>Enclosing-instance subscript</strong> (underscored, used by <code>@Published</code>):  if the wrapper declares <code>static subscript(_enclosingInstance:wrapped:storage:)</code>,  the compiler routes access through it with the <strong>owning object</strong> and two key  paths — so the wrapper can reach <code>self</code> (e.g. <code>objectWillChange</code>).  Class-only: <code>Published.wrappedValue</code> is marked unavailable,  <em>“@Published is only available on properties of classes”</em>.</li>
+<li><strong><code>@State</code></strong>: a <code>DynamicProperty</code> holding a handle; SwiftUI finds it  on the view, allocates storage in its graph (per view <em>identity</em>), updates the  handle before <code>body</code>. <code>$n</code> = <code>Binding</code>.</li>
+<li><strong><code>@Binding</code></strong>: a struct of <code>get</code>/<code>set</code> closures to someone  else’s storage; <code>@dynamicMemberLookup</code>, so <code>$user.name</code> is a  <code>Binding&lt;String&gt;</code>. No <code>init(wrappedValue:)</code> <span class="math">→</span> the child’s  memberwise init takes a <code>Binding</code>: <code>Child(n: $count)</code>.</li>
+<li><strong><code>@AppStorage(&quot;key&quot;)</code></strong>: a <code>DynamicProperty</code> over  <code>UserDefaults</code>; the view re-renders when that key changes; <code>$</code> =  <code>Binding</code>. Bool/Int/Double/String/URL/Data + <code>RawRepresentable</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Limits</h2>
+<ul>
+<li>Not on <code>let</code>, <code>lazy</code>, <code>weak</code>/<code>unowned</code>, computed  properties, or a property with its own <code>get</code>/<code>set</code>  (<code>willSet</code>/<code>didSet</code> are allowed).</li>
+<li>A protocol cannot require a wrapper — only the plain property.</li>
+<li>Inline storage (<code>@Clamped</code>): the setter is <code>mutating</code> — needs a  <code>var</code> owner; external storage (<code>@State</code>) uses <code>nonmutating set</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example — a wrapper + the enclosing subscript</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">@propertyWrapper</span> <span class="hljs-keyword">struct</span> <span class="hljs-title class_">Clamped</span>&lt;<span class="hljs-type">V</span>: <span class="hljs-type">Comparable</span>&gt; {
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">var</span> value: <span class="hljs-type">V</span>; <span class="hljs-keyword">let</span> range: <span class="hljs-type">ClosedRange</span>&lt;<span class="hljs-type">V</span>&gt;
+  <span class="hljs-keyword">init</span>(<span class="hljs-params">wrappedValue</span> <span class="hljs-params">v</span>: <span class="hljs-type">V</span>, <span class="hljs-keyword">_</span> <span class="hljs-params">r</span>: <span class="hljs-type">ClosedRange</span>&lt;<span class="hljs-type">V</span>&gt;) {
+    range <span class="hljs-operator">=</span> r; value <span class="hljs-operator">=</span> <span class="hljs-keyword">Self</span>.clamp(v, r) }       <span class="hljs-comment">// = 50 lands here</span>
+  <span class="hljs-keyword">var</span> wrappedValue: <span class="hljs-type">V</span> {
+    <span class="hljs-keyword">get</span> { value }
+    <span class="hljs-keyword">set</span> { value <span class="hljs-operator">=</span> <span class="hljs-keyword">Self</span>.clamp(newValue, range) } } <span class="hljs-comment">// mutating set</span>
+  <span class="hljs-keyword">var</span> projectedValue: <span class="hljs-type">ClosedRange</span>&lt;<span class="hljs-type">V</span>&gt; { range }   <span class="hljs-comment">// $volume</span>
+  <span class="hljs-keyword">static</span> <span class="hljs-keyword">func</span> <span class="hljs-title function_">clamp</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">v</span>: <span class="hljs-type">V</span>, <span class="hljs-keyword">_</span> <span class="hljs-params">r</span>: <span class="hljs-type">ClosedRange</span>&lt;<span class="hljs-type">V</span>&gt;) -&gt; <span class="hljs-type">V</span> {
+    <span class="hljs-built_in">min</span>(<span class="hljs-built_in">max</span>(v, r.lowerBound), r.upperBound) }
+}
+<span class="hljs-comment">// the shape @Published uses to reach its owner:</span>
+<span class="hljs-keyword">static</span> <span class="hljs-keyword">subscript</span>&lt;<span class="hljs-type">Owner</span>: <span class="hljs-type">AnyObject</span>&gt;(<span class="hljs-params">_enclosingInstance</span> <span class="hljs-params">o</span>: <span class="hljs-type">Owner</span>,
+  <span class="hljs-params">wrapped</span>: <span class="hljs-type">ReferenceWritableKeyPath</span>&lt;<span class="hljs-type">Owner</span>, <span class="hljs-type">Value</span>&gt;,
+  <span class="hljs-params">storage</span>: <span class="hljs-type">ReferenceWritableKeyPath</span>&lt;<span class="hljs-type">Owner</span>, <span class="hljs-keyword">Self</span>&gt;) -&gt; <span class="hljs-type">Value</span></code></pre>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><code>self.count = 5</code> in a View’s <code>init</code> does not seed <code>@State</code> —  write <code>_count = State(initialValue: 5)</code>; and only the first init wins.</li>
+<li class="trap"><code>@State var items = load()</code> runs <code>load()</code> on <em>every</em> view init,  result discarded after the first.</li>
+<li class="trap"><code>$vm.name.sink { }</code> reading <code>vm.name</code> inside gets the <strong>old</strong>  value (willSet); use the closure’s parameter.</li>
+<li class="trap">Two wrappers: <code>$x</code> projects only the outermost one.</li>
+<li class="trap">Wrappers hide semantics (persistence, threading) at the call site — great for  cross-cutting concerns, costly when overused.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>“<code>x</code> is a computed façade, <code>_x</code> is the wrapper, <code>$x</code> is the
+projection. Storage inside = value; storage outside = survives the struct.”</strong></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> swiftui-state (which wrapper to use) ·
+observation-and-combine (<code>@Published</code>, <code>@Observable</code> macro) · macros-and-result-builders ·
+swiftui-performance-identity · swift-initialization (memberwise)</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=swift" title="area">swift</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=language" title="topic">language</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=ui" title="topic">ui</a></li><li class="sheet-tag"><a href="/folios.html?tag=propertywrapper">propertywrapper</a></li><li class="sheet-tag"><a href="/folios.html?tag=wrappedvalue">wrappedvalue</a></li><li class="sheet-tag"><a href="/folios.html?tag=projectedvalue">projectedvalue</a></li><li class="sheet-tag"><a href="/folios.html?tag=published">published</a></li><li class="sheet-tag"><a href="/folios.html?tag=state">state</a></li><li class="sheet-tag"><a href="/folios.html?tag=binding">binding</a></li><li class="sheet-tag"><a href="/folios.html?tag=appstorage">appstorage</a></li><li class="sheet-tag"><a href="/folios.html?tag=dynamicproperty">dynamicproperty</a></li><li class="sheet-tag"><a href="/folios.html?tag=enclosing-instance">enclosing-instance</a></li><li class="sheet-tag"><a href="/folios.html?tag=objectwillchange">objectwillchange</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=swift%2Fswift-property-wrappers.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/162">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

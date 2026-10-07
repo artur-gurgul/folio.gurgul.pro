@@ -1,0 +1,187 @@
+% swift-equatable-hashable-comparable.tex — the equality/hash contract,
+% synthesis rules, hash(into:) + Hasher, mutable reference keys, Comparable,
+% Identifiable vs Hashable, NSObject isEqual/hash bridging.
+% Sources (checked 2026-10-06):
+%   swift-evolution SE-0185 (Equatable / Hashable synthesis, 4.1) · SE-0206 (hash(into:),
+%     Hasher = "SipHash-1-3", per-run seed, SWIFT_DETERMINISTIC_HASHING, 4.2) · SE-0261
+%     (Identifiable, 5.1) · SE-0266 (enum Comparable incl. payloads that are all Comparable;
+%     not raw-value enums, 5.3) · SE-0015 (tuple comparison operators, 2.2 — stdlib == / <
+%     for tuples up to arity 6; tuples themselves do NOT conform: SE-0283 was returned for
+%     revision) — checked against the evolution index and the 0206 text
+%   developer.apple.com/documentation/swift/hashable · /objectivec/nsobject/isequal(_:) ·
+%     /swift/identifiable (AnyObject default id = ObjectIdentifier) · /swift/range/clamped(to:)
+% @labels: area=swift kind=concept platform=apple topic=language,data discussion=156
+% @tags: equatable, hashable, comparable, hasher, hash-into, siphash, hash-contract, identifiable, objectidentifier, isequal, nsobject
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,static,
+    override,inout,extension,
+    if,else,return,guard,self,nil,private,some,switch,default,in,true,false,Int,String,Bool},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={??}{{\hbox{?}\hbox{?}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2 {===}{{\hbox{=}\hbox{=}\hbox{=}}}3}
+
+% 0xProto ligatures: one \hbox per character, for use INSIDE \texttt
+\newcommand\EQ{\hbox{=}\hbox{=}}
+\newcommand\EQQ{\hbox{=}\hbox{=}\hbox{=}}
+\newcommand\NE{\hbox{!}\hbox{=}}
+\newcommand\LE{\hbox{<}\hbox{=}}
+\newcommand\GE{\hbox{>}\hbox{=}}
+\newcommand\arr{\hbox{-}\hbox{>}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  bk/.style={draw=sheetGrey, minimum width=6.5mm, minimum height=5mm, font=\tiny, inner sep=0},
+  el/.style={box, font=\ttfamily\tiny, inner sep=1.2pt, minimum height=3.8mm},
+  bad/.style={el, draw=sheetRed, fill=sheetRed!7},
+  good/.style={el, draw=sheetGreen, fill=sheetGreen!10},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\small, anchor=west},
+  hs/.style={sb, font=\ttfamily\scriptsize},
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5mm},
+}
+
+\begin{document}
+
+\sheettitle{Equatable · Hashable · Comparable — the contracts}{swift · folio}
+
+\oneliner{\textbf{Equatable} = value equality (\texttt{\EQ}); \textbf{Hashable} adds
+\texttt{hash(into:)} under one rule — \textbf{\texttt{a \EQ{} b} $\Rightarrow$ equal hashes}
+(never the converse); \textbf{Comparable} adds a strict total order from \textbf{only
+\texttt{<}}. \texttt{Set}/\texttt{Dictionary} find a key by \emph{hash first, then \texttt{\EQ}}
+— break the contract or mutate a key and elements vanish.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {4.6,9.7} \draw[sheetGrey!40] (\x,1.45) -- (\x,-1.95);
+  % ── A: Hasher pipeline ──
+  \node[hd] at (0,1.3) {\textcolor{sheetBlue}{A} how a lookup works};
+  \node[hs] (k) at (0.55,0.65) {key};
+  \node[hs, text width=17mm] (h) at (2.3,0.65) {Hasher(seed)\\combine(id)\\finalize()};
+  \node[hs] (i) at (3.95,0.65) {Int};
+  \draw[flow] (k) -- (h); \draw[flow] (h) -- (i);
+  \foreach \b in {0,...,5} \node[bk] (b\b) at (0.6+\b*0.68,-0.55) {\b};
+  \draw[hot] (i.south) -- node[lbl, right]{\texttt{\% count}} (b3.north);
+  \node[lbl, text=sheetBlue] at (2.3,-1.05) {probe bucket 3, then \texttt{\EQ} on each candidate};
+  \node[lbl, text=sheetBrown] at (2.3,-1.55) {seed = random per \textbf{process}: hashes + Set order\\change every launch (SipHash-1-3)};
+  % ── B: broken contract ──
+  \node[hd] at (4.7,1.3) {\textcolor{sheetBlue}{B} \texttt{hash} uses MORE than \texttt{\EQ}};
+  \node[lbl, anchor=west] at (4.7,0.85) {\texttt{\EQ} compares \texttt{id}; \texttt{hash} combines \texttt{id + name}};
+  \foreach \b in {0,...,5} \node[bk] (c\b) at (5.2+\b*0.68,0.15) {\b};
+  \node[bad, anchor=north] at (c1.south) {7,"Ann"};
+  \node[bad, anchor=north] at (c4.south) {7,"Anna"};
+  \node[lbl, text=sheetRed] at (7.15,-1.1) {\texttt{a \EQ{} b} but different buckets:\\Set keeps BOTH, lookups miss};
+  \node[lbl, text=sheetGreen!60!black] at (7.15,-1.7) {rule: hash a \textbf{subset} of what \texttt{\EQ} reads};
+  % ── C: mutated key ──
+  \node[hd] at (9.8,1.3) {\textcolor{sheetBlue}{C} mutating a class key in a Set};
+  \foreach \b in {0,...,5} \node[bk] (d\b) at (10.3+\b*0.68,0.15) {\b};
+  \node[good, anchor=north] (e) at (d2.south) {obj};
+  \node[lbl, anchor=west] at (9.8,0.85) {inserted when \texttt{obj.name = "a"} $\to$ bucket 2};
+  \draw[hot, draw=sheetRed, dashed] (d5.south) ++(0,-0.1) -- ++(0,-0.35) node[below, lbl, text=sheetRed]{lookup now\\probes 5};
+  \node[lbl, anchor=west, text=sheetRed] at (9.8,-1.1) {\texttt{obj.name = "b"} (shared reference!):};
+  \node[lbl, anchor=west, text=sheetRed] at (9.8,-1.45) {\texttt{set.contains(obj)} $\to$ \textbf{false}, dups on insert};
+  \node[lbl, anchor=west] at (9.8,-1.8) {structs are safe: the Set holds its own copy};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Equatable}: reflexive, symmetric, transitive; \texttt{\NE} is free.
+        \textbf{Synthesized} (SE-0185, Swift 4.1) when you declare it and every stored
+        property / associated value conforms; payload-less enums get it without
+        declaring. Never for \textbf{classes}. Must be declared in the type's own file.
+  \item \textbf{Hashable: Equatable}. Implement \texttt{hash(into: inout Hasher)} and
+        \texttt{combine} the same fields \texttt{\EQ} reads (SE-0206, Swift 4.2);
+        implementing \texttt{hashValue} is deprecated. \texttt{Hasher} = SipHash-1-3,
+        randomly seeded per process (HashDoS resistance);
+        \texttt{SWIFT\_DETERMINISTIC\_HASHING=1} fixes the seed for tests.
+        \textbf{Never persist} a hash value.
+  \item \textbf{Comparable: Equatable}. Only \texttt{<} is required; \texttt{>}, \texttt{\LE},
+        \texttt{\GE}, \texttt{min}/\texttt{max}, \texttt{sort()}, ranges \texttt{a...b}
+        come free. Must be a strict total order consistent with \texttt{\EQ}
+        (\texttt{!(a<b) \&\& !(b<a)} $\Rightarrow$ \texttt{a \EQ{} b}).
+        Synthesized only for \textbf{enums} without raw values whose payloads are
+        Comparable — declaration order (SE-0266, 5.3). Tuples (arity $\le$ 6) compare
+        lexicographically: delegate to them.
+  \item \textbf{Identifiable} (SE-0261, 5.1): \texttt{var id: ID} where \texttt{ID: Hashable};
+        classes get \texttt{ObjectIdentifier(self)} by default. \textbf{Identity} (which row
+        is this?) $\neq$ \textbf{equality} (did its content change?). SwiftUI keys state,
+        animation and diffing on \texttt{id}.
+  \item \textbf{NSObject} bridges: Swift \texttt{\EQ} calls \texttt{isEqual(\_:)},
+        \texttt{hashValue} returns \texttt{hash}. Default \texttt{isEqual} is identity.
+        Subclass: override \textbf{\texttt{isEqual(\_:)} + \texttt{hash}} — a custom
+        \texttt{static \EQ} or \texttt{hash(into:)} is \emph{not} what \texttt{Set},
+        \texttt{NSSet} or Foundation call.
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+struct User: Hashable {           // identity = id
+  let id: Int; var name: String
+  static func == (l: User, r: User) -> Bool { l.id == r.id }
+  func hash(into h: inout Hasher) { h.combine(id) } // same field
+}
+struct Version: Comparable {
+  let major, minor, patch: Int
+  static func < (l: Self, r: Self) -> Bool {       // only <
+    (l.major, l.minor, l.patch) < (r.major, r.minor, r.patch)
+  }
+}
+final class Node: Hashable {                        // identity
+  static func == (l: Node, r: Node) -> Bool { l === r }
+  func hash(into h: inout Hasher) {
+    h.combine(ObjectIdentifier(self)) }   // stable
+}
+\end{lstlisting}
+
+\columnbreak
+
+\section{Which equality for which type?}
+{\footnotesize
+\begin{tabular}{@{}L{22mm}L{52mm}@{}}
+\toprule
+\textbf{Type} & \textbf{Choose} \\
+\midrule
+value struct & synthesize; hand-write only to exclude fields (cache, timestamps) \\
+entity (\texttt{User}) & \texttt{\EQ}/hash on \texttt{id}; \texttt{Identifiable} for SwiftUI \\
+class, identity & \texttt{\EQQ} + \texttt{ObjectIdentifier} (safe to mutate) \\
+class, value-based & only if the hashed fields are \texttt{let} \\
+\texttt{NSObject} subclass & \texttt{isEqual(\_:)} + \texttt{hash}, together \\
+normalised keys & \texttt{\EQ} and \texttt{hash} on the SAME normal form (lowercased) \\
+\bottomrule
+\end{tabular}}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{hash} combining a field \texttt{\EQ} ignores (panel B) — equal values,
+        different buckets.}
+  \trap{Mutable class with value-based hash inside a \texttt{Set}/as a dict key (panel C).}
+  \trap{\texttt{isEqual} overridden, \texttt{hash} forgotten: default hash is identity
+        $\to$ broken \texttt{NSSet}/\texttt{Set}.}
+  \trap{\texttt{Set}/\texttt{Dictionary} order differs per launch — never assert or
+        persist it.}
+  \trap{\texttt{Double.nan \EQ{} .nan} is \texttt{false}: breaks reflexivity,
+        \texttt{contains(.nan)} fails, \texttt{sort} with NaN is unspecified.}
+  \trap{\texttt{ForEach(items, id: \textbackslash.self)} = identity is the whole value:
+        editing a row \emph{changes its identity} (state reset, wrong animation);
+        duplicates collide. Array index as id breaks on insert/reorder.}
+  \trap{Hash collisions are legal: unequal values may share a hash.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Equal $\Rightarrow$ same hash; hash $\subseteq$ equality; never mutate a key;
+\texttt{<} buys all of Comparable; \texttt{id} is who, \texttt{\EQ} is what.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} value-vs-reference ·
+swift-enums-pattern-matching (synthesis) · strings-and-collections (hash tables) ·
+swiftui-performance-identity · tableview-diffable (item identifiers)}
+
+\end{document}

@@ -1,0 +1,175 @@
+% error-handling.tex — throws/try/try?/try!, do-catch patterns, rethrows,
+% Result, typed throws (Swift 6), defer, errors across async/Task,
+% cancellation, LocalizedError, never-crash rules.
+% Sources (checked 2026-10-06):
+%   docs.swift.org/swift-book Error Handling (throws, do-catch, try? / try!, rethrows, defer
+%     cannot transfer control out) + Assertions and Preconditions (assert not evaluated in -O;
+%     precondition evaluated in -O, not in -Ounchecked)
+%   swift-evolution SE-0413 (typed throws, 6.0, do throws(E)) · SE-0304 (structured
+%     concurrency: a throwing child cancels its siblings) — checked against the evolution index
+%   developer.apple.com/documentation/swift/task/result · /foundation/localizederror
+% @labels: area=swift kind=concept platform=apple topic=language discussion=145
+% @tags: throws, rethrows, do-catch, try-optional, result-type, typed-throws, defer, cancellationerror, localizederror, withthrowingtaskgroup, precondition
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,
+    if,else,return,guard,self,nil,private,true,false,in,async,await,throws,
+    rethrows,try,do,catch,throw,defer,where,is,as,switch,Task,some},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  fr/.style={draw=sheetBlue, thick, fill=sheetBlue!6, rounded corners=2pt,
+             minimum width=27mm, minimum height=6mm, font=\ttfamily\scriptsize,
+             align=left, anchor=west},
+  lbl/.style={font=\scriptsize, text=black!80, inner sep=1pt, align=center},
+  err/.style={->, very thick, draw=sheetRed},
+  cc/.style={draw=sheetGrey, fill=white, rounded corners=2pt, font=\ttfamily\scriptsize,
+             inner sep=2pt, anchor=west},
+}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\sheettitle{Error handling — throws, Result, typed throws, async}{swift · folio}
+
+\oneliner{Swift errors are \textbf{values} (any type conforming to the empty
+protocol \texttt{Error}) returned on a \textbf{separate, checked path}: a
+function says \texttt{throws}, every call site says \texttt{try}, and the error
+travels up until a \texttt{do/catch} handles it. No stack unwinding across
+unmarked frames, no cost on the success path, no stack trace.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{\texttt{try}} propagates (caller must \texttt{throw} or
+        \texttt{catch}); \textbf{\texttt{try?}} turns the error into
+        \texttt{nil} and \emph{flattens} (\texttt{throws -> Int?} gives
+        \texttt{Int?}, since Swift 5); \textbf{\texttt{try!}} traps on error.
+  \item \textbf{\texttt{catch} clauses} are patterns, checked \textbf{top to
+        bottom}: \texttt{catch E.timeout}, \texttt{catch E.status(let c) where c >= 500},
+        \texttt{catch let e as DecodingError}, \texttt{catch is CancellationError};
+        a bare \texttt{catch} binds \texttt{error}. In a non-throwing function the
+        catches must be \textbf{exhaustive} (usually: end with bare \texttt{catch}).
+  \item \textbf{\texttt{rethrows}}: throws only if its closure argument does
+        — \texttt{map}, \texttt{filter} need \texttt{try} only for a throwing closure.
+  \item \textbf{\texttt{Result<Success, Failure: Error>}} = the outcome as a
+        value: store it, pass it to a callback, collect many.
+        \texttt{Result \{ try f() \}} $\leftrightarrow$ \texttt{try r.get()};
+        \texttt{map}, \texttt{mapError}, \texttt{flatMap}.
+  \item \textbf{Typed throws} (Swift 6, SE-0413): \texttt{throws(ParseError)}.
+        \texttt{throws} $\equiv$ \texttt{throws(any Error)}; non-throwing
+        $\equiv$ \texttt{throws(Never)}. A \texttt{do} whose calls all throw
+        \texttt{E} gives \texttt{catch} an \texttt{error: E} — exhaustive
+        \texttt{switch}, no casting. Generic \texttt{throws(E)} replaces
+        \texttt{rethrows}. Advice: \textbf{keep public APIs untyped} (adding
+        a case later breaks clients); typed for closed internal domains/Embedded.
+  \item \textbf{\texttt{defer}} runs on \emph{every} scope exit, \textbf{LIFO};
+        after a \texttt{return} expression is evaluated; it cannot
+        \texttt{throw} or \texttt{return} itself.
+  \item \textbf{\texttt{LocalizedError}}: \texttt{errorDescription},
+        \texttt{failureReason}, \texttt{recoverySuggestion} — feeds
+        \texttt{localizedDescription}. \texttt{CustomNSError}: domain/code for
+        \texttt{NSError} bridging.
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+enum NetErr: Error { case timeout, status(Int) }
+func refresh() async {                 // non-throwing
+  isLoading = true
+  defer { isLoading = false }          // on every exit
+  do {
+    let data = try await api.fetch()   // throws NetErr
+    items = try JSONDecoder().decode([Item].self, from: data)
+  } catch NetErr.status(let c) where c >= 500 {
+    banner = "Server down (\(c))"
+  } catch is CancellationError {
+    return                             // user left: no banner
+  } catch {                            // required catch-all
+    log(error); banner = error.localizedDescription
+  }
+}
+\end{lstlisting}
+
+\section{Never-crash rules}
+\begin{itemize}
+  \item No \texttt{try!} / \texttt{!} on input you do not own (network, disk,
+        user). \texttt{try!} only for invariants: a bundled fixture, a literal regex.
+  \item \texttt{assert} = debug only (gone in \texttt{-O});
+        \texttt{precondition} stays in release; \texttt{fatalError} always.
+        All three are for \emph{programmer} errors, not runtime conditions.
+  \item Wrap with context, never swallow:
+        \texttt{catch \{ throw AppError.parse(underlying: error) \}}.
+\end{itemize}
+
+\columnbreak
+
+\section{How an error travels}
+\begin{tikzpicture}[sheet]
+  % frames (top = caller)
+  \node[fr] (f1) at (0,0)    {refresh()\\\textcolor{sheetGreen}{do \{ \ldots\ \} catch}};
+  \node[fr] (f2) at (0,-1.0) {fetch() throws\\\textcolor{sheetBrown}{defer \{ close() \}}};
+  \node[fr, draw=sheetRed, fill=sheetRed!6] (f3) at (0,-2.0) {decode() throws\\\textcolor{sheetRed}{throw E.bad}};
+  \draw[err] ([xshift=-3mm]f3.north east) -- node[lbl, right]{(1) \texttt{try}} ([xshift=-3mm]f2.south east);
+  \draw[err] ([xshift=-3mm]f2.north east) -- node[lbl, right]{(3) \texttt{try}} ([xshift=-3mm]f1.south east);
+  \node[lbl, text=sheetBrown, anchor=west] at (2.85,-1.0) {(2) its \texttt{defer}s run, LIFO};
+  \node[note, anchor=west] at (2.85,-2.0) {every frame on the way says \texttt{try}:\\the path is visible in source};
+  % catch ladder
+  \node[cc] (c1) at (4.1,0.55) {catch E.timeout};
+  \node[cc] (c2) at (4.1,0.0)  {catch let e as DecodingError};
+  \node[cc] (c3) at (4.1,-0.55) {catch \{ error \}};
+  \draw[err] (f1.east) -- (c1.west);
+  \draw[flow, sheetGrey] (c1.south west) ++(0.25,0) -- ++(0,-0.21);
+  \draw[flow, sheetGrey] (c2.south west) ++(0.25,0) -- ++(0,-0.21);
+  \node[lbl, text=sheetGreen, anchor=west] at ([xshift=2pt]c3.east) {top-down: first match wins};
+  % Task boundary
+  \node[draw=sheetOrange, very thick, dashed, rounded corners=3pt, minimum width=79mm,
+        minimum height=10mm, anchor=north west] (tb) at (0,-2.65) {};
+  \node[font=\bfseries\scriptsize, text=sheetOrange, anchor=north west] at (tb.north west)
+    {Task boundary: \texttt{let t = Task \{ try await load() \}} keeps the error inside};
+  \node[lbl, anchor=west] at (0.1,-3.3) {\texttt{try await t.value}: rethrows};
+  \node[lbl, anchor=west] at (3.05,-3.3) {\texttt{await t.result}: \texttt{Result}};
+  \node[lbl, anchor=west, text=sheetRed] at (5.6,-3.3) {never read: \textbf{lost}};
+\end{tikzpicture}
+
+\section{Across async \& Task}
+\begin{itemize}
+  \item \texttt{async throws} composes: call with \texttt{try await}. Order of
+        keywords: \texttt{try await f()}.
+  \item Unstructured \texttt{Task\{\}} stores the error in
+        \texttt{Task<T, any Error>}; nothing forces you to read it.
+  \item \texttt{async let}: error surfaces at the \texttt{await}; siblings are
+        cancelled when the scope exits. \texttt{withThrowingTaskGroup}: first
+        thrown child error leaves the group $\to$ the rest are cancelled.
+  \item \textbf{Cancellation} is cooperative: \texttt{try Task.checkCancellation()}
+        and \texttt{Task.sleep} throw \texttt{CancellationError};
+        \texttt{URLSession} throws \texttt{URLError(.cancelled)} instead —
+        treat both as ``not a failure''.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{try?} on \texttt{throws -> Int?}: \texttt{nil} means
+        ``threw'' \emph{or} ``returned nil'' — use \texttt{do/catch}.}
+  \trap{In \texttt{do \{ try a(); try b() \}}, if \texttt{a} throws,
+        \texttt{b} \textbf{never runs}.}
+  \trap{A \texttt{defer} that mutates the returned variable does
+        \textbf{not} change the already-evaluated return value.}
+  \trap{Typed throws in a public API = a breaking change for every new case.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``try marks, throw sends, catch ends; defer cleans backwards.''}
+\texttt{try?} = forget, \texttt{try!} = bet the app, \texttt{Result} = keep for later.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} optionals · async/await \& cancellation · continuations (\texttt{resume(throwing:)}) · NSError bridging · Combine \texttt{Failure} · logging \& crash reporting}
+
+\end{document}

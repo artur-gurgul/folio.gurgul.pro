@@ -1,0 +1,101 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Swift syntax tricks — closures, calls &amp; what they desugar to — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/swift/swift-syntax-closures-calls.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">213</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area current" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Swift syntax tricks — closures, calls &amp; what they desugar to</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">swift · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Almost every “clever” call in Swift is <strong>sugar the type checker rewrites into
+an ordinary call</strong>: a trailing closure is the last argument, <code>\.name</code> becomes a
+closure, <code>c(x)</code> becomes <code>c.callAsFunction(x)</code>, <code>box.name</code> becomes
+<code>box[dynamicMember:]</code>, <code>:=??</code> receives its right side <em>unevaluated</em>, and
+<code>#line</code> in a default argument is read at the <em>caller</em>. Say the rewrite and you
+have explained it.</p>
+<p class="sheet-tools"><a class="sheet-download" href="swift-syntax-closures-calls.pdf" download>Download PDF</a> <a href="swift-syntax-closures-calls.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/swift/swift-syntax-closures-calls.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="swift-syntax-closures-calls-fig1.svg" width="649" height="135" class="wide" alt="Swift syntax tricks — closures, calls &amp; what they desugar to — figure 1" loading="lazy"></figure>
+<p><span class="c-sheetblue"><strong>Trailing closures &amp; anonymous arguments</strong></span></p>
+<pre class="sheet-code"><code class="hljs language-plaintext">Button { save() } label: { Text(&quot;Save&quot;) }  // 5.3: 1st unlabeled,
+              // rest labeled = Button(action: {...}, label: {...})
+xs.first { $0 &gt; 3 }            // trailing closure = the LAST argument
+if xs.contains(where: { $0 &gt; 3 }) { }   // in if/guard/for: keep it in ( )
+xs.sorted { $1 &lt; $0 }          // using $1 implies 2 params -&gt; descending
+dict.map { k, v in &quot;\(k)=\(v)&quot; }  // (key, value) tuple destructured
+zip(a, b).map { $0 * $1 }      // same exception: 1 tuple param, 2 names
+xs.reduce(0) { _, x in x }     // { $0 } alone: &quot;expects 2 arguments&quot;</code></pre>
+<p><strong>$n rules</strong>: only in a closure <em>without</em> a parameter list; each nested
+closure has its own <code>$0</code> (the outer one is unreachable — name it); the highest
+<code>$n</code> used fixes the minimum arity.</p>
+<p><span class="c-sheetblue"><strong>Key paths, initializers, methods and operators as functions</strong></span></p>
+<pre class="sheet-code"><code class="hljs language-plaintext">users.filter(\.isActive)        // Bool key path as a predicate
+ForEach(0..&lt;5, id: \.self)      // \.self = the identity key path
+[&quot;1&quot;, &quot;x&quot;].compactMap(Int.init) // [1] - init?(_:) used as (String) -&gt; Int?
+[1, 2].map(String.init)         // [&quot;1&quot;, &quot;2&quot;]
+names.map(String.uppercased)    // [() -&gt; String] (!): (String) -&gt; () -&gt; String
+User.greet(alice)()             // Type.method is curried: instance first
+let greet = alice.greet         // bound method: a closure that RETAINS alice
+names.map(User.init(name:))     // compound name picks one overload
+xs.reduce(0, +); xs.sorted(by: &gt;)  // an operator is a function value
+let add: (Int, Int) -&gt; Int = (+)   // parenthesise to name it</code></pre>
+<p><span class="c-sheetblue"><strong>callAsFunction · dynamic members · dynamic calls</strong></span></p>
+<pre class="sheet-code"><code class="hljs language-plaintext">struct IsValid { func callAsFunction(_ s: String) -&gt; Bool { !s.isEmpty } }
+let isValid = IsValid(); isValid(&quot;x&quot;)   // isValid.callAsFunction(&quot;x&quot;)
+xs.filter(isValid)                      // error: not implicitly a function
+xs.filter(isValid.callAsFunction)       // OK: explicit method reference
+@dynamicMemberLookup struct JSON {
+  subscript(dynamicMember k: String) -&gt; JSON? { /* ... */ nil } }
+json.user?.name     // json[dynamicMember: &quot;user&quot;]?[dynamicMember: &quot;name&quot;]
+@dynamicCallable struct Sum {
+  func dynamicallyCall(withArguments a: [Int]) -&gt; Int { a.reduce(0, +) } }
+let sum = Sum(); sum(1, 2, 3)           // 6; withKeywordArguments: KeyValuePairs</code></pre>
+<p><span class="c-sheetblue"><strong>Immediately-invoked closures</strong></span></p>
+<pre class="sheet-code"><code class="hljs language-plaintext">let label: UILabel = {             // runs ONCE, right here; note the ()
+  let l = UILabel(); l.numberOfLines = 0; return l }()
+lazy var df: DateFormatter = {     // runs on first access; may use self
+  let f = DateFormatter(); f.dateStyle = .short; return f }()</code></pre>
+<p><span class="c-sheetblue"><strong>Default arguments are evaluated at the CALLER</strong></span></p>
+<pre class="sheet-code"><code class="hljs language-plaintext">func log(_ m: String, file: String = #fileID, line: Int = #line) { }
+log(&quot;hi&quot;)        // file/line of THIS call site, e.g. &quot;App/Feed.swift&quot;, 42
+func add(_ tags: [String] = []) { }  // fresh [] on every call (not Python)
+_ = try? save()  // discard result + error; silences unused-result warning</code></pre>
+<p>Magic literals (<code>#fileID</code>, <code>#line</code>, <code>#function</code>) as defaults
+read the call site; since 6.0 so do macros used as defaults (SE-0422).</p>
+<p><span class="c-sheetblue"><strong>@autoclosure — how <code>??</code> and <code>assert</code> are written</strong></span></p>
+<pre class="sheet-code"><code class="hljs language-plaintext">func ?? &lt;T&gt;(v: T?, d: @autoclosure () throws -&gt; T) rethrows -&gt; T {
+  switch v { case .some(let x): return x; case .none: return try d() } }
+name ?? loadDefault()   // ??(name, { loadDefault() }) - runs only if nil
+assert(isSorted(xs))    // closure never called in -O: zero release cost</code></pre>
+<p><span class="c-sheetblue"><strong>Implicit members · subscripts</strong></span></p>
+<pre class="sheet-code"><code class="hljs language-plaintext">let c: Color = .red.opacity(0.5)  // 5.4: chain from Color, must END in Color
+let p: Point = .init(x: 1, y: 2)  // .init = Point.init
+counts[word, default: 0] += 1     // Dictionary subscript(_:default:), in place
+extension Collection {            // labeled subscript: x[safe: 9] -&gt; nil
+  subscript(safe i: Index) -&gt; Element? { indices.contains(i) ? self[i] : nil } }
+enum Theme { static subscript(k: String) -&gt; Color { .red } }  // Theme[&quot;x&quot;]</code></pre>
+<p><span class="c-sheetblue"><strong>inout, <code>&amp;</code>, exclusivity</strong></span></p>
+<pre class="sheet-code"><code class="hljs language-plaintext">func bump(_ n: inout Int) { n += 1 }
+bump(&amp;score)            // copy-in, copy-out: written back when bump returns
+bump(&amp;user.age)         // observed/computed: get, call, set; didSet ALWAYS
+swap(&amp;a[0], &amp;a[1])      // error: overlapping accesses to &#x27;a&#x27; -&gt; a.swapAt(0, 1)
+withUnsafeMutablePointer(to: &amp;x) { $0.pointee = 1 }  // &amp; also makes pointers</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><code>names.map(String.uppercased)</code> compiles — to an array of <em>closures</em>.</li>
+<li class="trap">Only a key-path <em>literal</em> converts; method key paths <code>\.uppercased()</code>  (SE-0479) are <strong>not</strong> in the language — returned for revision.</li>
+<li class="trap"><code>inout</code> on an observed property fires <code>didSet</code> even if the value is unchanged.</li>
+<li class="trap">String-keyed <code>@dynamicMemberLookup</code> turns typos into runtime <code>nil</code>.</li>
+<li class="trap">Drop the <code>()</code> after <code>= { … }</code> and you store the <em>closure</em>  (<code>()</code><code>:=-&gt;</code><code>UILabel</code>), not a label.</li>
+<li class="trap">A <code>callAsFunction</code> value is not a function type: <code>filter(isValid)</code> fails.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>“Trailing = last arg · <code>\.x</code> = closure · <code>c()</code> = callAsFunction ·
+<code>.x</code> = member lookup · <code>:=??</code> = autoclosure · <code>#line</code> = caller.”</strong></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> swift-closures-deep (capture, escaping) ·
+swift-keypaths-access-control (key-path classes) · swift-operators-subscripts-literals (precedence,
+<code>:=~=</code>) · swift-syntax-control-flow-errors · swift-attributes-directives</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=swift" title="area">swift</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=language" title="topic">language</a></li><li class="sheet-tag"><a href="/folios.html?tag=trailing-closures">trailing-closures</a></li><li class="sheet-tag"><a href="/folios.html?tag=anonymous-arguments">anonymous-arguments</a></li><li class="sheet-tag"><a href="/folios.html?tag=keypath-as-function">keypath-as-function</a></li><li class="sheet-tag"><a href="/folios.html?tag=callasfunction">callasfunction</a></li><li class="sheet-tag"><a href="/folios.html?tag=dynamicmemberlookup">dynamicmemberlookup</a></li><li class="sheet-tag"><a href="/folios.html?tag=dynamiccallable">dynamiccallable</a></li><li class="sheet-tag"><a href="/folios.html?tag=autoclosure">autoclosure</a></li><li class="sheet-tag"><a href="/folios.html?tag=implicit-member-chains">implicit-member-chains</a></li><li class="sheet-tag"><a href="/folios.html?tag=inout">inout</a></li><li class="sheet-tag"><a href="/folios.html?tag=exclusivity">exclusivity</a></li><li class="sheet-tag"><a href="/folios.html?tag=default-arguments">default-arguments</a></li><li class="sheet-tag"><a href="/folios.html?tag=unapplied-method-reference">unapplied-method-reference</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=swift%2Fswift-syntax-closures-calls.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/165">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

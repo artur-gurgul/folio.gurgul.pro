@@ -1,0 +1,97 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Operators, subscripts, literals, callAsFunction, = — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/swift/swift-operators-subscripts-literals.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">213</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area current" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Operators, subscripts, literals, callAsFunction, =</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">swift · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Operators are ordinary (usually <code>static</code>) functions with special syntax; a
+<strong>precedence group</strong> decides how an unparenthesised expression <em>parses</em>. Subscripts
+are property-like members called with <code>[ ]</code>. A literal has no type until context picks an
+<code>ExpressibleBy…Literal</code> type. <code>:=~=</code> is what <code>switch</code> calls per pattern.</p>
+<p class="sheet-tools"><a class="sheet-download" href="swift-operators-subscripts-literals.pdf" download>Download PDF</a> <a href="swift-operators-subscripts-literals.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/swift/swift-operators-subscripts-literals.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="swift-operators-subscripts-literals-fig1.svg" width="616" height="159" class="wide" alt="Operators, subscripts, literals, callAsFunction, = — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>How it works</h2>
+<ul>
+<li><strong>Declare, then implement</strong>: <code>infix operator **: PowerPrecedence</code> at file  scope; implement as <code>static func</code> in a type (found by overload resolution via the  operand types) or a global <code>func</code>. <code>prefix</code>/<code>postfix</code> funcs carry the  modifier; infix ones don’t.</li>
+<li><strong>Whitespace decides fixity</strong>: space on both sides or neither = infix; <code>:=-x</code> prefix;  <code>:=x!</code> postfix. <code>a -b</code> is <em>not</em> subtraction.</li>
+<li><strong>Reserved</strong>: <code>:==</code>, <code>:=-&gt;</code>, <code>.</code>, <code>:=?:</code>, <code>:=//</code>, <code>:=/*</code>, prefix <code>:=&amp;</code>,  postfix <code>:=?</code> <code>:=!</code>. <code>:=&amp;&amp;</code>/<code>:=||</code> <em>are</em> overloadable — their right side is an  <code>@autoclosure</code>, which is how they short-circuit.</li>
+<li><strong><code>precedencegroup</code></strong>: <code>higherThan</code>/<code>lowerThan</code>,  <code>associativity</code> (<code>left</code>/<code>right</code>/<code>none</code>, default  <code>none</code>), <code>assignment: true</code> (folds into optional chains like <code>:==</code>).</li>
+<li><strong>Subscripts</strong>: parameters have <strong>no argument labels</strong> unless you name one  (<code>subscript(row r: Int)</code> <span class="math">→</span> <code>g[row: 1]</code>); several params, variadic,  defaults, <strong>generic</strong> (4.0), <strong><code>static</code></strong> (5.1, <code>Color[&quot;brand&quot;]</code>),  get-only may be <code>async throws</code> (5.5). No set-only subscripts.</li>
+<li><strong>Literals</strong>: the compiler calls the literal init of the <em>contextual</em> type, else  the default (<code>Int</code>, <code>Double</code>, <code>String</code>, <code>Array</code>…).</li>
+<li><strong><code>callAsFunction</code></strong> (5.2, SE-0253): makes <code>value(args)</code> work;  overloads, labels, <code>mutating</code>, <code>async</code> allowed. SwiftUI’s  <code>dismiss()</code> is a <code>DismissAction</code> value. <code>@dynamicCallable</code> = the  untyped, variadic cousin (scripting interop).</li>
+<li><strong><code>:=~=</code></strong>: stdlib has it for <code>Equatable</code> (<code>:===</code>) and  <code>RangeExpression</code> (<code>contains</code>); overload it to use a type as a  <code>case</code> pattern.</li>
+</ul>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>Protocol</strong> (<code>ExpressibleBy…</code>)</th><th><code><strong>required init</strong></code></th></tr>
+</thead>
+<tbody>
+<tr><td><code>IntegerLiteral</code> · <code>FloatLiteral</code></td><td><code>init(integerLiteral:) · (floatLiteral:)</code></td></tr>
+<tr><td><code>BooleanLiteral</code> · <code>StringLiteral</code></td><td><code>init(booleanLiteral:) · (stringLiteral:)</code></td></tr>
+<tr><td><code>ArrayLiteral</code></td><td><code>init(arrayLiteral: Element...)</code></td></tr>
+<tr><td><code>DictionaryLiteral</code></td><td><code>init(dictionaryLiteral: (K, V)...)</code></td></tr>
+<tr><td><code>StringInterpolation</code></td><td><code>init(stringInterpolation:)</code></td></tr>
+<tr><td><code>NilLiteral</code> — <strong>for <code>Optional</code> only</strong></td><td><code>init(nilLiteral: ())</code></td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Example — operators + subscripts</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">precedencegroup</span> <span class="hljs-title">PowerPrecedence</span> {
+  <span class="hljs-keyword">higherThan</span>: <span class="hljs-type">MultiplicationPrecedence</span>
+  <span class="hljs-keyword">associativity</span>: <span class="hljs-keyword">right</span> }
+<span class="hljs-keyword">infix</span> <span class="hljs-keyword">operator</span> <span class="hljs-title">**</span> : <span class="hljs-type">PowerPrecedence</span>
+<span class="hljs-keyword">func</span> <span class="hljs-title function_">**</span> (<span class="hljs-params">b</span>: <span class="hljs-type">Double</span>, <span class="hljs-params">e</span>: <span class="hljs-type">Double</span>) -&gt; <span class="hljs-type">Double</span> { pow(b, e) }
+<span class="hljs-keyword">struct</span> <span class="hljs-title class_">Vec</span>: <span class="hljs-title class_ inherited__">Equatable</span> { <span class="hljs-keyword">var</span> x, y: <span class="hljs-type">Double</span>
+  <span class="hljs-keyword">static</span> <span class="hljs-keyword">func</span> <span class="hljs-title function_">+</span> (<span class="hljs-params">l</span>: <span class="hljs-type">Vec</span>, <span class="hljs-params">r</span>: <span class="hljs-type">Vec</span>) -&gt; <span class="hljs-type">Vec</span> {
+    <span class="hljs-type">Vec</span>(x: l.x <span class="hljs-operator">+</span> r.x, y: l.y <span class="hljs-operator">+</span> r.y) }
+  <span class="hljs-keyword">static</span> <span class="hljs-keyword">func</span> <span class="hljs-title function_">+=</span> (<span class="hljs-params">l</span>: <span class="hljs-keyword">inout</span> <span class="hljs-type">Vec</span>, <span class="hljs-params">r</span>: <span class="hljs-type">Vec</span>) { l <span class="hljs-operator">=</span> l <span class="hljs-operator">+</span> r }
+  <span class="hljs-keyword">static</span> <span class="hljs-keyword">prefix</span> <span class="hljs-keyword">func</span> <span class="hljs-title function_">-</span> (<span class="hljs-params">v</span>: <span class="hljs-type">Vec</span>) -&gt; <span class="hljs-type">Vec</span> { <span class="hljs-type">Vec</span>(x: <span class="hljs-operator">-</span>v.x, y: <span class="hljs-operator">-</span>v.y) } }
+<span class="hljs-keyword">struct</span> <span class="hljs-title class_">Grid</span> { <span class="hljs-keyword">var</span> cells: [<span class="hljs-type">Int</span>]; <span class="hljs-keyword">let</span> w: <span class="hljs-type">Int</span>
+  <span class="hljs-keyword">subscript</span>(<span class="hljs-params">r</span>: <span class="hljs-type">Int</span>, <span class="hljs-params">c</span>: <span class="hljs-type">Int</span>) -&gt; <span class="hljs-type">Int</span> {                 <span class="hljs-comment">// g[1, 2]</span>
+    <span class="hljs-keyword">get</span> { cells[r <span class="hljs-operator">*</span> w <span class="hljs-operator">+</span> c] }
+    <span class="hljs-keyword">set</span> { cells[r <span class="hljs-operator">*</span> w <span class="hljs-operator">+</span> c] <span class="hljs-operator">=</span> newValue } }
+  <span class="hljs-keyword">subscript</span>(<span class="hljs-params">row</span> <span class="hljs-params">r</span>: <span class="hljs-type">Int</span>) -&gt; <span class="hljs-type">ArraySlice</span>&lt;<span class="hljs-type">Int</span>&gt; {         <span class="hljs-comment">// g[row: 1]</span>
+    cells[r <span class="hljs-operator">*</span> w <span class="hljs-operator">..&lt;</span> (r <span class="hljs-operator">+</span> <span class="hljs-number">1</span>) <span class="hljs-operator">*</span> w] } }</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Example — literals, callAsFunction, <code>~=</code></h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">struct</span> <span class="hljs-title class_">Money</span>: <span class="hljs-title class_ inherited__">ExpressibleByIntegerLiteral</span> {
+  <span class="hljs-keyword">let</span> cents: <span class="hljs-type">Int</span>
+  <span class="hljs-keyword">init</span>(<span class="hljs-params">integerLiteral</span> <span class="hljs-params">v</span>: <span class="hljs-type">Int</span>) { cents <span class="hljs-operator">=</span> v <span class="hljs-operator">*</span> <span class="hljs-number">100</span> } }
+<span class="hljs-keyword">let</span> price: <span class="hljs-type">Money</span> <span class="hljs-operator">=</span> <span class="hljs-number">5</span>                          <span class="hljs-comment">// 500 cents</span>
+<span class="hljs-keyword">struct</span> <span class="hljs-title class_">Scale</span> { <span class="hljs-keyword">let</span> k: <span class="hljs-type">Double</span>
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">callAsFunction</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">x</span>: <span class="hljs-type">Double</span>) -&gt; <span class="hljs-type">Double</span> { x <span class="hljs-operator">*</span> k } }
+<span class="hljs-keyword">let</span> twice <span class="hljs-operator">=</span> <span class="hljs-type">Scale</span>(k: <span class="hljs-number">2</span>); twice(<span class="hljs-number">21</span>)            <span class="hljs-comment">// 42.0</span>
+<span class="hljs-keyword">struct</span> <span class="hljs-title class_">Prefix</span> { <span class="hljs-keyword">let</span> s: <span class="hljs-type">String</span> }
+<span class="hljs-keyword">func</span> <span class="hljs-title function_">~=</span> (<span class="hljs-params">p</span>: <span class="hljs-type">Prefix</span>, <span class="hljs-params">v</span>: <span class="hljs-type">String</span>) -&gt; <span class="hljs-type">Bool</span> { v.hasPrefix(p.s) }
+<span class="hljs-keyword">switch</span> path {
+<span class="hljs-keyword">case</span> <span class="hljs-type">Prefix</span>(s: <span class="hljs-string">&quot;/api/&quot;</span>): routeAPI()           <span class="hljs-comment">// Prefix ~= path</span>
+<span class="hljs-keyword">default</span>: routeWeb() }
+<span class="hljs-keyword">if</span> <span class="hljs-keyword">case</span> <span class="hljs-number">200</span><span class="hljs-operator">..&lt;</span><span class="hljs-number">300</span> <span class="hljs-operator">=</span> status { ok() }           <span class="hljs-comment">// Range ~= status</span></code></pre>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">A custom infix operator with no group gets <code>DefaultPrecedence</code>: mixing it  with <code>:=+</code> or <code>:===</code> unparenthesised does not compile.</li>
+<li class="trap">Forgetting <code>associativity: right</code> on a power operator: the default  <code>none</code> rejects <code>:=2**3**2</code>; <code>left</code> silently gives 64.</li>
+<li class="trap">A free <code>:===</code> without <code>: Equatable</code> is invisible to generics, <code>Set</code>,  <code>firstIndex(of:)</code>; a free <code>:=&lt;</code> gives no <code>sort()</code> —  conform to <code>Comparable</code>.</li>
+<li class="trap"><code>let s: Set = [1, 1, 2]</code> silently has 2 elements; a dictionary literal with a  duplicate key <strong>traps at runtime</strong>.</li>
+<li class="trap">Overloads + literals multiply the type checker’s search: “unable to type-check this  expression in reasonable time” — add type annotations, split the expression.</li>
+<li class="trap">Don’t adopt <code>ExpressibleByNilLiteral</code> in your types — Apple reserves it for  <code>Optional</code>.</li>
+<li class="trap">Operators nobody can read (<code>:=&lt;~&gt;</code>, <code>:=|&gt;</code>) cost more than they save — only for a  real algebra (vectors, matrices, parsers).</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>“Group parses, function computes; subscripts have no labels; literals wait for a
+type; <code>case p</code> means <code>p ~= v</code>.”</strong></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> closures (<code>@autoclosure</code>) ·
+key paths (<code>@dynamicMemberLookup</code>) · protocols &amp; generics (<code>Equatable</code>,
+<code>Comparable</code>) · strings (interpolation) · result builders</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=swift" title="area">swift</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=language" title="topic">language</a></li><li class="sheet-tag"><a href="/folios.html?tag=custom-operators">custom-operators</a></li><li class="sheet-tag"><a href="/folios.html?tag=precedencegroup">precedencegroup</a></li><li class="sheet-tag"><a href="/folios.html?tag=associativity">associativity</a></li><li class="sheet-tag"><a href="/folios.html?tag=operator-overloading">operator-overloading</a></li><li class="sheet-tag"><a href="/folios.html?tag=subscript">subscript</a></li><li class="sheet-tag"><a href="/folios.html?tag=expressiblebyintegerliteral">expressiblebyintegerliteral</a></li><li class="sheet-tag"><a href="/folios.html?tag=literals">literals</a></li><li class="sheet-tag"><a href="/folios.html?tag=callasfunction">callasfunction</a></li><li class="sheet-tag"><a href="/folios.html?tag=pattern-match-operator">pattern-match-operator</a></li><li class="sheet-tag"><a href="/folios.html?tag=dynamiccallable">dynamiccallable</a></li><li class="sheet-tag"><a href="/folios.html?tag=dismissaction">dismissaction</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=swift%2Fswift-operators-subscripts-literals.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/160">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

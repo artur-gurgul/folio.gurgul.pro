@@ -1,0 +1,216 @@
+% swift-operators-subscripts-literals.tex — custom operators + precedence groups,
+% overloading, subscripts, ExpressibleBy*Literal, callAsFunction, ~= patterns.
+% Sources (checked 2026-10-06):
+%   docs.swift.org/swift-book Advanced Operators (custom operators, precedence groups; & groups
+%     with *, | and ^ with +) + Lexical Structure › Operators (whitespace decides prefix /
+%     postfix / infix; reserved tokens) + Subscripts (parameters unlabelled by default) +
+%     Patterns › Expression Pattern (~=)
+%   developer.apple.com/documentation/swift/operator-declarations (stdlib precedence groups;
+%     DefaultPrecedence higher than TernaryPrecedence only) · /swiftui/dismissaction
+%     (callAsFunction) · /swift/expressiblebynilliteral (reserved for Optional)
+%   swift-evolution SE-0310 (effectful read-only properties, 5.5) · SE-0254 (static subscripts,
+%     5.1) · SE-0253 (callAsFunction, 5.2) — checked against the evolution index
+% @labels: area=swift kind=concept platform=apple topic=language discussion=160
+% @tags: custom-operators, precedencegroup, associativity, operator-overloading, subscript, expressiblebyintegerliteral, literals, callasfunction, pattern-match-operator, dynamiccallable, dismissaction
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,default,
+    if,else,return,guard,self,nil,private,public,true,false,in,extension,where,static,
+    prefix,postfix,infix,operator,precedencegroup,higherThan,associativity,right,
+    subscript,get,set,newValue,inout,switch,mutating,String,Int,Double},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+% One \hbox per character defeats the mono font's ligatures (== ?? && -> ...).
+\makeatletter
+\DeclareRobustCommand\op[1]{\texttt{\@tfor\@c:=#1\do{\hbox{\@c}}}}
+\makeatother
+\DeclareRobustCommand\tl{\textasciitilde}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\scriptsize, anchor=west},
+  pg/.style={draw=sheetBlue, fill=sheetBlue!6, font=\ttfamily\tiny, minimum width=33mm,
+             minimum height=3.6mm, inner sep=1pt, anchor=west},
+  pgop/.style={font=\ttfamily\tiny, anchor=west, inner sep=1pt},
+  as/.style={font=\tiny\itshape, text=sheetGrey, anchor=west, inner sep=1pt},
+  tn/.style={circle, draw=sheetBlue, fill=sheetBlue!6, font=\ttfamily\tiny, inner sep=0.8pt,
+             minimum size=4mm},
+}
+
+\begin{document}
+
+\sheettitle{Operators, subscripts, literals, \texttt{callAsFunction}, \op{\tl=}}{swift · folio}
+
+\oneliner{Operators are ordinary (usually \texttt{static}) functions with special syntax; a
+\textbf{precedence group} decides how an unparenthesised expression \emph{parses}. Subscripts
+are property-like members called with \texttt{[ ]}. A literal has no type until context picks an
+\texttt{ExpressibleBy\ldots Literal} type. \op{\tl=} is what \texttt{switch} calls per pattern.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[ttl] at (0,3.55) {Stdlib precedence, high $\to$ low (a partial order)};
+  \foreach \n/\o/\a [count=\i from 0] in {
+      BitwiseShift/{\op{<<} \op{>>}}/none,
+      Multiplication/{\op{*} \op{/} \op{\%} \op{\&}}/left,
+      Addition/{\op{+} \op{-} \op{|} \op{\textasciicircum}}/left,
+      RangeFormation/{\op{..<} \op{...}}/none,
+      Casting/{\texttt{is as as? as!}}/none,
+      NilCoalescing/{\op{??}}/right,
+      Comparison/{\op{==} \op{<} \op{===} \op{\tl=}}/none,
+      LogicalConjunction/{\op{\&\&}}/left,
+      LogicalDisjunction/{\op{||}}/left,
+      Ternary/{\op{?} \op{:}}/right,
+      Assignment/{\op{=} \op{+=}}/{right, assignment}} {
+    \node[pg] (g\i) at (0,3.15-\i*0.3) {\n};
+    \node[pgop] at (3.4,3.15-\i*0.3) {\o};
+    \node[as] at (5.1,3.15-\i*0.3) {\a};
+  }
+  \node[pg, draw=sheetOrange, fill=sheetOrange!12, minimum width=22mm] (pw) at (7.0,2.85) {Power (custom)};
+  \draw[->, thick, sheetOrange] (pw.west) -- node[lbl, above, text=sheetOrange]{higherThan} (6.05,2.85);
+  \node[lbl, text=sheetOrange, align=left, anchor=west] at (7.0,2.35)
+        {above \op{*} and all below it; vs \op{<<}\\\textbf{unordered} $\to$ \op{a<<b**c} won't compile};
+  \node[pg, draw=sheetGrey, fill=black!4, minimum width=22mm] (df) at (7.0,0.45) {Default};
+  \draw[->, thick, sheetGrey] (df.west) -- node[lbl, above]{higherThan} (6.05,0.45);
+  \node[lbl, align=left, anchor=west] at (7.0,0.0)
+        {a group-less operator: above \op{?:} only —\\\op{a+++b+c} = ``unordered precedence groups''};
+  \node[lbl, text=sheetRed, align=left, anchor=west] at (6.8,1.35)
+        {C differs: \op{\&} binds like \op{*}, \op{|} like \op{+};\\\op{a<b<c} is an error (none)};
+  % ── parse trees ──
+  \begin{scope}[xshift=123mm]
+  \node[ttl] at (0,3.55) {\op{2**3**2} — associativity decides};
+  \node[lbl, text=sheetGreen!50!black] at (1.0,3.15) {\textbf{right} (math)};
+  \node[tn] (a) at (1.0,2.65) {**};
+  \node[tn] (a1) at (0.55,2.0) {2}; \node[tn] (a2) at (1.45,2.0) {**};
+  \node[tn] (a3) at (1.05,1.35) {3}; \node[tn] (a4) at (1.85,1.35) {2};
+  \draw (a) -- (a1); \draw (a) -- (a2); \draw (a2) -- (a3); \draw (a2) -- (a4);
+  \node[lbl, text=sheetGreen!50!black] at (1.0,0.85) {2 ** 9 = \textbf{512}};
+  \node[lbl, text=sheetRed] at (3.2,3.15) {\textbf{left}};
+  \node[tn] (b) at (3.2,2.65) {**};
+  \node[tn] (b1) at (2.75,2.0) {**}; \node[tn] (b2) at (3.65,2.0) {2};
+  \node[tn] (b3) at (2.35,1.35) {2}; \node[tn] (b4) at (3.15,1.35) {3};
+  \draw (b) -- (b1); \draw (b) -- (b2); \draw (b1) -- (b3); \draw (b1) -- (b4);
+  \node[lbl, text=sheetRed] at (3.2,0.85) {8 ** 2 = \textbf{64}};
+  \node[lbl, text=sheetGrey] at (2.1,0.4) {\textbf{none} (the default): compile error};
+  \node[lbl, align=left, anchor=west] at (0,-0.1) {\texttt{switch v \{ case p: \}} runs \texttt{p \tl= v}:\\pattern \textbf{left}, value right, returns \texttt{Bool}};
+  \end{scope}
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Declare, then implement}: \texttt{infix operator **: PowerPrecedence} at file
+        scope; implement as \texttt{static func} in a type (found by overload resolution via the
+        operand types) or a global \texttt{func}. \texttt{prefix}/\texttt{postfix} funcs carry the
+        modifier; infix ones don't.
+  \item \textbf{Whitespace decides fixity}: space on both sides or neither = infix; \op{-x} prefix;
+        \op{x!} postfix. \texttt{a -b} is \emph{not} subtraction.
+  \item \textbf{Reserved}: \op{=}, \op{->}, \texttt{.}, \op{?:}, \op{//}, \op{/*}, prefix \op{\&},
+        postfix \op{?} \op{!}. \op{\&\&}/\op{||} \emph{are} overloadable — their right side is an
+        \texttt{@autoclosure}, which is how they short-circuit.
+  \item \textbf{\texttt{precedencegroup}}: \texttt{higherThan}/\texttt{lowerThan},
+        \texttt{associativity} (\texttt{left}/\texttt{right}/\texttt{none}, default
+        \texttt{none}), \texttt{assignment: true} (folds into optional chains like \op{=}).
+  \item \textbf{Subscripts}: parameters have \textbf{no argument labels} unless you name one
+        (\texttt{subscript(row r: Int)} $\to$ \texttt{g[row: 1]}); several params, variadic,
+        defaults, \textbf{generic} (4.0), \textbf{\texttt{static}} (5.1, \texttt{Color["brand"]}),
+        get-only may be \texttt{async throws} (5.5). No set-only subscripts.
+  \item \textbf{Literals}: the compiler calls the literal init of the \emph{contextual} type, else
+        the default (\texttt{Int}, \texttt{Double}, \texttt{String}, \texttt{Array}\ldots).
+  \item \textbf{\texttt{callAsFunction}} (5.2, SE-0253): makes \texttt{value(args)} work;
+        overloads, labels, \texttt{mutating}, \texttt{async} allowed. SwiftUI's
+        \texttt{dismiss()} is a \texttt{DismissAction} value. \texttt{@dynamicCallable} = the
+        untyped, variadic cousin (scripting interop).
+  \item \textbf{\op{\tl=}}: stdlib has it for \texttt{Equatable} (\op{==}) and
+        \texttt{RangeExpression} (\texttt{contains}); overload it to use a type as a
+        \texttt{case} pattern.
+\end{itemize}
+
+{\footnotesize
+\begin{tabular}{@{}l>{\ttfamily}l@{}}
+\toprule
+\textbf{Protocol} (\texttt{ExpressibleBy\ldots}) & \textrm{\textbf{required init}} \\
+\midrule
+\texttt{IntegerLiteral} · \texttt{FloatLiteral} & init(integerLiteral:) · (floatLiteral:) \\
+\texttt{BooleanLiteral} · \texttt{StringLiteral} & init(booleanLiteral:) · (stringLiteral:) \\
+\texttt{ArrayLiteral} & init(arrayLiteral: Element...) \\
+\texttt{DictionaryLiteral} & init(dictionaryLiteral: (K, V)...) \\
+\texttt{StringInterpolation} & init(stringInterpolation:) \\
+\texttt{NilLiteral} — \textbf{for \texttt{Optional} only} & init(nilLiteral: ()) \\
+\bottomrule
+\end{tabular}}
+
+\section{Example — operators + subscripts}
+\begin{lstlisting}[language=SwiftSheet]
+precedencegroup PowerPrecedence {
+  higherThan: MultiplicationPrecedence
+  associativity: right }
+infix operator ** : PowerPrecedence
+func ** (b: Double, e: Double) -> Double { pow(b, e) }
+struct Vec: Equatable { var x, y: Double
+  static func + (l: Vec, r: Vec) -> Vec {
+    Vec(x: l.x + r.x, y: l.y + r.y) }
+  static func += (l: inout Vec, r: Vec) { l = l + r }
+  static prefix func - (v: Vec) -> Vec { Vec(x: -v.x, y: -v.y) } }
+struct Grid { var cells: [Int]; let w: Int
+  subscript(r: Int, c: Int) -> Int {                 // g[1, 2]
+    get { cells[r * w + c] }
+    set { cells[r * w + c] = newValue } }
+  subscript(row r: Int) -> ArraySlice<Int> {         // g[row: 1]
+    cells[r * w ..< (r + 1) * w] } }
+\end{lstlisting}
+
+\columnbreak
+
+\section{Example — literals, callAsFunction, \texttt{\hbox{\tl}\hbox{=}}}
+\begin{lstlisting}[language=SwiftSheet]
+struct Money: ExpressibleByIntegerLiteral {
+  let cents: Int
+  init(integerLiteral v: Int) { cents = v * 100 } }
+let price: Money = 5                          // 500 cents
+struct Scale { let k: Double
+  func callAsFunction(_ x: Double) -> Double { x * k } }
+let twice = Scale(k: 2); twice(21)            // 42.0
+struct Prefix { let s: String }
+func ~= (p: Prefix, v: String) -> Bool { v.hasPrefix(p.s) }
+switch path {
+case Prefix(s: "/api/"): routeAPI()           // Prefix ~= path
+default: routeWeb() }
+if case 200..<300 = status { ok() }           // Range ~= status
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{A custom infix operator with no group gets \texttt{DefaultPrecedence}: mixing it
+        with \op{+} or \op{==} unparenthesised does not compile.}
+  \trap{Forgetting \texttt{associativity: right} on a power operator: the default
+        \texttt{none} rejects \op{2**3**2}; \texttt{left} silently gives 64.}
+  \trap{A free \op{==} without \texttt{: Equatable} is invisible to generics, \texttt{Set},
+        \texttt{firstIndex(of:)}; a free \op{<} gives no \texttt{sort()} —
+        conform to \texttt{Comparable}.}
+  \trap{\texttt{let s: Set = [1, 1, 2]} silently has 2 elements; a dictionary literal with a
+        duplicate key \textbf{traps at runtime}.}
+  \trap{Overloads + literals multiply the type checker's search: ``unable to type-check this
+        expression in reasonable time'' — add type annotations, split the expression.}
+  \trap{Don't adopt \texttt{ExpressibleByNilLiteral} in your types — Apple reserves it for
+        \texttt{Optional}.}
+  \trap{Operators nobody can read (\op{<\tl>}, \op{|>}) cost more than they save — only for a
+        real algebra (vectors, matrices, parsers).}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Group parses, function computes; subscripts have no labels; literals wait for a
+type; \texttt{case p} means \texttt{p \tl= v}.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} closures (\texttt{@autoclosure}) ·
+key paths (\texttt{@dynamicMemberLookup}) · protocols \& generics (\texttt{Equatable},
+\texttt{Comparable}) · strings (interpolation) · result builders}
+
+\end{document}
