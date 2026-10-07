@@ -1,0 +1,210 @@
+% actors-reentrancy-isolation.tex — "What is an actor, and why can't you always
+% just use @MainActor?": isolation, reentrancy at every await + the stale-state
+% bug (duplicate download) and its fixes, global actors, custom executors,
+% Sendable / @unchecked Sendable, nonisolated, isolated params / #isolation,
+% actor vs Mutex (Synchronization).
+% Goes deeper than concurrency (bank-balance reentrancy basics) and
+% swift6-strict-concurrency (Sendable rules, error table) — neither repeated.
+% Sources (checked 2026-10-06):
+%   swift-evolution SE-0392 (custom executors: nonisolated var unownedExecutor,
+%     assumeIsolated / preconditionIsolated / assertIsolated) · SE-0433 (Mutex: ~Copyable,
+%     Sendable, withLock) · SE-0420 (#isolation) · SE-0461 (nonsending / @concurrent) —
+%     numbers and versions checked against download.swift.org/swift-evolution/v1/evolution.json
+%   developer.apple.com/documentation/dispatch/dispatchserialqueue (conforms to SerialExecutor;
+%     init(label:…) iOS 17.0) · /synchronization/mutex (iOS 18.0, macOS 15.0)
+%   docs.swift.org/swift-book Concurrency chapter (actor isolation, reentrancy at await)
+% @labels: area=swift kind=concept platform=apple topic=concurrency discussion=143
+% @tags: actors, reentrancy, mainactor, global-actor, custom-executor, unownedexecutor, assumeisolated, isolated-parameter, isolation-macro, mutex, unchecked-sendable, request-deduplication
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,actor,
+    if,else,return,guard,self,nil,private,true,false,in,async,await,throws,try,
+    defer,nonisolated,isolated,import,any,some,Task,Sendable},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {-=}{{\hbox{-}\hbox{=}}}2 {+=}{{\hbox{+}\hbox{=}}}2}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\tikzset{
+  lane/.style={font=\bfseries\scriptsize, anchor=east, inner sep=1pt, align=right},
+  st/.style={draw=#1, fill=#1!14, rounded corners=1pt, minimum height=4.4mm,
+             font=\ttfamily\scriptsize, inner sep=1.5pt, anchor=west},
+  sus/.style={st=#1, dashed, fill=white},
+  lbl/.style={font=\scriptsize, text=black!80, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Actors · reentrancy · isolation — and why not just \texttt{@MainActor}?}{swift · folio}
+
+\oneliner{An \textbf{actor} is a reference type whose mutable state is guarded by a
+\textbf{serial executor}: one task at a time runs its isolated code, outsiders
+\texttt{await}. It is \textbf{reentrant} — at every \texttt{await} \emph{inside} it
+other calls may run, so a check made before a suspension can be \textbf{stale} after.
+\texttt{@MainActor} is \emph{one} global actor on the main thread: everything there
+is serialised with the UI.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---------------- BUG ----------------
+  \node[ttl] at (-1.2,0.6) {Bug: two calls for the same URL interleave at the \texttt{await}};
+  \foreach \y/\n in {0/call A, -0.6/call B, -1.2/network}
+    { \node[lane] at (0,\y) {\n}; \draw[sheetGrey!45] (0.05,\y) -- (7.95,\y); }
+  \node[st=sheetBlue] (a1) at (0.1,0) {miss};
+  \node[sus=sheetBlue] (a2) at (0.85,0) {await load(u)};
+  \node[st=sheetBlue] (a3) at (5.3,0) {cache[u] = a};
+  \node[st=sheetGreen] (b1) at (2.55,-0.6) {miss};
+  \node[sus=sheetGreen] (b2) at (3.3,-0.6) {await load(u)};
+  \node[st=sheetRed] (b3) at (6.3,-0.6) {cache[u] = b};
+  \node[st=sheetBrown] (n1) at (1.0,-1.2) {GET u \#1};
+  \node[st=sheetRed] (n2) at (3.45,-1.2) {GET u \#2};
+  \draw[flow] (a2.south) -- (n1.north -| a2.south);
+  \draw[flow] (b2.south) -- (n2.north -| b2.south);
+  \node[lbl, text=sheetRed, anchor=west] at (4.75,-1.2) {duplicate work, last write wins};
+  \node[note, anchor=west, fill=white, inner sep=1pt] at (2.5,0) {A suspended: actor free};
+  % ---------------- FIX ----------------
+  \begin{scope}[xshift=87mm]
+  \node[ttl] at (-1.2,0.6) {Fix: claim the work \emph{before} the first \texttt{await}};
+  \foreach \y/\n in {0/call A, -0.6/call B, -1.2/network}
+    { \node[lane] at (0,\y) {\n}; \draw[sheetGrey!45] (0.05,\y) -- (7.95,\y); }
+  \node[st=sheetBlue] (c1) at (0.1,0) {miss};
+  \node[st=sheetBlue] (c2) at (0.85,0) {inFlight[u] = t};
+  \node[sus=sheetBlue] (c3) at (2.75,0) {await t.value};
+  \node[st=sheetBlue] (c4) at (6.35,0) {cache[u] = d};
+  \node[st=sheetGreen] (d1) at (4.2,-0.6) {inFlight hit};
+  \node[sus=sheetGreen] (d2) at (5.55,-0.6) {await t.value};
+  \node[st=sheetBrown] (m1) at (2.9,-1.2) {GET u — once, result shared};
+  \draw[flow] (c3.south) -- (m1.north -| c3.south);
+  \draw[flow, sheetGreen] (d2.south) |- (m1.east);
+  \end{scope}
+\end{tikzpicture}
+
+{\footnotesize\itshape\color{sheetBrown} Between two \texttt{await}s an actor
+method is atomic. Across one, assume \textbf{anything} in the actor changed. Swift
+chose reentrancy to rule out deadlocks (an actor awaiting a call back into itself);
+the price is interleaving.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Actor}: reference type, no inheritance, always \texttt{Sendable}.
+        Inside: synchronous access to \texttt{self}. Outside: \texttt{await} even
+        for a sync method (a possible hop). Arguments and results crossing the
+        boundary must be \texttt{Sendable} (or \texttt{sending}).
+  \item \textbf{Executor}: a default actor is a serial executor whose jobs run on
+        the \textbf{cooperative pool} — not a thread of its own.
+        \texttt{@MainActor}'s executor is the main thread. \textbf{Blocking}
+        inside an actor (semaphore, sync I/O) starves the pool.
+  \item \textbf{Global actor}: \texttt{@globalActor actor DB \{ static let
+        shared = DB() \}}; \texttt{@DB} on types/functions puts \emph{many}
+        declarations in \emph{one} domain. \texttt{MainActor} is one.
+  \item \textbf{Custom executor} (SE-0392, 5.9): \texttt{nonisolated var
+        unownedExecutor: UnownedSerialExecutor}. Back an actor with a
+        \texttt{DispatchSerialQueue} (iOS 17) to share a queue with a delegate
+        API (\texttt{AVCaptureSession}); in its callbacks use
+        \texttt{assumeIsolated \{\}} (traps if wrong) —
+        \texttt{preconditionIsolated()} / \texttt{assertIsolated()} to check.
+  \item \textbf{\texttt{nonisolated}} member: outside the domain, sees only
+        \texttt{let} Sendable state; needed for sync protocol requirements
+        (\texttt{Hashable}, \texttt{description}).
+  \item \textbf{\texttt{isolated} parameter}: \texttt{func f(\_ b: isolated Bank)}
+        runs on \texttt{b}'s executor, touching its state synchronously.
+        \textbf{\texttt{\#isolation}} (SE-0420):
+        \texttt{isolation: isolated (any Actor)? = \#isolation} = ``run on my
+        caller's actor'' — a generic async helper that never hops, so non-Sendable
+        closures are fine.
+  \item \textbf{\texttt{@unchecked Sendable} is acceptable} only when \emph{you}
+        synchronise every access (lock, \texttt{Mutex}, serial queue) or wrap a
+        type documented thread-safe — state the invariant in a comment, run TSan.
+  \item \textbf{\texttt{Mutex<State>}} (\texttt{Synchronization},
+        iOS 18\unverified): \texttt{\textasciitilde Copyable}, \texttt{Sendable};
+        \texttt{withLock \{ \$0 \ldots \}} is synchronous, so the lock can never be
+        held across an \texttt{await}. A \texttt{final class} with
+        \texttt{let m = Mutex(…)} is plain \texttt{Sendable} — no \texttt{@unchecked}.
+\end{itemize}
+
+\section{Why not always \texttt{@MainActor}?}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}L{0.17\linewidth}L{0.26\linewidth}L{0.26\linewidth}L{0.27\linewidth}@{}}
+\toprule
+ & \textbf{\texttt{@MainActor}} & \textbf{own \texttt{actor}} & \textbf{\texttt{Mutex}} \\ \midrule
+runs on & main thread & coop. pool, serial & caller's thread \\
+access & sync on main, else \texttt{await} & \texttt{await} & sync, blocks briefly \\
+across \texttt{await} & reentrant & reentrant & impossible \\
+parallel? & no — shares UI budget & vs other actors: yes & — \\
+use for & UI state, view models & cache + network, DB & tiny sections, sync APIs \\
+\bottomrule
+\end{tabular}}
+
+\section{Other reentrancy fixes}
+\begin{enumerate}
+  \item Mutate \emph{before} suspending (reserve, then \texttt{await}).
+  \item \textbf{Re-check} state after every \texttt{await}; never carry a local
+        copy of actor state across one.
+  \item Move the invariant into a \textbf{synchronous} actor method.
+\end{enumerate}
+
+\columnbreak
+
+\section{Example — dedupe via the in-flight Task}
+\begin{lstlisting}[language=SwiftSheet]
+actor ImageLoader {
+  private var cache: [URL: Data] = [:]
+  private var inFlight: [URL: Task<Data, any Error>] = [:]
+
+  func data(for u: URL) async throws -> Data {
+    if let hit = cache[u] { return hit }
+    if let t = inFlight[u] { return try await t.value } // join
+    let t = Task { try await URLSession.shared.data(from: u).0 }
+    inFlight[u] = t                // claimed BEFORE any await
+    defer { inFlight[u] = nil }
+    let d = try await t.value      // others may run here
+    cache[u] = d                   // still correct after re-entry
+    return d
+  }
+}
+func pay(_ n: Int, from b: isolated Bank) { b.balance -= n }
+
+import Synchronization
+final class Metrics: Sendable {    // no @unchecked needed
+  private let hits = Mutex<[String: Int]>([:])
+  func record(_ k: String) {
+    hits.withLock { $0[k, default: 0] += 1 } }
+}
+actor Camera {                     // shares the capture queue
+  let queue = DispatchSerialQueue(label: "camera")
+  nonisolated var unownedExecutor: UnownedSerialExecutor {
+    queue.asUnownedSerialExecutor() }
+}
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``Actors make it thread-safe'' — they remove \emph{data} races, not
+        \emph{logic} races — reentrancy reorders state between awaits.}
+  \trap{Sync callers (delegate callback, \texttt{description}) cannot
+        \texttt{await} an actor: \texttt{Mutex}, or \texttt{assumeIsolated} on the
+        right executor.}
+  \trap{Waiting on actor work with a semaphore from the pool can deadlock:
+        never block in async code.}
+  \trap{Everything on \texttt{@MainActor} = no parallelism and hangs; one actor
+        per \emph{resource}, not one per screen.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``An actor is a lock that lets go at every \texttt{await}.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} concurrency (GCD, bank-balance reentrancy) ·
+swift6-strict-concurrency (Sendable, \texttt{sending}) · async-sequences-streams ·
+instruments-performance (hangs) · concurrency-patterns}
+
+\end{document}

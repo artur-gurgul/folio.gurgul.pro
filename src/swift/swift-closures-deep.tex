@@ -1,0 +1,196 @@
+% swift-closures-deep.tex — closure syntax, escaping vs non-escaping,
+% withoutActuallyEscaping, @autoclosure, capture semantics (variables vs capture
+% lists), the loop trap, closures as reference types, @Sendable, trailing closures,
+% function types. Retain cycles are on ios-swift/arc-ownership.tex — only referenced.
+% Sources (checked 2026-10-06):
+%   docs.swift.org/swift-book Closures (capture semantics, escaping, autoclosures; optional
+%     closure parameters are implicitly escaping) · Expressions › Capture Lists
+%   developer.apple.com/documentation/swift/withoutactuallyescaping(_:do:) (runtime check that
+%     the closure did not escape)
+%   swift-evolution SE-0269 (implicit self, 5.3) · SE-0365 (implicit self after
+%     guard let self, 5.8) · SE-0279 (multiple trailing closures, 5.3) · SE-0302 (Sendable /
+%     @Sendable closures, 5.5) · SE-0430 (sending, 6.0) — checked against the evolution index
+% @labels: area=swift kind=concept platform=apple topic=language,memory discussion=153
+% @tags: closures, capture-list, escaping, non-escaping, autoclosure, withoutactuallyescaping, weak-self, sendable-closure, trailing-closures, retain-cycle, loop-capture
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,for,while,
+    if,else,return,guard,self,nil,private,true,false,in,weak,unowned,async,await,
+    throws,rethrows,try,static,some,Self,String,Int,Bool,Void,Data},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+% One \hbox per character defeats the mono font's ligatures (?? && ===).
+\makeatletter
+\DeclareRobustCommand\op[1]{\texttt{\@tfor\@c:=#1\do{\hbox{\@c}}}}
+\makeatother
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\scriptsize, anchor=west},
+  cv/.style={draw=sheetBlue, fill=sheetBlue!8, font=\ttfamily\tiny, minimum height=4.4mm,
+             minimum width=8mm, inner sep=1pt},
+  ctx/.style={box, draw=sheetOrange, fill=sheetOrange!10, font=\ttfamily\tiny, inner sep=2pt},
+  heap/.style={box, draw=sheetBrown, fill=sheetBrown!12, font=\ttfamily\tiny, inner sep=2pt},
+  ptr/.style={->, thick, draw=sheetGrey},
+  wk/.style={->, thick, dashed, draw=sheetGreen!70!black},
+}
+
+\begin{document}
+
+\sheettitle{Closures in depth — capture, escaping, autoclosure, Sendable}{swift · folio}
+
+\oneliner{A closure is a \textbf{function + a context} holding what it captured, and it is a
+\textbf{reference type}. By default it captures \textbf{variables}, not values (a captured
+\texttt{var} moves into a shared heap box); a \textbf{capture list} copies values \emph{when the
+closure is created}. Parameters are \textbf{non-escaping} by default — \texttt{@escaping} says
+the closure may outlive the call, and that is what brings heap contexts, ARC and cycles.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── A: shared box ──
+  \node[ttl] at (0,3.3) {A \ \texttt{let d = c} — one context, shared};
+  \node[lbl, anchor=east] at (0.35,2.6) {\texttt{c}}; \node[cv, anchor=west] (c1) at (0.4,2.6) {fn};
+  \node[cv, anchor=west] (c2) at (c1.east) {ctx};
+  \node[lbl, anchor=east] at (0.35,1.7) {\texttt{d}}; \node[cv, anchor=west] (d1) at (0.4,1.7) {fn};
+  \node[cv, anchor=west] (d2) at (d1.east) {ctx};
+  \node[ctx] (cx) at (3.05,2.15) {context};
+  \node[heap] (bx) at (4.6,2.15) {box: n = 3};
+  \draw[ptr] (c2.east) -- (cx); \draw[ptr] (d2.east) -- (cx); \draw[ptr] (cx) -- (bx);
+  \node[lbl, text=sheetBrown] at (2.6,1.05) {\texttt{makeCounter}'s frame is gone —\\
+        the escaping capture moved \texttt{n} to the heap};
+  \node[lbl] at (2.6,0.35) {\texttt{c(); c(); d()} $\to$ \textbf{3}: copying a closure\\copies the
+        \emph{reference}, never the state};
+  % ── B: variable vs capture list ──
+  \begin{scope}[xshift=57mm]
+  \node[ttl] at (0,3.3) {B \ What the context holds};
+  \node[heap] (x) at (4.3,2.65) {var x = 99};
+  \node[cv, minimum width=17mm] (live) at (0.9,2.65) {\{ print(x) \}};
+  \node[ctx] (lc) at (2.45,2.65) {ref to x};
+  \draw[ptr] (live) -- (lc); \draw[ptr] (lc) -- (x);
+  \node[lbl, anchor=west, text=sheetBrown] at (3.55,2.2) {sees later writes $\to$ 99};
+  \node[cv, minimum width=17mm] (snap) at (0.9,1.6) {\{ [x] in \ldots \}};
+  \node[ctx] (sc) at (2.45,1.6) {x = 1 (copy)};
+  \draw[ptr] (snap) -- (sc);
+  \node[lbl, anchor=west] at (3.35,1.6) {copied at \emph{creation} $\to$ 1};
+  \node[cv, minimum width=17mm] (wk) at (0.9,0.55) {\{ [weak self] \}};
+  \node[ctx] (wc) at (2.45,0.55) {weak self?};
+  \node[box, font=\ttfamily\tiny, inner sep=2pt] (vc) at (4.3,0.55) {VC};
+  \draw[ptr] (wk) -- (wc); \draw[wk] (wc) -- (vc);
+  \node[lbl, anchor=west] at (3.3,0.05) {non-owning; \texttt{nil} once VC dies};
+  \end{scope}
+  % ── C: lifetimes ──
+  \begin{scope}[xshift=112mm]
+  \node[ttl] at (0,3.3) {C \ Escaping = outlives the call};
+  \draw[thick, sheetBlue] (0.2,2.55) -- (3.1,2.55);
+  \draw[thick, sheetBlue] (0.2,2.45) -- (0.2,2.65); \draw[thick, sheetBlue] (3.1,2.45) -- (3.1,2.65);
+  \node[lbl, text=sheetBlue] at (0.2,2.85) {\texttt{f(g)} called}; \node[lbl, text=sheetBlue] at (3.1,2.85) {\texttt{f} returns};
+  \node[circle, fill=sheetGreen, inner sep=1.5pt] at (1.3,2.55) {};
+  \node[lbl, text=sheetGreen!50!black, align=left, anchor=north west] at (0.2,2.3)
+        {\textbf{non-escaping} (default): \texttt{g} runs only inside\\the window — context may
+         live on the stack, no\\retain, implicit \texttt{self} is fine};
+  \draw[thick, sheetOrange, dashed] (3.1,2.55) -- (4.9,2.55);
+  \node[circle, fill=sheetOrange, inner sep=1.5pt] at (4.6,2.55) {};
+  \node[lbl, text=sheetOrange] at (4.6,2.85) {later};
+  \node[lbl, text=sheetOrange!80!black, align=left, anchor=north west] at (0.2,1.15)
+        {\textbf{\texttt{@escaping}}: stored / async / \texttt{Task} — heap\\context,
+         captures retained $\to$ cycles possible;\\explicit \texttt{self.} required (class)};
+  \end{scope}
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Capture}: without a list a closure refers to the \emph{variable}; reads and
+        writes are shared with the enclosing scope. \textbf{\texttt{[x]}} is an immutable copy made
+        when the closure is \emph{created}; for a class it copies the pointer (same object).
+        \texttt{[weak self]}, \texttt{[unowned self]}, \texttt{[y = expr]} are the same mechanism.
+  \item \textbf{Non-escaping by default} (Swift 3, SE-0103): may only be called during the call,
+        cannot be stored or captured by an escaping closure. An \textbf{optional} closure
+        parameter \texttt{(() -> Void)?} is \textbf{implicitly escaping}.
+  \item \textbf{Implicit \texttt{self}} in escaping closures: allowed when \texttt{self} is a value
+        type or listed as \texttt{[self]} (5.3, SE-0269), and after
+        \texttt{guard let self} inside \texttt{[weak self]} (5.8, SE-0365).
+  \item \textbf{\texttt{withoutActuallyEscaping(f) \{ g in \ldots \}}} lends a non-escaping
+        \texttt{f} to an API typed \texttt{@escaping} (e.g. \texttt{lazy.filter}); at the end of the
+        block the runtime checks \texttt{g} was not kept — if it was, \textbf{crash}.
+  \item \textbf{\texttt{@autoclosure () -> T}}: the caller writes a plain expression, the callee
+        decides \emph{whether and when} to evaluate it (\texttt{assert}, \texttt{precondition},
+        \op{??}, \op{\&\&}, \op{||}, \texttt{XCTAssert*}, \texttt{@StateObject(wrappedValue:)}).
+        Forward it by calling it: \texttt{inner(msg())}. Combine with \texttt{@escaping} to store it.
+  \item \textbf{\texttt{@Sendable}} (5.5, SE-0302): may run concurrently, so every capture must
+        be \texttt{Sendable} and a local \texttt{var} can't be captured at all (not even read) —
+        copy it with \texttt{[x]}. Swift 6: \texttt{Task \{\}} takes a \texttt{sending} closure, so a
+        non-Sendable value may go in if nothing uses it afterwards.
+  \item \textbf{Function types}: \texttt{(Int) async throws -> Int}; \texttt{rethrows} HOFs
+        (\texttt{map}). \texttt{Type.method} is curried \texttt{(Type) -> (Args) -> R};
+        \texttt{obj.method} is a closure that \textbf{retains} \texttt{obj}.
+  \item \textbf{Trailing closures}: last closure after the parens; \textbf{multiple} (5.3,
+        SE-0279): first unlabeled, the rest keep their labels.
+\end{itemize}
+
+\section{Example — the syntax ladder}
+\begin{lstlisting}[language=SwiftSheet]
+names.sorted(by: { (a: String, b: String) -> Bool in
+  return a < b })                     // full form
+names.sorted(by: { a, b in a < b })   // implicit return
+names.sorted { $0 < $1 }             // shorthand + trailing
+names.sorted(by: <)                  // operator = function
+users.map(\.name)                    // key path (5.2)
+UIView.animate(withDuration: 0.3) { v.alpha = 0 }
+  completion: { _ in v.removeFromSuperview() }  // 2 trailing
+\end{lstlisting}
+
+\columnbreak
+
+\section{Example — capture}
+\begin{lstlisting}[language=SwiftSheet]
+func makeCounter() -> () -> Int {
+  var n = 0                       // boxed: outlives the frame
+  return { n += 1; return n } }
+let c = makeCounter(); let d = c  // one shared context
+c(); c(); print(d())              // 3
+var x = 1
+let live = { print(x) }           // captures the variable
+let snap = { [x] in print(x) }    // copies the value now
+x = 99; live(); snap()            // 99, then 1
+var fs: [() -> Int] = []
+for i in 0..<3 { fs.append { i } }       // new i each pass: 0 1 2
+var j = 0
+while j < 3 { fs.append { j }; j += 1 }  // one j: 3 3 3
+func debugLog(_ m: @autoclosure () -> String) {
+  if isDebug { print(m()) } }            // m may never run
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{Loop trap}: \texttt{for-in} makes a \emph{fresh} binding per iteration
+        ($\to$ 0 1 2); one \texttt{var} mutated by a \texttt{while} is shared ($\to$ 3 3 3).}
+  \trap{\textbf{Closures have no identity}: not \texttt{Equatable}, no \op{===} — to remove a
+        handler, register it under a token/ID.}
+  \trap{\texttt{button.onTap = handleTap} passes \texttt{self.handleTap}: \texttt{self} is
+        retained strongly $\to$ cycle. Wrap it: \texttt{\{ [weak self] in self?.handleTap() \}}.}
+  \trap{An escaping closure in a struct's \texttt{mutating} method cannot capture
+        \texttt{self} (it is \texttt{inout}) — copy the values you need first.}
+  \trap{A trailing closure inside an \texttt{if}/\texttt{guard} condition confuses the parser:
+        \texttt{if xs.contains(where: \{ \$0 > 3 \}) \{}.}
+  \trap{\texttt{@autoclosure} hides laziness from the caller: a side effect in the argument may
+        run later, twice, or never.}
+  \trap{\texttt{defer} is not a closure: it reads the variable's value at scope exit.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Variables by reference, lists by value, escaping to the heap.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} ARC \& ownership (retain cycles,
+\texttt{weak}/\texttt{unowned}) · Swift 6 strict concurrency (Sendable, \texttt{sending}) ·
+operators (\op{\&\&} short-circuit) · key paths as functions · result builders}
+
+\end{document}

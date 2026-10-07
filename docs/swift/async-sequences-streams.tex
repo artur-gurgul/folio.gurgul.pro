@@ -1,0 +1,192 @@
+% async-sequences-streams.tex — AsyncSequence / AsyncIteratorProtocol, for try await,
+% AsyncStream + AsyncThrowingStream (continuation, yield, finish, onTermination),
+% buffering policies, makeStream(of:), bridging delegates / NotificationCenter / Combine,
+% consumers split values, cancellation, swift-async-algorithms.
+% Sources (checked 2026-10-06):
+%   swift-evolution SE-0314 (AsyncStream: default .unbounded; yield returns immediately;
+%     "concurrent iteration is considered a programmer error"; build closure runs once) ·
+%     SE-0421 (Failure + next(isolation:), Swift 6.0) · SE-0388 (makeStream, 5.9) — numbers
+%     and versions checked against download.swift.org/swift-evolution/v1/evolution.json
+%   developer.apple.com/documentation/foundation/notificationcenter/notifications(named:object:)
+%     (iOS 15.0) · /swift/asyncstream (YieldResult, Termination, init(unfolding:))
+%   github.com/apple/swift-async-algorithms (AsyncChannel: send suspends until consumed)
+% @labels: area=swift kind=api platform=apple topic=concurrency discussion=144
+% @tags: asyncsequence, asyncstream, asyncthrowingstream, continuation, buffering-policy, makestream, ontermination, backpressure, asyncchannel, swift-async-algorithms, for-await, delegate-bridging
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,for,in,
+    true,false,AnyObject,Void,String,Bool,Task},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=6mm},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  bc/.style={draw=sheetGrey, minimum width=4mm, minimum height=3.6mm, inner sep=0pt,
+             font=\ttfamily\tiny, fill=sheetBlue!8},
+  dc/.style={bc, fill=sheetRed!10, text=sheetRed, draw=sheetRed!60},
+  pl/.style={font=\scriptsize\ttfamily, anchor=east, inner sep=1pt},
+}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\sheettitle{AsyncSequence \& AsyncStream}{swift · folio}
+
+\oneliner{An \texttt{AsyncSequence} is a \textbf{pull}-based sequence whose iterator's
+\texttt{next()} is \texttt{async}: \texttt{for try await} suspends until the next element or
+\texttt{nil} (end). \texttt{AsyncStream} turns a \textbf{push} source (delegate, callback,
+notification) into one: the producer \texttt{yield}s into a \textbf{continuation}, values wait
+in a \textbf{buffer} (default \textbf{unbounded}, \textbf{no backpressure}), one consumer task
+pulls them, and \texttt{onTermination} tears the source down.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── pipeline ──
+  \node[font=\bfseries\small, anchor=west] at (-0.1,2.75) {Push in, pull out};
+  \node[sb, draw=sheetBrown, fill=sheetBrown!10, minimum width=25mm] (prod) at (1.2,2.1)
+    {producer: delegate /\\callback, any thread};
+  \foreach \i/\v in {0/1,1/2,2/3} \node[bc] at (4.2+0.42*\i,2.1) {\v};
+  \node[draw=sheetBlue, thick, rounded corners=1pt, minimum width=14mm, minimum height=5.5mm] (buf) at (4.62,2.1) {};
+  \node[lbl, above] at (buf.north) {buffer};
+  \node[sb, draw=sheetGreen!70!black, fill=sheetGreen!10, minimum width=29mm] (cons) at (8.5,2.1)
+    {\texttt{for await x in stream}\\one consumer task};
+  \draw[hot] (prod) -- node[lbl, above]{\texttt{yield(x)}} node[lbl, below]{never waits} (buf);
+  \draw[flow, <-] (buf.east) -- node[lbl, above]{\texttt{next()}} node[lbl, below]{suspends if empty} (cons.west);
+  % ── buffering policies: 5 values yielded, consumer busy ──
+  \node[lbl, anchor=west, font=\scriptsize] at (-0.1,1.35) {\textbf{yield 1…5 while the consumer is busy:}};
+  \node[pl] at (2.75,0.95) {.unbounded};
+  \foreach \v in {1,...,5} \node[bc] at (2.65+0.42*\v,0.95) {\v};
+  \node[lbl, anchor=west, text=sheetRed] at (5.05,0.95) {default: grows without limit};
+  \node[pl] at (2.75,0.5) {.bufferingNewest(3)};
+  \foreach \v in {1,2} \node[dc] at (2.65+0.42*\v,0.5) {\v};
+  \foreach \v in {3,4,5} \node[bc] at (2.65+0.42*\v,0.5) {\v};
+  \node[lbl, anchor=west] at (5.05,0.5) {oldest dropped: latest wins};
+  \node[pl] at (2.75,0.05) {.bufferingOldest(3)};
+  \foreach \v in {1,2,3} \node[bc] at (2.65+0.42*\v,0.05) {\v};
+  \foreach \v in {4,5} \node[dc] at (2.65+0.42*\v,0.05) {\v};
+  \node[lbl, anchor=west] at (5.05,0.05) {newcomers dropped};
+  % ── two consumers split ──
+  \node[sb, minimum width=11mm] (st) at (8.35,0.95) {stream};
+  \node[sb, draw=sheetGreen!70!black, fill=sheetGreen!10] (ca) at (9.55,1.3) {A: 1, 3};
+  \node[sb, draw=sheetGreen!70!black, fill=sheetGreen!10] (cb) at (9.55,0.55) {B: 2, 4};
+  \draw[flow] (st) -- (ca); \draw[flow] (st) -- (cb);
+  \node[lbl, text=sheetRed] at (8.95,0.0) {two loops \textbf{split} values —\\not a broadcast};
+  % ── termination ──
+  \draw[sheetGrey!40] (10.3,2.85) -- (10.3,-0.3);
+  \node[font=\bfseries\small, anchor=west] at (10.4,2.75) {Who ends it — \texttt{onTermination} runs once};
+  \node[sb, minimum width=24mm, anchor=west] (t1) at (10.45,2.1) {producer \texttt{finish()}};
+  \node[sb, minimum width=24mm, anchor=west] (t2) at (10.45,1.35) {consumer task \texttt{cancel()}};
+  \node[sb, minimum width=24mm, anchor=west] (t3) at (10.45,0.6) {\texttt{break} / iterator dropped};
+  \node[sb, draw=sheetOrange, fill=sheetOrange!10, minimum width=20mm, text width=19mm] (ot) at (15.35,1.35)
+    {\texttt{onTermination}\\stop the source:\\\texttt{stopUpdating\ldots}\\\texttt{removeObserver}};
+  \draw[flow] (t1.east) -- node[lbl, above, sloped]{\texttt{.finished}} (ot);
+  \draw[flow] (t2.east) -- node[lbl, above]{\texttt{.cancelled}} (ot);
+  \draw[flow] (t3.east) -- node[lbl, below, sloped]{\texttt{.cancelled}} (ot);
+  \node[lbl, anchor=west, align=left] at (10.45,-0.05)
+    {buffered values still drain after \texttt{finish()}, then \texttt{nil};\\
+     \texttt{yield} after termination $\to$ \texttt{.terminated}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \texttt{AsyncSequence.makeAsyncIterator()} returns an iterator
+        (\texttt{AsyncIteratorProtocol}):
+        \texttt{mutating func next() async throws -> Element?}; \texttt{nil} ends it.
+        \texttt{for try await x in s} = \texttt{var it = s.makeAsyncIterator(); while let x
+        = try await it.next()}. Swift 6 (SE-0421) adds a \texttt{Failure} type and
+        \texttt{next(isolation:)}; non-throwing sequences drop the \texttt{try}.
+  \item \textbf{Lazy, pull-driven}: \texttt{map}, \texttt{filter}, \texttt{compactMap},
+        \texttt{flatMap}, \texttt{prefix}, \texttt{dropFirst}, \texttt{first(where:)},
+        \texttt{reduce} run per element as the consumer asks.
+  \item \texttt{AsyncStream(Int.self, bufferingPolicy:) \{ cont in \}} — the build closure
+        runs \textbf{once, immediately}. Better (Swift 5.9, SE-0388):
+        \texttt{let (stream, cont) = AsyncStream.makeStream(of: Int.self)}.
+  \item The \textbf{continuation} is \texttt{Sendable}: \texttt{yield} from any thread.
+        \texttt{yield} returns \texttt{.enqueued(remaining:)} / \texttt{.dropped(x)} /
+        \texttt{.terminated}. \texttt{finish()} ends;
+        \texttt{AsyncThrowingStream}'s \texttt{finish(throwing:)} makes the loop throw.
+  \item \textbf{No backpressure}: \texttt{yield} never suspends the producer. Need it? A
+        custom iterator, or \texttt{AsyncChannel} (\texttt{await send} waits for the
+        consumer). Pull-style producer: \texttt{AsyncStream(unfolding: \{ await
+        read() \})}.
+  \item \textbf{Cancellation}: cancel the consuming task → the stream's \texttt{next()}
+        returns \texttt{nil} (loop just ends) → \texttt{onTermination(.cancelled)}. A
+        hand-written iterator must check \texttt{Task.isCancelled} itself.
+\end{itemize}
+
+\section{Example — delegate → stream}
+\begin{lstlisting}[language=SwiftSheet]
+final class LocationFeed: NSObject, CLLocationManagerDelegate {
+  private let manager = CLLocationManager()
+  private var cont: AsyncStream<CLLocation>.Continuation?
+  func updates() -> AsyncStream<CLLocation> {
+    let (stream, cont) = AsyncStream.makeStream(
+      of: CLLocation.self, bufferingPolicy: .bufferingNewest(1))
+    cont.onTermination = { [weak self] _ in      // runs once
+      self?.manager.stopUpdatingLocation() }
+    self.cont = cont; manager.delegate = self
+    manager.startUpdatingLocation(); return stream }
+  func locationManager(_ m: CLLocationManager,
+                       didUpdateLocations l: [CLLocation]) {
+    l.forEach { cont?.yield($0) } }              // push
+}
+let t = Task { for await loc in feed.updates() { show(loc) } }
+t.cancel()          // loop ends, GPS stops via onTermination
+\end{lstlisting}
+
+\columnbreak
+
+\section{Bridging — which tool}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}L{22mm}L{53mm}@{}}
+\toprule
+\textbf{Source} & \textbf{Bridge} \\
+\midrule
+one-shot callback & \texttt{withCheckedThrowingContinuation} — not a stream \\
+delegate, repeated callback & \texttt{AsyncStream} / \texttt{AsyncThrowingStream} + \texttt{onTermination} \\
+NotificationCenter & \texttt{.notifications(named:)} (iOS 15) \\
+Combine publisher & \texttt{.values} (iOS 15) — demand 1 at a time: a subject's sends
+  during the loop body are \textbf{dropped}; add \texttt{.buffer(size:prefetch:whenFull:)} \\
+bytes, files & \texttt{URLSession.bytes(from:)}, \texttt{url.lines}, \texttt{FileHandle.bytes} \\
+\bottomrule
+\end{tabular}}
+
+\section{swift-async-algorithms (Apple package)}
+\texttt{merge(a, b)} (interleave) · \texttt{combineLatest(a, b)} · \texttt{zip(a, b)} ·
+\texttt{chain(a, b)} · \texttt{.debounce(for:)} (search box) ·
+\texttt{.chunks(ofCount:)} / \texttt{.chunked(by:)} (batch uploads) ·
+\texttt{.removeDuplicates()} · \texttt{AsyncChannel} (back-pressured) ·
+\texttt{AsyncTimerSequence}.
+
+\section{Traps}
+\begin{itemize}
+  \trap{Default \texttt{.unbounded} + fast producer + slow consumer = memory grows; pick
+        \texttt{.bufferingNewest(n)} for ``latest state''.}
+  \trap{Two \texttt{for await} loops on one stream: each value goes to \textbf{one} of
+        them. Fan-out = one stream (continuation) per subscriber.}
+  \trap{No \texttt{finish()} and no cancel → the consuming task waits forever.}
+  \trap{A stored \texttt{Task} you never cancel keeps the source running;
+        \texttt{onTermination} capturing \texttt{self} strongly → cycle.}
+  \trap{\texttt{break} ends \emph{your} loop; a hand-rolled producer that ignores
+        cancellation keeps working.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Yield pushes, next pulls, the buffer decides what's lost, onTermination cleans up.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} concurrency (Task, cancellation) ·
+swift6-strict-concurrency (\texttt{Sendable} continuations) · concurrency-patterns
+(producer–consumer, buffering) · observation-and-combine · swift-time-clock (debounce,
+timers)}
+
+\end{document}

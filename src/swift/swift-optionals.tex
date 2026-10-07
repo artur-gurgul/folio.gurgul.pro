@@ -1,0 +1,195 @@
+% swift-optionals.tex — Optional as an enum, binding, chaining, ??, !, IUO,
+% double optionals, map/flatMap, pattern matching, Optional vs ownership.
+% Sources (checked 2026-10-06):
+%   docs.swift.org/swift-book The Basics (Optionals, IUO, forced unwrapping) + Optional
+%     Chaining + Basic Operators (?? is right-associative: a ?? b ?? c = a ?? (b ?? c))
+%   swift-evolution SE-0054 (IUO as an attribute; an inferred IUO becomes T?) · SE-0230 (try?
+%     flattens nested optionals, 5.0) · SE-0345 (if let x shorthand, 5.7) — checked against
+%     the evolution index
+%   developer.apple.com/documentation/swift/optional · /swift/dictionary/subscript(_:)
+%     (assigning nil removes the key) · /swift/memorylayout (extra inhabitants: Int? is 9 bytes,
+%     a class reference? stays pointer-sized)
+% @labels: area=swift kind=concept platform=apple topic=language discussion=161
+% @tags: optional, if-let, guard-let, optional-chaining, nil-coalescing, force-unwrap, iuo, double-optional, flatmap, compactmap, extra-inhabitants
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,case,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,none,
+    switch,default,where,in,for,true,false,Int,String,Bool},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={??}{{\hbox{?}\hbox{?}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2 {<=}{{\hbox{<}\hbox{=}}}2}
+
+% 0xProto ligatures: one \hbox per character (\QQ etc. for use INSIDE \texttt)
+\newcommand\QQ{\hbox{?}\hbox{?}}
+\newcommand\EQ{\hbox{=}\hbox{=}}
+\newcommand\qq{\texttt{\QQ}}
+\newcommand\arr{\texttt{\hbox{-}\hbox{>}}}
+\newcommand\neqq{\texttt{\hbox{!}\hbox{=}}}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5mm},
+  lk/.style={sb, font=\ttfamily\scriptsize},
+  nilb/.style={sb, draw=sheetRed, fill=sheetRed!7, font=\ttfamily\scriptsize},
+  okb/.style={sb, draw=sheetGreen, fill=sheetGreen!10, font=\ttfamily\scriptsize},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\small, anchor=west},
+  byte/.style={draw=sheetGrey, minimum height=4.5mm, minimum width=3.2mm, inner sep=0,
+    font=\tiny, fill=sheetBlue!8},
+  tagb/.style={byte, fill=sheetOrange!25},
+}
+
+\begin{document}
+
+\sheettitle{Optionals — an enum, not a null pointer}{swift · folio}
+
+\oneliner{\texttt{T?} is sugar for the stdlib \textbf{\texttt{enum Optional<Wrapped> \{ case none; case some(Wrapped) \}}};
+\texttt{nil} is \texttt{.none} via \texttt{ExpressibleByNilLiteral}. Absence is part of the
+\textbf{type}, so the compiler forces you to unwrap — binding, chaining, \qq, \texttt{map}, pattern
+matching — and \texttt{!} is an explicit bet that traps on \texttt{nil}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {5.25,11.0} \draw[sheetGrey!40] (\x,1.45) -- (\x,-1.75);
+  % ── A: layout ──
+  \node[hd] at (0,1.3) {\textcolor{sheetBlue}{A} it is an enum: tag + payload};
+  \node[lbl, anchor=west] at (0,0.85) {\texttt{Int?} = 8-byte payload + 1 tag byte};
+  \foreach \i in {0,...,7} \node[byte] at (0.25+\i*0.32,0.35) {};
+  \node[tagb] at (0.25+8*0.32,0.35) {t};
+  \node[lbl, anchor=west] at (3.1,0.35) {size 9, stride 16};
+  \node[lbl, anchor=west] at (0,-0.2) {\texttt{UIView?} = one pointer, \texttt{.none} = \texttt{0x0}};
+  \foreach \i in {0,...,7} \node[byte, fill=sheetGreen!15] at (0.25+\i*0.32,-0.7) {};
+  \node[lbl, anchor=west] at (2.8,-0.7) {size 8: spare ``extra\\inhabitant'' = free tag};
+  \node[lbl, text=sheetBrown] at (2.55,-1.4) {\texttt{MemoryLayout<Int?>.size \EQ{} 9} · Optional of a class costs 0 bytes};
+  % ── B: chaining ──
+  \node[hd] at (5.35,1.3) {\textcolor{sheetBlue}{B} chaining short-circuits};
+  \node[lk] (u) at (6.0,0.55) {user?};
+  \node[lk] (a) at (7.45,0.55) {.address?};
+  \node[lk] (s) at (8.95,0.55) {.street};
+  \node[okb] (c) at (10.3,0.55) {.count};
+  \draw[flow] (u) -- (a); \draw[flow] (a) -- (s); \draw[flow] (s) -- (c);
+  \node[nilb] (n) at (7.45,-0.55) {nil};
+  \draw[hot, draw=sheetRed] (u.south) -- node[lbl, left]{nil} (n.west);
+  \draw[hot, draw=sheetRed] (a.south) -- node[lbl, right]{nil} (n.north);
+  \node[lbl, text=sheetGreen!60!black] at (10.3,-0.1) {wrapped:\\\texttt{Int?}};
+  \node[lbl] at (8.2,-1.3) {rest of the chain \textbf{never evaluated}; result is \textbf{always}\\
+    Optional, flattened to ONE level (\texttt{Int?}, never \texttt{Int\QQ})};
+  % ── C: double optional ──
+  \node[hd] at (11.1,1.3) {\textcolor{sheetBlue}{C} \texttt{[String: Int?]} lookup = \texttt{Int\QQ}};
+  \node[okb, anchor=west] at (11.1,0.7) {d["a"]};
+  \node[lbl, anchor=west] at (12.2,0.7) {\texttt{.some(.some(1))} key, value};
+  \node[sb, anchor=west, draw=sheetOrange, fill=sheetOrange!10, font=\ttfamily\scriptsize] at (11.1,0.1) {d["b"]};
+  \node[lbl, anchor=west] at (12.2,0.1) {\texttt{.some(.none)} key, value nil};
+  \node[nilb, anchor=west] at (11.1,-0.5) {d["c"]};
+  \node[lbl, anchor=west] at (12.2,-0.5) {\texttt{.none} \hspace{8.5mm} no key};
+  \node[lbl, text=sheetRed, anchor=west] at (11.1,-1.2) {\texttt{if let v = d["b"]} binds the OUTER layer:\\
+    \texttt{v: Int?} = nil. \texttt{d["b"] = nil} \textbf{removes} the key;\\\texttt{d["b"] = .some(nil)} stores nil.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Binding:} \texttt{if let x = opt}, \texttt{guard let x = opt else \{ return \}}
+        (\texttt{x} stays in scope \emph{after} the guard). Swift 5.7 shorthand
+        (SE-0345): \texttt{if let x \{\}} / \texttt{guard let x else \{\}} = \texttt{if let x = x}.
+        Binds an immutable non-optional; \texttt{if var} for a mutable copy.
+  \item \textbf{Chaining} \texttt{a?.b?.c()}: first \texttt{nil} stops the rest (incl.
+        argument evaluation); the result is \texttt{T?}. A \texttt{Void} method gives
+        \texttt{Void?} — compare to \texttt{nil} to know if it ran; \texttt{a?.x = 5}
+        also returns \texttt{Void?}.
+  \item \textbf{\qq}: \texttt{func \QQ<T>(T?, @autoclosure () throws \arr{} T) rethrows \arr{} T}
+        (+ an overload returning \texttt{T?}). Right side evaluated \textbf{only if nil};
+        right-associative: \texttt{a \QQ{} b \QQ{} c} = \texttt{a \QQ{} (b \QQ{} c)}.
+  \item \textbf{\texttt{!}} traps: \emph{``Fatal error: Unexpectedly found nil while
+        unwrapping an Optional value''} (\texttt{EXC\_BREAKPOINT} on arm64). Only for
+        invariants: a literal \texttt{URL(string:)!}, a bundled resource.
+  \item \textbf{IUO \texttt{T!}} (SE-0054, Swift 4.2) is \textbf{not a type}: it is
+        \texttt{Optional<T>} + an attribute ``force at use if needed''. \texttt{let y = iuo}
+        infers \texttt{y: T?}; only a use needing \texttt{T} forces. For
+        late-set-but-always-there values: \texttt{@IBOutlet}, UIKit \texttt{window}.
+  \item \textbf{\texttt{map}} \texttt{(T) \arr{} U} $\to$ \texttt{U?};
+        \textbf{\texttt{flatMap}} \texttt{(T) \arr{} U?} $\to$ \texttt{U?} (no \texttt{U\QQ}).
+        \texttt{s.map \{ Int(\$0) \}} is \texttt{Int\QQ}; \texttt{flatMap} gives \texttt{Int?}.
+  \item \textbf{\texttt{try?}} flattens since Swift 5 (SE-0230): \texttt{try?} on
+        \texttt{throws \arr{} Int?} is \texttt{Int?} (Swift 4: \texttt{Int\QQ}).
+  \item \textbf{Conformances:} \texttt{Optional} is Equatable/Hashable/Codable when
+        \texttt{Wrapped} is — but \textbf{never Comparable}: no \texttt{<} on \texttt{Int?}.
+\end{itemize}
+
+\section{Example — every unwrap}
+\begin{lstlisting}[language=SwiftSheet]
+func greet(_ name: String?) -> String {
+  guard let name else { return "anon" } // 5.7 shorthand
+  return "hi " + name                   // name: String
+}
+let n: Int? = Int("42")                 // failable init
+let a = n ?? 0                          // Int
+let b = n.map { $0 * 2 }                // Int?
+switch n {
+case .some(let x) where x > 0: print(x) // enum case pattern
+case let x?: print("<= 0", x)           // x? == .some(x)
+case nil: print("none")                 // == .none
+}
+for case let id? in [1, nil, 3] { }     // skips nils
+if case .some(let x) = n { print(x) }
+\end{lstlisting}
+
+\section{Optional $\neq$ ownership}
+\begin{itemize}
+  \item \texttt{var d: Delegate?} is a \textbf{strong} reference — ``optional'' says
+        \emph{may be absent}, not \emph{does not retain}.
+  \item \texttt{weak var} \textbf{must} be \texttt{Optional} (\texttt{var}) because ARC
+        sets it to \texttt{nil} on dealloc; \texttt{unowned} may be optional (Swift 5)
+        but is never nilled — access after dealloc traps.
+  \item Optional models \emph{absence}; \texttt{throws}/\texttt{Result} model
+        \emph{failure with a reason}. Don't smuggle errors into \texttt{nil}.
+\end{itemize}
+
+\section{Optionals meet the APIs}
+\begin{itemize}
+  \item \texttt{compactMap} drops \texttt{nil}s: \texttt{["1","x"].compactMap(Int.init)} $\to$ \texttt{[1]}
+        (\texttt{map} would give \texttt{[Int?]}).
+  \item Lookups return optionals: \texttt{first(where:)}, \texttt{firstIndex(of:)},
+        \texttt{dict[k]}, \texttt{Array.first}/\texttt{last}; \texttt{dict[k, default: 0] += 1}
+        avoids the unwrap.
+  \item Synthesized \texttt{Codable}: an optional property uses \texttt{decodeIfPresent}
+        (missing key $\to$ \texttt{nil}) and \texttt{encodeIfPresent} (\texttt{nil} $\to$ key
+        \textbf{omitted}, not \texttt{null}).
+  \item \texttt{"\textbackslash(opt)"} prints \texttt{Optional(5)} + a compiler warning —
+        unwrap or use \texttt{String(describing:)} knowingly.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{d["k"]?.count} is \texttt{Int?}, not \texttt{Int\QQ} — chaining
+        flattens. But a \texttt{[K: V?]} subscript IS \texttt{V\QQ} (panel C).}
+  \trap{\texttt{if x \neqq{} nil \{ use(x!) \}} — a check the compiler cannot see;
+        someone removes the check later. Bind instead: \texttt{if let x}.}
+  \trap{\texttt{a \QQ{} log()} — \texttt{log()} does \textbf{not} run when \texttt{a}
+        is non-nil (autoclosure). Don't hide side effects on the right.}
+  \trap{\texttt{x \QQ{} 0 \QQ{} 5} parses \texttt{x \QQ{} (0 \QQ{} 5)}: warning, left
+        side non-optional, the \texttt{5} is never used.}
+  \trap{IUO propagation: \texttt{let y = outlet} is \texttt{T?} — the ``!'' is not
+        inherited (since 4.2).}
+  \trap{\texttt{try?} hides which: ``threw'' and ``returned nil'' both become \texttt{nil}.}
+  \trap{\texttt{Bool?} in \texttt{if}: \texttt{if flag} does not compile;
+        write \texttt{flag \EQ{} true} (nil $\to$ false) deliberately.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Optional is a box with two cases: bind it, chain it, default it, map it —
+bang it only when a crash is the right answer.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} swift-enums-pattern-matching ·
+error-handling (\texttt{try?}) · arc-ownership (weak/unowned) · ownership-and-memory-layout
+(extra inhabitants) · functional-design (map/flatMap shape)}
+
+\end{document}

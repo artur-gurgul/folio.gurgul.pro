@@ -1,0 +1,229 @@
+% swift-syntax-control-flow-errors.tex — a catalogue of control-flow and error syntax,
+% line by line: labeled statements (break /
+% continue out of several scopes), guard's scope rule, defer order (LIFO, on every
+% exit incl. throw — traced through labeled loops), if-let shorthand, for case let x?,
+% for-where, while let, repeat, switch on tuples + where + fallthrough, catch patterns,
+% try? / try! / rethrows, typed throws and throws(Never), Result bridging, #available /
+% #unavailable, if case vs ~=.
+% Deliberately NOT repeated (see Related): the error model, Task error propagation and
+% LocalizedError (error-handling), the 8 pattern kinds (swift-enums-pattern-matching),
+% if/switch expressions and await-in-defer (parameter-packs-and-new-syntax).
+% Sources (checked 2026-10-06) — Swift Evolution, numbers and versions against the swift.org
+% evolution index: SE-0345 (if let shorthand, 5.7), SE-0413 (typed
+% throws, 6.0: `throws` = `throws(any Error)`, non-throwing = `throws(Never)`, `do
+% throws(E)`), SE-0290 (#unavailable, 5.6), SE-0230 (try? flattening, 5.0), SE-0493
+% (await in defer, 6.4); The Swift Programming Language — Control Flow (labeled
+% statements, fallthrough), Statements (defer: "executed in reverse order"; guard else
+% must not fall through), Error Handling.
+% @labels: area=swift kind=concept platform=apple topic=language discussion=166
+% @tags: labeled-statements, defer, guard, if-let-shorthand, for-case, fallthrough, catch-patterns, typed-throws, rethrows, result-type, available, unavailable
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,
+    if,else,return,guard,self,nil,true,false,in,throws,rethrows,try,throw,
+    do,catch,defer,for,while,repeat,break,continue,fallthrough,switch,default,
+    where,as,is,Never,some},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {??}{{\hbox{?}\hbox{?}}}2 {...}{{\hbox{.}\hbox{.}\hbox{.}}}3
+           {..<}{{\hbox{.}\hbox{.}\hbox{<}}}3 {>=}{{\hbox{>}\hbox{=}}}2
+           {<=}{{\hbox{<}\hbox{=}}}2 {+=}{{\hbox{+}\hbox{=}}}2 {/=}{{\hbox{/}\hbox{=}}}2
+           {&&}{{\hbox{\&}\hbox{\&}}}2 {||}{{\hbox{|}\hbox{|}}}2}
+\lstdefinestyle{cat}{language=SwiftSheet, basicstyle=\ttfamily\scriptsize,
+  aboveskip=1pt, belowskip=2pt}
+
+\makeatletter
+\DeclareRobustCommand\op[1]{\texttt{\@tfor\@c:=#1\do{\hbox{\@c}}}}
+\makeatother
+\newcommand\grp[1]{\par\vspace{1pt}\noindent{\color{sheetBlue}\bfseries\footnotesize #1}\par}
+
+\tikzset{
+  sc/.style={draw, thick, rounded corners=3pt, anchor=north west},
+  ev/.style={draw, thick, rounded corners=1.5pt, minimum height=4.6mm, minimum width=7.4mm,
+             font=\ttfamily\tiny, inner sep=0.5pt},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\scriptsize, anchor=west},
+}
+\colorlet{cA}{sheetOrange}\colorlet{cB}{sheetBlue}\colorlet{cC}{sheetGreen!70!black}
+\colorlet{cG}{black!45}
+
+\begin{document}
+
+\sheettitle{Swift syntax tricks — control flow, scopes \& errors}{swift · folio}
+
+\oneliner{Every \texttt{\{ \}} is a \textbf{scope}, and every way out of it —
+end, \texttt{return}, \texttt{break}, \texttt{continue}, \texttt{throw} — runs that scope's
+\texttt{defer}s \textbf{last-in first-out}, innermost scope first. A \textbf{label} names a
+loop/\texttt{if}/\texttt{do}/\texttt{switch} so one \texttt{break}/\texttt{continue} leaves
+several scopes at once; \texttt{guard} binds into the \emph{enclosing} scope and must leave it;
+patterns (\texttt{case let x?}, \texttt{where}) turn loops and conditions into filters.}
+
+\vspace{2pt}
+\noindent\begin{minipage}[t]{0.41\linewidth}
+\vspace{0pt}
+\begin{lstlisting}[style=cat]
+enum E: Error { case boom }
+func run() throws {
+  defer { print("A") }           // fn scope
+  outer: for i in 0..<2 {
+    defer { print("B\(i)") }     // per outer pass
+    for j in 0..<3 {
+      defer { print("C\(i)\(j)") } // per inner pass
+      if j == 1 { continue outer }
+      if i == 1 { throw E.boom }
+      print("body\(i)\(j)")
+    }
+  }
+}
+do { try run() } catch { print("caught") }
+\end{lstlisting}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.57\linewidth}
+\vspace{0pt}
+\begin{tikzpicture}[sheet]
+  \node[ttl] at (0,2.95) {Nested \texttt{defer}s through a labeled loop — what prints};
+  % scopes
+  \draw[sc, draw=cA, fill=cA!5] (0,2.7) rectangle (2.75,0.05);
+  \node[lbl, anchor=north west, text=cA] at (0.05,2.68) {\textbf{run()} \ defer A};
+  \draw[sc, draw=cB, fill=cB!6] (0.12,2.35) rectangle (2.63,0.17);
+  \node[lbl, anchor=north west, text=cB] at (0.17,2.33) {\textbf{outer:} pass \texttt{i} \ defer B\textit{i}};
+  \draw[sc, draw=cC, fill=cC!8] (0.24,2.0) rectangle (2.51,0.29);
+  \node[lbl, anchor=north west, text=cC] at (0.29,1.98) {\textbf{inner} pass \texttt{j} \ defer C\textit{ij}};
+  \node[lbl, anchor=north west, align=left] at (0.29,1.62) {exits run defers\\innermost first:\\[1pt]
+    end of pass $\to$ C\\\texttt{continue outer} $\to$ C, B\\\texttt{throw} $\to$ C, B, A};
+  % timeline
+  \foreach \t/\c [count=\k from 0] in {body00/cG, C00/cC, C01/cC, B0/cB,
+                        C10/cC, B1/cB, A/cA, caught/sheetRed} {
+    \node[ev, draw=\c, fill=\c!10] at (3.05+\k*0.8,2.25) {\t};
+    \node[lbl, text=sheetGrey] at (3.05+\k*0.8,2.62) {\the\numexpr\k+1\relax};
+  }
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}] (2.69,1.97) -- (4.21,1.97)
+      node[lbl, midway, below=3pt, align=center]{i=0 j=0:\\body, then\\end of pass};
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}] (4.29,1.97) -- (5.81,1.97)
+      node[lbl, midway, below=3pt, align=center]{j=1:\\\texttt{continue}\\\texttt{outer}};
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}] (5.89,1.97) -- (8.21,1.97)
+      node[lbl, midway, below=3pt, align=center, text=sheetRed]{i=1 j=0: \texttt{throw}\\unwinds all 3 scopes,\\innermost first};
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}] (8.29,1.97) -- (9.01,1.97)
+      node[lbl, midway, below=3pt, align=center]{caller's\\catch};
+  \node[lbl, anchor=west, align=left] at (2.95,0.9) {\texttt{C02}, \texttt{body01} never happen: \texttt{continue outer} skips
+    the\\rest of the inner loop. The error leaves \texttt{run()} only \emph{after} A.};
+  \node[lbl, anchor=west, align=left, text=sheetBrown] at (2.95,0.35) {\texttt{fatalError()} / a crash runs \textbf{no} defers
+    (unwinding,\\not finalizers). A defer can't \texttt{return}/\texttt{throw} its way out.};
+\end{tikzpicture}
+\end{minipage}
+
+\begin{multicols}{2}
+\raggedright
+
+\grp{Labels — leave several scopes at once}
+\begin{lstlisting}[style=cat]
+outer: for row in grid { for v in row where v < 0 { continue outer } }
+loop: while true {
+  switch next() {
+  case .end: break loop   // plain break would only leave the switch
+  default: continue }     // continue always targets a loop
+}
+parse: do { guard ok else { break parse }; step2() }  // do/if: break only
+\end{lstlisting}
+
+\grp{guard — bind for the rest of the scope, or leave it}
+\begin{lstlisting}[style=cat]
+guard let user else { return }            // user usable BELOW, not inside
+guard case .loaded(let items) = state else { return }
+guard !xs.isEmpty, let f = xs.first, f > 0 else { throw E.boom }
+guard let self else { return }            // in a [weak self] closure (5.7+)
+\end{lstlisting}
+{\scriptsize \texttt{else} must exit: \texttt{return}, \texttt{throw}, \texttt{break},
+\texttt{continue}, or a \texttt{Never} call (\texttt{fatalError}) — falling through does not compile.}
+
+\grp{Optional binding \& loop filters}
+\begin{lstlisting}[style=cat]
+if let name { greet(name) }        // 5.7 SE-0345: = if let name = name
+if let a, let b, a < b { }         // comma = &&, left to right, each binds
+if case let .some(x) = opt, x > 0 { }  // pattern + Bool in one condition list
+if let n = value as? Int { }       // cast and bind in one step
+for case let x? in optionals { }   // [Int?] -> only the non-nil, unwrapped
+for case .failed(let m) in results { log(m) }
+for i in 0..<n where i.isMultiple(of: 2) { }
+while let job = stack.popLast() { run(job) }
+repeat { n /= 2 } while n > 1      // body runs at least once
+for (i, x) in slice.enumerated() { }  // i = OFFSET from 0, not an index
+for t in stride(from: 10, to: 0, by: -2) { }  // 10 8 6 4 2 (through: incl.)
+\end{lstlisting}
+
+\grp{defer details · \texttt{do} as a scope}
+\begin{lstlisting}[style=cat]
+func f() -> Int { var x = 1; defer { x = 99 }; return x }  // returns 1
+for url in urls { let h = open(url); defer { close(h) } } // EVERY iteration
+func g() async { defer { await h.close() } }  // 6.4 SE-0493: async fns only
+do { let tmp = heavy(); use(tmp) }  // plain do = a scope: tmp gone at }
+\end{lstlisting}
+
+\grp{Availability — runtime vs compile time}
+\begin{lstlisting}[style=cat]
+if #available(iOS 17, *) { new() } else { old() }  // RUNTIME OS check
+guard #available(iOS 17, *) else { return }
+if #unavailable(iOS 17) { legacy() }  // 5.6 SE-0290: `!#available` is invalid
+#if os(iOS)                           // COMPILE time: code not built elsewhere
+\end{lstlisting}
+{\scriptsize \texttt{*} = ``every other platform, from its deployment target''. Only
+\texttt{,} combines it with other conditions — no \op{||}, no \texttt{!}.}
+
+\columnbreak
+
+\grp{switch — tuples, where, fallthrough}
+\begin{lstlisting}[style=cat]
+switch (x, y) {
+case (0, 0):              origin()
+case (let v, 0), (0, let v): onAxis(v)   // alternatives bind the same names
+case let (a, b) where a == b: diagonal()  // where = guard AFTER binding
+case (1...9, _):          small(); fallthrough  // run next body, NO match check
+case (_, 10...):          edge()
+default:                  break           // an empty body must say break
+}
+if case 200..<300 = status { }            // = if 200..<300 ~= status
+\end{lstlisting}
+
+\grp{Errors — catch patterns, try forms, typed throws}
+\begin{lstlisting}[style=cat]
+do { try load() }
+catch let e as URLError where e.code == .timedOut { retry() }
+catch DecodeError.missing(let key) { report(key) }
+catch { log(error) }                   // implicit `error`
+let a = try? load()      // T? - nil on error (T?? flattened since 5.0)
+let b = try! load()      // traps on error
+func map<T>(_ f: (Element) throws -> T) rethrows -> [T] // throws iff f does
+func parse() throws(ParseError) -> AST             // 6.0 SE-0413
+do throws(ParseError) { try parse() } catch { fix(error) } // error: ParseError
+func pure() throws(Never)      // = cannot throw; throws = throws(any Error)
+let r = Result { try load() }  // outcome as a value; try r.get() rethrows
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{break} in a \texttt{switch} inside a loop leaves the \emph{switch} — label the loop.}
+  \trap{\texttt{defer} reads variables at \emph{exit}, not at declaration; a trailing
+        \texttt{defer} as the last statement just runs immediately (warning).}
+  \trap{\texttt{fallthrough} skips the next pattern check and can't enter a case that binds.}
+  \trap{\texttt{try?} erases \emph{why}; \texttt{nil} from a \texttt{T?} function looks the same.}
+  \trap{\texttt{enumerated()} on a slice gives offsets, so \texttt{slice[i]} can crash — use
+        \texttt{zip(slice.indices, slice)}.}
+  \trap{\texttt{guard let x} inside a closure binds in the \emph{closure}; the \texttt{else}
+        \texttt{return} leaves the closure, not the outer function.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Exits run defers backwards, innermost first; a label picks the scope; \texttt{guard}
+must leave it.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} error-handling (model, Task errors,
+\texttt{LocalizedError}) · swift-enums-pattern-matching (8 pattern kinds) · swift-optionals ·
+parameter-packs-and-new-syntax (if/switch expressions, \texttt{await} in \texttt{defer}) ·
+swift-syntax-closures-calls · swift-attributes-directives (\texttt{\#if})}
+
+\end{document}

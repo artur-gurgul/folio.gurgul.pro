@@ -1,0 +1,182 @@
+% swift6-strict-concurrency.tex — Swift 6 language mode, complete data-race
+% safety: Sendable, isolation domains, global actors, nonisolated, region-based
+% isolation + `sending`, @preconcurrency, @Sendable closures, the common
+% errors and their fixes, migration.
+% Sources (checked 2026-10-06):
+%   swift-evolution SE-0302 (Sendable; implicit only for non-public types, 5.5) · SE-0414
+%     (region-based isolation, 6.0) · SE-0430 (sending, 6.0) · SE-0412 (global variables,
+%     5.10) · SE-0337 (@preconcurrency, 5.6) · SE-0461 / SE-0466 / SE-0470 (6.2: nonisolated
+%     async runs on the caller's actor, default MainActor isolation, isolated conformances)
+%     — numbers and versions checked against the evolution index
+%   swift.org/migration (Swift 6 migration guide: language mode per module, complete checking,
+%     common diagnostics)
+% @labels: area=swift kind=concept platform=apple topic=concurrency,language discussion=170
+% @tags: sendable, isolation-domains, mainactor, global-actor, nonisolated, region-based-isolation, sending, preconcurrency, unchecked-sendable, swift-6-language-mode, data-race, strict-concurrency-migration
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,actor,
+    if,else,return,guard,self,nil,private,true,false,in,async,await,
+    nonisolated,sending,Task,Sendable,some,static,import,throws,try},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  dom/.style={draw=#1, very thick, rounded corners=4pt, fill=#1!6,
+              minimum width=23mm, minimum height=13mm},
+  obj/.style={box, font=\scriptsize, minimum width=13mm},
+  lbl/.style={font=\scriptsize, text=black!80, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\scriptsize},
+  ok/.style={->, very thick, draw=sheetGreen},
+  bad/.style={->, very thick, draw=sheetRed},
+  mov/.style={->, very thick, draw=sheetOrange, dashed},
+}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\sheettitle{Swift 6 · strict concurrency \& data-race safety}{swift · folio}
+
+\oneliner{In the \textbf{Swift 6 language mode} data-race safety is a
+\textbf{compile-time guarantee}: all mutable state belongs to one
+\textbf{isolation domain} (an actor, a global actor like \texttt{@MainActor},
+or \texttt{nonisolated}); a value crosses domains only if it is
+\textbf{\texttt{Sendable}} or provably \textbf{never used again} by the sender
+(region isolation / \texttt{sending}). Swift 5 warnings become \textbf{errors}.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Domains.} Each \texttt{actor} instance = one domain (serial
+        executor). A \textbf{global actor} (\texttt{@MainActor}, or
+        \texttt{@globalActor actor DB \{ static let shared = DB() \}}) = one
+        domain shared by everything marked with it. \textbf{\texttt{nonisolated}}
+        = no domain: sees only \texttt{let}/Sendable state. Crossing = \texttt{await}.
+  \item \textbf{\texttt{Sendable}} = marker protocol, safe to share. Implicit for
+        \textbf{non-public} structs/enums with Sendable members;
+        \textbf{\texttt{public}} ones must declare it. A \texttt{final class}
+        with only \texttt{let} Sendable stored properties conforms (checked).
+        Actors and \texttt{@MainActor} classes are Sendable for free.
+        \texttt{@unchecked Sendable} = ``trust me, I lock''.
+  \item \textbf{\texttt{@Sendable} closure} may run concurrently: Sendable
+        captures only, no captured \texttt{var}. (\texttt{addTask},
+        \texttt{Task.detached}.)
+  \item \textbf{Region-based isolation} (SE-0414, Swift 6.0): a
+        \emph{non}-Sendable value in a \textbf{disconnected region} (fresh, not
+        reachable from any actor's state) may be sent if the sender never uses it
+        again. \textbf{\texttt{sending}} (SE-0430) spells it in a signature:
+        \texttt{f(\_ x: sending Box)}, \texttt{-> sending T}.
+  \item \textbf{Globals} (SE-0412): a global/\texttt{static var} must be
+        global-actor isolated, or a Sendable \texttt{let}. Hatch:
+        \texttt{nonisolated(unsafe)}.
+  \item \textbf{\texttt{@preconcurrency import M}} silences Sendable errors for
+        types of a not-yet-migrated module.
+  \item \textbf{Swift 6.2 / Xcode 26 ``Approachable Concurrency''}:
+        default isolation \texttt{MainActor} (SE-0466); nonisolated
+        \texttt{async} runs on the caller's actor (SE-0461), \texttt{@concurrent}
+        opts out; isolated conformance \texttt{extension V: @MainActor P} (SE-0470).
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+final class Box { var n = 0 }           // not Sendable
+struct Point: Sendable { var x, y: Int } // value: fine
+actor Store { var pts: [Point] = []
+  func add(_ p: Point) { pts.append(p) }
+  func take(_ b: sending Box) { b.n += 1 } }
+@MainActor final class VM {             // UI domain
+  let store = Store()
+  func run() async {
+    await store.add(Point(x: 1, y: 2))  // Sendable crosses
+    let b = Box()                        // disconnected region
+    await store.take(b)                  // OK: sent away...
+    // b.n = 5   error: 'b' used after being sent
+  }
+  nonisolated func id() -> String { "vm" } // no hop
+}
+\end{lstlisting}
+
+\section{Migration strategy}
+\begin{enumerate}
+  \item Swift 5 mode + \textbf{complete} checking \emph{as warnings}:
+        \texttt{SWIFT\_STRICT\_CONCURRENCY = complete} (SwiftPM
+        \texttt{.enableUpcomingFeature("StrictConcurrency")}).
+  \item \textbf{One module at a time}: UI types \texttt{@MainActor}, models as
+        Sendable values, deps behind \texttt{@preconcurrency import}.
+  \item Flip it: \texttt{SWIFT\_VERSION = 6} / \texttt{swiftLanguageModes: [.v6]};
+        modules in 5 and 6 mode link together. Then shrink every
+        \texttt{@unchecked} / \texttt{(unsafe)} / \texttt{@preconcurrency} —
+        each is debt.
+\end{enumerate}
+
+\columnbreak
+
+\section{Domains and what may cross}
+\begin{tikzpicture}[sheet]
+  \node[dom=sheetBlue] (ma) at (0,0) {};
+  \node[ttl, text=sheetBlue, anchor=north] at (ma.north) {@MainActor};
+  \node[obj, anchor=south] (vm) at ([yshift=1.5mm]ma.south) {VM, views};
+  \node[dom=sheetGreen] (ac) at (5.4,0) {};
+  \node[ttl, text=sheetGreen!70!black, anchor=north] at (ac.north) {actor Store};
+  \node[obj, anchor=south] (st) at ([yshift=1.5mm]ac.south) {pts};
+  \node[dom=sheetGrey, minimum width=40mm, minimum height=10mm] (ni) at (2.7,-1.85) {};
+  \node[ttl, text=sheetGrey, anchor=north] at (ni.north) {nonisolated / concurrent pool};
+  \node[obj, anchor=south, draw=sheetGrey, fill=white] at ([yshift=1.2mm]ni.south) {\texttt{Task.detached}, \texttt{@concurrent}};
+  \draw[ok] ([yshift=4mm]ma.east) -- node[lbl, above]{\texttt{Point} (Sendable) \checkmark} ([yshift=4mm]ac.west);
+  \draw[mov] (ma.east) -- node[lbl, above]{fresh \texttt{Box}: \textbf{sending}} node[lbl, below]{sender loses it} (ac.west);
+  \draw[bad] ([yshift=-5mm]ac.west) -- node[lbl, below]{a \texttt{Box} it still holds \textbf{\texttimes}} ([yshift=-5mm]ma.east);
+  \draw[flow, <->] (ma.south) |- node[lbl, pos=0.25, left]{\texttt{await}} (ni.west);
+  \draw[flow, <->] (ac.south) |- node[lbl, pos=0.25, right]{\texttt{await}} (ni.east);
+\end{tikzpicture}
+
+{\footnotesize\itshape\color{sheetBrown} Inside a domain: synchronous. Across:
+\texttt{await} + the value is \textbf{Sendable} or a \textbf{disconnected
+region}. Non-Sendable state still reachable from its home (red) never leaves.}
+
+\section{Common errors $\to$ fix}
+{\scriptsize
+\begin{tabular}{@{}L{0.44\linewidth}@{\hspace{4pt}}L{0.53\linewidth}@{}}
+\toprule
+\textbf{Compiler says (abridged)} & \textbf{Fix, best first} \\ \midrule
+\emph{Capture of 'x' with non-sendable type 'X' in a `@Sendable' closure}
+ & make \texttt{X} a Sendable value; capture a copy \texttt{[v = x.v]}; isolate both to one actor \\[1pt]
+\emph{Sending 'x' risks causing data races}
+ & don't touch \texttt{x} after the send; make it Sendable; param \texttt{sending} \\[1pt]
+\emph{Main actor-isolated \dots\ can not be referenced from a nonisolated context}
+ & mark the caller \texttt{@MainActor}; or make it \texttt{async} + \texttt{await} \\[1pt]
+\emph{Static property 'shared' is not concurrency-safe because it is nonisolated global shared mutable state}
+ & \texttt{static let} + Sendable type; \texttt{@MainActor static var}; last resort \texttt{nonisolated(unsafe)} \\[1pt]
+\emph{Stored property 'n' of 'Sendable'-conforming class 'C' is mutable}
+ & \texttt{let}; make it an \texttt{actor}; or \texttt{Mutex}/lock + \texttt{@unchecked Sendable} \\[1pt]
+\emph{Main actor-isolated method cannot satisfy nonisolated protocol requirement}
+ & \texttt{nonisolated} + \texttt{MainActor.assumeIsolated}; \texttt{@MainActor} protocol; 6.2 isolated conformance \\
+\bottomrule
+\end{tabular}}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{Swift 6 compiler $\neq$ Swift 6 mode}: an old project on the
+        6.x compiler still builds in Swift 5 mode; mode is per module.}
+  \trap{\texttt{@unchecked Sendable} over an unlocked \texttt{var} mutes the
+        checker and \emph{keeps} the race.}
+  \trap{\texttt{Task.detached} in an actor is \textbf{not} isolated to it;
+        \texttt{Task \{\}} inherits the actor.}
+  \trap{Actors stop \emph{data} races, not \emph{logic} races — state can
+        change across any \texttt{await} (reentrancy).}
+  \trap{A \texttt{public struct} is \textbf{not} implicitly Sendable.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Every value has one home. It may travel if it is the 3 S:}
+\textbf{S}endable, \textbf{S}ent (disconnected, never touched again), or
+\textbf{S}ynchronised by you (\texttt{@unchecked}, at your own risk).
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} async/await \& structured concurrency · actors \& reentrancy · \texttt{@MainActor} UI confinement · continuations · \texttt{Mutex} (Synchronization, iOS 18)}
+
+\end{document}

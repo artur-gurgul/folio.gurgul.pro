@@ -1,0 +1,204 @@
+% swift-numerics-overflow.tex — Int widths, overflow traps vs &+ wrapping,
+% reportingOverflow, integer conversion inits, IEEE 754 (NaN, ulp, 0.1+0.2),
+% Decimal for money + its caveats, NSDecimalNumber, rounding, formatting,
+% Float16/Float/Double choice.
+% Sources (checked 2026-10-06):
+%   docs.swift.org/swift-book The Basics (Int is the platform word size) + Advanced Operators
+%     (overflow traps; &+ &- &* wrap)
+%   developer.apple.com/documentation/swift/int/addingreportingoverflow(_:) ·
+%     /swift/binaryinteger/init(clamping:) · /swift/binaryinteger/init(truncatingifneeded:) ·
+%     /foundation/decimal · /foundation/nsdecimalnumber (raises exceptions on overflow etc.)
+%   swift-evolution SE-0425 (Int128 / UInt128, 6.0) · SE-0307 (CGFloat <-> Double implicit
+%     conversion, 5.5) · SE-0277 (Float16, 5.3) — checked against the evolution index
+%   IEEE 754-2019 (NaN, ulp, 0.1 + 0.2 != 0.3 in binary64); a Decimal written as a float
+%     literal is converted through Double first — build it from a String or integers
+% @labels: area=swift kind=concept platform=apple topic=language,data discussion=159
+% @tags: integer-overflow, wrapping-arithmetic, addingreportingoverflow, truncatingifneeded, clamping, ieee-754, floating-point, nan, ulp, decimal, nsdecimalnumber, rounding
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,
+    if,else,return,guard,self,nil,true,false,in,Int,Int8,UInt8,Double,
+    Decimal},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  bit/.style={draw=sheetGrey, minimum width=3mm, minimum height=4.4mm,
+              font=\ttfamily\scriptsize, inner sep=0pt},
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.4mm},
+  ok/.style={sb, draw=sheetGreen, fill=sheetGreen!10},
+  bad/.style={sb, draw=sheetRed, fill=sheetRed!8},
+  lbl/.style={font=\scriptsize, text=black!80, inner sep=1pt, align=left},
+  ttl/.style={font=\bfseries\small, anchor=west},
+}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\sheettitle{Numerics — overflow, conversions, floating point, money}{swift · folio}
+
+\oneliner{Swift integer arithmetic \textbf{traps} on overflow (in Debug
+\emph{and} Release) — wrapping is opt-in with \texttt{\&+ \&- \&*}; every lossy
+conversion has a named init that says \emph{how} it loses. \texttt{Double} is
+binary IEEE 754, so decimal fractions are approximations: compare with a
+tolerance, and keep money in \texttt{Decimal} (built from strings) or integer
+minor units.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── panel A: 300 into Int8 ──
+  \node[ttl] at (-0.1,2.55) {\texttt{let x = 300} (\texttt{0x012C}) into an \texttt{Int8}};
+  \foreach \i/\b in {0/0,1/0,2/0,3/0,4/0,5/0,6/0,7/1}
+    \node[bit, fill=black!8] at (\i*0.3,2.05) {\b};
+  \foreach \i/\b in {8/0,9/0,10/1,11/0,12/1,13/1,14/0,15/0}
+    \node[bit, fill=sheetBlue!18] at (\i*0.3+0.1,2.05) {\b};
+  \draw[decorate, decoration={brace, mirror, amplitude=3pt}] (-0.15,1.78) -- (2.25,1.78) node[lbl, midway, below=2pt]{high byte — lost};
+  \draw[decorate, decoration={brace, mirror, amplitude=3pt}] (2.35,1.78) -- (4.75,1.78) node[lbl, midway, below=2pt]{low byte \texttt{0x2C} = 44};
+  \node[bad, anchor=west] at (-0.15,0.95) {\texttt{Int8(x)} $\to$ \textbf{trap}};
+  \node[ok, anchor=west] at (2.4,0.95) {\texttt{Int8(exactly: x)} $\to$ \texttt{nil}};
+  \node[ok, anchor=west] at (-0.15,0.35) {\texttt{Int8(clamping: x)} $\to$ \texttt{127}};
+  \node[ok, anchor=west] at (2.4,0.35) {\texttt{…(truncatingIfNeeded: x)} $\to$ \texttt{44}};
+  \node[lbl, text=sheetBrown, anchor=west] at (-0.15,-0.15) {literal \texttt{Int8(300)} = \emph{compile} error; a runtime value traps};
+  % ── panel B: Double layout + 0.1 + 0.2 ──
+  \draw[sheetGrey!40] (5.85,2.7) -- (5.85,-0.3);
+  \node[ttl] at (5.9,2.55) {\texttt{Double} = IEEE 754 binary64};
+  \node[bit, fill=sheetRed!20, minimum width=4mm] (s) at (6.2,2.05) {s};
+  \node[bit, fill=sheetOrange!25, minimum width=15mm, anchor=west] (e) at (6.4,2.05) {exponent 11};
+  \node[bit, fill=sheetGreen!22, minimum width=46mm, anchor=west] (f) at (7.9,2.05) {fraction 52 (+1 implicit = 53-bit significand)};
+  \node[lbl, anchor=west] at (5.9,1.55) {$(-1)^s \times 1.f \times 2^{\,e-1023}$ · integers exact to $2^{53}$ · gap (\texttt{.ulp}) grows with size};
+  % number line near 0.3
+  \draw[flow, draw=black!60] (6.0,0.55) -- (12.6,0.55);
+  \foreach \x in {6.6, 8.1, 10.5, 12.0} \draw[black!60] (\x,0.45) -- (\x,0.65);
+  \node[lbl, below, align=center] at (8.1,0.45) {\texttt{0.3} is stored as\\\texttt{0.29999999999999998890}};
+  \node[lbl, below, align=center] at (10.5,0.45) {\texttt{0.1+0.2} lands on\\\texttt{0.30000000000000004441}};
+  \draw[<->, sheetRed, thick] (8.1,0.85) -- node[lbl, above, text=sheetRed]{next double: 1 ulp $= 2^{-54}$} (10.5,0.85);
+  % ── panel C: three ways to add ──
+  \draw[sheetGrey!40] (12.85,2.7) -- (12.85,-0.3);
+  \node[ttl] at (12.9,2.55) {\texttt{Int8(120)} plus \texttt{10}};
+  \node[bad, anchor=west] at (12.95,1.95) {\texttt{a + 10} $\to$ trap (crash)};
+  \node[ok, anchor=west] at (12.95,1.3) {\texttt{a \&+ 10} $\to$ \texttt{-126} (wraps)};
+  \node[ok, anchor=west, align=left] at (12.95,0.45) {\texttt{a.addingReporting}\\\texttt{Overflow(10)}\\$\to$ \texttt{(-126, true)}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Integers}
+\begin{itemize}
+  \item \texttt{Int}/\texttt{UInt} = word size: 64-bit on iPhone/Mac, but
+        \textbf{32-bit on arm64\_32} (Apple Watch Series 4+). Use \texttt{Int}
+        everywhere (\texttt{count}, indices); sized types for file/wire formats
+        and C. \texttt{Int128}/\texttt{UInt128}: Swift 6 (SE-0425).
+  \item \texttt{+ - *} \textbf{trap} on overflow in \texttt{-Onone} and
+        \texttt{-O} (only \texttt{-Ounchecked} removes checks). Also trap:
+        \texttt{/ 0}, \texttt{Int.min / -1}, \texttt{abs(Int.min)},
+        \texttt{UInt} \texttt{0 - 1}. A trap is a crash, not an exception —
+        no \texttt{catch}.
+  \item \texttt{\&+ \&- \&*}: wrap modulo $2^n$ (hashes, checksums, ring
+        counters). \texttt{\&<< \&>>}: shift count masked mod bitWidth;
+        plain \texttt{<<} with a big count gives 0, never traps.
+  \item \texttt{addingReportingOverflow} (also subtracting, multiplied,
+        divided) $\to$ \texttt{(partialValue, overflow)};
+        \texttt{multipliedFullWidth(by:)} $\to$ \texttt{(high, low)}.
+  \item Conversions: \texttt{init(\_:)} traps · \texttt{exactly:} optional ·
+        \texttt{clamping:} saturates · \texttt{truncatingIfNeeded:} low bits
+        · \texttt{bitPattern:} reinterprets (\texttt{UInt8(bitPattern: -1)} =
+        255). Generic code: \texttt{FixedWidthInteger} (\texttt{max},
+        \texttt{bitWidth}, \texttt{\&+}) refines \texttt{BinaryInteger}.
+\end{itemize}
+
+\section{Floating point}
+\begin{itemize}
+  \item \texttt{Float16} (11-bit significand, $\approx$3 digits; iOS 14+, not
+        on Intel Macs) · \texttt{Float} (24-bit, $\approx$7 digits, integers
+        exact only to 16\,777\,216) · \texttt{Double} (53-bit). Default to
+        \texttt{Double}; \texttt{CGFloat} is \texttt{Double} on 64-bit and
+        converts implicitly since Swift 5.5 (SE-0307).
+  \item Float ops \textbf{never trap}: \texttt{1/0.0 = +inf},
+        \texttt{0/0.0 = NaN}. \texttt{NaN} is unequal to everything,
+        itself included — test \texttt{x.isNaN}; NaNs poison \texttt{sort},
+        \texttt{min}, \texttt{max}. \texttt{-0.0} equals \texttt{0.0}.
+  \item \texttt{Double.ulpOfOne} = $2^{-52}\approx 2.2\times10^{-16}$ (machine
+        epsilon); \texttt{x.ulp} = gap at \texttt{x}; \texttt{nextUp} steps.
+        Compare: $|a-b| \le \max(\mathit{abs}, \mathit{rel}\cdot\max(|a|,|b|))$,
+        or swift-numerics \texttt{isApproximatelyEqual(to:)}.
+  \item \texttt{Int(2.99)} = 2, \texttt{Int(-2.99)} = -2 (toward zero; traps
+        on NaN/inf/out of range) — round first on purpose.
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+let big = 300
+Int8(clamping: big)             // 127
+Int8(truncatingIfNeeded: big)   // 44
+Int8(exactly: big)              // nil
+(2.5).rounded(.toNearestOrEven) // 2.0  banker's
+let bad: Decimal = 0.1          // literal goes through Double
+let good = Decimal(string: "0.10")!    // exact
+(good * 3).formatted(.currency(code: "EUR"))   // 0.30, localised
+\end{lstlisting}
+
+\columnbreak
+
+\section{Money: \texttt{Decimal} and its own caveats}
+\begin{itemize}
+  \item \texttt{Decimal} (Foundation, = \texttt{NSDecimal}): base-10,
+        128-bit mantissa ($\approx$38 digits), exponent $-128$…$127$.
+        \texttt{0.1} is exact — \emph{if} built from a string or integers.
+  \item \textbf{Float literal trap:} \texttt{let d: Decimal = 0.1} and
+        \texttt{Decimal(0.1)} go through \texttt{Double} and can carry binary
+        noise. Use \texttt{Decimal(string:)} or integer maths
+        (\texttt{Decimal(10) / 100}).
+  \item Still rounds (\texttt{1/3}); not \texttt{FloatingPoint} (no
+        \texttt{.rounded()}) — use \texttt{NSDecimalRound(\&out, \&in, 2,
+        .bankers)}. Software maths: slower than \texttt{Double}.
+  \item \texttt{NSDecimalNumber} (class; rounding via a behaviour handler)
+        by default \textbf{raises an ObjC exception} on divide-by-zero or
+        overflow — a crash, not a \texttt{throw}.
+  \item Or \textbf{integer minor units} (\texttt{Int64} cents; JPY has 0,
+        KWD 3). On the wire: string or integer, never a JSON float.
+  \item Display: \texttt{.currency(code:)},
+        \texttt{.precision(.fractionLength(2))} — not
+        \texttt{String(format: "\%.2f")} (Double, no locale).
+\end{itemize}
+
+\section{Rounding rules}
+{\footnotesize
+\begin{tabular}{@{}L{30mm}ccL{17mm}@{}}
+\toprule
+\textbf{\texttt{FloatingPointRoundingRule}} & \textbf{2.5} & \textbf{-2.5} & \textbf{use} \\
+\midrule
+\texttt{.toNearestOrAwayFromZero} & 3 & -3 & \texttt{rounded()} \\
+\texttt{.toNearestOrEven} & 2 & -2 & banker's, no bias \\
+\texttt{.up} / \texttt{.down} & 3 / 2 & -2 / -3 & ceil / floor \\
+\texttt{.towardZero} & 2 & -2 & = \texttt{Int(x)} \\
+\bottomrule
+\end{tabular}}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``Swift wraps like C'' — no: it \textbf{crashes}. \texttt{reduce(0,
+        +)} on big counts traps; use a wider type or reporting ops.}
+  \trap{\texttt{UInt} for ``can't be negative'' counts: \texttt{a - b}
+        traps when \texttt{b > a}. Prefer \texttt{Int}.}
+  \trap{\texttt{0.1 + 0.2} vs \texttt{0.3}: unequal (one ulp apart). No
+        equality tests on computed floats; no \texttt{Double} for money;
+        IDs in \texttt{Float} lose digits past $2^{24}$.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Plus traps, ampersand wraps, reporting tells.''} Conversions:
+\emph{trap · exactly · clamping · truncating · bitPattern}. Money: strings in,
+\texttt{Decimal}/cents inside, \texttt{FormatStyle} out.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:}
+\texttt{ownership-and-memory-layout} (sizes, stride) · \texttt{c-memory-layout}
+(integer promotion, endianness) · \texttt{c-bits-and-registers} · \texttt{swift-regex}
+(parse \texttt{Decimal} currency) · \texttt{error-handling} (traps are not errors)}
+
+\end{document}

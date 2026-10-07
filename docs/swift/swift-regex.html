@@ -1,0 +1,93 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Swift Regex — literal, runtime, RegexBuilder — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/swift/swift-regex.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">201</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area current" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Swift Regex — literal, runtime, RegexBuilder</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">swift · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> <code>Regex&lt;Output&gt;</code> (Swift 5.7, iOS 16): <strong>Output</strong> is the
+<em>typed</em> shape of a match, <code>(Substring, captures…)</code>. Three builds:
+<strong>literal</strong> (checked + typed at compile time), <code>Regex(string)</code>
+(runtime, throws, <code>AnyRegexOutput</code>), <strong>RegexBuilder</strong> (typed,
+composable, embeds Foundation parsers). Matches <strong>Characters</strong>, returns
+<code>String.Index</code> ranges.</p>
+<p class="sheet-tools"><a class="sheet-download" href="swift-regex.pdf" download>Download PDF</a> <a href="swift-regex.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/swift/swift-regex.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="swift-regex-fig1.svg" width="595" height="119" class="wide" alt="Swift Regex — literal, runtime, RegexBuilder — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>How it works</h2>
+<ul>
+<li><strong>Literal</strong>: parsed by the compiler — bad pattern = compile  error; captures become tuple elements, <code>(?&lt;year&gt;…)</code> a  <em>labelled</em> one (<code>m.year</code>). Bare <code>/…/</code> needs Swift 6  mode or <code>BareSlashRegexLiterals</code> (SE-0354); <code>#/…/#</code>  always works.</li>
+<li><strong>Runtime</strong> <code>try Regex(str)</code> for user/config patterns:  <code>m.output[1].substring</code>, <code>m.output[&quot;y&quot;]?.substring</code>.</li>
+<li><strong>RegexBuilder</strong> (<code>import RegexBuilder</code>):  <code>OneOrMore</code>, <code>ZeroOrMore</code>, <code>Optionally</code>,  <code>Repeat(2...4)</code>, <code>ChoiceOf</code>, <code>Anchor</code>,  <code>Lookahead</code>/<code>NegativeLookahead</code>, <code>CharacterClass</code>  (<code>.digit</code>, <code>.anyOf(&quot;+-&quot;)</code>). A literal can sit inside.</li>
+<li><code>Capture</code> adds a tuple element (transform can map it);  <code>TryCapture</code>’s transform returns <code>T?</code> — <code>nil</code>  <strong>fails that attempt and backtracks</strong>: parse + validate in one  step. <code>Reference(T.self)</code> names a capture: <code>m[ref]</code>.</li>
+<li><strong>Foundation parsers are components</strong> (SE-0357  <code>CustomConsumingRegexComponent</code>):  <code>.date(.numeric, locale:, timeZone:)</code>,  <code>.localizedCurrency(code:locale:)</code> <span class="math">→</span> <code>Decimal</code>,  <code>.iso8601(…)</code> — typed <code>Date</code>/<code>Decimal</code> captures,  no second parse. Always pass locale + time zone.</li>
+<li>Options return a <em>new</em> regex: <code>.ignoresCase()</code>,  <code>.dotMatchesNewlines()</code>; <code>.matchingSemantics</code> switches  graphemes (default: e+U+0301 is <em>one</em> <code>.</code>) to scalars. <code>.reluctant</code> = lazy <code>+?</code>;  <code>Local {…}</code> = atomic group. The engine <strong>backtracks</strong>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example — typed literal + builder</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">let</span> ym <span class="hljs-operator">=</span> <span class="hljs-regexp">/(?&lt;y&gt;\d{4})-(?&lt;mo&gt;\d{2})/</span>  <span class="hljs-comment">// (Substring, y:, mo:)</span>
+<span class="hljs-keyword">if</span> <span class="hljs-keyword">let</span> m <span class="hljs-operator">=</span> <span class="hljs-string">&quot;on 2026-09&quot;</span>.firstMatch(of: ym) { <span class="hljs-built_in">print</span>(m.y, m.mo) }
+
+<span class="hljs-keyword">import</span> RegexBuilder
+<span class="hljs-keyword">let</span> cents <span class="hljs-operator">=</span> <span class="hljs-type">Reference</span>(<span class="hljs-type">Int</span>.<span class="hljs-keyword">self</span>)
+<span class="hljs-keyword">let</span> line <span class="hljs-operator">=</span> <span class="hljs-type">Regex</span> {
+  <span class="hljs-type">Capture</span> { <span class="hljs-regexp">/CREDIT|DEBIT/</span> }                       <span class="hljs-comment">// Substring</span>
+  <span class="hljs-type">OneOrMore</span>(.whitespace)
+  <span class="hljs-type">Capture</span>(.date(.numeric, locale: <span class="hljs-type">Locale</span>(identifier: <span class="hljs-string">&quot;en_US&quot;</span>),
+                timeZone: .gmt))                   <span class="hljs-comment">// Date</span>
+  <span class="hljs-type">OneOrMore</span>(.whitespace)
+  <span class="hljs-type">TryCapture</span>(as: cents) { <span class="hljs-type">OneOrMore</span>(.digit) }
+    transform: { <span class="hljs-type">Int</span>(<span class="hljs-variable">$0</span>) }            <span class="hljs-comment">// overflow: nil, no match</span>
+}
+<span class="hljs-keyword">if</span> <span class="hljs-keyword">let</span> m <span class="hljs-operator">=</span> <span class="hljs-string">&quot;DEBIT 3/5/2026 1250&quot;</span>.wholeMatch(of: line) {
+  <span class="hljs-keyword">let</span> (<span class="hljs-keyword">_</span>, kind, date, <span class="hljs-keyword">_</span>) <span class="hljs-operator">=</span> m.output; <span class="hljs-built_in">print</span>(kind, date, m[cents]) }</code></pre>
+</section>
+<section class="sheet-section">
+<h2>vs <code>NSRegularExpression</code></h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th><strong>Swift <code>Regex</code></strong></th><th><strong><code>NSRegularExpression</code></strong></th></tr>
+</thead>
+<tbody>
+<tr><td>units</td><td><code>Character</code> (graphemes)</td><td>UTF-16 code units (ICU)</td></tr>
+<tr><td>ranges</td><td><code>Range&lt;String.Index&gt;</code></td><td><code>NSRange</code> → <code>Range(r, in: s)</code></td></tr>
+<tr><td>captures</td><td>typed tuple</td><td><code>range(at:)</code>; unmatched <code>NSNotFound</code></td></tr>
+<tr><td>OS</td><td>iOS 16+</td><td>all; runtime errors; <code>$1</code> templates</td></tr>
+</tbody>
+</table></p>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">let</span> re <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> <span class="hljs-type">NSRegularExpression</span>(pattern: <span class="hljs-string">#&quot;(\d{4})&quot;#</span>)
+<span class="hljs-keyword">let</span> all <span class="hljs-operator">=</span> <span class="hljs-type">NSRange</span>(s.startIndex<span class="hljs-operator">...</span>, in: s)       <span class="hljs-comment">// NOT s.count</span>
+<span class="hljs-keyword">if</span> <span class="hljs-keyword">let</span> m <span class="hljs-operator">=</span> re.firstMatch(in: s, range: all),
+   <span class="hljs-keyword">let</span> r <span class="hljs-operator">=</span> <span class="hljs-type">Range</span>(m.range(at: <span class="hljs-number">1</span>), in: s) { <span class="hljs-built_in">print</span>(s[r]) }</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Performance &amp; anchoring</h2>
+<ul>
+<li>Build once (a stored <code>let</code>), never in a loop.  <code>firstMatch</code> retries at every index — anchor (<code>̂</code>,  <code>Anchor.startOfSubject</code>) or use <code>whole</code>/<code>prefixMatch</code>.</li>
+<li><strong>Catastrophic backtracking</strong>: <code>/(a+)+$/</code> on  <code>&quot;aaaa…b&quot;</code> is exponential — no nested quantifiers,  <code>Local</code>. <strong>No timeout API</strong>: untrusted pattern = ReDoS.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>When NOT to use a regex</h2>
+<p>Fixed text (<code>contains</code>, <code>hasPrefix</code>, <code>split</code>) · JSON (<code>Codable</code>) · URLs (<code>URLComponents</code>) · ISO dates (<code>ISO8601FormatStyle</code>) · nested/balanced input — regex can’t count.</p>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><code>&quot;abc123&quot;.wholeMatch(of: /\d+/)</code> is <code>nil</code>:  whole = implicitly anchored both ends.</li>
+<li class="trap"><code>NSRange(location: 0, length: s.count)</code> — <code>count</code> is  Characters, NSRange wants UTF-16: emoji break it. Use  <code>NSRange(s.startIndex..., in: s)</code>.</li>
+<li class="trap"><code>Regex(str)</code> for a fixed pattern forfeits compile-time checks  and typed captures. <code>/a*/</code> “finds” an empty range at 0.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>“Literal = typed, String = throws, Builder = composes.”</strong> Whole anchors, first scans.</p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> <code>strings-and-collections</code>
+(graphemes, <code>String.Index</code>) · <code>macros-and-result-builders</code>
+(RegexBuilder is a result builder) · <code>swift-numerics-overflow</code>
+(<code>Decimal</code>) · FormatStyle / ParseStrategy</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=swift" title="area">swift</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=api" title="kind">api</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=language" title="topic">language</a></li><li class="sheet-tag"><a href="/folios.html?tag=regex">regex</a></li><li class="sheet-tag"><a href="/folios.html?tag=regexbuilder">regexbuilder</a></li><li class="sheet-tag"><a href="/folios.html?tag=regex-literal">regex-literal</a></li><li class="sheet-tag"><a href="/folios.html?tag=trycapture">trycapture</a></li><li class="sheet-tag"><a href="/folios.html?tag=typed-captures">typed-captures</a></li><li class="sheet-tag"><a href="/folios.html?tag=firstmatch">firstmatch</a></li><li class="sheet-tag"><a href="/folios.html?tag=wholematch">wholematch</a></li><li class="sheet-tag"><a href="/folios.html?tag=nsregularexpression">nsregularexpression</a></li><li class="sheet-tag"><a href="/folios.html?tag=nsrange">nsrange</a></li><li class="sheet-tag"><a href="/folios.html?tag=catastrophic-backtracking">catastrophic-backtracking</a></li><li class="sheet-tag"><a href="/folios.html?tag=redos">redos</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=swift%2Fswift-regex.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/163">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>
