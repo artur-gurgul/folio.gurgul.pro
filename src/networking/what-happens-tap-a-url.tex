@@ -1,0 +1,178 @@
+% what-happens-tap-a-url.tex — the classic "what happens when you tap a link" end to end: parse,
+% HSTS/ATS, caches + connection pool, radio promotion, DNS, Happy Eyeballs, TCP, TLS 1.3, HTTP/2,
+% server, response, decode/render; RTT counting per protocol; URLSessionTaskMetrics phase timing.
+% Sources (checked 2026-09-25): RFC 8305 (Happy Eyeballs v2: 50 ms resolution delay, 250 ms attempt
+% delay); RFC 6928 (initial window 10 segments); RFC 8446 (TLS 1.3 1-RTT); RFC 9460 (HTTPS RR);
+% IETF dnsop list, T. Pauly 2020-09 (iOS 14 sends HTTPS/type 65 queries for system networking APIs);
+% developer.apple.com URLSessionTaskTransactionMetrics (property list); Apple QA1941 (-1005 and
+% automatic retry of idempotent requests only); WWDC21 10094 (HTTP/3 in URLSession, iOS 15).
+% Not repeated: TLS details (tls-pki), HTTP versions + caching (http-deep), URLSession error layers
+% (urlsession-networking), radio tail energy (app-size-and-energy).
+% @labels: area=networking kind=concept platform=general topic=networking,protocols,performance discussion=234
+% @tags: url-loading, dns, tcp-handshake, tls13, http2, rtt, happy-eyeballs, connection-reuse, rrc-states, urlsessiontaskmetrics, ttfb, hsts
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,for,in,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{What happens when you tap a URL — end to end, in round trips}{networking · folio}
+
+\oneliner{Before the first response byte, the phone may have to \textbf{wake its radio}, \textbf{resolve}
+the name, open \textbf{TCP}, negotiate \textbf{TLS} and \textbf{send} the request — each step costs a network
+\textbf{round trip (RTT)}. Cold over TCP + TLS 1.3: \textbf{4 RTT} + server time; HTTP/3: 3; a
+\textbf{reused} connection: \textbf{1}. Every latency trick removes one of these rows.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet, x=1cm, y=1cm,
+    seg/.style={draw=white, minimum height=4.4mm, font=\tiny, inner sep=0pt, anchor=west, text=black},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    rl/.style={font=\scriptsize\bfseries, anchor=east, align=right}]
+  \def\rtt{1.95}   % 1 RTT
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-3.3,3.75) {Timeline of the first request (bars $=$ 1 RTT; server time and radio not to scale)};
+  % helper: \seg{x}{width}{colour}{y}{label}
+  \newcommand\seg[5]{\node[seg, fill=#3, minimum width=#2 cm] at (#1,#4) {#5};}
+  % row 1: cold h2
+  \node[rl] at (-0.1,3.2) {cold · TCP + TLS 1.3 · h2};
+  \seg{0}{0.7}{sheetGrey!35}{3.2}{radio}
+  \seg{0.7}{\rtt}{sheetBrown!30}{3.2}{DNS: A + AAAA + HTTPS}
+  \seg{2.65}{\rtt}{sheetBlue!25}{3.2}{TCP SYN / SYN-ACK}
+  \seg{4.6}{\rtt}{sheetGreen!30}{3.2}{TLS 1.3 handshake}
+  \seg{6.55}{\rtt}{sheetOrange!35}{3.2}{request $\leftrightarrow$ response}
+  \seg{8.5}{0.7}{sheetRed!25}{3.2}{server}
+  \seg{9.2}{1.3}{sheetGrey!15}{3.2}{body (slow start)}
+  \seg{10.5}{1.2}{sheetBlue!10}{3.2}{render}
+  \node[l, anchor=west, text=sheetRed] at (11.75,3.2) {\textbf{4 RTT} + server};
+  % row 2: h3
+  \node[rl] at (-0.1,2.62) {cold · QUIC · h3};
+  \seg{0.7}{\rtt}{sheetBrown!30}{2.62}{DNS: learns h3}
+  \seg{2.65}{\rtt}{sheetGreen!30}{2.62}{QUIC Initial + TLS 1.3}
+  \seg{4.6}{\rtt}{sheetOrange!35}{2.62}{request $\leftrightarrow$ response}
+  \seg{6.55}{0.7}{sheetRed!25}{2.62}{server}
+  \node[l, anchor=west, text=sheetOrange!80!black] at (7.35,2.62) {\textbf{3 RTT} — transport + crypto in one handshake};
+  % row 3: 0-RTT
+  \node[rl] at (-0.1,2.04) {resumed · QUIC 0-RTT};
+  \seg{0.7}{0.9}{sheetBrown!15}{2.04}{cached}
+  \seg{1.6}{\rtt}{sheetOrange!35}{2.04}{hello + early GET}
+  \seg{3.55}{0.7}{sheetRed!25}{2.04}{server}
+  \node[l, anchor=west, text=sheetOrange!80!black] at (4.35,2.04) {\textbf{1 RTT} — early data is \textbf{replayable}: idempotent only};
+  % row 4: reused
+  \node[rl] at (-0.1,1.46) {warm · pooled h2/h3 connection};
+  \seg{0.7}{\rtt}{sheetOrange!35}{1.46}{GET on a new stream}
+  \seg{2.65}{0.7}{sheetRed!25}{1.46}{server}
+  \node[l, anchor=west, text=sheetGreen!50!black] at (3.45,1.46) {\textbf{1 RTT} — why one shared \ct{URLSession} matters};
+  % metrics ruler under row 1
+  \draw[sheetGrey] (0.7,0.95) -- (11.7,0.95);
+  \foreach \x/\t in {0.7/{domainLookup\\Start}, 2.65/{domainLookupEnd\\connectStart}, 4.6/{secureConnection\\Start}, 6.55/{secureConnectionEnd\\connectEnd · requestStart}, 8.5/{\ }, 9.2/{responseStart}, 10.5/{responseEnd}}
+    {\draw[sheetGrey] (\x,1.03) -- (\x,0.87); \node[l, anchor=north, font=\tiny\ttfamily] at (\x,0.85) {\t};}
+  \node[l, anchor=west, align=left] at (-3.3,0.7) {\ct{URLSessionTask-}\\\ct{TransactionMetrics}\\dates (nil = step skipped)};
+  \node[l, anchor=west, align=left, text=sheetRed] at (-3.3,0.05)
+    {Worked: RTT 100\,ms $\Rightarrow$ cold h2 $=$ 400\,ms before server time; pooled $=$ 100\,ms. TLS 1.2 adds one more RTT (5).
+     Body $>$ first congestion window ($\approx$10 segments $\approx$ 14\,KB, RFC 6928) costs extra RTTs.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{The nine steps}
+\begin{enumerate}
+  \item \textbf{Parse}: scheme, host, port, path (non-ASCII host $\to$ Punycode). A browser applies
+        \textbf{HSTS} (incl. preload): \ct{http} $\to$ \ct{https} before any packet; an app's \textbf{ATS} refuses cleartext.
+  \item \textbf{Caches first}: a fresh \ct{URLCache} hit returns with \emph{no} network
+        (\ct{resourceFetchType == .localCache}); an open connection to the same origin in the
+        session's pool skips steps 3–6 (\ct{isReusedConnection}).
+  \item \textbf{Radio}: an idle modem (LTE \ct{RRC\_IDLE}; 5G adds \ct{RRC\_INACTIVE}) must be
+        promoted to \ct{CONNECTED} before the first packet — latency first, the energy
+        \emph{tail} afterwards.
+  \item \textbf{DNS}: stub resolver (\ct{mDNSResponder} on Apple) cache $\to$ recursive resolver
+        (carrier, 1.1.1.1, Private Relay) $\to$ root $\to$ TLD $\to$ authoritative. A, AAAA and, since
+        iOS 14, \textbf{HTTPS} (type 65) records are asked in parallel; answers live for their TTL.
+  \item \textbf{Connect}: \textbf{Happy Eyeballs} (RFC 8305) prefers IPv6, starts IPv4 250\,ms later if
+        it is slow; TCP 3-way handshake $=$ 1 RTT.
+  \item \textbf{TLS 1.3}: ClientHello (SNI, ALPN, key\_share) $\to$ Finished $=$ 1 RTT; chain + hostname
+        checked; ALPN picks \ct{h2}.
+  \item \textbf{Request}: HTTP/2 \ct{HEADERS} (HPACK) on a new stream $\to$ CDN edge / load balancer
+        $\to$ app server $\to$ cache / DB. \textbf{TTFB} $=$ 1 RTT + server think time.
+  \item \textbf{Response}: status + headers (\ct{Cache-Control}, \ct{ETag}, \ct{Content-Encoding})
+        $\to$ decompress $\to$ stored in \ct{URLCache} $\to$ your code: status, decode, main actor.
+  \item \textbf{Render}: browser — DOM + CSSOM, JS, layout, paint, composite; each sub-resource is
+        another (pooled) request. App — decode off-main, diff, UI on main, pre-decode images.
+\end{enumerate}
+
+\hd{Example — where did the time go?}
+\begin{lstlisting}[language=SwiftSheet]
+func urlSession(_ s: URLSession, task: URLSessionTask,
+                didFinishCollecting m: URLSessionTaskMetrics) {
+  func ms(_ a: Date?, _ b: Date?) -> String {
+    guard let a, let b else { return "-" }   // skipped step
+    return "\(Int(b.timeIntervalSince(a) * 1000))" }
+  for t in m.transactionMetrics {   // redirects = several
+    print(t.networkProtocolName ?? "?", t.isReusedConnection,
+      "dns", ms(t.domainLookupStartDate, t.domainLookupEndDate),
+      "tcp", ms(t.connectStartDate, t.secureConnectionStartDate),
+      "tls", ms(t.secureConnectionStartDate, t.secureConnectionEndDate),
+      "ttfb", ms(t.requestStartDate, t.responseStartDate),
+      "body", ms(t.responseStartDate, t.responseEndDate),
+      t.isCellular, t.remoteAddress ?? "")  // v6 or v4?
+  }
+}
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Where the milliseconds go — and the fix}
+{\footnotesize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{10mm}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{50mm}@{}}
+\toprule
+\textbf{step} & \textbf{cost} & \textbf{how to remove it} \\ \midrule
+radio & promotion & batch; prefetch while the radio is up \\
+DNS & 1 RTT (miss: more) & fewer hostnames; honour TTLs; HTTPS record \\
+TCP & 1 RTT & reuse: \textbf{one} shared session, h2/h3 multiplexing \\
+TLS & 1 RTT (1.2: 2) & TLS 1.3 resumption; 0-RTT for idempotent GETs \\
+request & 1 RTT + server & CDN edge near the user; cache; fewer serial calls \\
+body & slow start & small first screen ($<\approx$14\,KB), compression \\
+render & CPU & decode off-main, downsample images, paginate \\
+\bottomrule
+\end{tabular}}
+
+\hd{The mobile angle}
+\begin{itemize}
+  \item \textbf{Sequential calls multiply RTTs}: login $\to$ profile $\to$ feed $=$ 3 round trips
+        minimum. Parallelise (\ct{async let}) or aggregate server-side (BFF, GraphQL).
+  \item \textbf{Network switch} (Wi-Fi $\to$ cellular) kills every TCP connection: back to cold.
+        HTTP/3 migrates by connection ID; \ct{multipathServiceType = .handover} (MPTCP) keeps TCP alive.
+  \item \textbf{Lab $\neq$ field}: the simulator uses the Mac's network. Measure on a device, on
+        cellular, and collect \ct{URLSessionTaskMetrics} in production (sampled).
+  \item The first request after launch pays everything: warm the connection with the first
+        needed call, not a dummy ping.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``HTTPS is one handshake'' — TCP \emph{then} TLS: two RTTs before the request (QUIC merges them).}
+  \trap{Timing with \ct{Date()} around \ct{data(for:)} mixes queueing, DNS and server time — use the metrics.}
+  \trap{A pooled connection may already be closed by the server: \ct{-1005} (connection lost).
+        URLSession retries it only for \textbf{idempotent} methods — a POST surfaces the error (QA1941).}
+  \trap{``DNS is instant'' — a cold miss walks root $\to$ TLD $\to$ authoritative; bad Wi-Fi DNS stalls everything.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Wake, resolve, connect, secure, ask, render'' — each is a round trip until you reuse it.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} dns-for-apps · tcp-udp-quic · tls-pki (handshake) ·
+http-deep (h2/h3, caching) · urlsession-networking · app-size-and-energy (radio tail) · rendering-pipeline}
+
+\end{document}

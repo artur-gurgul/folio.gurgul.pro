@@ -1,0 +1,183 @@
+% oauth-oidc-jwt.tex — OAuth 2.0 roles, auth code + PKCE for a native app (drawn), implicit is dead,
+% access/refresh/ID tokens, rotation + reuse detection, OIDC, JWT anatomy + validation, Keychain
+% storage, single-flight refresh, logout/revocation limits.
+% Sources (checked 2026-10-06):
+%   rfc-editor.org: RFC 6749 (OAuth 2.0) · 7636 (PKCE, S256) · 8252 (native apps, system browser) ·
+%     7519 (JWT) · 7009 (revocation) · 7662 (introspection) · 9449 (DPoP) · 9700 (Security BCP:
+%     implicit SHOULD NOT, password grant MUST NOT)
+%   developer.apple.com/documentation/authenticationservices/aswebauthenticationsession/
+%     prefersephemeralwebbrowsersession (no shared cookies; default false)
+%   Not confirmed in this pass, marked \unverified: OIDC's TLS-instead-of-signature rule for ID
+%     tokens from /token; Sign in with Apple returning name/email only the first time. Keychain
+%     items surviving uninstall is stated on the page as undocumented.
+% @labels: area=networking kind=concept platform=general topic=security,networking discussion=227
+% @tags: oauth2, oidc, pkce, jwt, jwks, refresh-token-rotation, id-token, aswebauthenticationsession, token-refresh, keychain, token-revocation
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,actor,defer,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,Task,
+    true,false},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{OAuth 2.0 · OIDC · JWT — for a native app}{networking · folio}
+
+\oneliner{\textbf{OAuth 2.0} (RFC 6749) is \emph{delegated authorization}: the app gets a scoped
+\textbf{access token} without ever seeing the password. \textbf{OIDC} adds \emph{authentication}: an
+\textbf{ID token} saying who logged in. A native app is a \textbf{public client} (no secret), so it uses
+\textbf{authorization code + PKCE} (RFC 7636) in the \textbf{system browser} (RFC 8252). A \textbf{JWT}
+(RFC 7519) is \emph{signed, not encrypted}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    m/.style={font=\tiny, inner sep=1pt, align=center, fill=white},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=left},
+    hdr/.style={box, font=\scriptsize\bfseries, minimum width=15mm, inner sep=2pt}]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.3,3.95) {Authorization code + PKCE (iOS)};
+  \foreach \x/\n in {0.5/app, 2.6/{ASWebAuth-\\[-2pt]Session}, 6.0/{auth server}, 8.4/API}
+    \node[hdr] at (\x,3.45) {\n};
+  \foreach \x in {0.5,2.6,6.0,8.4} \draw[sheetGrey, thick] (\x,2.85) -- (\x,-0.3);
+  % 1 app prepares
+  \node[l, text=sheetBlue, anchor=west] at (-0.3,2.98) {app: \ct{verifier} = random 32 B, b64url · \ct{challenge} = b64url(SHA-256(verifier)) · \ct{state} · \ct{nonce}};
+  \draw[hot, draw=sheetBlue] (0.5,2.6) -- node[m, above]{start()} (2.6,2.6);
+  \draw[hot, draw=sheetBlue] (2.6,2.3) -- node[m, above]{GET /authorize?\ct{code\_challenge} (S256)\\\ct{\&state \&nonce \&scope=openid}} (6.0,2.3);
+  \node[l, text=black!75] at (7.2,2.2) {user logs in\\+ consents\\(SSO cookie)};
+  \draw[hot, draw=sheetOrange] (6.0,1.8) -- node[m, above]{302 \ct{myapp://cb?code\&state}} (2.6,1.8);
+  \draw[hot, draw=sheetOrange] (2.6,1.5) -- node[m, above]{callback URL} (0.5,1.5);
+  \node[l, text=sheetRed, anchor=east, align=right] at (0.45,1.5) {check\\\ct{state}};
+  \draw[hot, very thick, draw=sheetGreen] (0.5,1.0) -- node[m, above]{POST /token: \ct{code} + \textbf{\ct{code\_verifier}}\\+ redirect\_uri + client\_id (\textbf{no secret})} (6.0,1.0);
+  \node[l, text=sheetGreen!50!black] at (7.2,0.85) {SHA-256(verifier)\\$=$ challenge?};
+  \draw[hot, very thick, draw=sheetGreen] (6.0,0.55) -- node[m, above]{\textbf{access} (5–15 min) · \textbf{refresh} · \textbf{id\_token}} (0.5,0.55);
+  \draw[hot, draw=sheetBlue] (0.5,0.2) -- node[m, above, pos=0.75]{\ct{Authorization: Bearer <access>}} (8.4,0.2);
+  \draw[hot, draw=sheetBlue] (8.4,-0.1) -- node[m, below, pos=0.6]{200 — API checked signature (JWKS) · iss · aud · exp · scope} (0.5,-0.1);
+  \node[l, text=sheetRed, anchor=west] at (-0.3,-0.62) {\textbf{PKCE stops}: another app claiming \ct{myapp://} steals the \ct{code} — without the \ct{verifier}, \ct{/token} refuses it.};
+
+  \draw[sheetGrey!40] (9.2,4.05) -- (9.2,-0.85);
+
+  % ---------- JWT anatomy ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (9.35,3.95) {JWT = header . payload . signature};
+  \node[l, anchor=west, font=\tiny\ttfamily] at (9.35,3.55)
+     {\textcolor{sheetRed}{eyJhbGciOiJSUzI1NiIs…}.\textcolor{sheetBlue}{eyJpc3MiOiJodHRwczov…}.\textcolor{sheetGreen!60!black}{SflKxwRJSMeKKF2QT4…}};
+  \node[box, draw=sheetRed, fill=sheetRed!5, anchor=north west, text width=30mm, align=left, font=\tiny] (h) at (9.35,3.3)
+     {\textbf{header}\\\ct{"alg": "RS256"}\\\ct{"kid": "2025-09"}\\\ct{"typ": "JWT"}};
+  \node[box, anchor=north west, text width=33mm, align=left, font=\tiny] (p) at (12.85,3.3)
+     {\textbf{payload (claims)}\\\ct{"iss"} issuer URL \quad \ct{"sub"} user id\\\ct{"aud"} API / client\_id\\\ct{"exp" "nbf" "iat"} seconds\\\ct{"jti"} unique id \quad \ct{"scope"}};
+  \node[box, draw=sheetGreen, fill=sheetGreen!8, anchor=north west, text width=66mm, align=left, font=\tiny] (s) at (9.35,1.8)
+     {\textbf{signature} = RS256(key \ct{kid}, \ct{b64url(header) + "." + b64url(payload)})\\
+      verify with the issuer's public \textbf{JWKS} (\ct{jwks\_uri}, from \ct{/.well-known/openid-configuration})};
+  \node[l, anchor=north west, text width=68mm] at ([yshift=-3pt]s.south west)
+     {base64url, no padding $\to$ \textbf{anyone can read the payload}: no secrets, no PII beyond need.
+      JWE encrypts; almost every ``JWT'' is JWS.\\[2pt]
+      \textcolor{sheetOrange!80!black}{\textbf{3 tokens}: \textbf{access} $\to$ the API (aud = API; app treats it as opaque) ·
+      \textbf{refresh} $\to$ only the auth server · \textbf{ID token} $\to$ the \emph{app} (aud = client\_id) — never a bearer for the API.}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Roles}: resource owner (user) · client (app) · authorization server (issues tokens)
+        · resource server (API). \textbf{Scopes} cap what a token may ever do; the API still does
+        per-user authZ.
+  \item \textbf{Implicit is dead}: token in the redirect \emph{fragment} — leaks via history/referrer/logs,
+        no refresh, nothing to bind PKCE to. Security BCP (RFC 9700): implicit \textbf{SHOULD NOT},
+        password grant \textbf{MUST NOT}; the OAuth 2.1 draft omits both. Machine-to-machine: client credentials.
+  \item \textbf{Redirect}: \ct{ASWebAuthenticationSession(url:callbackURLScheme:)} — the app never sees
+        the password, shares Safari's SSO cookies; \ct{prefersEphemeralWebBrowserSession} opts out.
+        Claimed \ct{https} redirect (universal link) beats a custom scheme. \textbf{Not} a
+        \ct{WKWebView}: the app could read the password; Google refuses embedded views.
+  \item \textbf{Refresh rotation}: every refresh returns a \emph{new} RT and kills the old; an
+        old RT presented again $=$ theft $\to$ the server revokes the whole \textbf{family}.
+        Alternative: sender-constrained tokens (DPoP, RFC 9449).
+  \item \textbf{OIDC}: \ct{scope=openid}; ID token claims \ct{iss sub aud exp iat nonce auth\_time};
+        \ct{/userinfo} takes the access token. Identity key = \ct{iss + sub}, never email. Check the
+        \ct{nonce} you sent — binds the token to this login (replay).
+\end{itemize}
+
+\hd{JWT validation — server side, every request}
+\begin{enumerate}
+  \item \ct{alg} in \textbf{your allow-list} (e.g. only RS256/ES256) — never \ct{none}; never let the
+        token's \ct{alg} pick the key type (RS256$\to$HS256 confusion signs with the \emph{public} key).
+  \item \ct{kid} $\to$ key from cached JWKS; unknown \ct{kid} $\to$ refetch once (rate-limited).
+  \item Verify the signature over the bytes \emph{as received}.
+  \item \ct{iss} exact · \ct{aud} contains \emph{me} · \ct{exp} $>$ now $-$ leeway, \ct{nbf} $\leq$ now
+        $+$ leeway (30–60\,s skew) · \ct{scope} · \ct{jti} if one-time.
+\end{enumerate}
+ID token from \ct{/token} over TLS: OIDC lets the \emph{app} skip the signature check\unverified, but still
+check \ct{iss aud exp nonce}.
+
+\hd{Example — single-flight refresh}
+\begin{lstlisting}[language=SwiftSheet]
+actor TokenStore {
+  private var access: Token                   // in memory
+  private var refreshing: Task<Token, Error>?
+  func valid() async throws -> Token {
+    if let r = refreshing { return try await r.value } // join
+    guard access.expiresWithin(60) else { return access }
+    let r = Task { try await auth.refresh(keychain.refreshToken) }
+    refreshing = r                  // set BEFORE the await
+    defer { refreshing = nil }
+    access = try await r.value      // new RT saved to Keychain
+    return access                   // 401 later? same path, forced
+  }
+}
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Tokens at a glance}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{14mm}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{32mm}@{}}
+\toprule
+& \textbf{for} & \textbf{life} & \textbf{on iOS} \\ \midrule
+access & API & 5–15 min & memory (+ Keychain) \\
+refresh & auth server & days, rotated & Keychain only \\
+ID & the app & minutes & read claims once, then drop \\
+\bottomrule
+\end{tabular}}
+
+\hd{Storing tokens on iOS}
+\ct{SecItemAdd} with \ct{kSecClassGenericPassword}. Accessibility:
+\ct{AfterFirstUnlockThisDeviceOnly} if a background refresh must read it while locked;
+\ct{WhenUnlockedThisDeviceOnly} otherwise. \ct{ThisDeviceOnly} $=$ no backup/migration to a new phone.
+Biometry (\ct{SecAccessControl .biometryCurrentSet}) on the RT blocks \emph{silent} refresh — a
+deliberate trade. Never \ct{UserDefaults}. Keychain items \textbf{survive uninstall} (undocumented)
+$\to$ wipe on first launch after reinstall.
+
+\hd{Logout and revocation — the JWT limit}
+A JWT is valid until \ct{exp}: nothing \emph{un-signs} it. Levers: short access TTL · revoke the RT
+(\ct{/revoke}, RFC 7009) · deny-list by \ct{jti} or a per-user token version (state again) ·
+opaque tokens + introspection (RFC 7662). Logout $=$ revoke RT + delete Keychain + end the browser
+session (\ct{end\_session\_endpoint}) — or the next login is silent.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Two requests hit 401, two refreshes run with rotation: the second uses a dead RT $\to$ reuse
+        detection revokes the family $\to$ ``random logouts''. Single-flight it.}
+  \trap{Sending the \textbf{ID token} to your API (wrong \ct{aud}) or reading authZ from it.}
+  \trap{A client secret in the binary is public — extractable. PKCE replaces it.}
+  \trap{\ct{exp} is NumericDate \textbf{seconds}, not ms; compare with a leeway.}
+  \trap{OAuth alone is not login: an access token says \emph{what}, not \emph{who}.}
+  \trap{Sign in with Apple returns name/email only on the \textbf{first} authorization\unverified{} — store them.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Code + verifier in the browser; access to the API, ID to the app, refresh to nobody else;
+check alg, kid, iss, aud, exp.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} tls-pki (mTLS instead of bearer) ·
+keychain-secure-enclave · swift6-strict-concurrency (actor reentrancy) · api-design (401/403) ·
+deep-links-universal-links (https redirect)}
+
+\end{document}

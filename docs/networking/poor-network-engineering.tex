@@ -1,0 +1,174 @@
+% poor-network-engineering.tex — engineering an app for bad networks: the connectivity state
+% machine and what the app does in each state (drawn), timeouts per layer, retries, idempotency, NWPathMonitor (expensive / constrained), waitsForConnectivity,
+% Low Data Mode errors, captive portals, request coalescing + outbox, and how to test it
+% (Network Link Conditioner, Xcode Device Conditions, Android emulator -netdelay/-netspeed, Toxiproxy).
+% Sources (checked 2026-09-25): developer.apple.com — URLSessionConfiguration.waitsForConnectivity
+% (iOS 11; ignored by background sessions; only during connection establishment), NWPath
+% (isExpensive, isConstrained iOS 13, unsatisfiedReason), URLError.NetworkUnavailableReason (iOS 13:
+% cellular, expensive, constrained, ultraConstrained), QA1941 (-1005, automatic retry only for
+% idempotent requests); WWDC19 412 (Device Conditions, Xcode 11, iOS 13 device);
+% developer.android.com/studio/run/emulator-commandline (-netdelay, -netspeed values);
+% github.com/Shopify/toxiproxy (toxics, API port 8474); RFC 8908 / RFC 8910 (captive portal API).
+% @labels: area=networking kind=pattern platform=ios topic=networking,system-design,testing discussion=228
+% @tags: offline-first, nwpathmonitor, waitsforconnectivity, low-data-mode, captive-portal, timeouts, retries, idempotency, request-coalescing, network-link-conditioner, toxiproxy, outbox
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,for,in,case,actor,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,import,defer,
+    true,false,Task},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{Engineering for bad networks — offline, flaky, captive, metered}{networking · folio}
+
+\oneliner{On a phone the network is a \textbf{variable}: it vanishes (tunnel), \textbf{degrades}
+(one bar, 20\,\% loss), \textbf{lies} (a captive portal answers every request with a login page),
+\textbf{costs money} (cellular, Low Data Mode) and \textbf{changes under you} (Wi-Fi $\to$ LTE).
+Give every request a \textbf{timeout}, a \textbf{retry rule}, an \textbf{idempotency story} and an
+\textbf{offline behaviour} — then prove it under a simulated bad network.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    s/.style={box, font=\scriptsize, text width=27mm, align=left, inner sep=2.5pt, anchor=north, minimum height=13mm},
+    t/.style={->, thick, draw=sheetGrey},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center}]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-1.75,4.25) {Connectivity as a state machine — the path says ``a route exists'', only requests say ``it works''};
+  \node[s, draw=sheetGreen, fill=sheetGreen!8] (on) at (-0.2,3.55) {\textbf{ONLINE}\\flush outbox (jittered) ·\\prefetch · full-quality\\media · live sync};
+  \node[s, draw=sheetOrange, fill=sheetOrange!8] (deg) at (4.35,3.55) {\textbf{DEGRADED} (slow, lossy)\\smaller pages · low-res\\images · no prefetch ·\\fewer, later retries};
+  \node[s, draw=sheetRed, fill=sheetRed!6] (off) at (8.9,3.55) {\textbf{OFFLINE} (unsatisfied)\\serve cache, marked stale ·\\queue writes (outbox) ·\\banner · wait for a path};
+  \node[s, draw=sheetBrown, fill=sheetBrown!8] (cap) at (13.45,3.55) {\textbf{CAPTIVE} (route, no\\internet): stop retrying ·\\``sign in to Wi-Fi'' hint ·\\TLS errors expected};
+  \draw[t] ([yshift=2.5mm]on.east) -- node[l, above]{slow /\\timeouts} ([yshift=2.5mm]deg.west);
+  \draw[t] ([yshift=-2.5mm]deg.west) -- node[l, below]{recovers} ([yshift=-2.5mm]on.east);
+  \draw[t] ([yshift=2.5mm]deg.east) -- node[l, above]{\ct{.unsatis-}\\\ct{fied}} ([yshift=2.5mm]off.west);
+  \draw[t] ([yshift=2.5mm]off.east) -- node[l, above]{satisfied,\\probe fails} ([yshift=2.5mm]cap.west);
+  \draw[t] ([yshift=-2.5mm]cap.west) -- node[l, below]{signed in} ([yshift=-2.5mm]off.east);
+  \draw[t, draw=sheetGreen!70!black] (off.south) -- ++(0,-0.25) -| node[l, pos=0.25, below]{\ct{.satisfied} + a request succeeds $\to$ ONLINE: reconnect with jitter, resubscribe, fill gaps. \ct{.unsatisfied} from \emph{any} state $\to$ OFFLINE.} (on.south);
+  % modifier bar
+  \node[draw=sheetBlue, dashed, rounded corners=2pt, fill=sheetBlue!4, font=\tiny, align=left, anchor=north west, text width=161mm, inner sep=2pt] at (-1.75,1.45)
+    {\textbf{Orthogonal flags} (any state): \ct{path.isExpensive} (cellular, hotspot) $\to$ defer big downloads, ask before video ·
+     \ct{path.isConstrained} (\textbf{Low Data Mode}) $\to$ no prefetch, no autoplay, lower quality · Low Power Mode $\to$ stop optional work.
+     \textbf{Transitions are debounced} (1–2\,s) so a flapping path does not thrash the UI or trigger a reconnect storm.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Timeouts per layer}
+{\footnotesize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{56mm}@{}}
+\toprule
+\textbf{layer} & \textbf{what bounds it} \\ \midrule
+user action & \emph{your} deadline: spinner 10\,s $\to$ cached data + Retry \\
+URLSession idle & \ct{timeoutIntervalForRequest} (60\,s): max gap between bytes \\
+whole transfer & \ct{timeoutIntervalForResource} (default 7 days) \\
+waiting for a path & \ct{waitsForConnectivity}: bound it yourself (cancel) \\
+TCP connect & \ct{NWProtocolTCP.Options.connectionTimeout} \\
+\bottomrule
+\end{tabular}}
+
+\hd{Retries and idempotency}
+\begin{itemize}
+  \item Retry \textbf{transient} errors only (\ct{timedOut}, \ct{networkConnectionLost},
+        \ct{cannotConnectToHost}, 502/503/504, 429 with \ct{Retry-After}); never 4xx logic errors.
+        Exponential backoff + full jitter + a cap.
+  \item URLSession already retries \textbf{idempotent} requests when a reused connection drops
+        (QA1941) — don't stack your own immediate retry on top.
+  \item A timeout means \textbf{unknown}, not failed: POSTs carry an \ct{Idempotency-Key} created
+        once per user action and reused on every attempt.
+\end{itemize}
+
+\hd{Detecting connectivity}
+\begin{itemize}
+  \item \ct{NWPathMonitor}: \ct{status} (\ct{.satisfied} / \ct{.unsatisfied} / \ct{.requiresConnection}),
+        \ct{unsatisfiedReason}, \ct{isExpensive}, \ct{isConstrained} (iOS 13),
+        \ct{usesInterfaceType(.wifi)}. It sees \emph{routes}, not the internet.
+  \item \textbf{Don't pre-flight}: attempt, handle the error; retry on \emph{signals} (path
+        satisfied, foreground), not only timers.
+  \item \textbf{Low Data Mode}: \ct{allowsConstrainedNetworkAccess = false} makes the task fail with
+        \ct{URLError.networkUnavailableReason == .constrained} — retry with a lighter request
+        (also \ct{.expensive}, \ct{.cellular}).
+  \item \textbf{Captive portals}: the OS probes a known URL (Apple: \ct{captive.apple.com}) and shows
+        the sign-in sheet; until then requests get redirects, HTML instead of JSON (decode errors on a
+        ``200''), or a certificate for the wrong host. Standard: RFC 8908/8910.
+\end{itemize}
+
+\hd{Example — path + session setup}
+\begin{lstlisting}[language=SwiftSheet]
+let monitor = NWPathMonitor()
+monitor.pathUpdateHandler = { path in
+  Task { @MainActor in
+    net.isOnline = path.status == .satisfied
+    net.lowData  = path.isConstrained     // Low Data Mode
+    net.metered  = path.isExpensive       // cellular, hotspot
+    if net.isOnline { await outbox.flush() }  // jittered inside
+  }
+}
+monitor.start(queue: DispatchQueue(label: "net.path"))
+
+let cfg = URLSessionConfiguration.default
+cfg.waitsForConnectivity = true            // wait, don't fail -1009
+cfg.allowsConstrainedNetworkAccess = false // honour Low Data Mode
+cfg.timeoutIntervalForRequest = 20         // idle gap, not total
+// delegate: urlSession(_:taskIsWaitingForConnectivity:) -> "Waiting..."
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Coalescing, queuing, cancelling}
+\begin{itemize}
+  \item \textbf{Single-flight}: one in-flight \ct{Task} per cache key (an actor holding
+        \ct{[Key: Task<Value, Error>]}); five cells asking for the same avatar make one request.
+  \item \textbf{Cancel} what the user left: tie requests to the view's lifetime (\ct{.task} modifier,
+        stored \ct{Task} cancelled in \ct{deinit}) — bytes for a dismissed screen are waste.
+  \item \textbf{Prioritise}: \ct{URLSessionTask.priority}; visible cells before prefetch; separate
+        sessions for bulk vs interactive (\ct{httpMaximumConnectionsPerHost}).
+  \item \textbf{Outbox} for writes: persist the intent first (optimistic UI), send in order with
+        idempotency keys, remove on 2xx, surface permanent 4xx to the user. Background upload:
+        a \ct{.background} session (always waits for connectivity).
+  \item \textbf{Batch} small writes (analytics) — one radio wake, one request.
+\end{itemize}
+
+\hd{Testing bad networks}
+{\footnotesize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{51mm}@{}}
+\toprule
+\textbf{Network Link Conditioner} & Mac: \emph{Additional Tools for Xcode}; iPhone: Settings $\to$
+  Developer. Profiles: 100\% Loss, 3G, DSL, Edge, High Latency DNS, LTE, Very Bad Network, WiFi \\
+\textbf{Xcode Device Conditions} & Devices window $\to$ Network Link / Thermal State
+  (Xcode 11+, device on iOS 13+) \\
+\textbf{Android emulator} & \ct{-netdelay gsm|edge|umts|lte|min:max},
+  \ct{-netspeed edge|lte|up:down} (kbps); \ct{-netfast} = none \\
+\textbf{Toxiproxy} & TCP proxy for tests/CI: \ct{latency}, \ct{bandwidth}, \ct{timeout},
+  \ct{reset\_peer}, \ct{slicer}, \ct{limit\_data}, \ct{down} toxics \\
+\bottomrule
+\end{tabular}}\par
+Plus Charles / Proxyman (throttle, breakpoints, fake 500s) and the real world (lift, train, hotel
+Wi-Fi). Script: offline launch, drop mid-upload, 30\,s latency, 5xx burst, captive, Low Data Mode —
+assert the \emph{UI state}, not just ``no crash''.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Check reachability, then request'' — races, and a captive portal is ``reachable''.}
+  \trap{Retry-on-timeout for a payment POST without an idempotency key $\to$ double charge.}
+  \trap{\ct{timeoutIntervalForRequest} is an \emph{idle} timer: a slow trickle never trips it.}
+  \trap{Testing only in the simulator on office Wi-Fi: no radio, no loss, no NAT64.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Attempt, don't ask; bound every wait; retry what is safe; queue what must survive.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} websockets-realtime · urlsession-networking ·
+app-size-and-energy · api-design (idempotency keys) · sync-engines (offline sync)}
+
+\end{document}

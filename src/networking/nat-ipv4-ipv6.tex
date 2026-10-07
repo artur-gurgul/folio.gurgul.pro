@@ -1,0 +1,175 @@
+% nat-ipv4-ipv6.tex — IPv4 exhaustion, private + shared ranges, how NAPT rewrites and why it is not a
+% firewall, NAT behaviour types (RFC 3489 names vs RFC 4787 terms), port mapping (UPnP / NAT-PMP / PCP),
+% CGNAT, IPv6 addressing (link-local, ULA, global, SLAAC, temporary addresses), dual stack + Happy
+% Eyeballs, NAT64 / DNS64 / 464XLAT, why P2P needs STUN/TURN, what an app must do.
+% Picture: a phone behind home NAT + carrier CGNAT (translation tables), and DNS64 synthesising an
+% IPv6 address for an IPv4-only server.
+% Sources (checked 2026-09-25): RFC 1918, 6598, 3927, 5737 (documentation addresses), 3849, 4787,
+% 5382, 3489, 4291, 4193, 4862, 8981, 6052, 6146, 6147, 6877, 8305, 6886, 6887 (rfc-editor.org);
+% icann.org release-03feb11, nro.net (APNIC), arin.net 2015-09-24, ripe.net (run out, Nov 2019);
+% developer.apple.com/news/?id=05042016a and Apple's "Supporting IPv6 DNS64/NAT64 Networks" guide.
+% The private-side example address is written 192.168.1.x on purpose (RFC 1918; no full address).
+% NOT repeated: ICE / STUN / TURN mechanics and WebRTC (ios-platform/realtime-webrtc-callkit.tex).
+% @labels: area=networking kind=concept platform=general topic=networking,protocols discussion=225
+% @tags: nat, napt, cgnat, rfc1918, ipv6, slaac, privacy-addresses, dual-stack, happy-eyeballs, nat64, dns64, hole-punching
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,for,in,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{NAT, IPv4 \& IPv6 — what sits between the app and the server}{networking · folio}
+
+\oneliner{IPv4 ran out, so a phone sits behind \textbf{NAT} — often \emph{two} (home router + carrier
+\textbf{CGNAT}) — which rewrites the private source \textbf{IP:port} to a shared public one and keeps a
+\textbf{mapping table}. Only \emph{outbound} packets create rows, so nobody can dial \emph{in}: P2P breaks,
+yet it is \emph{not} a firewall. \textbf{IPv6} gives every device global addresses (no NAT); IPv6-only
+carriers reach IPv4 servers via \textbf{NAT64/DNS64}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    dev/.style={box, font=\scriptsize, minimum height=9mm, text width=19mm, inner sep=1.5pt},
+    nat/.style={box, draw=sheetOrange, fill=sheetOrange!8, font=\scriptsize, text width=31mm,
+                inner sep=1.5pt, align=left},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    pk/.style={font=\tiny\ttfamily, inner sep=1pt, fill=white}]
+  % ---------- IPv4: double NAT ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.3,3.55) {IPv4: home NAT + carrier CGNAT (NAPT)};
+  \node[dev] (ph) at (0.7,2.1) {\textbf{phone}\\\ct{192.168.1.x}};
+  \node[nat] (hn) at (4.0,2.1) {\textbf{home router NAT}\\\ct{192.168.1.x:50000}\\\ \ $\leftrightarrow$ \ct{100.64.12.9:40001}};
+  \node[nat] (cg) at (8.0,2.1) {\textbf{ISP CGNAT} (RFC 6598)\\\ct{100.64.12.9:40001}\\\ \ $\leftrightarrow$ \ct{203.0.113.7:61000}};
+  \node[dev, draw=sheetGreen, fill=sheetGreen!8] (sv) at (11.4,2.1) {\textbf{server}\\\ct{198.51.100.10:443}};
+  \foreach \a/\b in {ph/hn, hn/cg, cg/sv} {
+    \draw[hot, draw=sheetBlue] ([yshift=0.15cm]\a.east) -- ([yshift=0.15cm]\b.west);
+    \draw[hot, draw=sheetGreen] ([yshift=-0.15cm]\b.west) -- ([yshift=-0.15cm]\a.east);
+  }
+  \node[pk, text=sheetBlue] at (2.05,3.0) {src 192.168.1.x:50000};
+  \node[pk, text=sheetBlue] at (6.0,3.0) {src 100.64.12.9:40001};
+  \node[pk, text=sheetBlue] at (10.0,3.0) {src 203.0.113.7:61000};
+  \node[l, anchor=west] at (-0.3,3.25) {\textcolor{sheetBlue}{\textbf{blue}}: outbound creates the row and the source is rewritten at each hop (what the next hop sees, above) · \textcolor{sheetGreen!50!black}{\textbf{green}}: the reply matches the row and is rewritten back};
+  % unsolicited inbound
+  \node[dev, draw=sheetRed, fill=sheetRed!6, text width=17mm] (pe) at (11.4,0.55) {\textbf{peer} / attacker\\\ct{192.0.2.44}};
+  \draw[->, thick, draw=sheetRed] (pe.west) -- (9.2,0.55) node[l, left, text=sheetRed, align=right]{no row for this flow $\to$ \textbf{dropped}\\(endpoint-indep. filtering: let in)};
+  \node[l, anchor=west, align=left] at (-0.3,0.6) {server sees \ct{203.0.113.7} for\\\textbf{thousands} of subscribers:\\IP bans / rate limits hit them all};
+  \node[l, anchor=west, align=left, text=sheetBrown] at (2.35,0.6) {rows expire when idle: UDP $\geq$ 2 min\\(5 recommended), TCP $\geq$ 2 h 4 min —\\carriers are often far shorter\unverified};
+  \draw[sheetGrey!40] (12.75,3.7) -- (12.75,-0.1);
+  % ---------- IPv6-only + NAT64 ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (12.9,3.55) {IPv6-only: DNS64 + NAT64};
+  \node[l, anchor=west, align=left] at (12.9,3.05) {\textbf{1} AAAA? \ct{api.example.com}};
+  \node[l, anchor=west, align=left] at (12.9,2.6) {\textbf{2} DNS64: only \ct{A 198.51.100.10}\\\ \ \ $\to$ synthesise \ct{64:ff9b::c633:640a}};
+  \node[l, anchor=west, align=left] at (12.9,2.0) {\textbf{3} phone connects to that\\\ \ \ IPv6 address (it is \emph{fake})};
+  \node[l, anchor=west, align=left] at (12.9,1.45) {\textbf{4} NAT64 gateway strips the\\\ \ \ prefix $\to$ IPv4 \ct{198.51.100.10}};
+  \node[l, anchor=west, align=left, text=sheetGreen!50!black] at (12.9,0.85) {c6.33.64.0a = 198.51.100.10};
+  \node[l, anchor=west, align=left, text=sheetRed] at (12.9,0.35) {an IPv4 \emph{literal} skips step 1\\$\to$ no route. Use names.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{IPv4 and NAT}
+\begin{itemize}
+  \item \textbf{32 bits} $\approx$ 4.3\,bn addresses. IANA handed out its last \ct{/8}s on 3 Feb 2011;
+        APNIC hit its final \ct{/8} in Apr 2011, ARIN ran dry Sep 2015, RIPE NCC Nov 2019. NAT (really
+        \textbf{NAPT}, port translation) lets a whole LAN share one address.
+  \item \textbf{Not routed on the internet}: RFC 1918 \ct{10/8}, \ct{172.16/12}, \ct{192.168/16};
+        \textbf{CGNAT} shared space \ct{100.64/10} (RFC 6598); link-local \ct{169.254/16}.
+        Docs/examples: \ct{192.0.2/24}, \ct{198.51.100/24}, \ct{203.0.113/24} (RFC 5737).
+  \item \textbf{Outbound} packet $\to$ NAT allocates public IP:port, stores the 5-tuple mapping,
+        rewrites the source (and checksums). The \textbf{reply} matches the row and is rewritten back.
+        No row $\to$ dropped. Idle rows \textbf{expire} (RFC 4787: UDP $\geq$ 2 min, 5 min recommended;
+        RFC 5382: TCP established $\geq$ 2 h 4 min) — long-lived sockets need \textbf{keep-alives}.
+  \item \textbf{CGNAT} on mobile: one public IP for many customers $\to$ per-IP rate limits and bans
+        are collateral damage; abuse reports need IP + \textbf{port} + time; no port forwarding.
+\end{itemize}
+
+\hd{NAT behaviour — who may use a mapping}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{14mm}>{\raggedright\arraybackslash}p{36mm}>{\raggedright\arraybackslash}p{21mm}@{}}
+\toprule
+\textbf{RFC 3489} & \textbf{RFC 4787: mapping · filtering} & \textbf{hole punch?} \\ \midrule
+full cone & endpoint-indep. · endpoint-indep. & yes, easy \\
+restricted & endpoint-indep. · address-dep. & yes \\
+port-restr. & endpoint-indep. · address+port-dep. & yes (simultaneous) \\
+\textbf{symmetric} & \textbf{address(+port)-dep.} · a+p-dep. & \textbf{no $\to$ TURN} \\
+\bottomrule
+\end{tabular}}\par
+\textbf{Mapping} = does the public port stay the same for every destination? \textbf{Filtering} = who
+may send \emph{in} on it. STUN only helps when the mapping is endpoint-independent: the port the
+STUN server saw is the port the peer can use. Symmetric NAT gives the peer a \emph{different} port
+$\to$ relay. \textbf{Hairpinning}: two devices behind the same NAT reaching each other via the public address.
+
+\hd{Why NAT is not a firewall — and asking it for a hole}
+Dropping unknown inbound is a \emph{side effect} of having no row. Endpoint-independent filtering lets
+\emph{any} host use an open mapping; nothing inspects outbound. IPv6 has no NAT, so the router needs a
+real \textbf{stateful firewall} (allow established, deny new inbound). \textbf{Port mapping}: static
+forwarding · \textbf{UPnP IGD} (unauthenticated) · \textbf{NAT-PMP} (RFC 6886) $\to$ \textbf{PCP}
+(RFC 6887) — none reaches through a carrier CGNAT.
+
+\hd{Example — what an app must do}
+\begin{lstlisting}[language=SwiftSheet]
+// BAD: IPv4 literal - no AAAA to synthesise on NAT64
+let bad = URL(string: "http://198.51.100.10/v1")!
+// GOOD: a name; DNS64 gives 64:ff9b::c633:640a
+let good = URL(string: "https://api.example.com/v1")!
+let mon = NWPathMonitor()                 // Network.framework
+mon.pathUpdateHandler = { p in
+  print(p.supportsIPv4, p.supportsIPv6)  // IPv6-only: false, true
+}
+mon.start(queue: .main)
+// test: macOS Internet Sharing -> "Create NAT64 Network"
+// server: store IPs as 16 bytes; rate-limit per /64
+\end{lstlisting}
+
+\columnbreak
+
+\hd{IPv6}
+\begin{itemize}
+  \item \textbf{128 bits}; a LAN gets a \ct{/64}: 64-bit prefix + 64-bit interface ID. No broadcast,
+        no ARP (NDP/ICMPv6 instead — don't block ICMPv6).
+  \item Every interface has \textbf{several} addresses: \textbf{link-local} \ct{fe80::/10} (always, never
+        routed; needs a zone \ct{\%en0}) · \textbf{ULA} \ct{fc00::/7} (private, ``RFC 1918 for v6'') ·
+        \textbf{global} \ct{2000::/3}. Docs: \ct{2001:db8::/32}.
+  \item \textbf{SLAAC} (RFC 4862): the router advertises the prefix (RA), the host builds its own
+        address; DHCPv6 is optional. \textbf{Temporary (privacy) addresses} (RFC 8981) rotate the
+        interface ID — outbound connections use them, so \textbf{an IP is not a device ID}.
+  \item \textbf{Dual stack}: both families. \textbf{Happy Eyeballs v2} (RFC 8305): resolve A + AAAA,
+        try IPv6 first, start the next attempt after 250\,ms (50\,ms resolution delay), keep the
+        winner. URLSession / Network.framework race for you\unverified; a raw \ct{connect()} to the
+        first address does not.
+  \item \textbf{IPv6-only + NAT64} (RFC 6146) with \textbf{DNS64} (RFC 6147) and the well-known prefix
+        \ct{64:ff9b::/96} (RFC 6052) — many mobile carriers. \textbf{464XLAT} (RFC 6877): an on-device
+        CLAT gives IPv4-literal apps a fake IPv4 path. \textbf{Since 1 June 2016 every App Store app
+        must work on IPv6-only networks}; Apple says: no IP literals, use \ct{getaddrinfo} / URLSession.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``NAT is security'' — filtering is accidental; IPv6 security = the stateful firewall.}
+  \trap{``Two phones can just connect'' — both behind NAT/CGNAT: neither can accept; STUN + hole
+        punching, else \textbf{TURN} (symmetric NAT, UDP blocked).}
+  \trap{Idle TCP socket silently dead after minutes on cellular — the NAT row expired, no RST.
+        Heartbeat below the timeout, or reconnect.}
+  \trap{Banning an IP on mobile = banning a neighbourhood (CGNAT).}
+  \trap{Hard-coded IPv4 literal / IPv4-only socket code = rejected by App Review on NAT64.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``NAT hides, it doesn't guard. Outbound opens the row, idle closes it. Names, never literals.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} realtime-webrtc-callkit (ICE, STUN, TURN) ·
+websockets-realtime (heartbeats) · http-deep (connections) · cellular-network-performance · tls-pki}
+
+\end{document}
