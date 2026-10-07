@@ -1,0 +1,168 @@
+% mobile-data-leakage.tex — where data leaks on a phone OUTSIDE the storage you chose:
+% keyboard learning + third-party keyboards, app-switcher snapshot, screenshots / recording,
+% notifications, pasteboard, Spotlight/Handoff, URLCache (Cache.db), cookies + WebView store,
+% logs, backups (iOS + Android Auto Backup), crash/analytics SDKs, forgotten files — and the
+% logout wipe. Keychain classes + Data Protection are NOT repeated (keychain-secure-enclave);
+% Logger privacy + permission flow are NOT repeated (app-hardening-privacy).
+% Sources (checked 2026-09-25):
+%   https://developer.apple.com/documentation/uikit/preparing-your-ui-to-run-in-the-background (snapshot timing)
+%   https://developer.apple.com/documentation/foundation/urlresourcevalues/isexcludedfrombackup
+%   https://developer.apple.com/documentation/uikit/uitraitcollection/scenecapturestate (iOS 17)
+%   https://developer.apple.com/documentation/uikit/uiscreen/iscaptured (iOS 11, deprecated iOS 27)
+%   https://developer.apple.com/documentation/uikit/uipastecontrol (iOS 16, no paste alert)
+%   https://developer.android.com/develop/ui/views/touch-and-input/copy-paste (EXTRA_IS_SENSITIVE, 13+)
+%   https://developer.android.com/identity/data/autobackup (allowBackup, dataExtractionRules, 25 MB, D2D)
+%   https://developer.android.com/about/versions/14/features/screenshot-detection
+%   https://developer.android.com/about/versions/15/features (screen-recording detection)
+%   https://mas.owasp.org/MASVS/ (MASVS-STORAGE-2, MASVS-PLATFORM-3)
+% @labels: area=security kind=concept platform=ios topic=security,data,platform-apis discussion=241
+% @tags: data-leakage, app-switcher-snapshot, keyboard-cache, urlcache, cache-db, pasteboard, backups, isexcludedfrombackup, allowbackup, flag-secure, logout-wipe, masvs-storage
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,try,await,async,if,guard,return,for,in,true,false,nil},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  ch/.style={draw=#1, thick, rounded corners=2pt, fill=#1!6, font=\scriptsize,
+             text width=60mm, align=left, inner sep=1.5pt, minimum height=6.9mm},
+  fix/.style={text=sheetGreen!45!black},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Where data leaks on a phone — and what to wipe}{security · folio}
+
+\oneliner{Putting the token in the Keychain secures \emph{one} copy. The OS makes more
+copies for you: the \textbf{keyboard} learns what is typed, the \textbf{app switcher} photographs
+the screen, \textbf{URLCache} writes API responses to \ct{Cache.db}, \textbf{logs}, \textbf{backups},
+the \textbf{pasteboard}, \textbf{notifications}, \textbf{Spotlight} and your \textbf{SDKs} keep
+theirs. MASVS-STORAGE-2 (``prevents leakage'') and PLATFORM-3 (``UI used securely'') are about
+\emph{those} copies — and logout must delete every one.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % phone
+  \draw[thick, rounded corners=6pt, fill=black!3] (6.6,-4.3) rectangle (9.75,0.45);
+  \draw[sheetGrey, rounded corners=2pt, fill=white] (6.78,-4.0) rectangle (9.57,0.2);
+  \node[font=\scriptsize\bfseries, align=center] at (8.18,-0.1) {your app};
+  \node[lbl, align=center] at (8.18,-0.5) {one secret, typed once};
+  \node[box, draw=sheetGreen, fill=sheetGreen!12, font=\tiny] at (8.18,-1.05) {Keychain: \textbf{safe copy}};
+  \node[lbl, text=sheetRed, align=center] at (8.18,-1.85) {\textbf{+ 12 copies}\\the OS and SDKs\\make for you};
+  \node[lbl, text=sheetGrey, align=center] at (8.18,-3.2) {read by: whoever holds\\the unlocked phone,\\other apps, backups,\\forensics, your vendors};
+  \node[lbl, font=\tiny\bfseries, text=sheetOrange] at (3.15,0.62) {SEEN — the screen, input, OS surfaces};
+  \node[lbl, font=\tiny\bfseries, text=sheetBlue] at (13.25,0.62) {STORED / SENT — copies the OS and SDKs keep};
+  \foreach \i/\t in {
+    0/{\textbf{Keyboard} learns normal fields; a Full-Access 3rd-party one may upload.\\ \textcolor{sheetGreen!45!black}{\ct{isSecureTextEntry} · \ct{autocorrectionType = .no} · refuse \ct{.keyboard}}},
+    1/{\textbf{App-switcher snapshot}: taken after \ct{sceneDidEnterBackground} returns.\\ \textcolor{sheetGreen!45!black}{cover sensitive views in that callback}},
+    2/{\textbf{Screenshots, recording, mirroring}: iOS cannot block a screenshot.\\ \textcolor{sheetGreen!45!black}{hide while \ct{isCaptured} / \ct{sceneCaptureState}; Android \ct{FLAG\_SECURE}}},
+    3/{\textbf{Notifications}: lock-screen preview, Notification Center, the watch.\\ \textcolor{sheetGreen!45!black}{no secrets in the payload; generic text, fetch in the app}},
+    4/{\textbf{Pasteboard}: every app reads it; Universal Clipboard sends it to a Mac.\\ \textcolor{sheetGreen!45!black}{\ct{.localOnly} + \ct{.expirationDate}; no Copy on secret fields}},
+    5/{\textbf{Spotlight · Siri · Handoff}: \ct{NSUserActivity}, \ct{CSSearchableItem}.\\ \textcolor{sheetGreen!45!black}{don't index private screens; delete the index at logout}}}
+  { \node[ch=sheetOrange] (l\i) at (3.15,-0.76*\i) {\t};
+    \draw[hot, draw=sheetOrange!70] (6.6,-0.76*\i) -- (l\i.east); }
+  \foreach \i/\t in {
+    0/{\textbf{URLCache}: \ct{Library/Caches/<bundle-id>/Cache.db} = your API JSON.\\ \textcolor{sheetGreen!45!black}{server \ct{no-store}; \ct{.ephemeral} session or \ct{urlCache = nil}}},
+    1/{\textbf{Cookies + WebView}: \ct{Cookies.binarycookies}, \ct{WKWebsiteDataStore}.\\ \textcolor{sheetGreen!45!black}{\ct{.nonPersistent()} store; \ct{removeData} at logout}},
+    2/{\textbf{Logs}: \ct{NSLog} lands in the unified log (sysdiagnose, Console).\\ \textcolor{sheetGreen!45!black}{\ct{Logger} with privacy; strip debug logs from release}},
+    3/{\textbf{Backups}: iCloud/Finder copy the container except \ct{Caches}, \ct{tmp}.\\ \textcolor{sheetGreen!45!black}{\ct{isExcludedFromBackup}; Android \ct{dataExtractionRules}}},
+    4/{\textbf{Crash + analytics SDKs}: breadcrumbs, URLs with tokens, replay.\\ \textcolor{sheetGreen!45!black}{scrub in \ct{beforeSend}; mask replay; no tokens in URLs}},
+    5/{\textbf{Files you forgot}: \ct{UserDefaults} plist, SQLite \ct{-wal}, image cache.\\ \textcolor{sheetGreen!45!black}{Data Protection class; one per-user dir, deleted at logout}}}
+  { \node[ch=sheetBlue] (r\i) at (13.25,-0.76*\i) {\t};
+    \draw[hot, draw=sheetBlue!70] (9.75,-0.76*\i) -- (r\i.west); }
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{The mechanisms}
+\begin{itemize}
+  \item \textbf{Keyboard}: autocorrect / predictive text learn from non-secure fields. Secret
+        $\to$ \ct{isSecureTextEntry} (no copy; system keyboard only; no learning\unverified).
+        Sensitive but visible (IBAN, card) $\to$ \ct{autocorrectionType = .no},
+        \ct{spellCheckingType = .no}. Block custom keyboards:
+        \ct{shouldAllowExtensionPointIdentifier} $\to$ \ct{false} for \ct{.keyboard}.
+        Android: \ct{flagNoPersonalizedLearning}.
+  \item \textbf{Snapshot}: Apple — after the background delegate \emph{returns}, UIKit takes the
+        image shown in the switcher and at relaunch. Hide it in \ct{sceneDidEnterBackground};
+        SwiftUI: overlay unless \ct{scenePhase} is \ct{.active}.
+  \item \textbf{Capture}: iOS only \emph{tells} you — \ct{userDidTakeScreenshotNotification}
+        (after the fact); \ct{UIScreen.isCaptured} (iOS 11, deprecated in 27) $\to$
+        \ct{sceneCaptureState} trait (iOS 17) for recording + mirroring. Android \ct{FLAG\_SECURE} \emph{blocks} screenshots,
+        recording and the Recents thumbnail; 14 detects screenshots, 15 recording.
+  \item \textbf{URLCache}: \ct{URLSession.shared} caches cacheable responses in memory + on disk.
+        Fix at the source (\ct{no-store}), or per session (\ct{.ephemeral}: nothing on disk), or
+        per response (\ct{willCacheResponse} $\to$ \ct{nil}).
+  \item \textbf{Backups}: Documents + Library (not Caches/tmp) go to iCloud / Finder;
+        Keychain items restore to another device unless \ct{…ThisDeviceOnly}.
+        \ct{isExcludedFromBackup} is for caches/support files — Apple: edits to user documents
+        can reset it. Android: \ct{allowBackup} defaults \ct{true} (Auto Backup, 25~MB/app, Google
+        Drive); 12+: \ct{dataExtractionRules} splits \ct{<cloud-backup>} / \ct{<device-transfer>}
+        — \ct{allowBackup="false"} may not stop device-to-device transfer.
+  \item \textbf{Pasteboard}: \ct{setItems(\_:options:)} + \ct{.localOnly} (no Universal
+        Clipboard) + \ct{.expirationDate}. iOS 16+ prompts before a programmatic paste
+        (\ct{UIPasteControl} doesn't). Android 13+: \ct{EXTRA\_IS\_SENSITIVE} hides the preview.
+\end{itemize}
+
+\hd{Example — the logout wipe (server first, then every copy)}
+\begin{lstlisting}[language=SwiftSheet]
+func logOut() async {
+  try? await api.revokeSession()   // refresh token + push token
+  Keychain.deleteAll(service: "auth")          // SecItemDelete
+  URLCache.shared.removeAllCachedResponses()   // Cache.db
+  HTTPCookieStorage.shared.removeCookies(since: .distantPast)
+  await WKWebsiteDataStore.default().removeData(
+    ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+    modifiedSince: .distantPast)               // WebView store
+  UserDefaults.standard.removePersistentDomain(
+    forName: Bundle.main.bundleIdentifier!)
+  try? FileManager.default.removeItem(at: userDir)  // DB, drafts
+  imageCache.clearDisk(); memoryCaches.removeAll()
+  try? await CSSearchableIndex.default()
+            .deleteAllSearchableItems()        // Spotlight
+  UIPasteboard.general.items = []   // only if WE put a secret there
+  router.reset()                    // no stale screens in memory
+}
+\end{lstlisting}
+
+\columnbreak
+
+Put per-user data under \textbf{one directory} (+ one App Group folder for extensions) so
+``delete the user'' is one call — then test it: log out, grep the container.
+
+\hd{Also leaks}
+Android accessibility services read the screen · exported content providers · App Group
+containers + widgets · WebView form data · the state-restoration archive (same rule as the snapshot).
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``The token is in the Keychain, done'' — the \emph{response} that carried it may sit in
+        \ct{Cache.db}, a log line, a crash breadcrumb.}
+  \trap{Covering the UI in \ct{applicationWillTerminate} — not called on suspend; the snapshot
+        follows \ct{sceneDidEnterBackground}.}
+  \trap{``We block screenshots on iOS'' — you can't; detect, and hide while captured.}
+  \trap{\ct{Library/Caches} is not \emph{backed up} but is still \emph{on the device} —
+        a filesystem dump reads it.}
+  \trap{Logout that only drops the in-memory token: the refresh token still works server-side.}
+  \trap{RN: \ct{AsyncStorage} is a plain unencrypted store — never tokens.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Seen, stored, sent.''} Every secret has copies the user \emph{sees} (screen, keyboard,
+clipboard), the OS \emph{stores} (cache, logs, backups) and SDKs \emph{send}. Logout = server
+revoke + delete every copy.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} keychain-secure-enclave (Data
+Protection) · app-hardening-privacy (Logger privacy) · owasp-masvs-mobile-top10 · urlsession-networking}
+
+\end{document}

@@ -1,0 +1,179 @@
+% device-attestation.tex — proving "genuine app on a genuine device" to YOUR server:
+% Apple App Attest (DCAppAttestService: generateKey / attestKey / generateAssertion, the
+% server-side verification steps, counters, receipt + fraud metric, environments, key
+% lifetime, errors), DeviceCheck (two bits), Android Play Integrity API (standard vs classic,
+% verdict fields, server decryption, STRONG on Android 13+), SafetyNet's turndown, and the
+% limits of all of them. Deeper than security-build/app-hardening-privacy.tex (one bullet).
+% Sources (checked 2026-09-25):
+%   https://developer.apple.com/documentation/devicecheck/establishing-your-app-s-integrity
+%   https://developer.apple.com/documentation/devicecheck/validating-apps-that-connect-to-your-server
+%   https://developer.android.com/google/play/integrity/overview (standard vs classic, 10,000/day)
+%   https://developer.android.com/google/play/integrity/verdicts (fields, STRONG on 13+)
+%   https://developer.android.com/google/play/integrity/standard + /classic (decodeIntegrityToken, JWE/JWS)
+%   https://developer.android.com/privacy-and-security/safetynet/deprecation-timeline (turned down Jan 2025)
+% @labels: area=security kind=api platform=cross-platform topic=security,platform-apis,protocols discussion=238
+% @tags: app-attest, dcappattestservice, attestation, assertion, devicecheck, play-integrity, integrity-verdict, safetynet, secure-enclave, replay-protection, fraud-metric, anti-abuse
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,guard,else,return,try,await,async,catch,do,nil,true,false},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={>=}{{\hbox{>}\hbox{=}}}2 {==}{{\hbox{=}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  ll/.style={box, font=\scriptsize\bfseries, inner sep=2pt, minimum width=24mm},
+  msg/.style={font=\tiny, inner sep=0.8pt, align=center, fill=white},
+  vfy/.style={draw=sheetGreen!70!black, rounded corners=2pt, fill=sheetGreen!7, font=\tiny,
+              text width=62mm, align=left, inner sep=1.5pt},
+  ph/.style={font=\scriptsize\bfseries, anchor=west, fill=white, inner sep=1pt},
+}
+
+\begin{document}
+
+\sheettitle{Device attestation — App Attest, DeviceCheck, Play Integrity}{security · folio}
+
+\oneliner{Attestation lets \textbf{your server} ask the \emph{platform vendor} ``is this request
+coming from my genuine, unmodified app on a genuine device?''. \textbf{App Attest} makes a
+Secure-Enclave key, has Apple \textbf{attest} it once, then the app \textbf{asserts} (signs) each
+sensitive request with it; \textbf{Play Integrity} returns a Google-signed \textbf{verdict}
+about app, device and account. Both are evidence for a server-side risk decision — not
+authentication, not a jailbreak detector.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[ll] (a) at (1.3,0) {app + Secure Enclave};
+  \node[ll, draw=sheetGreen!70!black, fill=sheetGreen!8] (s) at (8.3,0) {your server};
+  \node[ll, draw=sheetGrey, fill=black!5] (p) at (15.3,0) {Apple App Attest};
+  \foreach \x/\c in {1.3/sheetBlue, 8.3/sheetGreen!70!black, 15.3/sheetGrey} \draw[\c, thick] (\x,-0.25) -- (\x,-5.05);
+  % ---- phase A
+  \node[ph, text=sheetBlue] at (-0.05,-0.42) {A · attest once per key};
+  \node[msg, anchor=west, text=sheetBlue] at (1.4,-0.72) {\ct{generateKey()} $\to$ \ct{keyId} (P-256 pair in the SE; \ct{keyId} = SHA-256 of the public key)};
+  \draw[hot, draw=sheetGreen!70!black] (8.3,-1.02) -- node[msg, above]{one-time \textbf{challenge} ($\geq$ 16 bytes)} (1.3,-1.02);
+  \draw[hot, draw=sheetBlue] (1.3,-1.37) -- node[msg, above, pos=0.3]{\ct{attestKey(keyId, clientDataHash: SHA-256(challenge))}} (15.3,-1.37);
+  \draw[hot, draw=sheetGrey] (15.3,-1.72) -- node[msg, above, pos=0.3]{\textbf{attestation} (CBOR): \ct{x5c} cert chain + \ct{authData} + \ct{receipt} — Apple vouches for key + app} (1.3,-1.72);
+  \draw[hot, draw=sheetBlue] (1.3,-2.07) -- node[msg, above]{\ct{keyId} + attestation} (8.3,-2.07);
+  \node[vfy, anchor=north west] at (8.45,-2.0)
+    {\textbf{verify}: \ct{x5c} chains to Apple's App Attest root ·
+     nonce = SHA-256(\ct{authData} $\Vert$ SHA-256(challenge)) equals the cert extension
+     \ct{1.2.840.113635.100.8.2} · SHA-256(cert public key) = \ct{keyId} ·
+     RP ID = SHA-256(\ct{TEAMID.bundle.id}) · \ct{counter} = 0 · \ct{aaguid} =
+     \ct{appattest}+7×\ct{0x00} (prod) or \ct{appattestdevelop} · \ct{credentialId} = \ct{keyId}
+     $\to$ \textbf{store public key, counter, receipt}};
+  % ---- phase B
+  \node[ph, text=sheetOrange] at (-0.05,-3.18) {B · assert each sensitive request};
+  \draw[hot, draw=sheetGreen!70!black] (8.3,-3.5) -- node[msg, above]{fresh challenge \ct{c}} (1.3,-3.5);
+  \node[msg, anchor=west, text=sheetOrange!80!black] at (1.4,-3.82) {\ct{generateAssertion(keyId, SHA-256(request $\Vert$ c))} — SE signs};
+  \draw[hot, draw=sheetOrange] (1.3,-4.17) -- node[msg, above]{request + \ct{assertion} (signature + \ct{authenticatorData})} (8.3,-4.17);
+  \node[vfy, anchor=north west] at (8.45,-3.4)
+    {\textbf{verify}: rebuild clientData from the request + \ct{c} · nonce =
+     SHA-256(\ct{authenticatorData} $\Vert$ SHA-256(clientData)) · signature valid with the
+     \emph{stored} key · RP ID · \textbf{counter > stored} (then save it) · challenge unused
+     $\to$ serve, step up, or refuse};
+  % ---- phase C
+  \draw[hot, draw=sheetGrey, dashed] (8.3,-4.72) -- node[msg, above]{\ct{receipt} $\to$ fraud metric (how many keys this device attested)} (15.3,-4.72);
+  \node[msg, anchor=west, text=sheetGrey] at (-0.05,-4.72) {C · risk metric, server-to-server};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{App Attest (iOS 14+)}
+\begin{itemize}
+  \item \ct{DCAppAttestService.shared}: check \ct{isSupported} (false on the Simulator; only
+        action, extensible-SSO and watchOS extensions work even if \ct{true}).
+        One key \textbf{per user per device}; persist the \ct{keyId} — it cannot be recovered.
+  \item \ct{attestKey} calls Apple's server: \ct{serverUnavailable} $\to$ retry later with the
+        \emph{same} key; any other error $\to$ discard the key, start over. Large apps ramp up
+        gradually (Apple's rollout guidance).
+  \item Keys survive app updates, \textbf{not} reinstall, device migration or restore from
+        backup — expect re-attestation, don't flag it as fraud.
+  \item Entitlement \ct{com.apple.developer.devicecheck.appattest-environment} =
+        \ct{development} | \ct{production} (the \ct{aaguid} the server must expect).
+  \item Assertions: unlimited per key; bind them to the request (hash of body + challenge),
+        reserve them for sensitive moments. Newer verification steps also check the
+        validation-category and bundle-version extensions in \ct{authData}.
+  \item \textbf{DeviceCheck} (\ct{DCDevice.generateToken}): your server asks Apple to read /
+        set \textbf{two bits} per device per developer (+ last-update time); they survive
+        reinstall — ``promo already used'', not integrity.
+\end{itemize}
+
+\hd{Example — client side (the server does all the checking)}
+\begin{lstlisting}[language=SwiftSheet]
+let svc = DCAppAttestService.shared
+guard svc.isSupported else { return .fallback }   // other signals
+let keyId = try await svc.generateKey()            // persist it
+let ch = try await api.challenge()                 // >= 16 bytes, one-time
+let att = try await svc.attestKey(keyId,
+            clientDataHash: Data(SHA256.hash(data: ch)))
+try await api.register(keyId: keyId, attestation: att, challenge: ch)
+// later, per sensitive request
+let body = try JSONEncoder().encode(order); let c = try await api.challenge()
+let sig = try await svc.generateAssertion(keyId,
+            clientDataHash: Data(SHA256.hash(data: body + c)))
+try await api.placeOrder(body, challenge: c, keyId: keyId, assertion: sig)
+\end{lstlisting}
+
+\hd{Which one?}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{21mm}>{\raggedright\arraybackslash}p{16mm}>{\raggedright\arraybackslash}p{21mm}@{}}
+\toprule
+& App Attest & DeviceCheck & Play Integrity \\ \midrule
+proves & genuine app, key in a real SE & nothing: 2 stored bits & app, device, licence, risk \\
+per request & assertion + counter & — & token + \ct{requestHash} \\
+reinstall & key lost & bits survive & new token per call \\
+\bottomrule
+\end{tabular}}
+
+\columnbreak
+
+\hd{Android — Play Integrity API}
+\begin{itemize}
+  \item \textbf{Standard} request: \ct{prepareIntegrityToken} warm-up, then a few hundred ms;
+        \ct{requestHash} = hash of your request; Google mitigates replay. \textbf{Classic}:
+        seconds, your own \ct{nonce}, for rare high-value actions. Default quota 10{,}000
+        requests/day.
+  \item \textbf{Decrypt on the server}: standard $\to$ only via Google's
+        \ct{decodeIntegrityToken}; classic may use your own keys (JWE A256KW/A256GCM wrapping a
+        JWS ES256). Never decrypt in the app.
+  \item \textbf{SafetyNet Attestation}: deprecated 2022, fully turned down \textbf{Jan 2025}.
+        Lower level: Android \emph{Key Attestation} (Keystore certificate chain).
+\end{itemize}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{50mm}@{}}
+\toprule
+\ct{appIntegrity} & \ct{PLAY\_RECOGNIZED} · \ct{UNRECOGNIZED\_VERSION} · \ct{UNEVALUATED} \\
+\ct{deviceIntegrity} & \ct{MEETS\_BASIC\_} / \ct{DEVICE\_} / \ct{STRONG\_} / \ct{VIRTUAL\_INTEGRITY}; empty = hooked, rooted, bad emulator \\
+\ct{accountDetails} & \ct{LICENSED} · \ct{UNLICENSED} (sideloaded) \\
+\ct{environmentDetails} & \ct{appAccessRiskVerdict} (capturing / overlay apps), \ct{playProtectVerdict} \\
+\ct{requestDetails} & package, \ct{requestHash} or \ct{nonce}, timestamp \\
+\bottomrule
+\end{tabular}}\par
+Android 13+: \ct{MEETS\_STRONG\_INTEGRITY} also needs a security patch from the last year.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Checking the attestation \emph{in the app} — the attacker owns that code. Server only.}
+  \trap{Skipping the counter or reusing challenges $\to$ an old assertion replays.}
+  \trap{Hard-blocking when \ct{isSupported} is false or a verdict is missing — locks out real users;
+        tier it: allow, limit, step up, refuse.}
+  \trap{A genuine phone in a device farm passes: attestation proves \emph{what} runs, not
+        \emph{who} drives it — add rate limits per key and the fraud metric.}
+  \trap{Caching a Play Integrity verdict — Google warns it enables proxying.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Attest once, assert often, decide on the server.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} app-hardening-privacy · keychain-secure-enclave
+(SE keys) · ios-reverse-engineering (repackaging) · owasp-masvs-mobile-top10 (RESILIENCE) · storekit2 (JWS verification)}
+
+\end{document}

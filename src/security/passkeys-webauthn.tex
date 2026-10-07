@@ -1,0 +1,171 @@
+% passkeys-webauthn.tex — passkeys = FIDO2 / WebAuthn discoverable credentials: the model (authenticator, RP
+% ID, challenge, attestation vs assertion), the two ceremonies drawn, authenticator data byte layout, server
+% verification steps, iOS AuthenticationServices APIs (ASAuthorizationController, platform provider,
+% AutoFill, automatic upgrades, iOS 26 account creation / credential updater / import-export), associated
+% domains + AASA, iCloud Keychain sync, cross-device hybrid sign-in, pitfalls.
+% Sources (checked 2026-10-07) — re-read today: WebAuthn L3 status (W3C Recommendation, 25 Aug 2026):
+% https://www.w3.org/TR/webauthn-3/ (W3C Recommendation, 25 Aug 2026) ·
+% https://developer.apple.com/documentation/authenticationservices/supporting-passkeys ·
+% https://developer.apple.com/videos/play/wwdc2024/10125/ (automatic passkey upgrades) ·
+% https://developer.apple.com/videos/play/wwdc2025/279/ (account creation API, ASCredentialUpdater,
+% import/export) · https://passkeys.dev/docs/reference/ios/
+% @labels: area=security kind=api platform=ios topic=security,platform-apis discussion=243
+% @tags: passkeys, webauthn, fido2, asauthorizationcontroller, relying-party-id, attestation, assertion, associated-domains, icloud-keychain, hybrid-transport, conditional-ui
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={class,final,struct,enum,func,var,let,if,else,return,guard,self,nil,try,await,async,
+    throws,case,import,as,true,false},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt,
+  literate={==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2 {->}{{\hbox{-}\hbox{>}}}2 {//}{{\hbox{/}\hbox{/}}}2}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{Passkeys — WebAuthn / FIDO2 on iOS}{security · folio}
+
+\oneliner{A \textbf{passkey} is a WebAuthn \textbf{discoverable credential}: a key pair made \emph{per site} by an
+\textbf{authenticator} (iCloud Keychain, a password manager, a security key). The server keeps only the
+\textbf{public key}; to sign in, the authenticator signs the server's one-time \textbf{challenge} together with a
+hash of the \textbf{RP ID} and the \textbf{origin} the OS/browser vouches for. A look-alike site gets a different
+RP ID, so there is nothing to phish, replay or leak from a breach.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    act/.style={box, font=\scriptsize\bfseries, minimum width=15mm, inner sep=2pt},
+    m/.style={font=\tiny, inner sep=1pt, align=center, fill=white},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=left}]
+  % ---------- registration ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.3,4.1) {Registration (\ct{create}) — attestation};
+  \node[act] at (0.4,3.6) {server (RP)};
+  \node[act] at (3.6,3.6) {app + iOS};
+  \node[act, draw=sheetGreen, fill=sheetGreen!10] at (7.4,3.6) {authenticator};
+  \foreach \x in {0.4,3.6,7.4} \draw[sheetGrey, thick] (\x,3.35) -- (\x,0.85);
+  \draw[hot, draw=sheetBlue] (0.4,3.05) -- node[m, above]{challenge · \ct{rp.id} · \ct{user.id} (opaque)} (3.6,3.05);
+  \node[l, anchor=east, align=right] at (3.55,2.6) {iOS checks app $\leftrightarrow$ RP ID\\(\ct{webcredentials} + AASA)};
+  \draw[hot, draw=sheetBlue] (3.6,2.3) -- node[m, above]{SHA-256(\ct{clientDataJSON})} (7.4,2.3);
+  \node[l, anchor=west, text=sheetGreen!50!black] at (7.45,1.98) {Face ID (UV)\\\textbf{new key pair}\\(synced)};
+  \draw[hot, draw=sheetGreen] (7.4,1.45) -- node[m, above]{attestationObject (\ct{authData} + \ct{fmt} + \ct{attStmt})} (3.6,1.45);
+  \draw[hot, draw=sheetGreen] (3.6,1.05) -- node[m, above]{credId · clientDataJSON · attestationObject} (0.4,1.05);
+  \node[l, anchor=west, text=sheetRed] at (-0.3,0.68) {verify \ct{webauthn.create}, challenge, origin, rpIdHash, UP/UV $\to$
+     store \textbf{credId + public key + signCount + BE/BS}};
+
+  % ---------- authenticator data ----------
+  \node[font=\bfseries\scriptsize, text=sheetBlue, anchor=west] at (-0.3,0.2) {authenticatorData};
+  \node[cell, minimum width=17mm, fill=sheetBlue!10, anchor=west] (r) at (1.9,0.2) {rpIdHash 32};
+  \node[cell, minimum width=9mm, fill=sheetOrange!15, right=0pt of r] (fl) {flags 1};
+  \node[cell, minimum width=13mm, fill=black!5, right=0pt of fl] (sc) {signCount 4};
+  \node[cell, minimum width=26mm, fill=sheetGreen!12, right=0pt of sc] (ac) {AAGUID·credId·COSE key};
+  \node[l, anchor=north] at (fl.south) {UP\,b0 · UV\,b2 · BE\,b3 · BS\,b4 · AT\,b6 · ED\,b7};
+  \node[l, anchor=north] at (ac.south) {only at registration (AT)};
+
+  \draw[sheetGrey!40] (9.3,4.2) -- (9.3,-0.3);
+
+  % ---------- assertion ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (9.45,4.1) {Sign-in (\ct{get}) — assertion};
+  \node[act] at (10.1,3.6) {server};
+  \node[act] at (12.6,3.6) {app + iOS};
+  \node[act, draw=sheetGreen, fill=sheetGreen!10] at (15.0,3.6) {authn.};
+  \foreach \x in {10.1,12.6,15.0} \draw[sheetGrey, thick] (\x,3.35) -- (\x,0.85);
+  \draw[hot, draw=sheetBlue] (10.1,3.05) -- node[m, above]{challenge · \ct{rpId}} (12.6,3.05);
+  \node[l, anchor=west] at (12.65,2.72) {AutoFill / sheet:\\pick an account};
+  \draw[hot, draw=sheetBlue] (12.6,2.3) -- node[m, above]{hash(clientData)} (15.0,2.3);
+  \node[l, anchor=west, text=sheetGreen!50!black] at (15.05,1.85) {Face ID\\$\to$ \textbf{sign}};
+  \draw[hot, draw=sheetGreen] (15.0,1.45) -- node[m, above]{sig · authData · userHandle} (12.6,1.45);
+  \draw[hot, draw=sheetGreen] (12.6,1.05) -- node[m, above]{credId · sig · authData · clientData} (10.1,1.05);
+  \node[box, draw=sheetRed, fill=sheetRed!5, anchor=north west, font=\tiny, align=left, text width=62mm] at (9.45,0.78)
+    {\textbf{signature} $=$ Sign(private key, \ct{authData} $\Vert$ SHA-256(\ct{clientDataJSON}))\\
+     server: find credential by ID / userHandle $\to$ verify with the \emph{stored} public key $\to$
+     challenge unused + fresh · origin · rpIdHash · UP/UV · signCount $\to$ session.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{RP ID} $=$ a registrable domain (\ct{example.com}); \ct{login.example.com} may use it, a
+        look-alike cannot\unverified. The \emph{client} (browser, or iOS for apps) writes the origin into
+        \ct{clientDataJSON} — the page or app cannot lie about it.
+  \item \textbf{Attestation} (at \ct{create}) says \emph{what made} the key (\ct{fmt}, AAGUID); consumer
+        passkeys usually send \ct{none}\unverified. \textbf{Assertion} (at \ct{get}) proves \emph{possession}.
+  \item \textbf{Discoverable} (resident) credential $\Rightarrow$ username-less sign-in: the authenticator
+        returns \ct{userHandle} $=$ your \ct{user.id}. \textbf{UP} $=$ a human tapped; \textbf{UV} $=$ biometrics /
+        PIN verified — together the two factors in one gesture.
+  \item \textbf{BE/BS} flags: backup-\emph{eligible} / backed-\emph{up} $\Rightarrow$ a synced passkey (iCloud
+        Keychain). If stored \emph{and} received \ct{signCount} are both 0, the spec says the check passes.
+  \item \textbf{Cross-device (hybrid)}: laptop shows a \textbf{QR}; the phone scans, a \textbf{Bluetooth}
+        advert proves it is \emph{nearby}, then an encrypted tunnel via a relay carries the ceremony\unverified.
+        The passkey never leaves the phone.
+\end{itemize}
+
+\hd{Example — iOS (AuthenticationServices)}
+\begin{lstlisting}[language=SwiftSheet]
+let p = ASAuthorizationPlatformPublicKeyCredentialProvider(
+          relyingPartyIdentifier: "example.com")
+// register: challenge + userID come from YOUR server
+let reg = p.createCredentialRegistrationRequest(
+          challenge: ch, name: "alice@example.com", userID: uid)
+// sign in (username-less): no allowCredentials needed
+let get = p.createCredentialAssertionRequest(challenge: ch)
+let c = ASAuthorizationController(authorizationRequests: [get])
+c.delegate = self; c.presentationContextProvider = self
+c.performAutoFillAssistedRequests()  // passkeys suggested
+                  // on a field with textContentType = .username
+// delegate: ...PublicKeyCredentialAssertion ->
+//   rawAuthenticatorData, signature, userID, rawClientDataJSON
+// entitlement: webcredentials:example.com ; AASA at
+//   example.com/.well-known/apple-app-site-association
+//   {"webcredentials":{"apps":["TEAMID.com.example.app"]}}
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Apple timeline}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{10mm}>{\raggedright\arraybackslash}p{62mm}@{}}
+\toprule
+iOS 16 & passkeys in iCloud Keychain, AutoFill, cross-device QR sign-in \\
+iOS 17 & third-party passkey providers (password-manager apps) \\
+iOS 18 & \textbf{automatic upgrade}: registration with \ct{requestStyle: .conditional} right after a
+         password AutoFill — passkey created silently, error (no UI) if not eligible \\
+iOS 26 & \ct{ASAuthorizationAccountCreationProvider} (password-less sign-up sheet) ·
+         \ct{ASCredentialUpdater} signals (rename, accepted IDs) · import/export between managers \\
+\bottomrule
+\end{tabular}}\par
+Web: \ct{mediation: "conditional"} + \ct{autocomplete="username webauthn"}. \textbf{WebAuthn Level 3}:
+\textbf{W3C Recommendation, 25 Aug 2026} (conditional create, signal API, related origins). Android:
+Credential Manager + \ct{assetlinks.json}\unverified.
+
+\hd{Server checklist}
+\begin{enumerate}
+  \item Challenge: $\geq$ 16 random bytes, server-stored, \textbf{single use}, short TTL.
+  \item \ct{type}, \ct{challenge}, \ct{origin} in \ct{clientDataJSON}; \ct{rpIdHash}; UP (+ UV if required).
+  \item Signature with the stored COSE key (ES256 $=$ alg \ct{-7}); \ct{signCount} if non-zero.
+  \item Several passkeys per account; \ct{excludeCredentials} stops duplicates.
+\end{enumerate}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{\ct{user.id} $=$ email: it is stored in the authenticator and returned — use a random opaque handle.}
+  \trap{App and web on different RP IDs $\Rightarrow$ two unrelated credentials. Pick one domain (or L3 related origins).}
+  \trap{Requiring attestation: Apple passkeys give \ct{none}\unverified — you would lock out most users.}
+  \trap{AASA served via Apple's CDN cache — edits are not instant; \ct{?mode=developer} for local testing.}
+  \trap{``Passkeys are biometrics sent to the server'' — the face never leaves the device; it only unlocks the key.}
+  \trap{Recovery is still your problem: a lost-everything user needs a fallback path you secure too.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Challenge in, signature out — bound to the RP ID the OS vouches for; the server only ever holds a public key.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} deep-links-universal-links (AASA) · keychain-secure-enclave
+· oauth-oidc-jwt · jwt-attacks-token-hardening · auth system design}
+
+\end{document}

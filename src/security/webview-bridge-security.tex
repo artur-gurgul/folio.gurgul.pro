@@ -1,0 +1,192 @@
+% webview-bridge-security.tex — WebViews as an attack surface: UIWebView vs WKWebView,
+% the native <-> JS bridge (WKScriptMessageHandler, WKScriptMessage.frameInfo, reply handlers,
+% WKContentWorld), injecting JS safely (callAsyncJavaScript arguments), navigation policy,
+% file access, inspectability; Android addJavascriptInterface vs addWebMessageListener;
+% React Native WebView (postMessage carries no verified origin, originWhitelist only
+% governs navigation, onShouldStartLoadWithRequest, injectedJavaScriptObject, the 2020
+% Android WebView UXSS advisory).
+% Sources (checked 2026-09-25):
+%   https://developer.apple.com/documentation/webkit/wkcontentworld (iOS 14; DOM shared)
+%   https://developer.apple.com/documentation/webkit/wkusercontentcontroller (handler APIs)
+%   https://developer.apple.com/documentation/webkit/wkwebview (callAsyncJavaScript, isInspectable)
+%   https://developer.apple.com/news/?id=12232019b and ?id=edwud51q (UIWebView App Store deadlines)
+%   https://github.com/react-native-webview/react-native-webview/blob/master/docs/Reference.md
+%   https://github.com/advisories/GHSA-36j3-xxf7-4pqg (CVE-2020-6506, <=10.10.2, fixed 11.0.0)
+%   https://developer.android.com/reference/android/webkit/WebSettings (file access defaults)
+%   https://developer.android.com/reference/androidx/webkit/WebViewCompat (addWebMessageListener)
+%   https://www.rfc-editor.org/rfc/rfc8252 (8.12: no embedded user-agents for OAuth)
+% @labels: area=security kind=api platform=cross-platform topic=security,platform-apis discussion=247
+% @tags: wkwebview, uiwebview, wkscriptmessagehandler, wkcontentworld, js-bridge, callasyncjavascript, navigation-policy, react-native-webview, postmessage, originwhitelist, addjavascriptinterface, cve-2020-6506
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={final,class,func,let,var,guard,else,return,async,await,try,nil,true,false,in},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2
+           {===}{{\hbox{=}\hbox{=}\hbox{=}}}3 {=>}{{\hbox{=}\hbox{>}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstdefinelanguage{JSSheet}{
+  morekeywords={const,if,new,true,false,return},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]', morestring=[b]",
+  literate={===}{{\hbox{=}\hbox{=}\hbox{=}}}3 {=>}{{\hbox{=}\hbox{>}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2
+           {://}{{\hbox{:}\hbox{/}\hbox{/}}}3}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\css{\hbox{:}\hbox{/}\hbox{/}}   % "://" without the mono font's ligature
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  src/.style={draw=#1, thick, rounded corners=2pt, fill=#1!7, font=\scriptsize, text width=32mm,
+              align=left, inner sep=1.5pt, minimum height=6mm},
+  nat/.style={draw=sheetGreen!70!black, thick, rounded corners=2pt, fill=sheetGreen!8, font=\scriptsize,
+              text width=37mm, align=left, inner sep=1.5pt, minimum height=6mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{WebView \& JS-bridge security — WKWebView, React Native}{security · folio}
+
+\oneliner{A WebView runs \emph{someone's} JavaScript inside your app. The \textbf{bridge}
+(WebKit message handlers, React Native \emph{postMessage}, Android \emph{addJavascriptInterface})
+hands that JavaScript native powers — and it is reachable by \textbf{every script in every frame}
+of whatever page is loaded. Treat each message as untrusted input: \textbf{check the origin and
+frame, allowlist commands, restrict navigation}, pass data to JS as \emph{values}, never as code.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % web side
+  \draw[sheetGrey, thick, rounded corners=4pt, fill=black!2] (0,0.45) rectangle (6.9,-3.85);
+  \node[font=\bfseries\scriptsize, anchor=north west] at (0.1,0.42) {WebContent process — untrusted};
+  \node[src=sheetGreen!70!black, anchor=west] (m) at (0.15,-0.25) {\textbf{main frame}: your https page};
+  \node[src=sheetOrange, anchor=west] (a) at (0.15,-0.95) {\textbf{3rd-party} script / ad tag in it};
+  \node[src=sheetRed, anchor=west] (x) at (0.15,-1.65) {\textbf{XSS} in your own page};
+  \node[src=sheetRed, anchor=west] (f) at (0.15,-2.35) {\textbf{iframe} from another origin};
+  \node[src=sheetRed, anchor=west] (n) at (0.15,-3.05) {page \textbf{navigated away} (redirect)};
+  \node[lbl, anchor=north west, text=sheetRed, text width=29mm, align=left] at (3.75,0.4)
+    {all five can call \ct{messageHandlers.app}\\\ct{.postMessage(…)} unless you\\check the sender};
+  % the gate
+  \node[draw=sheetBlue, very thick, fill=sheetBlue!10, rounded corners=3pt, text width=34mm, align=left,
+        font=\scriptsize, inner sep=2pt] (g) at (8.95,-1.45)
+    {\textbf{bridge checkpoint}\\
+     1 \ct{frameInfo.isMainFrame}\\
+     2 \ct{securityOrigin}: https + your host\\
+     3 decode into a typed \ct{Command}\\
+     4 allowlist: \emph{this} page may do \emph{this}\\
+     5 sensitive? user confirms / re-auth\\
+     \textcolor{sheetRed}{RN \ct{onMessage}: a bare string —}\\
+     \textcolor{sheetRed}{no frame/origin to check}};
+  \foreach \s in {m,a,x,f,n} \draw[hot, draw=sheetGrey] (\s.east) -- (g.west);
+  % native side
+  \node[font=\bfseries\scriptsize, text=sheetGreen!50!black, anchor=west] at (11.2,0.3) {native — your privileges};
+  \node[nat, anchor=west] (k) at (11.2,-0.25) {Keychain tokens, session};
+  \node[nat, anchor=west] (p) at (11.2,-0.95) {payments, contacts, camera};
+  \node[nat, anchor=west] (fs) at (11.2,-1.65) {files, \ct{openURL} to other apps};
+  \node[nat, anchor=west] (c) at (11.2,-2.35) {navigation: \ct{decidePolicyFor}};
+  \node[nat, anchor=west, draw=sheetBlue, fill=sheetBlue!6] (j) at (11.2,-3.05) {native $\to$ JS: \ct{callAsyncJavaScript} with \ct{arguments}};
+  \foreach \t in {k,p,fs} \draw[flow, draw=sheetGreen!60!black] (g.east) -- (\t.west);
+  \draw[flow, draw=sheetBlue] (j.west) -- ++(-0.35,0) |- node[lbl, pos=0.75, below]{values, never string concatenation} (6.9,-3.45);
+  \node[lbl, anchor=north west, text=sheetGrey, align=left] at (0.1,-3.95)
+    {\textbf{Isolation}: a \ct{WKContentWorld.world(name:)} gives your injected script its own JS globals + handlers the page can't see —
+     but the \textbf{DOM is shared}, so a named world hides \emph{your} code, it does not make the page trustworthy.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{iOS}
+\begin{itemize}
+  \item \textbf{UIWebView} (deprecated iOS 12) ran web content \emph{in your process}; the App
+        Store refused new apps using it from Apr 2020. \textbf{WKWebView}: separate WebContent
+        process, Safari's engine + JIT.
+  \item Bridge: \ct{userContentController.add(handler, name: "app")} $\to$ JS
+        \ct{window.webkit.messageHandlers.app.postMessage(obj)} (JSON-like types). The handler gets
+        a \ct{WKScriptMessage}: \ct{body}, \ct{frameInfo} (\ct{isMainFrame}, \ct{request},
+        \ct{securityOrigin}), \ct{world}. Reply: \ct{WKScriptMessageHandlerWithReply} (iOS 14) —
+        JS gets a Promise.
+  \item \textbf{Content worlds} (iOS 14): \ct{.page}, \ct{.defaultClient}, \ct{.world(name:)};
+        \ct{add(\_:contentWorld:name:)} exposes a handler \emph{only} in that world.
+  \item \textbf{Native $\to$ JS}: \ct{evaluateJavaScript("show('\textbackslash(name)')")} is
+        injection (a quote in \ct{name} ends the string).
+        \ct{callAsyncJavaScript(\_:arguments:in:contentWorld:)} passes \emph{values}.
+  \item \textbf{Navigation}: \ct{decidePolicyFor} — allow https + your hosts; others $\to$
+        Safari; cancel \ct{javascript:}, \ct{file:}, \ct{data:}, custom schemes. iOS 14
+        \ct{WKAppBoundDomains} + \ct{limitsNavigationsToAppBoundDomains} disable script
+        injection / handlers elsewhere.
+  \item \textbf{Files}: \ct{loadFileURL(\_:allowingReadAccessTo:)} — the narrowest directory,
+        never the whole container. \textbf{Debug}: \ct{isInspectable} (iOS 16.4, default false) —
+        keep it off in release.
+  \item The controller \textbf{retains} its handlers $\to$ handler $\to$ VC $\to$ WebView cycle:
+        weak proxy, or \ct{removeScriptMessageHandler(forName:)}.
+\end{itemize}
+
+\hd{Android}
+\ct{addJavascriptInterface}: every \ct{@JavascriptInterface} method, to every frame and origin
+(before API 17: reflection $\to$ RCE). Prefer AndroidX \ct{WebViewCompat.addWebMessageListener}
+with \ct{allowedOriginRules} — the listener gets \ct{sourceOrigin} + \ct{isMainFrame}.
+\ct{setAllowFileAccess} defaults \ct{false} from API 30. \ct{shouldOverrideUrlLoading}
+= \ct{decidePolicyFor}.
+
+\hd{Example — a checked bridge (Swift) and RN}
+\begin{lstlisting}[language=SwiftSheet]
+final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
+  func userContentController(_ c: WKUserContentController,
+      didReceive m: WKScriptMessage) async -> (Any?, String?) {
+    let o = m.frameInfo.securityOrigin
+    guard m.frameInfo.isMainFrame, o.protocol == "https",
+          o.host == "app.example.com",
+          let cmd = Command(json: m.body)    // typed, allowlisted
+    else { return (nil, "denied") }
+    return (await perform(cmd), nil)
+  }
+}
+cfg.userContentController.addScriptMessageHandler(Bridge(),
+    contentWorld: .page, name: "app")
+try await web.callAsyncJavaScript("render(item)",
+    arguments: ["item": title], contentWorld: .page)
+\end{lstlisting}
+\begin{lstlisting}[language=JSSheet]
+<WebView source={{ uri: 'https://app.example.com' }}
+  originWhitelist={['https://app.example.com']} // navigation only
+  onShouldStartLoadWithRequest={r =>
+    new URL(r.url).origin === 'https://app.example.com'}
+  onMessage={e => { const m = parseCommand(e.nativeEvent.data)
+                    if (m && allowed(m)) run(m) }}   // string in
+  javaScriptEnabled setSupportMultipleWindows /* keep true */ />
+\end{lstlisting}
+
+\hd{React Native WebView — the traps}
+\begin{itemize}
+  \item \ct{onMessage} receives \ct{window.ReactNativeWebView.postMessage(string)} — a
+        \textbf{string only}, with no verified sender: any script the page runs can post.
+  \item \ct{originWhitelist} (default \ct{http\css{}*}, \ct{https\css{}*}) lists origins the WebView
+        may \textbf{navigate} to; others are handed to the OS. It does \emph{not} filter messages.
+  \item \ct{onShouldStartLoadWithRequest}: \ct{false} blocks; not called on Android's first load.
+  \item \ct{injectedJavaScriptObject} is visible to \emph{all} frames;
+        \ct{injectedJavaScriptForMainFrameOnly} defaults \ct{true}.
+  \item \textbf{GHSA-36j3-xxf7-4pqg / CVE-2020-6506} (Sep 2020, moderate): Android WebView before
+        83.0.4103.106 let a cross-origin \textbf{iframe} run code in the top document (UXSS);
+        \ct{react-native-webview} $\leq$ 10.10.2 exposed, 11.0.0 mitigates —
+        \ct{setSupportMultipleWindows=false} re-opens it.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``It's our own page'' — until a CDN script, an ad or one XSS runs on it.}
+  \trap{Login / OAuth in an embedded WebView: the app can read the password;
+        RFC 8252 says use the system browser (\ct{ASWebAuthenticationSession}).}
+  \trap{Injecting the refresh token into JS for the web part — any page script can read it.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Who sent it, may they, is it well-formed?''} — then values out, never code.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} owasp-masvs-mobile-top10 (PLATFORM-2, M4) ·
+deep-link-attack-surface · oauth-oidc-jwt · rn-native-modules · mobile-data-leakage (WebView store)}
+
+\end{document}

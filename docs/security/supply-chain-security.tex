@@ -1,0 +1,159 @@
+% supply-chain-security.tex — dependency supply chain for RN + iOS apps: the chain from author to app with
+% the attack points (drawn), the 2025–26 npm incidents (each checked on a vendor / maintainer source),
+% lockfiles + npm ci, install scripts, release cooldown, dependency confusion, provenance / trusted
+% publishing / Sigstore, SBOM (CycloneDX, SPDX), SPM / CocoaPods / Gradle pinning, Dependabot / Renovate,
+% OWASP Mobile Top 10 2024 M2, incident response.
+% Sources (checked 2026-10-07) — re-read today: pnpm 10.16 minimumReleaseAge (minutes); the rest as listed:
+% https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised (chalk/debug, 8 Sep 2025)
+% https://www.cisa.gov/news-events/alerts/2025/09/23/widespread-supply-chain-compromise-impacting-npm-ecosystem (Shai-Hulud)
+% https://securitylabs.datadoghq.com/articles/shai-hulud-2.0-npm-worm/ (Shai-Hulud 2.0, Nov 2025)
+% https://gluestack.io/blogs/public-incident-report · https://www.aikido.dev/blog/supply-chain-attack-on-react-native-aria-ecosystem (June 2025)
+% https://www.stepsecurity.io/blog/malicious-npm-releases-found-in-popular-react-native-packages---130k-monthly-downloads-compromised (Mar 2026)
+% https://www.microsoft.com/en-us/security/blog/2026/04/01/mitigating-the-axios-npm-supply-chain-compromise/ · https://github.com/axios/axios/issues/10636
+% https://github.blog/changelog/2025-12-09-npm-classic-tokens-revoked-session-based-auth-and-cli-token-management-now-available/
+% https://pnpm.io/supply-chain-security · https://pnpm.io/blog/releases/10.16 · https://pnpm.io/blog/releases/11.0
+% https://blog.cocoapods.org/CocoaPods-Specs-Repo/ · https://owasp.org/www-project-mobile-top-10/
+% @labels: area=security kind=process platform=cross-platform topic=security,build,tooling discussion=245
+% @tags: supply-chain, npm, lockfile, npm-ci, install-scripts, dependency-confusion, typosquatting, provenance, sigstore, sbom, trusted-publishing, owasp-mobile-top-10
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt,
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2 {//}{{\hbox{/}\hbox{/}}}2}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcommand\dd{\hbox{-}\hbox{-}}
+
+\begin{document}
+
+\sheettitle{Supply-chain security — from a maintainer's laptop to your app}{security · folio}
+
+\oneliner{Your app ships code from hundreds of people you never vetted, and a package manager
+\textbf{runs some of it at install time}. Attackers go for the weakest link: a \textbf{maintainer account}
+(phishing, stolen token), a \textbf{look-alike name}, an \textbf{install script}, a \textbf{public name shadowing a
+private one}. Defence is layered: \textbf{pin} (lockfile + \ct{npm ci}), \textbf{delay} (release cooldown),
+\textbf{don't execute} (no dependency scripts), \textbf{verify} (provenance), \textbf{inventory} (SBOM) and
+\textbf{rehearse} the response. OWASP Mobile Top 10 (2024) \textbf{M2}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    st/.style={box, font=\scriptsize\bfseries, text width=21mm, minimum height=7mm, inner sep=2pt},
+    atk/.style={font=\tiny, text=sheetRed, align=center, text width=24mm, inner sep=1pt},
+    def/.style={font=\tiny, text=sheetGreen!45!black, align=center, text width=24mm, inner sep=1pt},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=left}]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.5,3.45) {The chain, where it breaks (red) and what holds it (green)};
+  \foreach \i/\n/\t in {0/m/{maintainer\\account}, 1/s/{source repo\\+ CI}, 2/r/{registry\\(npm, CDN)}, 3/i/{install on dev\\machine / CI}, 4/b/{build\\(Metro, Xcode)}, 5/a/{app on\\users' phones}}
+    \node[st] (\n) at (\i*2.75+0.8,2.3) {\t};
+  \foreach \x/\y in {m/s, s/r, r/i, i/b, b/a} \draw[flow, very thick] (\x) -- (\y);
+  % attacks
+  \node[atk, anchor=south] at (m.north) {phishing (fake 2FA mail), stolen / no-2FA token};
+  \node[atk, anchor=south] at (s.north) {poisoned CI step, leaked secrets};
+  \node[atk, anchor=south] at (r.north) {typosquat, \textbf{dependency confusion}, malicious version};
+  \node[atk, anchor=south] at (i.north) {\textbf{pre/postinstall} runs as you: steals tokens, worms};
+  \node[atk, anchor=south] at (b.north) {payload bundled into JS / native code};
+  \node[atk, anchor=south] at (a.north) {runs in users' WebView / JS: wallet drainer};
+  % defences
+  \node[def, anchor=north] at (m.south) {WebAuthn 2FA, no long-lived tokens};
+  \node[def, anchor=north] at (s.south) {\textbf{trusted publishing} (OIDC), provenance};
+  \node[def, anchor=north] at (r.south) {scoped registry, claim your scope, cooldown};
+  \node[def, anchor=north] at (i.south) {\textbf{lockfile + \ct{npm ci}}, scripts off};
+  \node[def, anchor=north] at (b.south) {SBOM, scanners, review diffs};
+  \node[def, anchor=north] at (a.south) {kill switch, fast update, rotate};
+  \node[l, anchor=west, text width=165mm] at (-0.5,0.95)
+    {\textbf{Measured windows}: chalk/debug were malicious $\sim$\textbf{2 h}; axios $\sim$\textbf{3 h}. A \ct{\^{}} range +
+     \ct{npm install} in that window pulled it; a lockfile pinned to the old version, or a 1-day cooldown, did not.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Incidents to name (all verified)}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{60mm}@{}}
+\toprule
+Jun 2025 & \textbf{\ct{@react-native-aria/*}} + \ct{@gluestack-ui/utils} (17 pkgs, $\sim$1 M/week): leaked
+           maintainer token without 2FA; RAT appended to \ct{lib/index.js} past the viewer's width \\
+8 Sep 2025 & \textbf{chalk, debug} + 16 more ($\sim$2 bn/week): maintainer phished via \ct{npmjs.help}
+           ``update your 2FA''; browser crypto-drainer \\
+Sep 2025 & \textbf{Shai-Hulud} worm: steals npm/GitHub/cloud tokens, republishes the victim's other packages;
+           500+ pkgs (CISA alert) \\
+Nov 2025 & \textbf{Shai-Hulud 2.0}: \ct{preinstall} hook, $\sim$800 pkgs, 25k+ GitHub repos; may wipe home dir \\
+Mar 2026 & \textbf{\ct{react-native-international-phone-number}}, \ct{react-native-country-select}:
+           \ct{preinstall}, Solana-memo C2, skips Russian locales \\
+31 Mar 2026 & \textbf{axios} 1.14.1 / 0.30.4: maintainer PC compromised; added dependency
+           \ct{plain-crypto-js} dropped a RAT on install; published by CLI \textbf{without} the provenance real
+           releases carried \\
+\bottomrule
+\end{tabular}}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Typosquatting}: a look-alike such as \ct{react-native-reanimate} next to the real name.
+  \item \textbf{Dependency confusion} (Birsan, 2021\unverified): internal \ct{acme-utils} not on npm $\to$ attacker
+        publishes it publicly with a higher version $\to$ resolver prefers it. Fix: \textbf{scoped} names
+        (\ct{@acme/}) mapped to your registry, and own the scope on npm.
+  \item \textbf{Install scripts}: \ct{preinstall}/\ct{install}/\ct{postinstall} run with your user's rights
+        on laptops and CI — where the tokens live. That is how worms spread.
+  \item \textbf{Provenance}: \ct{npm publish \dd provenance} (automatic with trusted publishing) signs, via
+        \textbf{Sigstore}, a statement linking the tarball to a repo commit + CI run;
+        \ct{npm audit signatures} checks it. A new version \emph{missing} it is a red flag.
+\end{itemize}
+
+\hd{Example — lock it down (npm / pnpm)}
+\begin{lstlisting}
+# .npmrc
+ignore-scripts=true               # opt specific deps back in
+@acme:registry=https://npm.acme.example/   # no confusion
+# CI
+npm ci                  # exact lockfile; fails if it drifts
+npm audit signatures    # registry signatures + provenance
+npm sbom --sbom-format cyclonedx > sbom.json
+# pnpm-workspace.yaml  (pnpm 10: dep scripts OFF by default)
+minimumReleaseAge: 1440   # minutes; default in pnpm 11
+allowBuilds:              # pnpm 11 (was onlyBuiltDependencies)
+  esbuild: true
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Pinning beyond npm}
+\begin{itemize}
+  \item \textbf{SPM}: commit \ct{Package.resolved} (the Git commit per package + binary checksums);
+        \ct{binaryTarget} needs a checksum. Xcode fails the build if an XCFramework's signature changes.
+  \item \textbf{CocoaPods}: commit \ct{Podfile.lock}, \ct{pod install} (not \ct{update}) in CI. Trunk goes
+        \textbf{read-only 2 Dec 2026} — move to SPM.
+  \item \textbf{Gradle}: dependency locking + \ct{verification-metadata.xml} (checksums / PGP).
+  \item \textbf{Bots}: Dependabot / Renovate for small, reviewable PRs; Renovate \ct{minimumReleaseAge} $=$ cooldown.
+  \item \textbf{SBOM}: CycloneDX (OWASP) or SPDX (ISO/IEC 5962) — answers ``are we affected?'' in minutes.
+\end{itemize}
+
+\hd{npm itself changed (after Sep 2025)}
+Classic tokens \textbf{revoked 9 Dec 2025}; write tokens are granular, $\leq$ 90 days (7-day default); 2FA
+for local publishing, WebAuthn over TOTP; \textbf{trusted publishing} (OIDC from GitHub Actions / GitLab)
+means no token to steal.
+
+\hd{Incident response}
+Find affected versions in \emph{every} lockfile and image $\to$ did an install run in the window? $\to$ treat
+that machine/runner as compromised: \textbf{rotate every secret it held} $\to$ rebuild from clean $\to$ pin a safe
+version $\to$ ship, and invalidate bundles built in the window.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``We pin in \ct{package.json}'' — transitive deps still float. The \textbf{lockfile} is the pin, and
+        \ct{npm install} in CI may rewrite it.}
+  \trap{\ct{npm audit} finds \emph{known CVEs}, not a malicious version published an hour ago.}
+  \trap{Build-time only? chalk's payload shipped \emph{inside} web bundles to end users.}
+  \trap{Removing the bad version is not recovery — the stolen tokens still work.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Pin, delay, don't execute, verify, inventory — and rotate when it happens.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} modularization-spm · signing-and-cicd · rn-tooling-release
+· dependency management · app-hardening-privacy (SDK privacy manifests) · threat modelling}
+
+\end{document}

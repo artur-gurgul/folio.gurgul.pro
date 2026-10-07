@@ -1,0 +1,185 @@
+% att-adattributionkit.tex — ad privacy on iOS: Apple's definition of tracking, the App Tracking
+% Transparency request (statuses, when no prompt appears, EU sheet), IDFA vs IDFV, fingerprinting,
+% tracking domains; AdAttributionKit (successor of SKAdNetwork): impressions, attribution rules,
+% conversion values, three postback windows, crowd anonymity, re-engagement + conversion tags,
+% alternative marketplaces, SKAdNetwork interop; what teams do with and without consent.
+% Purpose strings, permission states in general, privacy-manifest structure and required-reason
+% APIs live in security-build/app-hardening-privacy.tex; GDPR consent vs ATT in
+% security/privacy-compliance.tex — only pointed to here.
+% Sources (checked 2026-09-29):
+% https://developer.apple.com/app-store/user-privacy-and-data-use/ ·
+% https://developer.apple.com/documentation/apptrackingtransparency/attrackingmanager/requesttrackingauthorization(completionhandler:) ·
+% https://developer.apple.com/documentation/bundleresources/information-property-list/nsusertrackingmarkdownusagedescription ·
+% https://developer.apple.com/documentation/adsupport/asidentifiermanager/advertisingidentifier ·
+% https://developer.apple.com/documentation/uikit/uidevice/identifierforvendor ·
+% https://developer.apple.com/documentation/bundleresources/app-privacy-configuration/nsprivacytrackingdomains ·
+% https://developer.apple.com/documentation/adattributionkit (+ receiving-ad-attributions-and-postbacks,
+% receiving-postbacks-in-multiple-conversion-windows, adattributionkit-skadnetwork-interoperability,
+% presenting-ads-in-your-app, configuring-an-advertised-app, configuring-a-publisher-app,
+% configuring-attribution-rules-for-your-app, conversion-tags, appimpression, postback, postbackupdate) ·
+% https://developer.apple.com/documentation/storekit/skadnetwork ·
+% https://developer.apple.com/documentation/adservices/aaattribution/attributiontoken() ·
+% https://developer.apple.com/videos/play/wwdc2025/221/ · https://developer.apple.com/app-store/review/guidelines/ (5.1.1(iv), 5.1.2(i))
+% @labels: area=security kind=api platform=ios topic=security,platform-apis,data discussion=236
+% @tags: app-tracking-transparency, attrackingmanager, idfa, idfv, fingerprinting, tracking-domains, adattributionkit, skadnetwork, conversion-value, postback, crowd-anonymity, re-engagement
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={import,func,let,var,guard,else,return,try,await,async,nil,true,false,if},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt,
+  literate={==}{{\hbox{=}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {??}{{\hbox{?}\hbox{?}}}2 {>=}{{\hbox{>}\hbox{=}}}2 {//}{{\hbox{/}\hbox{/}}}2}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{Ad privacy — App Tracking Transparency \& AdAttributionKit}{security · folio}
+
+\oneliner{Two different systems. \textbf{ATT} is a \emph{permission} for \textbf{tracking} — linking data from
+your app with \emph{other companies'} data for ads or ad measurement, or sharing it with a data broker;
+unless the user taps Allow, the \textbf{IDFA is all zeros}. \textbf{AdAttributionKit} (iOS 17.4+, successor
+of SKAdNetwork) is measurement \emph{without} permission: the \textbf{device} picks the winning ad and sends a
+\textbf{delayed, signed, crowd-anonymised postback} with no user or device ID.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet,
+    l/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+    la/.style={font=\tiny, text=black!80, inner sep=1pt, align=left},
+    act/.style={box, font=\scriptsize, text width=23mm, inner sep=2pt},
+    win/.style={draw=sheetGrey, minimum height=6mm, font=\scriptsize, align=center, inner sep=1pt}]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.2,3.0)
+     {AdAttributionKit — one ad, one winner, three delayed postbacks};
+  % actors
+  \node[act, draw=sheetOrange, fill=sheetOrange!8] (net) at (1.0,2.5)
+     {\textbf{ad network}\\ID \ct{x.adattributionkit}};
+  \node[act] (pub) at (1.0,1.45)
+     {\textbf{publisher app}\\lists IDs in\\\ct{AdNetworkIdentifiers}};
+  \draw[flow] (net) -- node[l, right]{signed impression (compact \textbf{JWS})} (pub);
+  \draw[sheetOrange, thick, dashed] (2.3,2.5) -- (16.3,2.5);
+  \node[la, anchor=west, text=sheetOrange!80!black] at (2.45,2.68)
+     {every postback $\to$ the \textbf{ad network}; the winner's copy $\to$ advertiser (\ct{AttributionCopyEndpoint},
+      \ct{/.well-known/appattribution/report-attribution/})};
+  % timeline
+  \node[win, fill=sheetBlue!10, minimum width=13mm] (imp) at (3.2,1.55) {impression};
+  \node[l, text width=20mm] at (3.2,0.95) {view: on screen $\geq$ 2 s\\click: verified tap};
+  \draw[flow] (pub.east) -- (imp.west);
+  \node[win, fill=sheetGreen!12, minimum width=17mm] (ins) at (5.9,1.55) {install + launch};
+  \draw[hot] (imp) -- node[l, above]{24 h / 30 d} (ins);
+  \node[l, text width=22mm] at (5.9,0.95) {\ct{updateConversionValue}\\in 60 d (re-engage: 2 d)};
+  \node[win, fill=sheetGreen!22, minimum width=18mm] (w1) at (8.0,1.55) {\textbf{day 0–2}};
+  \node[win, fill=sheetGreen!12, minimum width=24mm] (w2) at (10.3,1.55) {\textbf{day 3–7}};
+  \node[win, fill=sheetGreen!6,  minimum width=46mm] (w3) at (13.95,1.55) {\textbf{day 8–35}};
+  \draw[flow] (ins) -- (w1);
+  \node[l, text width=19mm] at (8.0,0.95) {\textbf{fine 0–63} (tier 2–3)\\or coarse (tier 1)};
+  \node[l, text width=24mm] at (10.3,0.95) {coarse only:\\\ct{low / medium / high}};
+  \node[l, text width=46mm] at (13.95,0.95) {coarse only · \ct{lockPostback: true} closes a\\window early — later updates in it are ignored};
+  % postbacks up to the network
+  \draw[hot, draw=sheetOrange] (w1.north) -- node[l, right]{PB1 +24–48 h} (8.0,2.5);
+  \draw[hot, draw=sheetOrange] (w2.north) -- node[l, right]{PB2 +24–144 h} (10.3,2.5);
+  \draw[hot, draw=sheetOrange] (w3.north) -- node[l, right]{PB3 +24–144 h} (13.95,2.5);
+  % winner + tiers
+  \node[la, anchor=west, text=sheetBlue] at (-0.2,0.42)
+     {\textbf{Who wins:} a click beats a view, then the most recent; $\leq$ 6 impressions considered; ONE winner across
+      AdAttributionKit \emph{and} SKAdNetwork. Up to 5 other networks get \emph{non-winning} postbacks.};
+  \node[la, anchor=west, text=sheetRed] at (-0.2,0.12)
+     {\textbf{Crowd anonymity} tiers 0–3 — the bigger the crowd, the more data: \ct{source-identifier} 2 / 3 / 4 digits,
+      fine value, publisher ID. Tier 0: no PB2/PB3. Country code needs a bonus tier (WWDC25).};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{ATT}
+\begin{itemize}
+  \item \textbf{Tracking} = the \emph{linking}, whatever the identifier: ads targeted with other companies' data;
+        e-mail lists / ad IDs to networks for retargeting; location to a broker; \textbf{an SDK in your app that
+        combines your users' data with other apps'} — even if you don't use it that way. \textbf{Not
+        tracking}: joins done only \emph{on device}; a broker used solely for fraud / security; credit agencies.
+  \item \ct{ATTrackingManager.requestTrackingAuthorization} (callback or \ct{async}) +
+        \ct{NSUserTrackingUsageDescription}; needed for the IDFA since \textbf{iOS 14.5}. Status:
+        \ct{notDetermined} · \ct{restricted} · \ct{denied} · \ct{authorized}.
+  \item \textbf{No prompt} — the completion runs at once — when the app is not
+        \ct{UIApplicationStateActive}, in an extension, tracking is restricted, the global ``Allow Apps to
+        Request to Track'' is off, or a request is pending. Dismissed $\to$ \ct{notDetermined}: ask later.
+  \item \textbf{IDFA} (\ct{ASIdentifierManager}): a UUID only when \ct{authorized}; else (and in the
+        Simulator) \ct{00000000-...}. Re-read, never store. \textbf{IDFV} (\ct{identifierForVendor}): one
+        value per vendor per device; new after \emph{all} the vendor's apps are deleted; \ct{nil} after reboot
+        until first unlock. First-party use only.
+  \item \textbf{Fingerprinting is banned whatever the answer} (license agreement): no device ID derived from
+        device / network / browser traits — an SDK doing it gets you rejected. \textbf{5.1.2(i)}: no gating,
+        no reward for Allow; a primer may explain, never trick.
+  \item \textbf{Tracking domains} (\ct{NSPrivacyTrackingDomains}, iOS 17+): without consent, requests to
+        them \textbf{fail} — keep tracking and non-tracking endpoints on separate hosts.
+  \item \textbf{EU} (current docs): after an answer, no new prompt for \textbf{a year}; FR, DE, IT, PL, RO get a
+        full-page sheet (\ct{NSUserTrackingMarkdownUsageDescription}, 27.2 beta).
+\end{itemize}
+
+\hd{Example — ask when active; report value without asking}
+\begin{lstlisting}[language=SwiftSheet]
+// from an ACTIVE scene (after onboarding) - not didFinishLaunching
+func idfaIfAllowed() async -> UUID? {
+  let s = await ATTrackingManager.requestTrackingAuthorization()
+  guard s == .authorized else { return nil }     // zeros anyway
+  return ASIdentifierManager.shared().advertisingIdentifier
+}
+// advertised app: at first launch, then per milestone. No ATT.
+// the 6-bit fine value (0...63) is YOUR schema
+func reached(_ fine: Int, big: Bool) async {
+  try? await Postback.updateConversionValue(fine,
+      coarseConversionValue: big ? .high : .low,
+      lockPostback: false)        // true = send this window now
+}
+\end{lstlisting}
+
+\hd{AdAttributionKit}
+\begin{itemize}
+  \item \textbf{StoreKit-rendered} ads (\ct{SKOverlay}, \ct{SKStoreProductViewController} given the impression)
+        record by themselves. \textbf{Custom-rendered}: \ct{AppImpression(compactJWS:)}; click =
+        \ct{UIEventAttributionView} over the ad + \ct{handleTap()} (throws without a real tap); view =
+        \ct{beginView()}/\ct{endView()}, 26.2+ \ct{handleView()}.
+  \item \textbf{Rules} (WWDC25, Info.plist \ct{AdAttributionKitConfigurations}): window view 1–7 d, click
+        1–30 d, global or per network; \textbf{cooldown} 0–720 h so a later ad can't steal a conversion.
+  \item \textbf{Re-engagement} (iOS 18): \ct{handleTap(reengagementURL:)} with the advertised app's
+        \textbf{universal link} opens it; the query holds \ct{Postback.reengagementOpenURLParameter}.
+        \textbf{18.4}: overlapping re-engagement windows told apart by a \textbf{conversion tag}
+        (\ct{PostbackUpdate}); Settings can create development postbacks.
+  \item \textbf{vs SKAdNetwork} (StoreKit, 11.3; v4.0 in 16.1 added 3 windows + coarse): App Store only,
+        \ct{SKAdNetworkItems}, \ct{updatePostbackConversionValue}, copies to
+        \ct{/.well-known/skadnetwork/...}. AdAttributionKit adds \textbf{alternative marketplaces} (EU),
+        re-engagement, JWS. Network IDs work in both; SKAdNetwork updates are \textbf{mirrored} into it;
+        Apple now recommends AdAttributionKit.
+\end{itemize}
+
+\hd{What teams actually do}
+\begin{itemize}
+  \item \textbf{Consented} users: IDFA to an MMP (mobile measurement partner), user-level attribution.
+  \item \textbf{Everyone}: the network / MMP verifies each postback's signature and aggregates by campaign
+        (\ct{source-identifier}) server-side. The 6 bits are a designed schema (revenue buckets, funnel
+        steps) with coarse mapped onto it; \emph{lock early} = faster signal, less information.
+  \item \textbf{Apple Ads}: \ct{AAAttribution.attributionToken()} (AdServices, 14.3+), POSTed within 24 h.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Asking in \ct{didFinishLaunching}: not active yet $\to$ no prompt, nothing learned.}
+  \trap{``We use IDFV / hashed e-mail, so no ATT'' — tracking is the \emph{linking}, not the ID.}
+  \trap{``The SDK tracks, not us'' — its behaviour is yours: ATT, label, manifest.}
+  \trap{Expecting per-user or real-time attribution — aggregate, 24 h+ late, tier-limited.}
+  \trap{No \ct{updateConversionValue} at first launch — the conversion window never starts.}
+  \trap{ATT ``Allow'' is not GDPR consent — two separate duties.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``ATT asks before you \emph{link}; AdAttributionKit counts without knowing \emph{who}.''}
+Windows \textbf{2 / 7 / 35} days; fine value only in the first; 6 bits.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} app-hardening-privacy (manifest) · privacy-compliance
+(GDPR consent) · deep-links-universal-links · flags-experiments-observability · storekit2}
+
+\end{document}
