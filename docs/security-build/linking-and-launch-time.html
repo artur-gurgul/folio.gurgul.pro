@@ -1,0 +1,77 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Linking &amp; launch time — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/security-build/linking-and-launch-time.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">183</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area current" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Linking &amp; launch time</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">build · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> <strong>Static</strong> code is copied into your binary at link time (no load cost,
+but one copy per binary); <strong>dynamic</strong> code stays a separate Mach-O that <strong>dyld</strong> maps,
+fixes up and initialises at <em>every</em> launch. Launch = <strong>pre-main</strong> (dyld + runtime
+init) + <strong>post-main</strong> (UIKit + your <code>didFinishLaunching</code> → first frame); aim for
+first frame in <strong>≤ 400 ms</strong>.</p>
+<p class="sheet-tools"><a class="sheet-download" href="linking-and-launch-time.pdf" download>Download PDF</a> <a href="linking-and-launch-time.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/security-build/linking-and-launch-time.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="linking-and-launch-time-fig1.svg" width="592" height="133" class="wide" alt="Linking &amp; launch time — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Linking</h2>
+<ul>
+<li><strong><code>.a</code></strong> = archive of <code>.o</code>, static, no resources.  <strong><code>.framework</code></strong> = bundle (binary + headers + modulemap + resources),  static <em>or</em> dynamic. <strong><code>.xcframework</code></strong> = per-platform slices  (<code>ios-arm64</code>, <code>ios-arm64_x86_64-simulator</code>, …): a fat  <code>lipo</code> binary cannot hold device-arm64 <em>and</em> simulator-arm64.</li>
+<li><strong>Dynamic</strong> → <em>Embed &amp; Sign</em> (copied to <code>App.app/Frameworks</code>,  found via <code>@rpath</code> = <code>@executable_path/Frameworks</code><span class="unverified">(unverified)</span>).  <strong>Static</strong> and system frameworks → <em>Do Not Embed</em>.</li>
+<li>System frameworks sit in the <strong>dyld shared cache</strong> (pre-linked); <em>your</em>  dylibs pay full load + fixup cost. dyld3/4 cache a launch closure and use chained  fixups (iOS 13.4+ targets), but many dylibs still hurt.</li>
+<li><strong>Mergeable libraries</strong> (Xcode 15): framework built with  <code>MERGEABLE_LIBRARY</code>, app with <code>MERGED_BINARY_TYPE</code> — dynamic  in Debug (fast iteration), <em>merged</em> into the app binary in Release.</li>
+<li>Swift binary frameworks need<br><code>BUILD_LIBRARY_FOR_DISTRIBUTION = YES</code>  (<code>.swiftinterface</code>, module stability) or only the exact compiler can import them.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Launch fixes</h2>
+<ul>
+<li>Fewer dylibs (static/merge); no <code>+load</code> (use <code>+initialize</code> or  explicit init); Swift globals/<code>static let</code> are already lazy — but touching  one in <code>didFinishLaunching</code> runs its init right there.</li>
+<li>Build only the first screen; lazy DI factories; no sync disk/network on main;  defer SDKs to <em>after</em> the first frame, heavy work off the main thread.</li>
+<li>Static <code>LaunchScreen</code> is drawn by the system — free; no splash delays.</li>
+<li>Profile <strong>Release</strong>, <strong>cold</strong>, on a low-end device.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Build settings — who wins</h2>
+<ul>
+<li><strong>Target</strong> = one product; <strong>configuration</strong> (Debug/Release) = a named  set of setting values; <strong>scheme</strong> = which targets + which configuration per  action (Run/Test→Debug, Profile/Archive→Release by default<span class="unverified">(unverified)</span>). Optimization level  is a <em>configuration</em> setting — “edit the scheme” is the wrong answer.</li>
+<li>Precedence, highest first: <code>xcodebuild SETTING=v</code> → target (pbxproj) →  target <code>.xcconfig</code> → project (pbxproj) → project <code>.xcconfig</code> → SDK  default. Assigning <em>replaces</em>; write <code>$(inherited)</code> to append.</li>
+<li>Swift <code>#if DEBUG</code> reads<br><code>SWIFT_ACTIVE_COMPILATION_CONDITIONS</code>;  ObjC reads <code>GCC_PREPROCESSOR_DEFINITIONS</code> — define it in both.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">func</span> <span class="hljs-title function_">application</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">a</span>: <span class="hljs-type">UIApplication</span>, <span class="hljs-params">didFinishLaunchingWithOptions</span>
+    <span class="hljs-params">o</span>: [<span class="hljs-type">UIApplication</span>.<span class="hljs-params">LaunchOptionsKey</span>: <span class="hljs-keyword">Any</span>]<span class="hljs-operator">?</span>) -&gt; <span class="hljs-type">Bool</span> {
+  <span class="hljs-type">CrashReporter</span>.start()      <span class="hljs-comment">// only what must exist before frame 1</span>
+  <span class="hljs-keyword">return</span> <span class="hljs-literal">true</span>                <span class="hljs-comment">// root UI built by the scene delegate</span>
+}
+<span class="hljs-comment">// after first frame (root view .task / first viewDidAppear):</span>
+<span class="hljs-type">Task</span>.detached(priority: .utility) {
+  <span class="hljs-type">Analytics</span>.configure(); <span class="hljs-keyword">await</span> <span class="hljs-type">ImageCache</span>.warm() }  <span class="hljs-comment">// off main</span></code></pre>
+<pre class="sheet-code"><code class="hljs language-plaintext">// Release.xcconfig
+#include &quot;Base.xcconfig&quot;
+OTHER_LDFLAGS = $(inherited) -ObjC    // keep Pods&#x27;/parent flags
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) RELEASE</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><strong>Static + Embed &amp; Sign</strong> = the code ships twice (inside the binary and in  <code>Frameworks/</code>); App Store validation may reject it<span class="unverified">(unverified)</span>.</li>
+<li class="trap">Same static lib linked into a dynamic framework <em>and</em> the app → two copies;  the ObjC runtime warns of a duplicate class, and singletons split.</li>
+<li class="trap"><em>“Library not loaded: @rpath/…”</em> = linked but not embedded.</li>
+<li class="trap">The linker loads a static-lib member only for a needed symbol: a category-only  <code>.o</code> vanishes (unrecognized selector); <code>-ObjC</code><span class="unverified">(unverified)</span> loads it.</li>
+<li class="trap"><code>DispatchQueue.main.async</code> from <code>didFinishLaunching</code> still runs on  main — it only moves work past the first frame, not off the thread.</li>
+<li class="trap"><code>DYLD_PRINT_STATISTICS</code>: dyld4 no longer reads it; use the App Launch  instrument. <em>Prewarming</em> may create the process and load its dylibs long  before the tap, so don’t time launch from inside <code>main</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>“Static = copy, dynamic = dyld; pre-main is dylibs + initialisers; post-main is
+your code; first frame in 400 ms, or the watchdog’s <code>8badf00d</code>.”</strong></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> modularization &amp; SPM ·
+crashes &amp; symbolication (<code>0x8badf00d</code>) · app thinning · Instruments · MetricKit</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=security-build" title="area">security-build</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=build" title="topic">build</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=performance" title="topic">performance</a></li><li class="sheet-tag"><a href="/folios.html?tag=static-linking">static-linking</a></li><li class="sheet-tag"><a href="/folios.html?tag=dynamic-framework">dynamic-framework</a></li><li class="sheet-tag"><a href="/folios.html?tag=dyld">dyld</a></li><li class="sheet-tag"><a href="/folios.html?tag=pre-main">pre-main</a></li><li class="sheet-tag"><a href="/folios.html?tag=cold-launch">cold-launch</a></li><li class="sheet-tag"><a href="/folios.html?tag=mergeable-libraries">mergeable-libraries</a></li><li class="sheet-tag"><a href="/folios.html?tag=xcframework">xcframework</a></li><li class="sheet-tag"><a href="/folios.html?tag=rpath">rpath</a></li><li class="sheet-tag"><a href="/folios.html?tag=embed-and-sign">embed-and-sign</a></li><li class="sheet-tag"><a href="/folios.html?tag=xcconfig">xcconfig</a></li><li class="sheet-tag"><a href="/folios.html?tag=watchdog">watchdog</a></li><li class="sheet-tag"><a href="/folios.html?tag=app-launch-instrument">app-launch-instrument</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=security-build%2Flinking-and-launch-time.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/253">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

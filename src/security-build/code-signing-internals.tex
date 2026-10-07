@@ -1,0 +1,205 @@
+% code-signing-internals.tex — what a code signature IS inside a Mach-O: LC_CODE_SIGNATURE,
+% SuperBlob, CodeDirectory (page hashes, special slots, cdhash), requirements language, embedded
+% entitlements (XML + DER), the CMS blob, sealed resources, nested-code order, ad-hoc and
+% linker signatures, how the kernel/AMFI enforce it, and the codesign commands to read it.
+% Sources (checked 2026-09-26):
+%   developer.apple.com/documentation/technotes/tn3126-inside-code-signing-hashes (page size 4096,
+%     slots -1 Info.plist / -3 CodeResources / -5 XML ents / -7 DER ents, cdhash, one CD per arch,
+%     SHA-256 CD only from macOS 10.12, CodeResources files2 hash2 + nested cdhash/requirement)
+%   developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements (DR syntax,
+%     codesign --display -r -, --verify -R, csreq, TCC + keychain + XPC use the DR)
+%   github.com/apple-oss-distributions/xnu osfmk/kern/cs_blobs.h (CSMAGIC_*, CSSLOT_*, CS_* flags)
+%   developer.apple.com/forums (Apple DTS): Apple silicon code must be signed; linker ad-hoc signs,
+%     flags=0x20002(adhoc,linker-signed); -no_adhoc_codesign; "A Peek Behind the Code Signing Curtain"
+%   developer.apple.com/documentation/xcode/using-the-latest-code-signature-format (DER entitlements)
+%   developer.apple.com/documentation/security/resolving-common-notarization-issues
+%     (codesign -vvv --deep --strict; codesign -d --entitlements :-)
+% Not repeated: sandbox, entitlement table, library validation, W^X (os/ios-sandbox-security-model);
+% Mach-O layout + dyld (os/mach-o-and-dyld); certificates/profiles (signing-and-cicd).
+% @labels: area=security-build kind=concept platform=apple topic=security,build,platform-apis discussion=250
+% @tags: code-signing, codedirectory, cdhash, superblob, designated-requirement, entitlements, cms-signature, ad-hoc-signing, amfi, hardened-runtime, codesign, mach-o
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{ShSheet}{
+  morekeywords={codesign,csreq,otool,xcrun},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]",
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2 {=>}{{\hbox{=}\hbox{>}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}   % "--" without the mono font's ligature
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pg/.style={draw=sheetGrey, minimum width=25mm, minimum height=4mm, font=\ttfamily\tiny, inner sep=0pt, anchor=north},
+  sl/.style={draw=sheetGrey, minimum width=31mm, minimum height=3.3mm, font=\ttfamily\tiny, inner sep=0pt, anchor=north},
+  sb/.style={draw=sheetGrey, minimum width=31mm, minimum height=3.6mm, font=\ttfamily\tiny, inner sep=0pt, anchor=north},
+  ce/.style={box, font=\tiny, text width=40mm, inner sep=1.5pt, align=left},
+  hp/.style={->, draw=sheetOrange, thick},
+  rf/.style={->, draw=sheetBlue, densely dashed},
+}
+
+\begin{document}
+
+\sheettitle{Code signing internals — what \ct{codesign} writes into a Mach-O}{security-build · folio}
+
+\oneliner{A signature is a \textbf{SuperBlob} appended to \ct{\_\_LINKEDIT} and located by
+\ct{LC\_CODE\_SIGNATURE}. Its heart is the \textbf{CodeDirectory}: a SHA-256 hash of every
+\textbf{4~KiB page} of the file (code slots) plus hashes of \textbf{Info.plist, requirements,
+resources and entitlements} (special slots). The hash of the CodeDirectory — the \textbf{cdhash} —
+is what a \textbf{CMS} signature from your certificate signs, so one signature covers every byte;
+the kernel re-hashes each page as it is \textbf{paged in}.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── the binary ──
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (-0.05,5.05) {Mach-O (one arch)};
+  \node[lbl, anchor=north west, align=left, text=sheetBrown] at (-0.05,4.85) {pages hashed up to \textbf{codeLimit} =\\the start of the signature (it can't\\hash itself). Outside the binary:\\$-1$ $\to$ \ct{Info.plist}\\$-3$ $\to$ \ct{\_CodeSignature/CodeResources}:\\\hspace*{2mm}each resource's \ct{hash2}; nested\\\hspace*{2mm}code's cdhash + requirement};
+  \node[pg, fill=sheetBlue!15] (c0) at (1.75,3.05) {header + load cmds};
+  \node[pg, fill=sheetOrange!15, below=0pt of c0] (c1) {\_\_TEXT page 1};
+  \node[pg, fill=sheetOrange!15, below=0pt of c1] (c2) {\_\_TEXT page 2};
+  \node[pg, fill=white, below=0pt of c2] (c3) {…};
+  \node[pg, fill=sheetGreen!15, below=0pt of c3] (c4) {\_\_DATA page k};
+  \node[pg, fill=black!8, below=0pt of c4] (c5) {\_\_LINKEDIT (symbols…)};
+  \node[pg, fill=sheetRed!15, draw=sheetRed, below=0pt of c5] (c6) {\textbf{signature}};
+  \draw[->, thick, sheetRed] (c0.west) to[out=190, in=170] node[lbl, left, text=sheetRed, pos=0.5, align=right]{LC\_CODE\_\\SIGNATURE:\\offset +\\size} (c6.west);
+  % ── CodeDirectory ──
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (3.55,5.05) {CodeDirectory \ct{0xfade0c02}};
+  \node[box, font=\tiny, text width=29mm, align=left, anchor=north, inner sep=1.5pt] (cdh) at (5.2,4.85) {version · \textbf{flags} (\ct{0x10000} runtime,\\\ct{0x2} adhoc) · hashType SHA-256 ·\\pageSize 4096 · \textbf{identifier} ·\\\textbf{teamID} · codeLimit · slot counts};
+  \node[sl, fill=sheetBrown!10, below=1pt of cdh] (m7) {$-7$ DER entitlements};
+  \node[sl, fill=sheetBrown!10, below=0pt of m7] (m5) {$-5$ XML entitlements};
+  \node[sl, fill=sheetBrown!10, below=0pt of m5] (m3) {$-3$ CodeResources};
+  \node[sl, fill=sheetBrown!10, below=0pt of m3] (m2) {$-2$ requirements};
+  \node[sl, fill=sheetBrown!10, below=0pt of m2] (m1) {$-1$ Info.plist};
+  \node[sl, fill=sheetOrange!10, below=0pt of m1] (s0) {0 SHA-256(page 0)};
+  \node[sl, fill=sheetOrange!10, below=0pt of s0] (s1) {1 SHA-256(page 1)};
+  \node[sl, fill=sheetOrange!10, below=0pt of s1] (s2) {2 …};
+  \node[sl, fill=sheetOrange!10, below=0pt of s2] (s4) {n SHA-256(page n)};
+  \draw[hp] (s0.west) -- (c0.east);
+  \draw[hp] (s1.west) -- (c1.east);
+  \draw[hp] (s2.west) -- (c2.east);
+  \draw[hp] (s4.west) -- (c5.east);
+  \node[lbl, anchor=north, text=sheetOrange!80!black] at (5.2,0.6) {one SHA-256 per 4096-byte page};
+  % ── SuperBlob ──
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (7.7,5.05) {SuperBlob \ct{0xfade0cc0} (index)};
+  \node[sb, fill=black!5] (b0) at (9.35,4.8) {slot type $\to$ offset};
+  \node[sb, fill=sheetBlue!12, below=0pt of b0] (b1) {0 \ \ CodeDirectory};
+  \node[sb, fill=white, below=0pt of b1] (b2) {2 \ \ Requirements \ct{0xfade0c01}};
+  \node[sb, fill=white, below=0pt of b2] (b5) {5 \ \ Entitlements \ct{0xfade7171}};
+  \node[sb, fill=white, below=0pt of b5] (b7) {7 \ \ DER ents \ct{0xfade7172}};
+  \node[sb, fill=black!5, below=0pt of b7] (ba) {0x1000 alt.\ CD (SHA-1, legacy)};
+  \node[sb, fill=sheetGreen!15, draw=sheetGreen!70!black, below=0pt of ba] (bc) {\textbf{0x10000 CMS} \ct{0xfade0b01}};
+  \draw[rf] (b1.west) -- (cdh.east |- b1.west);
+  \draw[rf] (m7.east) -- (b7.west);
+  \draw[rf] (m5.east) -- (b5.west);
+  \draw[rf] (m2.east) -- (b2.west);
+  \node[lbl, anchor=north west, align=left, text=sheetBlue] at (8.75,2.12) {special slot $-k$ in the CD\\= hash of blob $k$ here};
+  \draw[->, thick, sheetRed] (c6.south) -- ++(0,-0.2) -| node[lbl, pos=0.25, below, text=sheetRed]{the signature \emph{is} this SuperBlob} (8.2,2.12);
+  % ── CMS + chain ──
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (11.75,5.05) {CMS SignedData — who vouches};
+  \node[ce, draw=sheetGreen!70!black, fill=sheetGreen!8] (cms) at (14.1,4.35) {signed attribute: the \textbf{cdhash(es)} of every CD\\\textbf{cdhash} = SHA-256(CodeDirectory), first 20 bytes\\signature by the \textbf{leaf's private key} + a secure\\timestamp (\ct{timestamp.apple.com}, \ct{\dd timestamp})};
+  \node[ce] (leaf) at (14.1,3.35) {\textbf{leaf}: Apple Development / Apple Distribution /\\Developer ID Application — subject.OU = \textbf{Team ID}};
+  \node[ce, draw=sheetGrey, fill=black!5] (wwdr) at (14.1,2.62) {Apple WWDR or Developer ID CA (intermediate)};
+  \node[ce, draw=sheetGrey, fill=black!5] (root) at (14.1,2.05) {Apple Root CA — in every device's trust store};
+  \draw[flow] (cms) -- (leaf); \draw[flow] (leaf) -- (wwdr); \draw[flow] (wwdr) -- (root);
+  \draw[->, thick, sheetGreen!70!black] (bc.east) to[out=0, in=180] (cms.west);
+  \node[lbl, anchor=north west, align=left] at (11.75,1.7) {\textbf{ad hoc} (\ct{codesign -s -}): CD only, \textbf{no CMS, no cert} —\\identity is the cdhash itself. Linker signs every arm64\\image this way (\ct{flags=0x20002(adhoc,linker-signed)}).\\\textbf{App Store}: Apple verifies your signature, then\\\textbf{re-signs} the app with an Apple identity.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Signing}
+\begin{itemize}
+  \item \ct{codesign} hashes the file in \textbf{4096-byte pages} up to \ct{codeLimit}, writes
+        the CD, requirements and entitlements, then the CMS over the cdhash. Universal binary:
+        \textbf{one signature per arch}, different cdhashes (\ct{\dd arch arm64}).
+  \item \textbf{Hash agility}: macOS $\leq$ 10.11 needed a SHA-1 CD too (\ct{0x1000} alternate
+        slot); since 10.12 a single SHA-256 CD. \ct{CodeDirectory v=20500 … hashes=14+7} =
+        14 code pages + 7 special slots.
+  \item \textbf{Entitlements} are signed in twice: XML plist (slot 5/$-5$) and DER
+        (7/$-7$, the format the OS parses; required on iOS 15+\unverified). Old signatures without
+        DER must be re-signed; App Store builds already are.
+  \item \textbf{Bundles}: Info.plist and resources are outside the Mach-O, so they are
+        \emph{sealed} by hash — edit one PNG and the seal breaks
+        (``a sealed resource is missing or invalid'').
+  \item \textbf{Nested code signs inside-out}: dylibs/frameworks $\to$ XPC services, app
+        extensions, helpers $\to$ the app \textbf{last}, because the outer seal records each
+        inner cdhash. Sign the app first and any inner re-sign invalidates it. Xcode does the
+        order; by hand never sign with \ct{\dd deep} (it pushes one set of entitlements/options
+        onto everything) — \ct{\dd deep} is for \emph{verify} only.
+  \item Code must sit where code belongs (\ct{Frameworks/}, \ct{MacOS/}, \ct{PlugIns/}); a Mach-O
+        in \ct{Resources/} is sealed as data, not signed as code.
+\end{itemize}
+
+\hd{Requirements — the code's identity (macOS)}
+A \textbf{requirement} is a boolean expression over a signature; the \textbf{designated
+requirement (DR)} says ``if you see me again, this is how you know it's me''. TCC grants,
+keychain ACLs and XPC peers (\ct{setCodeSigningRequirement}) store the DR, not a hash —
+that's how v1.3 inherits v1.2's microphone permission.
+\begin{lstlisting}[language=ShSheet]
+designated => identifier "com.example.app" and anchor apple generic
+   and certificate leaf[subject.OU] = "ABCDE12345"   # team
+anchor apple and identifier "com.apple.TextEdit"     # Apple's own
+cdhash H"ff19a91b..."          # this exact build only - brittle
+\end{lstlisting}
+
+\hd{Example — reading and making a signature}
+\begin{lstlisting}[language=ShSheet]
+codesign -dvvv App.app       # CDHash, Authority chain, TeamIdentifier
+codesign -d -vvvvvv App.app  # + every slot hash (page size 4096)
+codesign -d --entitlements :- App.app   # raw XML ("bplist00" = broken)
+codesign -d -r- App.app                 # designated => ...
+codesign --verify --deep --strict -vvv App.app   # notarization-grade check
+codesign -v -R \
+  '=anchor apple generic and identifier "com.example.app"' App.app
+codesign -s - -f tool            # ad hoc re-sign (after lipo/patch)
+codesign -s "Developer ID Application: Alice (ABCDE12345)" \
+  -o runtime --timestamp --entitlements app.entitlements -f App.app
+\end{lstlisting}
+
+\columnbreak
+
+\hd{How it is enforced}
+\begin{itemize}
+  \item \textbf{At exec / mmap}: the kernel loads the blob, checks each CD hash against the CMS'
+        cdhash list; \textbf{AMFI} (AppleMobileFileIntegrity) decides if the signer may run
+        this: platform binaries by cdhash in the \textbf{trust cache}, third-party code by
+        certificate + provisioning profile (entitlements $\subseteq$ profile) via \ct{amfid}.
+  \item \textbf{At page-in}: every page faulted in from a signed file is hashed and compared to
+        its code slot. Mismatch + \ct{CS\_KILL} $\to$ \textbf{SIGKILL} (crash ``CODESIGNING''\unverified).
+        Lazy: a tampered page that never runs is never noticed.
+  \item \textbf{Process flags} (\ct{cs\_blobs.h}): \ct{CS\_VALID} 0x1 · \ct{CS\_ADHOC} 0x2 ·
+        \ct{CS\_GET\_TASK\_ALLOW} 0x4 · \ct{CS\_HARD} 0x100 (refuse invalid pages) ·
+        \ct{CS\_KILL} 0x200 · \ct{CS\_REQUIRE\_LV} 0x2000 (library validation) ·
+        \ct{CS\_RUNTIME} 0x10000 (hardened runtime) · \ct{CS\_LINKER\_SIGNED} 0x20000.
+  \item \textbf{Apple silicon}: macOS won't run \emph{unsigned} arm64 code at all — ad hoc is
+        enough to run, not to distribute (Gatekeeper wants Developer ID + notarization). Intel
+        could run unsigned. Patch a byte in a binary $\to$ killed at launch.
+  \item \textbf{Team ID} (in the CD and the leaf's OU) drives library validation and
+        keychain/app-group scoping.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``The signature encrypts the app'' — no: it \emph{hashes and signs}; FairPlay
+        (\ct{cryptid}) is the encryption.}
+  \trap{\ct{codesign \dd deep} to \emph{sign} — wrong entitlements on nested code; sign inside-out.}
+  \trap{Editing Info.plist / a resource after signing breaks the seal.}
+  \trap{A fresh ad hoc build changes cdhash $\to$ TCC/keychain ask again: the DR is the cdhash.}
+  \trap{\ct{lipo}/\ct{install\_name\_tool}/\ct{strip} after signing breaks it — re-sign last.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Pages $\to$ CodeDirectory $\to$ cdhash $\to$ CMS $\to$ Team cert $\to$ Apple root — and the kernel re-checks each page as it faults in.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Mach-O \& dyld · sandbox \& library validation
+(W$\oplus$X) · code signing \& CI/CD · notarization \& distribution · signing troubleshooting}
+
+\end{document}

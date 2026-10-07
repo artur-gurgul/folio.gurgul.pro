@@ -1,0 +1,189 @@
+% keychain-secure-enclave.tex — Keychain CRUD + accessibility classes + access
+% groups, Secure Enclave keys (CryptoKit), biometrics done right
+% (SecAccessControl vs LAContext Bool), file Data Protection classes.
+% Sources (checked 2026-10-07):
+%   developer.apple.com/documentation/security/ksecattraccessiblewhenunlocked (the default when none
+%     is set) · /ksecattraccessibleafterfirstunlock (background; migrates in encrypted backups) ·
+%     /ksecattraccessiblewhenpasscodesetthisdeviceonly (deleted when the passcode is disabled) ·
+%     /protecting-keys-with-the-secure-enclave (P-256 only; generated inside; privateKeyUsage;
+%     signing + ECDH) · /secaccesscontrolcreateflags/biometrycurrentset (invalidated on re-enrol)
+%   /foundation/fileprotectiontype/completeuntilfirstuserauthentication · /completeunlessopen
+%   Apple Platform Security, "Data Protection classes" (class key discarded 10 s after lock with
+%     Require Password = Immediately; Protected Until First User Authentication is the default
+%     for third-party app data)
+%   Not confirmed, marked \unverified: every class degrading to UID-only without a passcode.
+%   Keychain items surviving uninstall is stated on the page as not a contract.
+% @labels: area=security-build kind=api platform=apple topic=security,platform-apis discussion=252
+% @tags: keychain, secitemadd, ksecattraccessible, afterfirstunlock, keychain-access-group, secure-enclave, cryptokit, secaccesscontrol, biometrycurrentset, lacontext, data-protection, face-id
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={let,var,if,try,func,return,true,false,nil,as,Any},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  zone/.style={draw=#1, thick, rounded corners=3pt, fill=#1!5},
+  it/.style={box, font=\scriptsize, minimum height=5mm, inner sep=2pt},
+}
+
+\begin{document}
+
+\sheettitle{Keychain · Secure Enclave · biometrics}{security · folio}
+
+\oneliner{The \textbf{Keychain} is an encrypted database \emph{outside} your
+sandbox (\texttt{securityd}); its rows open with \textbf{class keys} that
+depend on lock state. The \textbf{Secure Enclave} is a separate chip: keys
+\emph{born} there \textbf{never leave} — data in, signature out. Biometrics are
+secure only when they \textbf{gate a key}, never when they return a \texttt{Bool}.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Keychain}
+\begin{itemize}
+  \item \texttt{SecItemAdd} · \texttt{SecItemCopyMatching} ·
+        \texttt{SecItemUpdate} · \texttt{SecItemDelete} — dictionary in,
+        \texttt{OSStatus} out. \textbf{No upsert}: add, and on
+        \texttt{errSecDuplicateItem} update; absent $\to$
+        \texttt{errSecItemNotFound}.
+  \item \texttt{kSecClass}: \texttt{GenericPassword} (tokens; identity =
+        service + account), \texttt{InternetPassword}, \texttt{Key},
+        \texttt{Certificate}, \texttt{Identity}. Reads need
+        \texttt{kSecReturnData: true} + \texttt{kSecMatchLimit}.
+  \item \textbf{Sharing}: \texttt{kSecAttrAccessGroup}, same Team ID, group in
+        the Keychain Sharing entitlement. \texttt{kSecAttrSynchronizable} =
+        iCloud Keychain. Items usually \textbf{survive uninstall} — not a
+        contract; never a ``first run'' flag.
+\end{itemize}
+
+{\footnotesize
+\begin{tabular}{@{}p{2.75cm}p{4.55cm}@{}}
+\toprule
+\multicolumn{2}{@{}l}{\texttt{kSecAttrAccessible…} — choose by \emph{when you read}} \\
+\midrule
+\texttt{WhenPasscodeSet\-ThisDeviceOnly} & unlocked + passcode; \textbf{deleted}
+  if the passcode is removed \\
+\texttt{WhenUnlocked} (default) & only while unlocked — UI-driven secrets \\
+\texttt{AfterFirstUnlock} & 1st unlock $\to$ reboot, also locked:
+  \textbf{background} work \\
+\texttt{…ThisDeviceOnly} & never migrates (no iCloud sync, no restore
+  to a new device) \\
+\bottomrule
+\end{tabular}}
+
+\section{Secure Enclave \& biometrics}
+\begin{itemize}
+  \item SE keys are \textbf{EC P-256} (no RSA, no arbitrary blobs):
+        generated and used \emph{inside}; the app holds an opaque reference.
+        CryptoKit \texttt{SecureEnclave.P256.Signing.PrivateKey} — its
+        \texttt{dataRepresentation} is a wrapped handle only \emph{this} SE
+        can use (store it in the Keychain). No SE on the Simulator.
+  \item Protect a secret \emph{with} the SE: encrypt it under an SE-bound
+        key, or gate its item with a \texttt{SecAccessControl}.
+  \item Flags: \texttt{.biometryCurrentSet} (item dies when a face/finger is
+        enrolled — an attacker adding theirs loses access), \texttt{.biometryAny},
+        \texttt{.userPresence} (biometry \emph{or passcode}),
+        \texttt{.privateKeyUsage} (SE keys).
+  \item \texttt{LAContext.evaluatePolicy} = a \texttt{Bool} in hookable code:
+        UX only. Reuse it via \texttt{kSecUseAuthenticationContext} (one
+        prompt). Face ID needs \texttt{NSFaceIDUsageDescription}.
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+let id: [CFString: Any] = [kSecClass: kSecClassGenericPassword,
+  kSecAttrService: "api", kSecAttrAccount: "token"]
+var add = id; add[kSecValueData] = data
+add[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlock
+var st = SecItemAdd(add as CFDictionary, nil)
+if st == errSecDuplicateItem {                   // no upsert
+  let new = [kSecValueData: data] as CFDictionary
+  st = SecItemUpdate(id as CFDictionary, new) }
+let acl = SecAccessControlCreateWithFlags(nil,
+  kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+  [.privateKeyUsage, .biometryCurrentSet], nil)!
+let key = try SecureEnclave.P256.Signing
+                .PrivateKey(accessControl: acl)
+let sig = try key.signature(for: nonce)  // Face ID, signed in SE
+\end{lstlisting}
+
+\columnbreak
+
+\section{The trust boundary}
+\begin{tikzpicture}[sheet]
+  \draw[zone=sheetGrey] (0,0) rectangle (2.3,3.9);
+  \node[font=\bfseries\scriptsize, anchor=north] at (1.15,3.85) {your app};
+  \node[lbl, anchor=north, text=sheetRed] at (1.15,3.55) {attacker can hook};
+  \draw[zone=sheetBlue] (2.6,0) rectangle (4.9,3.9);
+  \node[font=\bfseries\scriptsize, anchor=north] at (3.75,3.85) {Keychain};
+  \node[lbl, anchor=north] at (3.75,3.55) {\texttt{securityd}, encrypted DB};
+  \draw[zone=sheetGreen, very thick] (5.2,0) rectangle (7.5,3.9);
+  \node[font=\bfseries\scriptsize, anchor=north] at (6.35,3.85) {Secure Enclave};
+  \node[lbl, anchor=north] at (6.35,3.55) {own CPU, UID key};
+  % SE key
+  \node[it] (req) at (1.15,2.85) {\texttt{signature(for:)}};
+  \node[it, draw=sheetGreen, fill=sheetGreen!15] (pk) at (6.35,2.85) {private key};
+  \draw[flow] (req.east) -- node[lbl, above]{digest in} (pk.west);
+  \draw[flow] (pk.south) |- node[lbl, pos=0.75, below]{signature out — key stays}
+       (1.15,2.3) -- (req.south);
+  % keychain + biometry
+  \node[it] (cm) at (1.15,1.6) {\texttt{CopyMatching}};
+  \node[it, fill=sheetBlue!15] (row) at (3.75,1.6) {item + ACL};
+  \node[it, draw=sheetGreen, fill=sheetGreen!15, align=center] (bio) at (6.35,1.6)
+       {face match $\to$\\class key};
+  \draw[flow] (cm) -- (row);
+  \draw[flow] (row) -- (bio);
+  \draw[flow] (bio.south) |- node[lbl, pos=0.75, below]{bytes only after a real match}
+       (1.15,1.0) -- (cm.south);
+  % insecure path
+  \node[it, draw=sheetRed, fill=sheetRed!10] (lb) at (1.15,0.4)
+       {\texttt{evaluatePolicy}};
+  \node[lbl, text=sheetRed, anchor=west, fill=white, draw=sheetRed,
+        rounded corners=1pt, inner sep=2pt] at (2.75,0.4)
+       {\texttt{true} $\to$ \texttt{unlock()}: a Bool Frida flips};
+  \draw[hot, sheetRed] (lb.east) -- (2.75,0.4);
+\end{tikzpicture}
+
+\section{Data Protection — files, same idea}
+{\footnotesize
+\begin{tabular}{@{}p{3.1cm}p{4.2cm}@{}}
+\toprule
+\texttt{.complete} & unlocked only; key dropped 10~s after lock (Require Password: Immediately) \\
+\texttt{.completeUnlessOpen} & open files keep working when locked; new
+  files can be created \\
+\texttt{.completeUntilFirst\-UserAuthentication} & \textbf{default} — the
+  twin of \texttt{AfterFirstUnlock} \\
+\texttt{.none} & UID-key only, always readable \\
+\bottomrule
+\end{tabular}}
+
+\texttt{data.write(to:options: .completeFileProtection)}; SQLite: the
+\texttt{-wal}/\texttt{-shm} files too. \textbf{No passcode $\Rightarrow$ no
+passcode-derived keys}: every class degrades to \texttt{.none}\unverified.
+
+\section{Traps}
+\begin{itemize}
+  \trap{Background upload fails at 3~am $\to$ token is \texttt{WhenUnlocked};
+        locked read = \texttt{errSecInteractionNotAllowed}. Use \texttt{AfterFirstUnlock}.}
+  \trap{``Put the JWT in the Secure Enclave'' — impossible; it holds keys.}
+  \trap{\texttt{if faceIDOK \{ showVault() \}} is a UI gate, not security.}
+  \trap{\texttt{.complete} Core Data store + background launch = crash.}
+  \trap{Tokens in \texttt{UserDefaults} — a plain plist in the container.}
+  \trap{Add succeeds, read says \texttt{errSecItemNotFound} $\to$ query
+        differs (service/account/access group) or no \texttt{kSecReturnData}.}
+  \trap{\texttt{…ThisDeviceOnly} + \texttt{kSecAttrSynchronizable} —
+        contradictory; synced items cannot be device-only.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Keychain for secrets, class for \emph{when}, enclave for keys,
+biometry on the key — never on a Bool.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} app hardening \& privacy · CryptoKit (\texttt{AES.GCM}, HKDF) · App Attest (SE-backed) · passkeys · networking / pinning}
+
+\end{document}

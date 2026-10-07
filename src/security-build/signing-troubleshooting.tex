@@ -1,0 +1,158 @@
+% signing-troubleshooting.tex — the Apple code-signing errors you actually meet, their cause and fix,
+% the commands that diagnose them, where profiles live (Xcode 16+), automatic vs manual signing.
+% Sources (checked 2026-09-26):
+%   developer.apple.com/forums/thread/712005 (Apple DTS: errSecInternalComponent causes + fixes)
+%   developer.apple.com/forums — ITMS-90035 "Invalid Signature" (subtypes: code object is not signed
+%     at all / a sealed resource is missing or invalid / Info.plist modified); ITMS-90164
+%     (entitlements don't match the profile); ITMS-90046 (entitlement not supported, e.g. wildcard
+%     associated-domains, malformed application-identifier)
+%   developer.apple.com/forums (Apple engineer): Xcode 16 keeps profiles in
+%     ~/Library/Developer/Xcode/UserData/Provisioning Profiles (was ~/Library/MobileDevice/...)
+%   developer.apple.com/documentation/security/resolving-common-notarization-issues
+%   developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements
+% Not repeated: what certificates/profiles are (signing-and-cicd); the keychain gates
+% (macos-keychain-security-cli); signature format (code-signing-internals); match (cicd/fastlane-deep).
+% @labels: area=security-build kind=process platform=apple topic=build,debugging,security discussion=258
+% @tags: code-signing, provisioning-profile, signing-errors, errsecinternalcomponent, itms-90035, entitlements, automatic-signing, xcodebuild, codesign, mobileprovision
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{ShSheet}{
+  morekeywords={security,codesign,xcrun,xcodebuild,xattr,unzip,grep},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]",
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  sy/.style={box, font=\tiny, text width=31mm, inner sep=1.5pt, align=left, draw=sheetRed, fill=sheetRed!6},
+  ck/.style={box, font=\tiny, text width=48mm, inner sep=1.5pt, align=left, draw=sheetOrange, fill=sheetOrange!7},
+  fx/.style={box, font=\tiny, text width=48mm, inner sep=1.5pt, align=left, draw=sheetGreen!70!black, fill=sheetGreen!8},
+}
+
+\begin{document}
+
+\sheettitle{Signing failures — symptom $\to$ check $\to$ fix}{security-build · folio}
+
+\oneliner{Every signing error is a \textbf{mismatch between four things} that must agree —
+the \textbf{identity} (certificate \emph{+ private key} in a reachable keychain), the
+\textbf{profile} (App ID, certificates, entitlements, devices, expiry), the \textbf{signed
+entitlements} and the \textbf{bundle} (every nested binary signed, nothing changed after). First
+ask \emph{when} it fails — build, CI only, install, upload, launch — then \textbf{decode both
+sides and diff them} instead of toggling Xcode settings.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[box, font=\scriptsize\bfseries, draw=sheetRed, fill=sheetRed!12, text width=12mm, align=center] (root) at (0.6,1.95) {signing\\failed —\\\emph{when?}};
+  \node[font=\bfseries\tiny, text=sheetRed, anchor=west] at (1.45,4.15) {symptom};
+  \node[font=\bfseries\tiny, text=sheetOrange!80!black, anchor=west] at (4.85,4.15) {check};
+  \node[font=\bfseries\tiny, text=sheetGreen!50!black, anchor=west] at (10.25,4.15) {fix};
+  \foreach \y/\s/\c/\f [count=\i] in {
+    3.7/{\textbf{build}: ``No signing certificate''\\/ ``no identities found''}/{\ct{security find-identity -v -p codesigning} —\\cert listed? private key under it? WWDR intermediate?}/{import the \ct{.p12} (not \ct{.cer}); install the WWDR\\intermediate; or let automatic signing create one},
+    2.85/{\textbf{build}: profile ``doesn't\\include'' cert / entitlement / device}/{\ct{security cms -D -i x.mobileprovision}:\\DeveloperCertificates · Entitlements · ProvisionedDevices}/{enable the capability on the App ID / add cert or\\device $\to$ \textbf{regenerate + re-download} the profile},
+    2.0/{\textbf{CI only}: \ct{errSecInternalComponent},\\``User interaction is not allowed''}/{keychain unlocked in \emph{this} session? ACL/partition list?\\\ct{sudo}? chain complete?}/{temp keychain: unlock + \ct{import -T} +\\\ct{set-key-partition-list -S apple-tool:,apple:}},
+    1.15/{\textbf{install}: ``A valid provisioning\\profile … was not found'', invalid ents}/{UDID in the profile? profile expired? dev profile\\+ dist cert? \ct{codesign -d \dd entitlements :-}}/{register the device + regenerate; right export\\method; entitlements $\subseteq$ profile},
+    0.3/{\textbf{upload / launch}: ITMS-90035,\\``not signed at all'', killed at launch}/{\ct{codesign \dd verify \dd deep \dd strict -vvv}: which nested\\item? modified after signing? \ct{xattr}?}/{Embed \& Sign every framework; sign inside-out;\\\ct{xattr -cr}; never touch the bundle after signing}}
+  {
+    \node[sy] (s\i) at (3.05,\y) {\s};
+    \node[ck] (c\i) at (7.45,\y) {\c};
+    \node[fx] (f\i) at (12.9,\y) {\f};
+    \draw[flow] (root.east) -- (s\i.west);
+    \draw[flow] (s\i) -- (c\i);
+    \draw[hot] (c\i) -- (f\i);
+  }
+\end{tikzpicture}
+
+\vspace{1pt}
+{\footnotesize\setstretch{1.0}
+\noindent\begin{tabular}{@{}>{\raggedright\arraybackslash}p{49mm}>{\raggedright\arraybackslash}p{52mm}>{\raggedright\arraybackslash}p{61mm}@{}}
+\toprule
+\textbf{Message (abridged)} & \textbf{Real cause} & \textbf{Fix} \\ \midrule
+No signing certificate ``Apple Distribution'' found & identity not in a searched keychain, or the cert is there \emph{without} its private key & import the \ct{.p12} from the Mac that made the CSR (or \ct{match}); revoking + recreating breaks other machines \\
+Provisioning profile ``X'' doesn't include the \ct{aps-environment} entitlement & capability in \ct{.entitlements} but not enabled on the App ID, or the profile predates it & enable on the App ID $\to$ regenerate profile $\to$ download (automatic signing does all three) \\
+… doesn't include signing certificate ``Apple Development: Alice (…)'' & profile lists other certs (new Mac, cert renewed) & regenerate the profile with your cert selected \\
+profile / cert from another team & \ct{DEVELOPMENT\_TEAM} $\neq$ profile's TeamIdentifier (often an extension target) & one team per target set; check every target \\
+certificate expired or revoked & 1-year Development/Distribution cert ran out, or a teammate revoked it & new cert $\to$ new profiles; App Store builds already live are unaffected \\
+A valid provisioning profile for this executable was not found & at install: expired profile, device missing, or profile/cert mismatch & decode \ct{embedded.mobileprovision} inside the \ct{.ipa} and compare \\
+resource fork, Finder information, or similar detritus not allowed & extended attributes on files in the bundle (iCloud Drive / Dropbox folder, downloaded assets) & \ct{xattr -cr App.app}, build outside synced folders \\
+code object is not signed at all — In subcomponent: \ct{…/Frameworks/X.framework} & nested binary unsigned: ``Embed Without Signing'', a Mach-O in \ct{Resources/}, a patched vendor binary & Embed \& Sign; put code where code goes; re-sign inside-out \\
+ITMS-90035 Invalid Signature & dev/ad hoc identity, sealed resource missing/invalid, odd filenames, script files in the bundle & distribution identity, Release config, clean build, rename files \\
+ITMS-90164 / ITMS-90046 & signed entitlements not all in the profile / not valid on iOS (wildcard associated domain, malformed \ct{application-identifier}) & diff \ct{codesign -d \dd entitlements} vs the profile; explicit values only \\
+unsupported architectures {[}x86\_64, i386{]} (ITMS-90087\unverified) & simulator slices in a fat vendor framework & ship an \ct{.xcframework}, or strip before signing \\
+\bottomrule
+\end{tabular}}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Example — decode both sides and diff}
+\begin{lstlisting}[language=ShSheet]
+unzip -q App.ipa && APP=Payload/App.app
+security cms -D -i $APP/embedded.mobileprovision > prof.plist
+/usr/libexec/PlistBuddy -c 'Print :Entitlements' prof.plist    # allowed
+/usr/libexec/PlistBuddy -c 'Print :ProvisionedDevices' prof.plist
+codesign -d --entitlements :- $APP                  # actually signed
+codesign -dvvv $APP 2>&1 | grep -E 'Authority|TeamIdentifier'
+security find-identity -v -p codesigning            # SHA-1 of your certs
+xcodebuild -showBuildSettings | grep -E 'CODE_SIGN|PROVISIONING|TEAM'
+codesign --verify --deep --strict -vvv $APP         # nested damage
+\end{lstlisting}
+
+\hd{Where things live}
+\begin{itemize}
+  \item Profiles: \textbf{Xcode 16+} \ct{\textasciitilde/Library/Developer/Xcode/UserData/Provisioning
+        Profiles}; Xcode $\leq$ 15 \ct{\textasciitilde/Library/MobileDevice/Provisioning Profiles} —
+        tools and CI scripts hard-coding the old path need updating.
+  \item In the product: \ct{embedded.mobileprovision} (iOS), \ct{embedded.provisionprofile}
+        (macOS). Keys: \ct{TeamIdentifier}, \ct{Entitlements}, \ct{DeveloperCertificates},
+        \ct{ProvisionedDevices}, \ct{ExpirationDate}.
+\end{itemize}
+
+\hd{Automatic vs manual signing}
+\begin{itemize}
+  \item \textbf{Automatic} (\ct{CODE\_SIGN\_STYLE = Automatic}): Xcode creates certs, App IDs,
+        ``Xcode Managed'' profiles, registers the connected device. On CI:
+        \ct{xcodebuild -allowProvisioningUpdates} + an App Store Connect API key
+        (\ct{-authenticationKey\{Path,ID,IssuerID\}}).
+  \item \textbf{Manual}: \ct{CODE\_SIGN\_IDENTITY} + \ct{PROVISIONING\_PROFILE\_SPECIFIER} per
+        target; deterministic — usual on CI with match.
+  \item \textbf{Every target signs separately}: each app extension / watch app has its own
+        App ID and profile; the host's profile does not cover them.
+\end{itemize}
+
+\hd{On the device}
+\begin{itemize}
+  \item iOS 16+: development-signed apps need \textbf{Developer Mode} (Settings › Privacy \&
+        Security); TestFlight / App Store builds don't.
+  \item Enterprise builds: the user must trust the developer (Settings › General › VPN \&
+        Device Management) and the first launch verifies online\unverified.
+  \item No debugger on a distribution build: no \ct{get-task-allow}.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Revoke and recreate the certificate'' — kills every other machine's key and CI;
+        export the \ct{.p12} instead.}
+  \trap{Capability works in Debug, fails in Release: only the \emph{development} profile was
+        regenerated.}
+  \trap{Toggling ``Automatically manage signing'' hides the real mismatch — diff first.}
+  \trap{Anything that edits the bundle after signing (a script phase, \ct{strip},
+        \ct{install\_name\_tool}) invalidates it — sign last.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``When does it fail? Decode the profile, dump the entitlements, list the identities —
+diff, regenerate, sign inside-out.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} code signing \& CI/CD · the macOS \ct{security} CLI ·
+code signing internals · notarization \& distribution · fastlane match · crashes \& symbolication}
+
+\end{document}

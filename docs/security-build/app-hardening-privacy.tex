@@ -1,0 +1,172 @@
+% app-hardening-privacy.tex — ATS, pinning (pointer), secrets in the binary,
+% jailbreak detection limits, App Attest/DeviceCheck, obfuscation, storage
+% recap, logging privacy; permissions (purpose strings, states, the re-ask
+% trap), ATT/IDFA, privacy manifest, nutrition labels.
+% Sources (checked 2026-10-07):
+%   developer.apple.com/documentation/security/preventing-insecure-network-connections (ATS:
+%     TLS 1.2+, PFS via ECDHE, SHA-2 ≥ 256, RSA ≥ 2048 / ECC ≥ 256; NSAllowsArbitraryLoads and other
+%     exceptions need App Review justification)
+%   /devicecheck/dcdevice (two per-device bits) · /adsupport/asidentifiermanager/advertisingidentifier
+%     (all zeros unless ATT authorized) · /bundleresources/describing-use-of-required-reason-api
+%     (fingerprinting banned regardless of tracking permission; required since 1 May 2024) ·
+%     /os/oslogprivacy (redaction, hashed masks)
+%   Not in those sources, marked \unverified: the UserDefaults reason code CA92.1; the
+%     strings-private / scalars-public default split.
+% @labels: area=security-build kind=concept platform=ios topic=security,platform-apis discussion=249
+% @tags: app-transport-security, certificate-pinning, jailbreak-detection, app-attest, devicecheck, oslog-privacy, purpose-string, permission-primer, app-tracking-transparency, idfa, privacy-manifest, required-reason-api
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={let,var,func,switch,case,default,import,in,true,false,nil,
+    unknown},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  stt/.style={box, font=\scriptsize, minimum height=6mm, minimum width=14mm,
+              inner sep=2pt},
+}
+
+\begin{document}
+
+\sheettitle{App hardening \& privacy}{security · folio}
+
+\oneliner{\textbf{The device is the attacker's}: everything in the
+\texttt{.ipa} is readable and every client check is hookable — so secrets and
+real decisions live on the \textbf{server}, and the client only
+\emph{proves} things (TLS, App Attest). Privacy is the mirror image: you get
+\textbf{one} system prompt per permission, and must \textbf{declare} what you
+touch (purpose strings, privacy manifest, nutrition label).}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Hardening}
+\begin{itemize}
+  \item \textbf{ATS}: \texttt{URLSession} requires HTTPS, TLS 1.2+, forward
+        secrecy, SHA-256 certs. Exceptions in \texttt{Info.plist}
+        \texttt{NSAppTransportSecurity}: per-domain
+        \texttt{NSExceptionDomains} (prefer), \texttt{NSAllowsLocalNetworking};
+        blanket \texttt{NSAllowsArbitraryLoads} needs an App Review
+        justification.
+  \item \textbf{Pinning}: ATS trusts every CA on the device (user/MDM CAs
+        too); pin the \textbf{SPKI hash} + a \textbf{backup pin}
+        (\texttt{NSPinnedDomains} or the trust challenge) — see
+        certificate-pinning-2026.
+  \item \textbf{No secrets in the binary}: \texttt{strings}, class-dump,
+        Hopper read plists and literals; an XOR'd key is plaintext in memory
+        at use (Frida). Client keys: low-privilege, scoped, rotatable; real
+        secrets stay behind your backend.
+  \item \textbf{Jailbreak detection} (Cydia paths, \texttt{fork()},
+        injected dylibs) runs on the attacker's device $\Rightarrow$ hookable.
+        A risk \emph{signal}, never a boundary. Same for obfuscation and
+        \texttt{PT\_DENY\_ATTACH}: they buy time, not safety.
+  \item \textbf{App Attest} (\texttt{DCAppAttestService}): SE key
+        $\to$ \texttt{attestKey} (Apple-signed: genuine app, real device)
+        $\to$ \texttt{generateAssertion} per sensitive request; the
+        \textbf{server} verifies. \textbf{DeviceCheck}
+        (\texttt{DCDevice}): 2 bits per device per developer, survive
+        reinstall — ``free trial used?'', not integrity.
+  \item \textbf{Storage recap}: secrets $\to$ Keychain; files $\to$ Data
+        Protection; never \texttt{UserDefaults}; pasteboard
+        \texttt{.localOnly} + \texttt{.expirationDate}; blur the app-switcher
+        snapshot.
+  \item \textbf{Logging}: \texttt{Logger}/\texttt{os\_log} redact
+        \textbf{dynamic strings} as \texttt{<private>} by default (scalars are
+        public)\unverified; opt in per value with \texttt{privacy: .public}. Never
+        \texttt{print()} a token.
+\end{itemize}
+
+\section{Privacy}
+\begin{itemize}
+  \item \textbf{Purpose string} per protected API
+        (\texttt{NSCameraUsageDescription},
+        \texttt{NSLocationWhenInUseUsageDescription}, …): missing $\Rightarrow$
+        \textbf{crash} on first access. Specific and honest.
+  \item Read status first (\texttt{authorizationStatus}); \textbf{ask in
+        context}, after your own primer, since the system prompt is one-shot.
+  \item \textbf{ATT}: \texttt{ATTrackingManager.requestTrackingAuthorization}
+        (+ \texttt{NSUserTrackingUsageDescription}, app active). Not
+        authorized $\Rightarrow$ IDFA is all zeros. ``Tracking'' = linking
+        your data with \emph{other companies'} for ads/brokers.
+        Fingerprinting is banned either way.
+  \item \textbf{Privacy manifest} \texttt{PrivacyInfo.xcprivacy} (app
+        \emph{and} each SDK): \texttt{NSPrivacyTracking},
+        \texttt{NSPrivacyTrackingDomains} (blocked without ATT consent),
+        \texttt{NSPrivacyCollectedDataTypes},
+        \texttt{NSPrivacyAccessedAPITypes} + reason codes.
+        \textbf{Required-reason APIs}: \texttt{UserDefaults}
+        (\texttt{CA92.1}\unverified), file timestamps, boot time, disk space, active
+        keyboards. Listed SDKs must ship a manifest + signature.
+  \item \textbf{Nutrition label} (App Store Connect): data collected,
+        linked to identity, used to track — \emph{including your SDKs'}.
+\end{itemize}
+
+\columnbreak
+
+\section{One prompt, then Settings}
+\begin{tikzpicture}[sheet]
+  \node[stt, draw=sheetGrey, fill=black!4] (pr) at (0,2.3) {your primer};
+  \node[stt] (nd) at (0,1.1) {\texttt{notDetermined}};
+  \node[stt, draw=sheetGreen, fill=sheetGreen!12] (au) at (3.4,2.3)
+       {\texttt{authorized}};
+  \node[lbl, text=sheetGreen, anchor=south] at (3.4,2.63)
+       {(or \texttt{limited}, \texttt{provisional})};
+  \node[stt, draw=sheetRed, fill=sheetRed!10] (de) at (3.4,-0.1) {\texttt{denied}};
+  \node[stt, draw=sheetGrey, fill=black!8] (re) at (0,-0.1) {\texttt{restricted}};
+  \node[lbl, below=1pt of re, align=center] {MDM / Screen Time:\\user can't change};
+  \node[stt, draw=sheetBlue, fill=sheetBlue!6] (st) at (6.3,1.1) {Settings app};
+  \draw[flow] (pr) -- node[lbl, left]{``Continue''} (nd);
+  \draw[hot] (nd) -- node[lbl, sloped, above]{system prompt, \textbf{once}} (au);
+  \draw[hot] (nd) -- (de);
+  \draw[flow, sheetRed] (de.south west) .. controls +(-0.1,-0.75) and +(0.1,-0.75) ..
+       node[lbl, text=sheetRed, below]{request again: no UI, still denied} (de.south east);
+  \draw[flow, sheetBlue] (de.east) -- node[lbl, below right, pos=0.45]
+       {\texttt{openSettingsURLString}} (st.south west);
+  \draw[flow, sheetBlue] (st.north west) -- node[lbl, above right, pos=0.55]
+       {user flips it} (au.east);
+\end{tikzpicture}
+
+\section{Example — log safely, branch on status}
+\begin{lstlisting}[language=SwiftSheet]
+let log = Logger(subsystem: "com.x.app", category: "auth")
+log.info("login \(email)")                 // shows <private>
+log.info("screen \(name, privacy: .public)")  // explicit opt-in
+log.info("user \(uid, privacy: .private(mask: .hash))")
+
+switch AVCaptureDevice.authorizationStatus(for: .video) {
+case .notDetermined:                    // primer first,
+  showPrimer { requestCameraAccess() }  // then the ONE prompt
+case .denied:     openSettings()        // can't re-ask
+case .restricted: explainUnavailable()  // user can't change
+case .authorized: startCamera()
+@unknown default: break
+}
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``Re-ask after Don't Allow'' — impossible; the request returns
+        \texttt{denied} silently. Explain + deep link to Settings.}
+  \trap{Camera permission $\neq$ ATT: using data in-app is not ``tracking''.}
+  \trap{Jailbreak check or \texttt{evaluatePolicy} as the gate — both are
+        Booleans on a hostile device.}
+  \trap{``Our API key is obfuscated'' — still public; scope and rotate it.}
+  \trap{\texttt{NSAllowsArbitraryLoads} to fix one HTTP host — use a
+        per-domain exception.}
+  \trap{\texttt{UserDefaults} needs a required-reason entry — even in a
+        plain app.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Readable, hookable, declared.''} Everything shipped is readable;
+every check is hookable; every access is declared. Trust $\to$ server +
+attestation. Permissions: \textbf{primer $\to$ one prompt $\to$ Settings}.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Keychain \& Secure Enclave · networking (SPKI pinning) · OWASP Mobile Top 10 · SKAdNetwork / AdAttributionKit · notifications (provisional)}
+
+\end{document}
