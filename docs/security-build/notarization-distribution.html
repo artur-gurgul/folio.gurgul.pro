@@ -1,0 +1,83 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Notarization &amp; distribution channels — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/security-build/notarization-distribution.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">240</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area current" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Notarization &amp; distribution channels</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">security-build · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> The <strong>channel</strong> decides who may install and who vouches: App Store, TestFlight,
+Custom and Unlisted apps go through <strong>App Review</strong> and are <strong>re-signed by Apple</strong>; Ad Hoc
+and Enterprise run on <strong>your</strong> signature + profile; a Mac app outside the store is signed
+with <strong>Developer ID</strong>, uses the <strong>hardened runtime</strong> and is <strong>notarized</strong> — an
+automated malware + signing scan whose <strong>ticket</strong> Gatekeeper checks at first launch.
+“Notarization” for <em>iOS</em> (EU, via alternative marketplaces or the web) is a different thing: a
+baseline App Review.</p>
+<p class="sheet-tools"><a class="sheet-download" href="notarization-distribution.pdf" download>Download PDF</a> <a href="notarization-distribution.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/security-build/notarization-distribution.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="notarization-distribution-fig1.svg" width="624" height="93" class="wide" alt="Notarization &amp; distribution channels — figure 1" loading="lazy"></figure>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>Channel</strong></th><th><strong>Signing</strong></th><th><strong>Who can install</strong></th><th><strong>Review</strong></th><th><strong>Know this</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>App Store</td><td>Apple Distribution <span class="math">→</span> Apple re-signs</td><td>public</td><td>App Review</td><td>store builds unaffected by your cert expiring</td></tr>
+<tr><td>TestFlight</td><td>same build + profile</td><td>internal / external testers</td><td>Beta App Review (external)</td><td>the <em>same</em> <code>.ipa</code> is promoted to the store</td></tr>
+<tr><td>Ad Hoc</td><td>Apple Distribution + ad hoc profile</td><td>registered UDIDs only</td><td>none</td><td><strong>100 devices per product family per membership year</strong>; disabling frees no slot — reset only at renewal</td></tr>
+<tr><td>Enterprise / In-House</td><td>In-House cert + profile</td><td>own employees only (MDM)</td><td>none</td><td>Enterprise Program $299/yr, 100+ employees; customer use breaks the agreement; revoked/expired cert <span class="math">→</span> <strong>every install stops launching</strong></td></tr>
+<tr><td>Custom app</td><td>Apple Distribution, App Store record set <em>Private</em></td><td>named orgs via Apple Business / School Manager</td><td>App Review</td><td>Apple’s preferred path for internal apps; distribution method fixed once approved</td></tr>
+<tr><td>Unlisted app</td><td>App Store record + request</td><td>anyone with the link</td><td>App Review</td><td>not in search/charts; also assignable via ABM/ASM</td></tr>
+<tr><td>Developer ID (macOS)</td><td>Developer ID Application / Installer</td><td>anyone who downloads</td><td>notarization (automated)</td><td>expired cert: signed + timestamped builds keep running; <strong>revoked</strong>: no new installs</td></tr>
+<tr><td>Mac App Store</td><td>Mac App Distribution + Mac Installer Distribution</td><td>public</td><td>App Review</td><td>App Sandbox required</td></tr>
+<tr><td>EU alt. marketplace / Web Distribution</td><td>Apple encrypts + signs after notarization</td><td>EU users, iOS 17.4+ (web: 17.5+)</td><td>iOS Notarization (guideline subset, automated + human)</td><td>installed only from an authorised marketplace or your registered domain</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">How macOS notarization works</span></h3>
+<ul>
+<li><strong>Requirements</strong>: every executable signed with <strong>Developer ID</strong> (not  Development/Distribution/ad hoc) + <strong>hardened runtime</strong> + <strong>secure
+ timestamp</strong>; no <code>get-task-allow</code>; SDK <span class="math">≥</span> 10.9; ASCII-XML entitlements.  <strong>Mandatory</strong> since macOS 10.15 (software built after 1 June 2019).</li>
+<li><strong>Hardened runtime</strong> blocks JIT, <code>DYLD_*</code> env vars, foreign dylibs, debugger  attach — each re-enabled only by a <code>com.apple.security.cs.*</code> entitlement  (<code>allow-jit</code>, <code>disable-library-validation</code>…).</li>
+<li><strong>What is scanned</strong>: malicious content + code-signing problems; an audit trail per  signing key is kept.</li>
+<li><strong>Tools</strong>: <code>notarytool</code> (Xcode 13+). Apple stopped accepting <code>altool</code> and  Xcode 13- uploads on <strong>1 Nov 2023</strong>. Auth: keychain profile (Apple ID +  app-specific password + Team ID) or an App Store Connect API key (<code>--key --key-id
+ --issuer</code>).</li>
+<li><strong>Packaging</strong>: notarize the thing you ship; a <code>.zip</code> can’t be stapled (staple the  app, then re-zip). DMG: sign the app, build the DMG, sign the DMG, notarize + staple the  DMG. Installer: <code>pkgbuild</code> (component) / <code>productbuild</code> (product archive), signed  with <strong>Developer ID Installer</strong>; custom installers = two rounds (payload, then  installer).</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">iOS outside the App Store — EU (and Japan)</span></h3>
+<ul>
+<li>Reviewed under the <strong>Notarization Review Guidelines</strong> only (security, privacy,  device integrity) <span class="math">→</span> alternative channels only; full App Review <span class="math">→</span> both.</li>
+<li>Apple <strong>encrypts and signs</strong> every alternatively distributed app; install checks  for tampering and an authorised source; known malware <span class="math">→</span> won’t launch, installs blocked.</li>
+<li>Marketplaces need Apple’s authorisation (USD 1 M letter of credit). Japan: iOS  Notarization too.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<h3 class="sheet-hd">“Sign inside-out with a timestamp and the runtime, notarize the outermost thing,
+staple what you ship.”</h3>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — Developer ID release of a DMG</span></h3>
+<pre class="sheet-code"><code class="hljs language-bash">ID=<span class="hljs-string">&quot;Developer ID Application: Alice (ABCDE12345)&quot;</span>
+codesign -s <span class="hljs-string">&quot;<span class="hljs-variable">$ID</span>&quot;</span> -o runtime --timestamp -f App.app   <span class="hljs-comment"># after nested code</span>
+hdiutil create -volname App -srcfolder App.app -ov -format UDZO App.dmg
+codesign -s <span class="hljs-string">&quot;<span class="hljs-variable">$ID</span>&quot;</span> --timestamp App.dmg
+xcrun notarytool store-credentials AC --apple-id alice@example.com \
+      --team-id ABCDE12345            <span class="hljs-comment"># prompts for an app-specific password</span>
+xcrun notarytool submit App.dmg --keychain-profile AC --<span class="hljs-built_in">wait</span>
+xcrun notarytool <span class="hljs-built_in">log</span> &lt;submission-id&gt; --keychain-profile AC  <span class="hljs-comment"># if Invalid</span>
+xcrun stapler staple App.dmg &amp;&amp; xcrun stapler validate App.dmg
+spctl -a -vvv -t <span class="hljs-built_in">exec</span> App.app     <span class="hljs-comment"># accepted, source=Notarized Developer ID</span>
+productbuild --component App.app /Applications \
+      --sign <span class="hljs-string">&quot;Developer ID Installer: Alice (ABCDE12345)&quot;</span> App.pkg</code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">Certificate facts that decide channels</span></h3>
+<ul>
+<li>One certificate <em>of each distribution type</em> per team — except Developer ID; only  the Account Holder or an Admin can create distribution certificates.</li>
+<li>Developer ID <strong>Application</strong> expired: existing builds still install and run;  <strong>Installer</strong> expired: pkgs install only if timestamped; <strong>revoked</strong>: no installs.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap"><strong>Notarized <span class="math">≠</span> reviewed</strong>: macOS notarization is automated malware/signing  scanning; App Review is a different process.</li>
+<li class="trap">Signing a DMG with <em>Developer ID Installer</em>, or a pkg with <em>Application</em> — each  container has its own certificate type.</li>
+<li class="trap"><code>codesign --deep</code> “fixes” the notary’s nested-code complaint but stamps the app’s  entitlements on every helper — sign each item.</li>
+<li class="trap">Missing <code>--timestamp</code>: the notary rejects it (“does not include a secure  timestamp”); for a pkg the timestamp is what keeps it installable after the  Installer cert expires.</li>
+<li class="trap">Enterprise cert for customers/betas — revoked <span class="math">→</span> every copy dies; use Custom apps.</li>
+</ul>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> code signing &amp; CI/CD (profiles, TestFlight) ·
+code signing internals (cdhash) · signing troubleshooting · macOS security architecture
+(Gatekeeper) · fastlane</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=security-build" title="area">security-build</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=process" title="kind">process</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=security" title="topic">security</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=build" title="topic">build</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=tooling" title="topic">tooling</a></li><li class="sheet-tag"><a href="/folios.html?tag=notarization">notarization</a></li><li class="sheet-tag"><a href="/folios.html?tag=notarytool">notarytool</a></li><li class="sheet-tag"><a href="/folios.html?tag=stapler">stapler</a></li><li class="sheet-tag"><a href="/folios.html?tag=developer-id">developer-id</a></li><li class="sheet-tag"><a href="/folios.html?tag=hardened-runtime">hardened-runtime</a></li><li class="sheet-tag"><a href="/folios.html?tag=gatekeeper">gatekeeper</a></li><li class="sheet-tag"><a href="/folios.html?tag=ad-hoc-distribution">ad-hoc-distribution</a></li><li class="sheet-tag"><a href="/folios.html?tag=enterprise-program">enterprise-program</a></li><li class="sheet-tag"><a href="/folios.html?tag=custom-apps">custom-apps</a></li><li class="sheet-tag"><a href="/folios.html?tag=alternative-app-marketplace">alternative-app-marketplace</a></li><li class="sheet-tag"><a href="/folios.html?tag=pkgbuild">pkgbuild</a></li><li class="sheet-tag"><a href="/folios.html?tag=dmg">dmg</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=security-build%2Fnotarization-distribution.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/256">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

@@ -1,0 +1,181 @@
+% linking-and-launch-time.tex — static vs dynamic linking, the launch path, build configs.
+% Sources (checked 2026-10-07):
+%   developer.apple.com/documentation/xcode/reducing-your-app-s-launch-time (launch closure; system
+%     frameworks share memory; static initialisers = C++ ctors, +load, constructor attribute;
+%     launch metric = tap to first frame) · /configuring-your-project-to-use-mergeable-libraries
+%     (Xcode 15; MERGEABLE_LIBRARY, MERGED_BINARY_TYPE; dynamic in debug, merged in release)
+%   /uikit/about-the-app-launch-sequence (main → UIApplicationMain → will/didFinish → scene
+%     connect; prewarming loads the libraries, then suspends before app code)
+%   /xcode/addressing-watchdog-terminations (0x8badf00d, scene-create; no fixed limit published)
+%   /metrickit/timetofirstdrawmetric (iOS 27) · MXAppLaunchMetric.histogrammedTimeToFirstDraw
+%     (deprecated iOS 27.2)
+%   /xcode/configuring-the-build-settings-of-a-target (precedence list; xcodebuild args highest)
+%   /xcode/adding-a-build-configuration-file-to-your-project ($(inherited), #include)
+%   /xcode/creating-a-multi-platform-binary-framework-bundle (no lipo of device + Simulator;
+%     Build Libraries for Distribution = library evolution + module interface)
+%   WWDC19 session 423 (first frame within 400 ms) · WWDC22 session 110362 (chained fixups;
+%     static-library members with only a category are not loaded)
+%   dyld source, DyldProcessConfig.cpp (parses DYLD_PRINT_APIS etc., not DYLD_PRINT_STATISTICS)
+%   Not confirmed, marked \unverified: the @executable_path/Frameworks default, the scheme's
+%     default configurations, App Store rejecting a static framework that is embedded, -ObjC.
+% @labels: area=security-build kind=concept platform=apple topic=build,performance discussion=253
+% @tags: static-linking, dynamic-framework, dyld, pre-main, cold-launch, mergeable-libraries, xcframework, rpath, embed-and-sign, xcconfig, watchdog, app-launch-instrument
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,import,
+    return,self,nil,true,false,some,await,async,Task,static,lazy},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+\lstdefinestyle{plain}{language={}, morecomment=[l]{//}, commentstyle=\color{tangoComment}\itshape}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  bundle/.style={draw=sheetGrey, dashed, rounded corners=2pt},
+  code/.style={cell, font=\ttfamily\tiny, minimum width=22mm, minimum height=4.2mm, fill=sheetBlue!12, draw=sheetBlue},
+  dyn/.style={cell, font=\ttfamily\tiny, minimum width=22mm, minimum height=4.2mm, fill=sheetOrange!15, draw=sheetOrange},
+  seg/.style={draw=white, thick, minimum height=9mm, font=\tiny, align=center, inner sep=1pt, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Linking \& launch time}{build · folio}
+
+\oneliner{\textbf{Static} code is copied into your binary at link time (no load cost,
+but one copy per binary); \textbf{dynamic} code stays a separate Mach-O that \textbf{dyld} maps,
+fixes up and initialises at \emph{every} launch. Launch = \textbf{pre-main} (dyld + runtime
+init) + \textbf{post-main} (UIKit + your \texttt{didFinishLaunching} → first frame); aim for
+first frame in \textbf{≤ 400 ms}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── static vs dynamic bundle layout ──
+  \node[font=\bfseries\scriptsize] at (1.3,3.3) {static};
+  \draw[bundle] (0,0.2) rectangle (2.6,3.05); \node[lbl, anchor=north west] at (0,3.05) {App.app/};
+  \node[code, fill=sheetBlue!6, minimum height=16mm, minimum width=23mm] at (1.3,1.75) {};
+  \node[lbl, anchor=north] at (1.3,2.55) {\texttt{App} (one Mach-O)};
+  \node[code] at (1.3,2.0) {your code};
+  \node[code] at (1.3,1.55) {LibA.o};
+  \node[code] at (1.3,1.1) {LibB.o};
+  \node[lbl, text=sheetGreen!50!black] at (1.3,0.5) {no dyld work · dead-strip\\bigger link, 1 copy/binary};
+  \node[font=\bfseries\scriptsize] at (4.2,3.3) {dynamic};
+  \draw[bundle] (2.9,0.2) rectangle (5.5,3.05); \node[lbl, anchor=north west] at (2.9,3.05) {App.app/};
+  \node[code] (dc) at (4.2,2.35) {App: your code};
+  \node[lbl, anchor=west] at (2.95,1.85) {Frameworks/};
+  \node[dyn] (fa) at (4.2,1.45) {LibA.framework};
+  \node[dyn] (fb) at (4.2,1.0) {LibB.framework};
+  \node[lbl, text=sheetRed] at (4.2,0.5) {dyld: \texttt{@rpath}, map · fixup ·\\init \emph{per launch}; shared by exts};
+  \draw[hot] (fa.east) to[bend right=50] (dc.east);
+  % ── launch timeline ──
+  \def\y{1.9}
+  \node[seg, fill=black!25, minimum width=6mm] (s0) at (6.0,\y) {exec};
+  \node[seg, fill=sheetOrange!40, minimum width=19mm] (s1) at (s0.east) {dyld: load\\dylibs, rebase\\+ bind (fixups)};
+  \node[seg, fill=sheetOrange!25, minimum width=17mm] (s2) at (s1.east) {ObjC setup;\\\texttt{+load}, C++\\static ctors};
+  \node[seg, fill=sheetBlue!30, minimum width=13mm] (s3) at (s2.east) {\texttt{main} →\\\texttt{UIApplication-}\\\texttt{Main}};
+  \node[seg, fill=sheetBlue!20, minimum width=19mm] (s4) at (s3.east) {UIKit init;\\\texttt{willFinish}/\\\texttt{didFinishLaunching}};
+  \node[seg, fill=sheetGreen!30, minimum width=16mm] (s5) at (s4.east) {scene connect,\\root VC/view,\\\textbf{first frame}};
+  \draw[decorate, decoration={brace, amplitude=3pt}, thick, sheetOrange] (s0.north west) -- node[lbl, above=3pt, text=sheetOrange]{\textbf{pre-main} — fewer dylibs, no \texttt{+load}, no static init work} (s2.north east);
+  \draw[decorate, decoration={brace, amplitude=3pt}, thick, sheetBlue] (s3.north west) -- node[lbl, above=3pt, text=sheetBlue]{\textbf{post-main} — do the minimum, defer the rest} (s5.north east);
+  \draw[flow] (s0.south west) ++(0,-0.15) -- ($(s5.south east)+(0.1,-0.15)$) node[lbl, right]{t};
+  \node[lbl, anchor=north east, text=sheetGreen!50!black] at ($(s5.south east)+(0,-0.25)$) {\textbf{≤ 400 ms} target to first frame};
+  \node[lbl, anchor=north east, text=sheetRed] at ($(s5.south east)+(0,-0.55)$) {too slow: watchdog \texttt{0x8badf00d}, \emph{scene-create}};
+  \node[lbl, anchor=north west, align=left] at ($(s0.south west)+(0,-0.25)$) {\textbf{cold}: not in memory — full path (measure this)\\\textbf{warm}: process gone, pages still cached\\\textbf{resume}: suspended process, no launch at all};
+  \node[lbl, anchor=west, align=left] at (6.0,3.45) {\textbf{Measure:} Instruments \emph{App Launch} (phases + stacks) · Organizer Launch Time};
+  \node[lbl, anchor=west, align=left] at (6.0,3.2) {MetricKit \texttt{TimeToFirstDrawMetric} (iOS 27; \texttt{MXAppLaunchMetric} deprecated 27.2)};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Linking}
+\begin{itemize}
+  \item \textbf{\texttt{.a}} = archive of \texttt{.o}, static, no resources.
+        \textbf{\texttt{.framework}} = bundle (binary + headers + modulemap + resources),
+        static \emph{or} dynamic. \textbf{\texttt{.xcframework}} = per-platform slices
+        (\texttt{ios-arm64}, \texttt{ios-arm64\_x86\_64-simulator}, …): a fat
+        \texttt{lipo} binary cannot hold device-arm64 \emph{and} simulator-arm64.
+  \item \textbf{Dynamic} → \emph{Embed \& Sign} (copied to \texttt{App.app/Frameworks},
+        found via \texttt{@rpath} = \texttt{@executable\_path/Frameworks}\unverified).
+        \textbf{Static} and system frameworks → \emph{Do Not Embed}.
+  \item System frameworks sit in the \textbf{dyld shared cache} (pre-linked); \emph{your}
+        dylibs pay full load + fixup cost. dyld3/4 cache a launch closure and use chained
+        fixups (iOS 13.4+ targets), but many dylibs still hurt.
+  \item \textbf{Mergeable libraries} (Xcode 15): framework built with
+        \texttt{MERGEABLE\_LIBRARY}, app with \texttt{MERGED\_BINARY\_TYPE} — dynamic
+        in Debug (fast iteration), \emph{merged} into the app binary in Release.
+  \item Swift binary frameworks need\newline\texttt{BUILD\_LIBRARY\_FOR\_DISTRIBUTION = YES}
+        (\texttt{.swiftinterface}, module stability) or only the exact compiler can import them.
+\end{itemize}
+
+\section{Launch fixes}
+\begin{itemize}
+  \item Fewer dylibs (static/merge); no \texttt{+load} (use \texttt{+initialize} or
+        explicit init); Swift globals/\texttt{static let} are already lazy — but touching
+        one in \texttt{didFinishLaunching} runs its init right there.
+  \item Build only the first screen; lazy DI factories; no sync disk/network on main;
+        defer SDKs to \emph{after} the first frame, heavy work off the main thread.
+  \item Static \texttt{LaunchScreen} is drawn by the system — free; no splash delays.
+  \item Profile \textbf{Release}, \textbf{cold}, on a low-end device.
+\end{itemize}
+
+\section{Build settings — who wins}
+\begin{itemize}
+  \item \textbf{Target} = one product; \textbf{configuration} (Debug/Release) = a named
+        set of setting values; \textbf{scheme} = which targets + which configuration per
+        action (Run/Test→Debug, Profile/Archive→Release by default\unverified). Optimization level
+        is a \emph{configuration} setting — ``edit the scheme'' is the wrong answer.
+  \item Precedence, highest first: \texttt{xcodebuild SETTING=v} → target (pbxproj) →
+        target \texttt{.xcconfig} → project (pbxproj) → project \texttt{.xcconfig} → SDK
+        default. Assigning \emph{replaces}; write \texttt{\$(inherited)} to append.
+  \item Swift \texttt{\#if DEBUG} reads\newline\texttt{SWIFT\_ACTIVE\_COMPILATION\_CONDITIONS};
+        ObjC reads \texttt{GCC\_PREPROCESSOR\_DEFINITIONS} — define it in both.
+\end{itemize}
+
+\columnbreak
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+func application(_ a: UIApplication, didFinishLaunchingWithOptions
+    o: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+  CrashReporter.start()      // only what must exist before frame 1
+  return true                // root UI built by the scene delegate
+}
+// after first frame (root view .task / first viewDidAppear):
+Task.detached(priority: .utility) {
+  Analytics.configure(); await ImageCache.warm() }  // off main
+\end{lstlisting}
+\begin{lstlisting}[style=plain]
+// Release.xcconfig
+#include "Base.xcconfig"
+OTHER_LDFLAGS = $(inherited) -ObjC    // keep Pods'/parent flags
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) RELEASE
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{Static + Embed \& Sign} = the code ships twice (inside the binary and in
+        \texttt{Frameworks/}); App Store validation may reject it\unverified.}
+  \trap{Same static lib linked into a dynamic framework \emph{and} the app → two copies;
+        the ObjC runtime warns of a duplicate class, and singletons split.}
+  \trap{\emph{``Library not loaded: @rpath/…''} = linked but not embedded.}
+  \trap{The linker loads a static-lib member only for a needed symbol: a category-only
+        \texttt{.o} vanishes (unrecognized selector); \texttt{-ObjC}\unverified{} loads it.}
+  \trap{\texttt{DispatchQueue.main.async} from \texttt{didFinishLaunching} still runs on
+        main — it only moves work past the first frame, not off the thread.}
+  \trap{\texttt{DYLD\_PRINT\_STATISTICS}: dyld4 no longer reads it; use the App Launch
+        instrument. \emph{Prewarming} may create the process and load its dylibs long
+        before the tap, so don't time launch from inside \texttt{main}.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Static = copy, dynamic = dyld; pre-main is dylibs + initialisers; post-main is
+your code; first frame in 400 ms, or the watchdog's \texttt{8badf00d}.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} modularization \& SPM ·
+crashes \& symbolication (\texttt{0x8badf00d}) · app thinning · Instruments · MetricKit}
+
+\end{document}

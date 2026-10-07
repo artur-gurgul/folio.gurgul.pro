@@ -1,0 +1,81 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Crashes &amp; symbolication — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/security-build/crashes-symbolication.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">240</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area current" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Crashes &amp; symbolication</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">build · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A crash report says <strong>what</strong> killed the process (<em>Exception Type +
+Termination Reason</em>), <strong>where</strong> (the crashed thread’s backtrace of
+<em>image + offset</em>), and <strong>which build</strong> (the <em>UUID</em> of every binary image).
+Symbolication turns offsets into <code>function + file:line</code> using the <strong>dSYM whose
+UUID matches</strong> — no matching dSYM, no names, ever.</p>
+<p class="sheet-tools"><a class="sheet-download" href="crashes-symbolication.pdf" download>Download PDF</a> <a href="crashes-symbolication.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/security-build/crashes-symbolication.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="crashes-symbolication-fig1.svg" width="543" height="149" class="wide" alt="Crashes &amp; symbolication — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Exception type → cause → first move</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>Type (signal)</strong></th><th><strong>Meaning</strong></th><th><strong>First move</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>EXC_BAD_ACCESS</code> (SIGSEGV / SIGBUS)</td><td>bad pointer: freed object, <code>unowned</code>, unsafe pointer; <code>KERN_INVALID_ADDRESS</code></td><td>Zombies, ASan</td></tr>
+<tr><td><code>EXC_BREAKPOINT</code> (SIGTRAP)</td><td>Swift trap: <code>!</code> on nil, index out of range, <code>fatalError</code>, <code>precondition</code>, <code>as!</code>, overflow</td><td>top app frame; the <em>Fatal error</em> msg</td></tr>
+<tr><td><code>EXC_CRASH</code> (SIGABRT)</td><td><code>abort()</code>: uncaught <code>NSException</code>, C <code>assert</code></td><td><em>Last Exception Backtrace</em></td></tr>
+<tr><td><code>EXC_CRASH</code> (SIGKILL) <code>0x8badf00d</code></td><td>watchdog: main thread blocked at launch / resume / suspend</td><td>main stack; I/O off main</td></tr>
+<tr><td><code>0xdead10cc</code></td><td>held a file or SQLite lock while being suspended</td><td><code>beginBackgroundTask</code>, release first</td></tr>
+<tr><td>no crash log</td><td><strong>jetsam</strong> (memory limit)</td><td>iOS 27 MetricKit <code>.memoryException</code></td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>How it works</h2>
+<ul>
+<li>Reports are JSON <code>.ips</code> (iOS 15+). Always read in order: exception type →  termination reason → crashed thread (main?) → first frame in <em>your</em> image.</li>
+<li><strong>dSYM</strong> = DWARF debug info split out of the stripped binary  (<code>DEBUG_INFORMATION_FORMAT = dwarf-with-dsym</code>); the archive keeps it.  Find one by UUID: <code>mdfind &quot;com_apple_xcode_dsym_uuids == &lt;UUID&gt;&quot;</code>.</li>
+<li><strong>Bitcode</strong> is gone (deprecated in Xcode 14): the App Store no longer  recompiles, so the <em>archive’s</em> dSYM is the shipped one. Old bitcode builds  needed <em>Download dSYMs</em> from App Store Connect.</li>
+<li>Where crashes arrive: Xcode <strong>Organizer</strong> (opt-in users, delayed,  auto-symbolicated if the dSYM is known) · Crashlytics/Sentry (upload dSYMs from a  build phase or CI) · <strong>MetricKit</strong>.</li>
+<li><strong>MetricKit</strong> (iOS 27): one <code>MetricManager</code> instance;  <code>diagnosticReports</code> is an <code>AsyncSequence</code> of <code>DiagnosticReport</code>  (<code>Codable</code>); <code>result</code>: <code>.crash</code> · <code>.hang</code> ·  <code>.cpuException</code> · <code>.diskWriteException</code> · <code>.appLaunch</code> ·  <code>.memoryException</code> (memory-limit kills). Before: <code>MXMetricManager</code> +  subscriber <code>didReceive(_:)</code> — deprecated in 27.2. Call stacks come  <em>unsymbolicated</em>. Diagnostics arrive immediately (iOS 15+), metrics at most daily.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Reproduce and triage</h2>
+<ul>
+<li>Memory crashes: scheme → Diagnostics → <strong>Zombie Objects</strong> (message to a freed  object), <strong>Address Sanitizer</strong> (use-after-free, overflow),  <strong>Thread Sanitizer</strong> (races; not with ASan), Main Thread Checker.</li>
+<li>Hangs/watchdog: Time Profiler, Hangs instrument. OOM: Allocations, Memory Graph,  downsample images, drop caches on memory warning.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">let</span> metrics <span class="hljs-operator">=</span> <span class="hljs-type">MetricManager</span>()        <span class="hljs-comment">// iOS 27: hold ONE instance</span>
+<span class="hljs-type">Task</span> {
+  <span class="hljs-keyword">for</span> <span class="hljs-keyword">await</span> report <span class="hljs-keyword">in</span> metrics.diagnosticReports { <span class="hljs-comment">// never throws</span>
+    <span class="hljs-keyword">switch</span> report.result {
+    <span class="hljs-keyword">case</span> .crash, .hang, .memoryException:
+      send(report)                 <span class="hljs-comment">// Codable; stacks unsymbolicated</span>
+    <span class="hljs-keyword">default</span>: <span class="hljs-keyword">break</span>
+    }
+  }
+}</code></pre>
+<pre class="sheet-code"><code class="hljs language-plaintext">dwarfdump --uuid MyApp.app/MyApp MyApp.app.dSYM  # equal?</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">Swift traps are <strong>not</strong> SIGABRT: on arm64 they are <code>EXC_BREAKPOINT
+ (SIGTRAP)</code> (<code>EXC_BAD_INSTRUCTION</code>/SIGILL on Intel simulators).</li>
+<li class="trap">“No crash log” <span class="math">≠</span> no crash — jetsam kills leave only a <code>JetsamEvent</code> log.</li>
+<li class="trap"><code>0x8badf00d</code> is not a bug at the top frame: it is where the main thread  <em>was</em> when time ran out.</li>
+<li class="trap">Optimized builds inline code: a frame may show the caller’s line or skip callees.</li>
+<li class="trap">Never trust “I rebuilt the same commit” — different UUID, dSYM useless.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>“What · Where · Which build.”</strong> Type tells the <em>category</em>, the backtrace the <em>place</em>, the UUID the <em>dSYM</em>. <code>8badf00d</code> = too slow, <code>dead10cc</code> = lock on suspend.</p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> linking &amp; launch time ·
+signing &amp; CI (archive keeps dSYMs) · memory management / retain cycles · Instruments · threading</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=security-build" title="area">security-build</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=tooling" title="kind">tooling</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=debugging" title="topic">debugging</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=build" title="topic">build</a></li><li class="sheet-tag"><a href="/folios.html?tag=crash-report">crash-report</a></li><li class="sheet-tag"><a href="/folios.html?tag=symbolication">symbolication</a></li><li class="sheet-tag"><a href="/folios.html?tag=dsym">dsym</a></li><li class="sheet-tag"><a href="/folios.html?tag=atos">atos</a></li><li class="sheet-tag"><a href="/folios.html?tag=dwarfdump">dwarfdump</a></li><li class="sheet-tag"><a href="/folios.html?tag=exc-bad-access">exc-bad-access</a></li><li class="sheet-tag"><a href="/folios.html?tag=exc-breakpoint">exc-breakpoint</a></li><li class="sheet-tag"><a href="/folios.html?tag=sigabrt">sigabrt</a></li><li class="sheet-tag"><a href="/folios.html?tag=watchdog">watchdog</a></li><li class="sheet-tag"><a href="/folios.html?tag=jetsam">jetsam</a></li><li class="sheet-tag"><a href="/folios.html?tag=metrickit">metrickit</a></li><li class="sheet-tag"><a href="/folios.html?tag=mxdiagnosticpayload">mxdiagnosticpayload</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=security-build%2Fcrashes-symbolication.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/251">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

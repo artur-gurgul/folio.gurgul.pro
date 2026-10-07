@@ -1,0 +1,78 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Code signing &amp; iOS CI/CD — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/security-build/signing-and-cicd.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">240</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area current" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Code signing &amp; iOS CI/CD</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">build · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A build runs on a device only if it is <strong>signed with a certificate’s private
+key</strong> and carries a <strong>provisioning profile</strong> that lists that certificate, the
+<strong>App ID</strong>, the <strong>entitlements</strong> and (dev/ad hoc) the <strong>device</strong>. CI breaks
+because the runner has none of that — <strong>fastlane match</strong> + an <strong>App Store Connect
+API key</strong> make signing and upload reproducible and non-interactive.</p>
+<p class="sheet-tools"><a class="sheet-download" href="signing-and-cicd.pdf" download>Download PDF</a> <a href="signing-and-cicd.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/security-build/signing-and-cicd.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="signing-and-cicd-fig1.svg" width="620" height="169" class="wide" alt="Code signing &amp; iOS CI/CD — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Profile types</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>Profile</strong></th><th><strong>Certificate</strong></th><th><strong>Devices</strong></th><th><strong>Use</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>Development</td><td>Apple Development</td><td>listed UDIDs</td><td>run + debug (<code>get-task-allow</code>)</td></tr>
+<tr><td>Ad Hoc</td><td>Apple Distribution</td><td>listed UDIDs</td><td>QA outside TestFlight</td></tr>
+<tr><td>App Store</td><td>Apple Distribution</td><td>none</td><td>TestFlight + App Store</td></tr>
+<tr><td>Enterprise</td><td>In-House (Enterprise Program)</td><td>none</td><td>internal staff only, never public</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>How it works</h2>
+<ul>
+<li>The <strong>profile</strong> picks the channel, not the certificate: one Distribution  cert signs both Ad Hoc and App Store builds.</li>
+<li><strong>Capability flow:</strong> enable it on the App ID → regenerate the profile → add it  to <code>.entitlements</code>. All three must agree.</li>
+<li><strong>Automatic signing</strong> = Xcode creates certs/profiles with a logged-in Apple ID:  fine locally, flaky on CI. <strong>Manual</strong> = named profile + identity: reproducible.</li>
+<li><strong>match</strong> stores certs + profiles in git, S3, Google Cloud or GitLab Secure Files  and installs the same ones on every laptop and runner — <em>encrypted</em> with  <code>MATCH_PASSWORD</code> in git and S3 only; the others rely on bucket access.  <code>readonly: true</code> on CI so it never creates or revokes. iOS types:  <code>development</code>, <code>adhoc</code>, <code>appstore</code>, <code>enterprise</code>.</li>
+<li><strong>ASC API key</strong> = Issuer ID + Key ID + <code>.p8</code> (downloadable once); signs an  ES256 JWT that lives <span class="math">≤</span>20 min, reused until it expires. No password, no 2FA,  role-scoped, revocable; a <em>team</em> key — individual keys cannot reach the  provisioning endpoints. Apple ID auth needs 2FA sessions that expire<span class="unverified">(unverified)</span>.</li>
+<li><strong>Version vs build:</strong> <code>CFBundleShortVersionString</code> (2.4.0, user-facing)  vs <code>CFBundleVersion</code> (1387) — unique and increasing per upload of a  version<span class="unverified">(unverified)</span>.</li>
+<li><strong>Build once, promote the artifact:</strong> the <code>.ipa</code> you tested in TestFlight  is the one you submit; never rebuild for release.</li>
+<li><strong>Caching:</strong> key SPM/Pods caches on <code>Package.resolved</code> /  <code>Podfile.lock</code> + Xcode version — keyed on branch only, they go stale.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<h3 class="sheet-hd">“Key + Cert + Profile = permission to run; match shares them, the API key
+uploads them.”</h3>
+</section>
+<section class="sheet-section">
+<h2>Example — <code>Fastfile</code> (Ruby)</h2>
+<pre class="sheet-code"><code class="hljs language-ruby">lane <span class="hljs-symbol">:beta</span> <span class="hljs-keyword">do</span>
+  setup_ci                        <span class="hljs-comment"># temp unlocked keychain on CI</span>
+  key = app_store_connect_api_key(<span class="hljs-symbol">key_id:</span> <span class="hljs-variable constant_">ENV</span>[<span class="hljs-string">&quot;ASC_KEY_ID&quot;</span>],
+    <span class="hljs-symbol">issuer_id:</span> <span class="hljs-variable constant_">ENV</span>[<span class="hljs-string">&quot;ASC_ISSUER_ID&quot;</span>], <span class="hljs-symbol">key_content:</span> <span class="hljs-variable constant_">ENV</span>[<span class="hljs-string">&quot;ASC_P8&quot;</span>])
+  match(<span class="hljs-symbol">type:</span> <span class="hljs-string">&quot;appstore&quot;</span>, <span class="hljs-symbol">readonly:</span> <span class="hljs-literal">true</span>, <span class="hljs-symbol">api_key:</span> key)
+  run_tests(<span class="hljs-symbol">scheme:</span> <span class="hljs-string">&quot;App&quot;</span>)                         <span class="hljs-comment"># scan</span>
+  increment_build_number(<span class="hljs-symbol">build_number:</span> <span class="hljs-variable constant_">ENV</span>[<span class="hljs-string">&quot;CI_RUN_NUMBER&quot;</span>])
+  build_app(<span class="hljs-symbol">scheme:</span> <span class="hljs-string">&quot;App&quot;</span>, <span class="hljs-symbol">export_method:</span> <span class="hljs-string">&quot;app-store&quot;</span>)  <span class="hljs-comment"># gym</span>
+  upload_symbols_to_crashlytics                    <span class="hljs-comment"># dSYMs</span>
+  upload_to_testflight(<span class="hljs-symbol">api_key:</span> key)               <span class="hljs-comment"># pilot</span>
+<span class="hljs-keyword">end</span></code></pre>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><strong>“Works on my Mac, fails on CI”</strong>: your Keychain has the private key; the  runner doesn’t. A <code>.cer</code> without its private key cannot sign.</li>
+<li class="trap"><code>errSecInternalComponent</code> / “User interaction is not allowed” = locked  keychain or key ACL<span class="unverified">(unverified)</span> → <code>setup_ci</code> or <code>security
+ set-key-partition-list</code>.</li>
+<li class="trap">Automatic signing on CI keeps minting distribution certs until the account  limit<span class="unverified">(unverified)</span>.</li>
+<li class="trap">Capability works in Debug, missing in the App Store build → the distribution  profile was not regenerated after enabling it on the App ID.</li>
+<li class="trap">Duplicate <code>CFBundleVersion</code> → App Store Connect rejects the upload<span class="unverified">(unverified)</span>.</li>
+<li class="trap">Never commit <code>.p12</code>/<code>.p8</code> in plain text or <code>echo</code> a secret in a  job — CI logs are kept.</li>
+<li class="trap">Phased release can be paused, not rolled back; a bad build needs a new build.</li>
+</ul>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> crashes &amp; symbolication (dSYMs) ·
+linking (Embed &amp; Sign) · build configurations / xcconfig · feature flags · Keychain</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=security-build" title="area">security-build</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=process" title="kind">process</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=build" title="topic">build</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=security" title="topic">security</a></li><li class="sheet-tag"><a href="/folios.html?tag=code-signing">code-signing</a></li><li class="sheet-tag"><a href="/folios.html?tag=provisioning-profile">provisioning-profile</a></li><li class="sheet-tag"><a href="/folios.html?tag=signing-certificate">signing-certificate</a></li><li class="sheet-tag"><a href="/folios.html?tag=entitlements">entitlements</a></li><li class="sheet-tag"><a href="/folios.html?tag=codesign">codesign</a></li><li class="sheet-tag"><a href="/folios.html?tag=fastlane">fastlane</a></li><li class="sheet-tag"><a href="/folios.html?tag=fastlane-match">fastlane-match</a></li><li class="sheet-tag"><a href="/folios.html?tag=app-store-connect-api-key">app-store-connect-api-key</a></li><li class="sheet-tag"><a href="/folios.html?tag=testflight">testflight</a></li><li class="sheet-tag"><a href="/folios.html?tag=phased-release">phased-release</a></li><li class="sheet-tag"><a href="/folios.html?tag=ci-cd">ci-cd</a></li><li class="sheet-tag"><a href="/folios.html?tag=cfbundleversion">cfbundleversion</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=security-build%2Fsigning-and-cicd.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/257">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

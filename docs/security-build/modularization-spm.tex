@@ -1,0 +1,180 @@
+% modularization-spm.tex — why/how to modularize an iOS app with local SPM packages.
+% Sources (checked 2026-10-07):
+%   developer.apple.com/documentation/packagedescription — package(url:from:) (up to the next
+%     major) · library(name:type:targets:) (type omitted: SwiftPM chooses) ·
+%     SwiftSetting.unsafeFlags (products become ineligible for other packages) ·
+%     binaryTarget(name:url:checksum:) (SwiftPM 5.3, Apple platforms) · Package.platforms
+%     (minimum versions; a dependency's minimum must be ≤ the top-level package's)
+%   /xcode/bundling-resources-with-a-swift-package (process vs copy; Bundle.module is created
+%     when a target includes resources)
+%   /xcode/build-settings-reference (ENABLE_TESTABILITY: -enable-testing, for debug builds)
+%   Swift Evolution SE-0386 (package access, Swift 5.9) · SE-0272 (compute-checksum; url
+%     artifacts are a .zip) · SE-0303 (plugins run sandboxed, Swift 5.6)
+%   swift-package-manager Sources/PackageGraph/ModulesGraph+Loading.swift (module cycles always
+%     rejected; package-to-package cycles allowed when every root manifest is tools 6.0+)
+%   Not confirmed, marked \unverified: automatic libraries usually linking statically.
+% @labels: area=security-build kind=architecture platform=apple topic=build,architecture discussion=255
+% @tags: swift-package-manager, package-swift, modularization, api-impl-split, composition-root, access-control, package-access-level, bundle-module, binary-target, spm-plugins, package-resolved, incremental-build
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,import,package,
+    public,open,internal,private,fileprivate,return,self,nil,true,false,some},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  mb/.style={box, font=\scriptsize, inner sep=2pt, minimum height=5.5mm, minimum width=19mm},
+  app/.style={mb, draw=sheetBrown, fill=sheetBrown!12, font=\scriptsize\bfseries},
+  api/.style={mb, draw=sheetGreen!70!black, fill=sheetGreen!14, dashed},
+  impl/.style={mb, draw=sheetBlue, fill=sheetBlue!8},
+  core/.style={mb, draw=sheetGrey, fill=black!5},
+  dep/.style={->, thick, draw=sheetGrey},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  acc/.style={draw=sheetGrey, font=\ttfamily\scriptsize, minimum height=5mm, inner sep=2pt, minimum width=15mm},
+}
+
+\begin{document}
+
+\sheettitle{Modularization \& Swift Package Manager}{build · folio}
+
+\oneliner{Cut the app into \textbf{modules} (local SPM packages) along seams that change
+independently; features depend on each other's \textbf{interfaces} only, dependencies point
+\textbf{down}, and a thin \textbf{app target} composes the concrete implementations. The payoff
+is faster incremental builds and \textbf{compiler-enforced} boundaries.}
+
+\noindent\begin{tikzpicture}[sheet, yscale=0.86]
+  % ── module graph ──
+  \node[app, minimum width=44mm] (app) at (3.0,3.3) {App (composition root: DI, routing)};
+  \node[impl] (ai) at (1.0,2.2) {ProfileImpl};
+  \node[impl] (bi) at (5.0,2.2) {CartImpl};
+  \node[api] (aa) at (1.0,1.1) {ProfileAPI};
+  \node[api] (ba) at (5.0,1.1) {CartAPI};
+  \node[core, minimum width=44mm] (core) at (3.0,0.1) {Core / Domain (models, \texttt{Router})};
+  \node[core] (net) at (1.4,-0.9) {Networking};
+  \node[core] (ds) at (4.6,-0.9) {DesignSystem};
+  \draw[dep] (app) -- (ai); \draw[dep] (app) -- (bi);
+  \draw[dep] (ai) -- (aa); \draw[dep] (bi) -- (ba);
+  \draw[hot] (ai) -- node[lbl, pos=0.35, above, sloped]{uses API only} (ba);
+  \draw[dep] (aa) -- (core); \draw[dep] (ba) -- (core);
+  \draw[dep] (core) -- (net); \draw[dep] (core) -- (ds);
+  \draw[->, thick, sheetRed, dashed] (ai.east) -- node[lbl, text=sheetRed, above=1pt, fill=white]{$\times$ Impl→Impl forbidden} (bi.west);
+  \node[lbl, anchor=west, text=sheetBrown] at (6.25,3.3) {only the app\\sees any Impl};
+  \node[lbl, anchor=west, text=sheetGreen!50!black] at (6.25,1.1) {API: tiny, stable,\\rarely rebuilt};
+  \node[lbl, anchor=west] at (6.25,0.1) {small + stable,\\or it rebuilds all};
+  \node[lbl, anchor=west] at (6.25,-0.9) {arrows point\\\textbf{down} only,\\no cycles};
+  % ── rebuild ripple ──
+  \node[font=\bfseries\small, anchor=west] at (8.6,3.55) {Edit \texttt{CartImpl} → what rebuilds?};
+  \node[impl, fill=sheetOrange!20, draw=sheetOrange, minimum width=15mm] (e1) at (9.4,2.75) {CartImpl};
+  \node[app, minimum width=10mm] (e2) at (11.6,2.75) {App};
+  \node[impl, minimum width=15mm, fill=white] (e3) at (13.9,2.75) {ProfileImpl};
+  \draw[hot] (e1) -- node[lbl, above=1pt]{recompile} node[lbl, below=1pt]{+ relink} (e2);
+  \node[lbl, text=sheetGreen!50!black] at (13.9,2.25) {untouched ✓};
+  \node[lbl, anchor=west, align=left] at (8.6,1.85) {Profile imports \texttt{CartAPI}, not \texttt{CartImpl} → no recompile.\\Edit \texttt{CartAPI} instead → Cart + Profile + App all rebuild.};
+  % ── access ladder ──
+  \node[font=\bfseries\small, anchor=west] at (8.6,1.05) {Access across modules (narrow → wide)};
+  \node[acc, fill=black!4, minimum width=11mm, anchor=west] (a1) at (8.6,0.45) {private};
+  \foreach \t/\c [count=\i from 2] in {fileprivate/black!4,internal/sheetBlue!10,package/sheetOrange!15,public/sheetGreen!12,open/sheetGreen!24}{
+    \pgfmathtruncatemacro\j{\i-1}
+    \node[acc, fill=\c, minimum width=11.5mm, anchor=west] (a\i) at (a\j.east) {\t};}
+  \node[lbl, anchor=north] at ($(a1.south)!0.5!(a2.south)$) {scope / file};
+  \node[lbl, anchor=north] at (a3.south) {module\\(default)};
+  \node[lbl, anchor=north] at (a4.south) {same package\\(Swift 5.9)};
+  \node[lbl, anchor=north] at (a5.south) {other modules\\use it};
+  \node[lbl, anchor=north] at (a6.south) {+ subclass /\\override};
+  \node[lbl, anchor=west, align=left, text=sheetBrown] at (8.6,-0.85) {\texttt{public class}: usable, NOT subclassable outside its module.\\\texttt{@testable import} lifts \texttt{internal} (needs\\\texttt{ENABLE\_TESTABILITY}, Debug); never \texttt{private}.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Why:} incremental builds (only a changed module + its dependents recompile),
+        \textbf{enforced boundaries} (\texttt{internal} is the default, so nothing leaks
+        by accident), \textbf{ownership} (a team per package), isolated tests + fast
+        SwiftUI previews, \textbf{reuse} across app, widget, extensions, App Clip.
+  \item \textbf{Layers:} App → Features → Interfaces/Core → Foundation. Acyclic;
+        SPM \emph{rejects} target cycles (package-to-package cycles are allowed from
+        tools 6.0), but does \emph{not} forbid Feature→Feature edges — that rule is
+        policy (review, CI graph lint).
+  \item \textbf{API/Impl split:} \texttt{FeatureAPI} = protocols, routes, DTOs (no heavy
+        deps); \texttt{FeatureImpl} = UI + logic. Others import the API; the app injects
+        the Impl. Cross-feature navigation = a \texttt{Router}/\texttt{Route} enum in Core,
+        resolved by the app.
+  \item \textbf{Package.swift:} first line \texttt{// swift-tools-version:5.9};
+        \textbf{products} = what consumers can import (\texttt{.library}, \texttt{.executable},
+        \texttt{.plugin}); \textbf{targets} = compilation units = modules; package
+        \textbf{dependencies} (which repo/version) \emph{and} per-target dependencies
+        (\texttt{.product(name:package:)}) — you need both.
+  \item \textbf{Versions:} \texttt{from: "1.2.0"} = \texttt{>=1.2.0 <2.0.0};
+        \texttt{.exact}, ranges; commit \texttt{Package.resolved} for apps.
+  \item \textbf{Resources:} \texttt{.process} (optimised: asset catalogs, localisation)
+        or \texttt{.copy} (verbatim). Load via the synthesised \texttt{Bundle.module} —
+        only generated when the target \emph{has} resources.
+  \item \textbf{platforms:} \texttt{[.iOS(.v16)]} is the package's \emph{minimum};
+        it does not set the app's deployment target.
+  \item \textbf{Binary target:} \texttt{.binaryTarget(name:url:checksum:)} (or
+        \texttt{path:}) wraps a prebuilt \texttt{.xcframework}; checksum of the
+        \emph{zip} from \texttt{swift package compute-checksum}.
+  \item \textbf{Plugins:} \emph{build-tool} (runs every build: SwiftGen, protobuf) vs
+        \emph{command} (\texttt{swift package <verb>}: lint, format). Sandboxed.
+\end{itemize}
+
+\section{Example — a feature package}
+\begin{lstlisting}[language=SwiftSheet]
+// swift-tools-version:5.9
+import PackageDescription
+let package = Package(name: "Cart", platforms: [.iOS(.v16)],
+  products: [.library(name: "CartAPI", targets: ["CartAPI"]),
+    .library(name: "CartImpl", targets: ["CartImpl"])],
+  dependencies: [.package(path: "../Core"),
+    .package(url: "https://github.com/apple/swift-log",
+             from: "1.5.0")],
+  targets: [
+    .target(name: "CartAPI"),               // protocols + models
+    .target(name: "CartImpl", dependencies: ["CartAPI",
+      .product(name: "Core", package: "Core"),
+      .product(name: "Logging", package: "swift-log")],
+      resources: [.process("Resources")]),  // -> Bundle.module
+    .testTarget(name: "CartTests", dependencies: ["CartImpl"])])
+\end{lstlisting}
+
+\columnbreak
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{Product $\neq$ target.} Other packages depend on \emph{products}; a target
+        not exposed as a product is private to its package.}
+  \trap{40 modules that import each other's \emph{concrete} Impl = file layout, not a
+        graph: all the overhead, none of the incremental-build win.}
+  \trap{Image blank / \texttt{nil} inside a package → loaded from \texttt{Bundle.main};
+        use \texttt{Bundle.module}.}
+  \trap{\textbf{Over-modularization:} per-module manifest, link and DI cost; clean builds
+        can get \emph{slower}. Cut along ownership/change seams, not per screen.}
+  \trap{A giant \texttt{Common} module that everything imports and that changes weekly
+        recompiles the world — split it (DesignSystem, Networking, …).}
+  \trap{\texttt{ServiceLocator.shared} inside features hides dependencies — inject
+        API protocols through \texttt{init} from the composition root.}
+  \trap{\texttt{package} (Swift 5.9) $\neq$ \texttt{@\_spi}: \texttt{package} = visible to
+        modules \emph{in the same package}; \texttt{@\_spi(X)} = public but only for
+        importers writing \texttt{@\_spi(X) import} (underscored, unofficial).}
+  \trap{\texttt{.library(type:)} omitted = \emph{automatic}: SwiftPM picks (usually
+        static\unverified). Static in app \emph{and} extension = two copies; dynamic = one
+        copy + dyld cost.}
+  \trap{\texttt{.unsafeFlags} make the target's products ineligible for use by other
+        packages — fine in the app's own root package, fatal in a shared one.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``API up, Impl hidden, arrows down, app wires.''} Litmus: \emph{can I build and
+preview any one feature in seconds with mocks, and does editing X never recompile Y?}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} linking \& launch time ·
+dependency injection · Coordinator/Router · SOLID (DIP) · Clean Architecture · XCFrameworks}
+
+\end{document}
