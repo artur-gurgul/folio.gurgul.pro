@@ -1,0 +1,167 @@
+% swift-initialization.tex — memberwise init, two-phase initialization,
+% designated vs convenience, inheritance rules, required, failable/throwing,
+% lazy, observers during init, deinit.
+% Sources (checked 2026-10-06):
+%   docs.swift.org/swift-book Initialization (two-phase init, the four safety checks,
+%     designated / convenience rules, inheritance, required, failable, init!) + Properties
+%     (observers not called while the type's own init sets the property; lazy var is not
+%     initialised once under concurrent access) + Deinitialization + Access Control (memberwise
+%     init is internal, private if any stored property is private)
+%   swift-evolution SE-0242 (default values in memberwise init, 5.1) · SE-0390 (deinit on
+%     ~Copyable structs, 5.9) — checked against the evolution index
+%   developer.apple.com/documentation/uikit/uiview/init(coder:) (NSCoding's required init)
+% @labels: area=swift kind=concept platform=apple topic=language discussion=157
+% @tags: designated-init, convenience-init, two-phase-initialization, memberwise-init, required-init, failable-init, init-coder, initializer-inheritance, lazy-var, deinit, didset
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,convenience,
+    required,override,super,lazy,deinit,extension,
+    if,else,return,guard,self,nil,try,throws,private,some,switch,default,in,true,false},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={??}{{\hbox{?}\hbox{?}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=5mm},
+  cls/.style={box, font=\scriptsize, minimum width=30mm, minimum height=7mm, align=left},
+  des/.style={sb, draw=sheetBlue, fill=sheetBlue!12, font=\ttfamily\scriptsize, minimum width=14mm},
+  con/.style={sb, draw=sheetOrange, fill=sheetOrange!10, font=\ttfamily\scriptsize, minimum width=14mm, dashed},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\small, anchor=west},
+  up/.style={->, very thick, draw=sheetBlue},
+  down/.style={->, very thick, draw=sheetGreen},
+  acr/.style={->, thick, draw=sheetOrange},
+}
+
+\begin{document}
+
+\sheettitle{Initialization — two phases, three delegation rules}{swift · folio}
+
+\oneliner{An initializer must give \textbf{every stored property} a value before the instance
+is used. Structs get a free \textbf{memberwise init}; classes split init into
+\textbf{designated} (initialise own properties, \textbf{delegate up} to \texttt{super}) and
+\textbf{convenience} (\textbf{delegate across} to \texttt{self.init}), and run
+\textbf{two-phase initialization}: phase 1 fills memory bottom-up, phase 2 customises top-down.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet]
+  \draw[sheetGrey!40] (8.0,1.5) -- (8.0,-2.35);
+  % ── A: two-phase ──
+  \node[hd] at (0,1.35) {\textcolor{sheetBlue}{A} two-phase init of \texttt{Bike(rider:)}};
+  \node[cls] (r) at (3.6,0.75)  {\textbf{Vehicle} (root)\\\texttt{wheels = 2}};
+  \node[cls] (m) at (3.6,-0.45)  {\textbf{Bike}\\\texttt{rider = "Ann"}};
+  \draw[up] (m.west) -- ++(-0.45,0) |- node[lbl, left, pos=0.25, text=sheetBlue]{\textbf{1} set own props,\\then \texttt{super.init}} (r.west);
+  \draw[down] (r.east) -- ++(0.45,0) |- node[lbl, right, pos=0.25, text=sheetGreen!60!black]{\textbf{2} root done:\\\texttt{self} usable,\\back down} (m.east);
+  \node[lbl, anchor=west, text=sheetBlue] at (0,-1.2) {\textbf{Phase 1} (up): each designated init sets ITS stored props, then
+    delegates up.\\No \texttt{self}, no methods, no reading props — memory is half-formed.};
+  \node[lbl, anchor=west, text=sheetGreen!60!black] at (0,-1.95) {\textbf{Phase 2} (down): root returns first; each init may now
+    call methods,\\set inherited props, pass \texttt{self} (e.g. \texttt{delegate = self}).};
+  % ── B: delegation ──
+  \node[hd] at (8.1,1.35) {\textcolor{sheetBlue}{B} delegation: up, across, end at designated};
+  \node[font=\scriptsize\bfseries, anchor=west] at (8.1,0.8) {super};
+  \node[des] (sd1) at (10.2,0.8) {init(a:b:)};
+  \node[con] (sc1) at (12.4,0.8) {conv init(a:)};
+  \draw[acr] (sc1) -- (sd1);
+  \node[font=\scriptsize\bfseries, anchor=west] at (8.1,-0.55) {sub};
+  \node[des] (d1) at (10.2,-0.55) {init(x:)};
+  \node[con] (c1) at (12.4,-0.55) {conv init()};
+  \node[con] (c2) at (14.8,-0.55) {conv init(s:)};
+  \draw[up] (d1) -- node[lbl, left]{\textbf{R1} up\\to super D} (sd1);
+  \draw[acr] (c1) -- node[lbl, below=1.5pt]{\textbf{R2} across} (d1);
+  \draw[acr] (c2) -- (c1);
+  \node[lbl, anchor=west] at (13.35,0.15) {\textbf{R3} a chain of convenience\\ends at a designated};
+  \node[lbl, anchor=west] at (8.1,-1.45) {\textcolor{sheetBlue}{\rule{2mm}{2mm}} designated: the funnel, calls \texttt{super.init}
+    \quad \textcolor{sheetOrange}{\rule{2mm}{2mm}} convenience: \texttt{self.init} only};
+  \node[lbl, anchor=west] at (8.1,-1.95) {Inherited automatically: \textbf{(1)} no designated init of your own (new props
+    defaulted)\\$\to$ all super designateds; \textbf{(2)} all super designateds provided $\to$ all its convenience inits too.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{Memberwise init} (structs only): synthesized if the \emph{main declaration}
+        has no init. \texttt{var} props with a default become defaulted params (SE-0242,
+        Swift 5.1); a \texttt{let} with a default is excluded. Access: \texttt{internal}
+        at most, \texttt{private} if any stored prop is. Custom init in an
+        \textbf{extension} keeps it. Struct inits delegate with \texttt{self.init}, no
+        \texttt{convenience} keyword.
+  \item \textbf{Four safety checks} (TSPL): (1) designated sets all own props
+        \emph{before} delegating up; (2) designated delegates up \emph{before}
+        assigning an inherited prop; (3) convenience delegates \emph{before} assigning
+        anything; (4) no methods, no prop reads, no \texttt{self} as a value until phase 1 ends.
+  \item Overriding a super designated init: \texttt{override init}. A \textbf{\texttt{required}}
+        init must exist in every subclass (written \texttt{required}, not \texttt{override});
+        satisfied by inheritance too. Protocol \texttt{init} requirements force
+        \texttt{required} unless the class is \texttt{final}.
+  \item \textbf{Failable} \texttt{init?} (returns \texttt{nil}) / \texttt{init!} (IUO result).
+        Classes may \texttt{return nil} anywhere, even before all props are set (Swift 2.2+).
+        A failable may delegate to a non-failable; a non-failable override may replace a
+        failable one, never the reverse. \texttt{init() throws} when the caller needs \emph{why}.
+  \item \textbf{\texttt{let}} props: assigned exactly once per path during init.
+  \item \textbf{Observers} \texttt{willSet}/\texttt{didSet} do \textbf{not} fire for assignments in
+        the class's own init (nor for defaults); they \textbf{do} fire when a subclass sets
+        an inherited prop in its phase 2.
+  \item \textbf{\texttt{lazy var}}: computed on first access, may use \texttt{self}; not
+        thread-safe (two threads can both run it); on a struct the first access mutates, so
+        it needs a \texttt{var} instance.
+  \item \textbf{\texttt{deinit}}: classes (and \texttt{\textasciitilde Copyable} structs/enums, Swift 5.9).
+        Runs subclass-first, super's deinit is called automatically; never call it yourself.
+\end{itemize}
+
+\section{Remember}
+\textbf{``Designated up, convenience across. Phase 1 fills (bottom-up), phase 2 uses
+(top-down). Own props before \texttt{super}.''}
+
+\columnbreak
+
+\section{Example — phase 1 protects an override}
+\begin{lstlisting}[language=SwiftSheet]
+class Vehicle {
+  let wheels: Int
+  init(wheels: Int) { self.wheels = wheels; setup() } // designated
+  convenience init() { self.init(wheels: 4) }          // across
+  func setup() {}
+}
+final class Bike: Vehicle {
+  var rider: String                     // no default
+  init(rider: String) {
+    self.rider = rider                  // phase 1: own props FIRST
+    super.init(wheels: 2)               // then up
+    print(wheels)                       // phase 2: self usable
+  }
+  override func setup() { print(rider) } // runs INSIDE super.init
+}
+// Bike() is an error: Bike has its own designated init,
+// so Vehicle's convenience init() is not inherited.
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{UIKit subclass with \texttt{init(viewModel:)} stops inheritance $\to$ you must write
+        \texttt{required init?(coder:)} (usually \texttt{fatalError} / \texttt{@available(*, unavailable)}).}
+  \trap{\texttt{self.method()} before \texttt{super.init} — compile error (check 4).
+        Assign own props, call \texttt{super.init}, \emph{then} configure.}
+  \trap{Setup in \texttt{didSet} ``does nothing'' in \texttt{init} — observers skip the own init.
+        Call the setup explicitly.}
+  \trap{\texttt{public struct} in a package: the memberwise init is \textbf{internal} —
+        clients cannot call it; write a \texttt{public init}.}
+  \trap{Adding one init to a struct body silently deletes the memberwise init for every caller.}
+  \trap{Convenience init cannot call \texttt{super.init} — only \texttt{self.init}.}
+  \trap{A super init calling an overridable method = a subclass sees phase-1 state;
+        keep init bodies side-effect-light.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} value-vs-reference · arc-ownership
+(\texttt{deinit}) · swift-optionals (\texttt{init!}) · swift-enums-pattern-matching
+(\texttt{init?(rawValue:)}) · swift-property-wrappers (\texttt{init(wrappedValue:)}) ·
+app-and-vc-lifecycle (\texttt{init(coder:)})}
+
+\end{document}

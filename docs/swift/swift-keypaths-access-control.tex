@@ -1,0 +1,182 @@
+% swift-keypaths-access-control.tex — the KeyPath class hierarchy, key paths as
+% functions, @dynamicMemberLookup via key paths; the six access levels and their
+% rules, open vs public, final, @testable, @inlinable / @usableFromInline.
+% The access ladder across modules is also on modularization-spm; this folio does the rules.
+% Sources (checked 2026-10-06):
+%   developer.apple.com/documentation/swift/keypath (class hierarchy: AnyKeyPath ->
+%     PartialKeyPath -> KeyPath -> WritableKeyPath -> ReferenceWritableKeyPath; Hashable) ·
+%     /foundation/keypathcomparator · /combine/publisher/assign(to:on:) (retains the object)
+%   docs.swift.org/swift-book Access Control (six levels, open vs public, private(set),
+%     members of a public type default to internal, overrides may be more accessible) +
+%     Attributes (@inlinable, @usableFromInline, dynamicMemberLookup)
+%   swift-evolution SE-0161 (smart key paths, 4.0) · SE-0249 (key path as function, literal
+%     only, 5.2) · SE-0252 (key path member lookup, 5.1) · SE-0193 (@inlinable, 4.2) · SE-0409
+%     (access-level imports, 6.0) — checked against the evolution index
+% @labels: area=swift kind=concept platform=apple topic=language discussion=158
+% @tags: keypath, writablekeypath, referencewritablekeypath, partialkeypath, dynamicmemberlookup, keypathcomparator, access-control, open-vs-public, private-set, testable, inlinable, usablefrominline
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,
+    if,else,return,guard,self,nil,private,public,internal,fileprivate,open,
+    true,false,in,extension,where,static,some,Self,get,set,newValue,String,Int,UUID},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=left},
+  ttl/.style={font=\bfseries\scriptsize, anchor=west},
+  kp/.style={box, font=\ttfamily\tiny, minimum width=30mm, minimum height=4.6mm, inner sep=1.5pt},
+  inh/.style={-{Latex[open,length=4pt]}, thick, draw=sheetGrey},
+  ring/.style={draw, thick, rounded corners=3pt, anchor=south west},
+  kw/.style={font=\ttfamily\scriptsize\bfseries, anchor=north west, inner sep=1.5pt},
+}
+
+\begin{document}
+
+\sheettitle{Key paths \& access control}{swift · folio}
+
+\oneliner{A \textbf{key path} (\texttt{\textbackslash User.name}) is a typed, reusable,
+\emph{uninvoked} reference to a property — a class instance you apply with
+\texttt{x[keyPath: kp]}; its class (read-only vs writable) is decided by what \emph{you} may do
+with the property. \textbf{Access control} is lexical: six levels, default \texttt{internal},
+and nothing may be exposed through something less visible than itself.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── key path hierarchy ──
+  \node[ttl] at (0,3.3) {Key path classes (arrow = subclass of)};
+  \node[kp, fill=black!4, draw=sheetGrey] (any) at (1.6,2.8) {AnyKeyPath};
+  \node[kp, fill=black!4, draw=sheetGrey] (par) at (1.6,2.15) {PartialKeyPath<Root>};
+  \node[kp] (k) at (1.6,1.5) {KeyPath<Root, Value>};
+  \node[kp, fill=sheetGreen!10, draw=sheetGreen!70!black] (w) at (1.6,0.85) {WritableKeyPath};
+  \node[kp, fill=sheetOrange!12, draw=sheetOrange] (r) at (1.6,0.2) {ReferenceWritableKeyPath};
+  \draw[inh] (par) -- (any); \draw[inh] (k) -- (par); \draw[inh] (w) -- (k); \draw[inh] (r) -- (w);
+  \node[lbl, anchor=west] at (3.25,2.8) {Root + Value erased — \texttt{[AnyKeyPath]}};
+  \node[lbl, anchor=west] at (3.25,2.15) {Value erased: \texttt{[PartialKeyPath<User>]} of mixed\\types; \texttt{u[keyPath: p]} returns \texttt{Any}};
+  \node[lbl, anchor=west] at (3.25,1.5) {read-only: \texttt{let}, get-only computed, or a setter\\you can't see (\texttt{private(set)} from outside)};
+  \node[lbl, anchor=west] at (3.25,0.85) {\texttt{var} on a \textbf{value} type — the \emph{root}\\must be a \texttt{var} to write};
+  \node[lbl, anchor=west] at (3.25,0.2) {\texttt{var} on a \textbf{class} — writes through\\a \texttt{let} reference (\texttt{assign(to:on:)})};
+  \node[lbl, text=sheetGrey] at (0,-0.35) {The compiler infers the most specific class for a literal.};
+  % ── access scopes ──
+  \begin{scope}[xshift=92mm, yshift=-4.5mm]
+  \node[ttl] at (0,3.75) {Access = nested lexical scopes (who can see it)};
+  \draw[ring, draw=sheetGreen!70!black, fill=sheetGreen!5] (0,0) rectangle (7.4,3.45);
+  \node[kw, text=sheetGreen!50!black] at (0.05,3.45) {open · public};
+  \node[lbl, anchor=north east] at (7.35,3.42) {any importing module;\\\texttt{open}: + subclass / override there};
+  \draw[ring, draw=sheetOrange, fill=sheetOrange!6] (0.25,0.12) rectangle (7.15,2.75);
+  \node[kw, text=sheetOrange] at (0.3,2.75) {package};
+  \node[lbl, anchor=north east] at (7.1,2.72) {modules of the same package (5.9)};
+  \draw[ring, draw=sheetBlue, fill=sheetBlue!6] (0.5,0.24) rectangle (6.9,2.2);
+  \node[kw, text=sheetBlue] at (0.55,2.2) {internal};
+  \node[lbl, anchor=north east] at (6.85,2.17) {the module — \textbf{default}; \texttt{@testable} lifts it};
+  \draw[ring, draw=sheetGrey, fill=black!4] (0.75,0.36) rectangle (6.65,1.65);
+  \node[kw, text=sheetGrey] at (0.8,1.65) {fileprivate};
+  \node[lbl, anchor=north east] at (6.6,1.62) {the source file};
+  \draw[ring, draw=sheetRed, fill=sheetRed!6] (1.0,0.48) rectangle (6.4,1.1);
+  \node[kw, text=sheetRed, anchor=west] at (1.05,0.79) {private};
+  \node[lbl, anchor=east] at (6.35,0.79) {the declaration + its extensions\\\emph{in the same file} (Swift 4)};
+  \end{scope}
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Key paths}
+\begin{itemize}
+  \item \textbf{Components}: \texttt{\textbackslash User.address.city}; optional chaining
+        \texttt{\textbackslash.address?.city} (Value becomes \texttt{String?}); subscripts
+        \texttt{\textbackslash[Int].[0]}; identity \texttt{\textbackslash.self};
+        \texttt{kp.appending(path:)}. Key paths are \texttt{Hashable} — usable as dictionary keys.
+  \item \textbf{As functions} (5.2, SE-0249): \texttt{users.map(\textbackslash.name)},
+        \texttt{filter(\textbackslash.isActive)}. Only a key path \textbf{literal} converts; a
+        stored \texttt{let kp} needs \texttt{\{ \$0[keyPath: kp] \}}.
+  \item \textbf{\texttt{@dynamicMemberLookup} with key paths} (5.1, SE-0252):
+        \texttt{subscript<T>(dynamicMember kp: KeyPath<W, T>) -> T} forwards \emph{real}
+        members, type-checked (string-keyed lookup is not). SwiftUI: \texttt{\$model.name} is
+        \texttt{Binding}'s dynamic member lookup over a \texttt{WritableKeyPath}.
+  \item \textbf{Where you meet them}: \texttt{ForEach(items, id: \textbackslash.id)},
+        \texttt{SortDescriptor}/\texttt{KeyPathComparator(\textbackslash.name)}, KVO
+        \texttt{observe(\textbackslash.count)} (needs \texttt{@objc dynamic}), Combine
+        \texttt{assign(to:on:)}.
+\end{itemize}
+
+\section{Access rules}
+\begin{itemize}
+  \item \textbf{No leaking}: a declaration can't be more visible than the types in its signature
+        (\texttt{public func f(\_: InternalType)} is an error). Tuple/function types take the
+        \emph{lowest} level of their parts.
+  \item \textbf{Member defaults}: members of a \texttt{public} type are \texttt{internal} unless
+        marked; members of a \texttt{private}/\texttt{fileprivate} type are \texttt{fileprivate}.
+        Enum cases and protocol requirements take the enclosing level.
+  \item \textbf{Setters}: \texttt{public private(set) var count} — read everywhere, write in the scope.
+  \item \textbf{Inheritance}: a subclass can't be more visible than its superclass; an
+        \texttt{override} \emph{may} widen access.
+  \item \textbf{\texttt{open} vs \texttt{public}} (classes only): \texttt{public} = use it outside
+        the module; \texttt{open} = also subclass/override it there. \texttt{final} = nobody,
+        anywhere — and lets the compiler call it directly (\texttt{private} lets the optimiser
+        \emph{infer} \texttt{final}; \texttt{final} is the guarantee).
+  \item \textbf{\texttt{@testable import}}: tests see \texttt{internal} (build with
+        \texttt{ENABLE\_TESTABILITY}, on in Debug), never \texttt{private}/\texttt{fileprivate}.
+  \item \textbf{\texttt{@inlinable}}: the body ships in the module interface so clients can inline
+        and specialise it; it may use only \texttt{public} or \texttt{@usableFromInline}
+        declarations. \texttt{@usableFromInline internal} = ABI-visible, source-invisible.
+  \item Swift 6 (SE-0409): \texttt{internal import X} / \texttt{private import X} keep a dependency
+        out of your module's public interface.
+\end{itemize}
+
+\columnbreak
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+public struct User {
+  public let id: UUID
+  public private(set) var name: String  // write: module only
+  var visits = 0                        // internal
+  public init(id: UUID, name: String) { // memberwise is internal
+    self.id = id; self.name = name }
+}
+let ids = users.map(\.id)               // literal -> function
+let byName = users.sorted(using: KeyPathComparator(\.name))
+@dynamicMemberLookup struct Box<W> {
+  var wrapped: W
+  subscript<T>(dynamicMember kp: WritableKeyPath<W, T>) -> T {
+    get { wrapped[keyPath: kp] }
+    set { wrapped[keyPath: kp] = newValue } } }
+var box = Box(wrapped: user); box.visits += 1 // checked
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{A \texttt{public struct} has no public init}: the memberwise init is
+        \texttt{internal} (lower still if a stored property is \texttt{private}). Clients can't
+        construct it until you write \texttt{public init}.}
+  \trap{\texttt{\textbackslash User.name} is a \texttt{WritableKeyPath} inside the module and a
+        plain \texttt{KeyPath} outside — \texttt{private(set)} decides. Key paths never bypass
+        access.}
+  \trap{\texttt{public class} is \textbf{not} subclassable by clients — that is
+        \texttt{open}. Making an \texttt{open} class \texttt{public}/\texttt{final} later breaks
+        every client that subclassed it.}
+  \trap{\texttt{assign(to: \textbackslash.text, on: self)} \textbf{retains} \texttt{self}
+        $\to$ cycle when \texttt{self} holds the \texttt{AnyCancellable}. Use
+        \texttt{assign(to: \&\$prop)} (iOS 14) or \texttt{sink} + \texttt{[weak self]}.}
+  \trap{\texttt{@inlinable} code is compiled \emph{into clients}: a fix to its body reaches them
+        only when they rebuild.}
+  \trap{\texttt{fileprivate} is only needed to share between \emph{different} types in one file;
+        same-type extensions in the file already see \texttt{private}.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``Key path = a property as a value; its class = your rights.''} Access:
+\textbf{``O-P-P-I-F-P''} — open, public, package, internal, fileprivate, private; public
+\emph{uses}, open \emph{extends}.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} modularization \& SPM (levels across
+modules, \texttt{package}, \texttt{@\_spi}) · extensions · method dispatch (\texttt{final}) ·
+observation \& Combine (KVO, \texttt{assign}) · SwiftUI state (\texttt{Binding})}
+
+\end{document}

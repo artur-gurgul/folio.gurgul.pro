@@ -1,0 +1,197 @@
+% parameter-packs-and-new-syntax.tex — parameter packs (each / repeat, variadic
+% types, pack iteration SE-0408) and the small syntax additions 5.9 → 6.4:
+% if/switch expressions, trailing commas, raw identifiers, weak let, module
+% selectors, `some P?` / `any P?`, @diagnose, await in defer (+ cancellation
+% shield), access-level imports, package.
+% Sources (checked 2026-10-06) — every SE number and version against the swift.org evolution
+% index; proposal texts read 2026-09-25:
+% SE-0393 (same-shape, no indexing/count), SE-0398 (one pack per type), SE-0408
+% (pack for-in, lazy, early exit; 5.9 `repeat try f(each x)` statement form),
+% SE-0380 (else required, branches type-checked independently, throw/fatalError
+% branches), SE-0439 (where trailing commas are / are not allowed), SE-0451 (raw
+% identifier character rules, `case `50``), SE-0481 (weak let = Swift **6.3**; the
+% research file said 6.2), SE-0491 (6.3; no selector on a new declaration; skips
+% local scopes), SE-0521 (6.4; `any P?` too), SE-0522 (grammar, error|warning|ignored,
+% order-sensitive, -suppress-warnings wins), SE-0493 (async context only; cancellation
+% NOT suppressed), SE-0409 (default stays public in 5 and 6 modes;
+% InternalImportsByDefault), SE-0386 (5.9, -package-name, no subclassing outside).
+% swift.org 6.4 post: defer + withTaskCancellationShield example.
+% @labels: area=swift kind=concept platform=apple topic=language discussion=149
+% @tags: parameter-packs, each, repeat, pack-iteration, variadic-generics, if-expression, trailing-commas, raw-identifiers, weak-let, module-selectors, diagnose, withtaskcancellationshield
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usepackage{tabularx}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,case,weak,
+    if,else,return,guard,self,nil,true,false,in,async,await,throws,try,defer,
+    for,each,repeat,some,any,import,internal,package,public},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {::}{{\hbox{:}\hbox{:}}}2 {??}{{\hbox{?}\hbox{?}}}2}
+
+\newcommand\dcol{\hbox{:}\hbox{:}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\tikzset{
+  pk/.style={draw=sheetBlue, fill=sheetBlue!12, minimum width=11mm, minimum height=4.6mm,
+             font=\ttfamily\scriptsize, inner sep=1pt},
+  ex/.style={pk, draw=sheetGreen!70!black, fill=sheetGreen!12},
+  pat/.style={draw=sheetOrange, thick, fill=sheetOrange!8, rounded corners=2pt,
+              font=\ttfamily\scriptsize, inner sep=2pt, align=center},
+  lbl/.style={font=\scriptsize, text=black!80, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, inner sep=1pt},
+}
+
+\begin{document}
+
+\sheettitle{Parameter packs \& the new syntax (5.9 → 6.4)}{swift · folio}
+
+\oneliner{A \textbf{parameter pack} (5.9) lets one generic declaration take
+\emph{any number} of type parameters: \texttt{<each T>} declares the pack,
+\texttt{repeat \textit{pattern}} expands the pattern once per element, and
+\texttt{each x} names the current element — no more 1…10 overloads. Around it, every
+release since added small syntax that deletes boilerplate: expression
+\texttt{if}/\texttt{switch}, trailing commas, raw identifiers, \texttt{weak let},
+module selectors, \texttt{some P?}, \texttt{@diagnose}, \texttt{await} in \texttt{defer}.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How packs work}
+\begin{itemize}
+  \item \texttt{func f<each T>(\_ v: repeat each T)}: \texttt{T} is a
+        \textbf{type pack}, \texttt{v} a \textbf{value pack}; a call
+        \texttt{f(1, "a", true)} binds \texttt{T = \{Int, String, Bool\}}.
+        Constraints apply per element: \texttt{<each T: Equatable>}.
+  \item \texttt{repeat P} is a \textbf{pack expansion}: \texttt{P} must mention a
+        pack with \texttt{each}; it becomes a comma list —
+        \texttt{repeat [each T]} $\to$ \texttt{[Int], [String], [Bool]}.
+        Values: \texttt{(repeat each v)} builds a tuple (SE-0399).
+  \item \textbf{Same shape}: two packs in one expansion
+        (\texttt{repeat (each L, each R)}) must have the same length — the
+        compiler infers and enforces it.
+  \item \textbf{No \texttt{count}, no subscript}: you cannot index a pack. You
+        expand it, or (\textbf{6.0}, SE-0408) iterate it: \texttt{for x in repeat
+        each v}, one element per iteration, \emph{lazily} — \texttt{break} stops
+        evaluating the rest. In 5.9: a local generic func +
+        \texttt{repeat try f(each v)}.
+  \item \textbf{Variadic types} (SE-0398, 5.9): \texttt{struct Zip<each S:
+        Sequence>}; at most \textbf{one} pack per type; store it as a tuple
+        \texttt{(repeat each S)}.
+  \item Where you meet them: SwiftUI's \texttt{ViewBuilder} (no 10-child
+        limit), \texttt{zip}-style APIs over any arity, typed tuple helpers.
+\end{itemize}
+
+\section{One pattern, stamped per element}
+\begin{tikzpicture}[sheet]
+  \node[hd] at (0.55,0.55) {\texttt{each T}};
+  \node[pk] (t1) at (0.55,0) {Int};
+  \node[pk] (t2) at (0.55,-0.55) {String};
+  \node[pk] (t3) at (0.55,-1.1) {Bool};
+  \draw[decorate, decoration={brace, amplitude=3pt}] (-0.15,-1.35) -- (-0.15,0.25)
+     node[lbl, midway, left=3pt]{pack\\of 3};
+  \node[pat] (p) at (2.75,-0.55) {pattern\\\texttt{repeat (each T)?}};
+  \node[hd] at (5.0,0.55) {expansion};
+  \node[ex] (e1) at (5.0,0) {Int?};
+  \node[ex] (e2) at (5.0,-0.55) {String?};
+  \node[ex] (e3) at (5.0,-1.1) {Bool?};
+  \foreach \i in {1,2,3} { \draw[flow] (t\i.east) -- (p.west); \draw[hot] (p.east) -- (e\i.west); }
+  % same shape
+  \node[hd, anchor=west] at (-0.95,-1.75) {same shape: \texttt{repeat (each L, each R)}};
+  \foreach \i/\a/\b in {0/Int/Int,1/String/String,2/Bool/Bool} {
+    \node[pk, minimum width=9mm] (l\i) at (0.1+\i*2.05,-2.3) {\a};
+    \node[ex, minimum width=9mm] (r\i) at (1.0+\i*2.05,-2.3) {\b};
+  }
+  \node[lbl, text=sheetRed, anchor=west] at (-0.95,-2.8) {length 3 vs 2 $\to$ compile error; \texttt{for (a, b) in} walks the pairs};
+\end{tikzpicture}
+
+\columnbreak
+
+\section{Example — packs}
+\begin{lstlisting}[language=SwiftSheet]
+func tuplify<each T>(_ v: repeat each T) -> (repeat each T) {
+  (repeat each v)                        // 5.9: tuple expansion
+}
+let t = tuplify(1, "a", true)            // (Int, String, Bool)
+
+func allEqual<each E: Equatable>(_ l: (repeat each E),
+                                 _ r: (repeat each E)) -> Bool {
+  for (a, b) in repeat (each l, each r) { // 6.0 pack iteration
+    guard a == b else { return false }    // rest never evaluated
+  }
+  return true
+}
+allEqual((1, "a"), (1, "b"))             // false; E = Int, String
+struct Zip<each S: Sequence> { let seqs: (repeat each S) }
+\end{lstlisting}
+
+\section{Example — the new syntax}
+\begin{lstlisting}[language=SwiftSheet]
+let tint: Color = if ok { .green } else { .red }       // 5.9
+let p = Point(x: 1, y: 2,)                             // 6.1
+@Test func `rejects an empty email`() {}               // 6.2
+enum Shade { case `50`, `100` }; let s = Shade.`50`    // 6.2
+final class Tag: Sendable { weak let owner: Owner? }   // 6.3
+let x = ModuleA::getValue()                            // 6.3
+weak var delegate: any CellDelegate?                   // 6.4
+@diagnose(DeprecatedDeclaration, as: warning,
+          reason: "legacy bridge until 3.0")           // 6.4
+func bridge() { oldAPI() }
+func upload() async throws {
+  let h = try await open()
+  defer { await withTaskCancellationShield { await h.close() } }
+  try await h.send(payload)                            // 6.4
+}
+\end{lstlisting}
+{\footnotesize\itshape\color{sheetBrown} (\texttt{Owner}: a Sendable class;
+\texttt{CellDelegate}: \texttt{AnyObject}-bound.)}
+
+\end{multicols}
+
+\vspace{-2pt}
+\noindent{\scriptsize\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.05}%
+\begin{tabularx}{\linewidth}{@{}L{27mm}l l >{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Feature} & \textbf{Swift} & \textbf{SE} & \textbf{The rule that bites} \\ \midrule
+\texttt{if}/\texttt{switch} expression & 5.9 & 0380 & only as \texttt{return} value, assignment, \texttt{let}/\texttt{var} init — not inside a larger expression; \texttt{else} mandatory; one expression per branch; branches type-checked \textbf{independently} (\texttt{if c \{ 0 \} else \{ 1.0 \}} fails — annotate the type); a \texttt{throw}/\texttt{fatalError} branch is fine \\
+trailing commas & 6.1 & 0439 & in \texttt{( )}, \texttt{[ ]}, \texttt{< >} lists: args, params, tuples, subscripts, capture lists, generics, interpolation. \textbf{Not} in \texttt{if}/\texttt{guard} conditions, inheritance clauses, \texttt{where}, \texttt{case a, b} \\
+raw identifiers & 6.2 & 0451 & any characters between backticks except backtick, backslash, newline; not all whitespace, not only operator characters; \textbf{use sites need the backticks too} \\
+\texttt{weak let} & 6.3 & 0481 & still becomes \texttt{nil} when the object dies, but cannot be reassigned $\Rightarrow$ a \texttt{final class} with it can be \texttt{Sendable} \\
+module selectors \texttt{M\dcol x} & 6.3 & 0491 & pick the module when two imports export the same name (also on members: \texttt{s.Foundation\dcol data(using:)}); lookup starts at module top level, so locals/generic params are unreachable; never on a new declaration's name \\
+\texttt{some P?} / \texttt{any P?} & 6.4 & 0521 & = \texttt{(some P)?} / \texttt{(any P)?} — the optional wraps the opaque/existential, no parentheses needed \\
+\texttt{@diagnose} & 6.4 & 0522 & \texttt{@diagnose(Group, as: error|warning|ignored, reason: "…")} on one declaration (func, type, extension, \texttt{import}…); order-sensitive; module flag \texttt{-suppress-warnings} still wins \\
+\texttt{await} in \texttt{defer} & 6.4 & 0493 & only in an \texttt{async} context; awaited on \textbf{every} scope exit (a hidden suspension point); cancellation is \textbf{not} suppressed — wrap in \texttt{withTaskCancellationShield} (SE-0504) \\
+access-level imports & 6.0 & 0409 & \texttt{internal import X} keeps X out of your public API (error if a public signature uses it); a bare \texttt{import} stays \texttt{public} in modes 5 and 6 unless \texttt{InternalImportsByDefault} \\
+\texttt{package} access & 5.9 & 0386 & visible to other modules built with the same \texttt{-package-name} (SwiftPM sets it); between \texttt{public} and \texttt{internal}; no subclassing outside the module \\
+\bottomrule
+\end{tabularx}}
+
+\vspace{2pt}
+\begin{multicols}{2}
+\raggedright
+
+\section{Traps}
+\begin{itemize}
+  \trap{``Just use \texttt{v.count}'' — a pack has no count or index;
+        iterate (6.0) or expand.}
+  \trap{\texttt{some P?} is an \emph{optional of an opaque type}, not an
+        opaque optional: the underlying type is still fixed.}
+  \trap{\texttt{defer \{ await … \}} in a cancelled task: \texttt{Task.sleep},
+        network calls inside it fail at once — shield the cleanup.}
+  \trap{\texttt{weak let} is \textbf{6.3}, not 6.2 (proposal header).}
+\end{itemize}
+
+\columnbreak
+
+\section{Remember}
+\textbf{``\texttt{each} names it, \texttt{repeat} stamps it, \texttt{for} walks it.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} swift-syntax-generics-protocols ·
+macros-and-result-builders · error-handling (typed throws) ·
+swift-keypaths-access-control · modularization-spm}
+
+\end{document}

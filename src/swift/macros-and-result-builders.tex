@@ -1,0 +1,205 @@
+% macros-and-result-builders.tex — Swift macros (freestanding vs attached,
+% roles, SwiftSyntax plugin, sandbox, @Observable, Expand Macro) and result
+% builders (@resultBuilder, build* methods, ViewBuilder -> _ConditionalContent,
+% DSL limits).
+% Sources (checked 2026-10-06):
+%   swift-evolution SE-0382 / SE-0389 (expression + attached macros; macros only ADD code) ·
+%     SE-0415 (body macros, 6.0) · SE-0289 (result builders) · SE-0348 (buildPartialBlock, 5.7)
+%     · SE-0393 (parameter packs, 5.9) — checked against the evolution index
+%   developer.apple.com/documentation/swiftui/viewbuilder (buildBlock, buildEither, buildIf,
+%     buildLimitedAvailability — no buildArray) · docs.swift.org/swift-book Macros + Advanced
+%     Operators › Result Builders (an explicit return disables the transform)
+% @labels: area=swift kind=concept platform=apple topic=language discussion=146
+% @tags: swift-macros, swiftsyntax, freestanding-macro, attached-macro, externalmacro, resultbuilder, viewbuilder, buildblock, buildeither, conditionalcontent, observable, assertmacroexpansion
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,macro,
+    if,else,return,self,private,true,false,in,static,extension,some,get,set,
+    nonisolated,internal},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  st/.style={box, font=\scriptsize, minimum height=7mm},
+  lbl/.style={font=\scriptsize, text=black!80, inner sep=1pt, align=center},
+  tn/.style={box, font=\ttfamily\scriptsize, inner sep=2pt},
+  el/.style={font=\ttfamily\scriptsize, text=sheetOrange, inner sep=1pt, fill=white},
+}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\sheettitle{Macros \& result builders — compile-time code generation}{swift · folio}
+
+\oneliner{A \textbf{macro} (Swift 5.9) is a compiler plugin that receives the
+\textbf{syntax tree} of its use site and returns \textbf{new syntax}, spliced in
+at compile time — \emph{additive only}, no runtime cost. A \textbf{result
+builder} (\texttt{@resultBuilder}, Swift 5.4) rewrites the statements of a
+closure into nested \texttt{static build\ldots} calls that fold them into
+\emph{one} value — the engine behind SwiftUI's \texttt{@ViewBuilder}.}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Macros}
+\begin{itemize}
+  \item \textbf{Declaration} (your library): \texttt{macro stringify<T>(\_ v: T)
+        -> (T, String) = \#externalMacro(module: "MyMacros", type:
+        "StringifyMacro")}. \textbf{Implementation}: a \texttt{.macro} target
+        (SwiftPM) — structs conforming to \texttt{ExpressionMacro},
+        \texttt{MemberMacro}, \dots\ with a static \texttt{expansion(of:\dots in:)},
+        registered by an \texttt{@main} \texttt{CompilerPlugin}.
+  \item The plugin runs as a \textbf{separate, sandboxed process} (no file
+        system, no network): input = syntax nodes (SwiftSyntax), output =
+        syntax. It sees \textbf{no types} — only the text of the code.
+  \item \textbf{Hygienic}: invented names come from
+        \texttt{makeUniqueName()}; names your code will use must be declared
+        (\texttt{names: named(x)}, \texttt{prefixed(\_)}, \texttt{arbitrary}).
+        Errors via \texttt{context.diagnose(\ldots)}.
+  \item \textbf{Debug}: right-click $\to$ \textbf{Expand Macro} in Xcode;
+        test with \texttt{assertMacroExpansion} (SwiftSyntaxMacrosTestSupport).
+        Package macros need \emph{Trust \& Enable} (CI:
+        \texttt{xcodebuild -skipMacroValidation}).
+\end{itemize}
+
+{\scriptsize
+\begin{tabular}{@{}L{0.26\linewidth}L{0.36\linewidth}L{0.33\linewidth}@{}}
+\toprule
+\textbf{Role} & \textbf{Adds} & \textbf{Real example} \\ \midrule
+\multicolumn{3}{@{}l}{\textbf{\color{sheetBlue}Freestanding \texttt{\#name} — \texttt{@freestanding(\ldots)}}} \\
+\texttt{expression} & one value & \texttt{\#expect(a == b)} \\
+\texttt{declaration} & decls at that spot & \texttt{\#Preview \{ V() \}} \\ \midrule
+\multicolumn{3}{@{}l}{\textbf{\color{sheetOrange}Attached \texttt{@Name} — \texttt{@attached(\ldots)}}} \\
+\texttt{peer} & decls \emph{beside} the target & \texttt{@Test func t()} \\
+\texttt{member} & decls \emph{inside} the type & \texttt{@Observable} registrar \\
+\texttt{accessor} & get/set: stored $\to$ computed & \texttt{@ObservationTracked} \\
+\texttt{memberAttribute} & attributes on each member & \texttt{@Observable} $\to$ tracked \\
+\texttt{extension} & extension + conformances & \texttt{: Observable} \\
+\texttt{body} (6.0) & a function body & SE-0415 \\
+\bottomrule
+\end{tabular}}
+
+\section{Example — \texttt{@Observable}, expanded (abridged)}
+\begin{lstlisting}[language=SwiftSheet]
+@Observable final class Model { var name = "" }
+// -> Expand Macro:
+final class Model {
+  @ObservationTracked var name = ""      // memberAttribute
+  @ObservationIgnored private let _$observationRegistrar =
+      Observation.ObservationRegistrar()   // member
+  internal nonisolated func access<M>(keyPath: KeyPath<Model, M>)
+  internal nonisolated func withMutation<M, R>(...) // member
+}
+extension Model: Observation.Observable {} // extension
+// @ObservationTracked (accessor + peer) turns `name` into
+//   get { access(keyPath: \.name); return _name }
+//   set { withMutation(keyPath: \.name) { _name = newValue } }
+// + peer storage  @ObservationIgnored private var _name = ""
+\end{lstlisting}
+
+\section{Where a macro runs}
+\begin{tikzpicture}[sheet]
+  \node[st] (src) at (0,0) {source\\\texttt{@Observable}};
+  \node[st] (cmp) at (2.1,0) {compiler\\parse};
+  \node[st, draw=sheetOrange, fill=sheetOrange!8] (pl) at (4.6,0) {plugin process\\SwiftSyntax};
+  \node[st] (tc) at (6.8,0) {type-check\\+ codegen};
+  \node[draw=sheetOrange, dashed, rounded corners=3pt, fit=(pl), inner sep=3pt,
+        label={[lbl, text=sheetOrange]above:sandbox}] {};
+  \draw[flow] (src) -- (cmp);
+  \draw[hot] ([yshift=1.5mm]cmp.east) -- node[lbl, above]{syntax, no types} ([yshift=1.5mm]pl.west);
+  \draw[hot] ([yshift=-1.5mm]pl.west) -- node[lbl, below]{new syntax} ([yshift=-1.5mm]cmp.east);
+  \draw[flow] (cmp.south) -- ++(0,-0.45) -| node[lbl, pos=0.25, below]{expanded source = what \emph{Expand Macro} shows; nothing left at runtime} (tc.south);
+\end{tikzpicture}
+
+\section{Macro traps}
+\begin{itemize}
+  \trap{Macros \textbf{cannot see types} (\texttt{\#m(x)} gets the text
+        ``\texttt{x}'', not \texttt{Int}) and \textbf{cannot delete or rewrite}
+        the code they annotate — they only add.}
+  \trap{Names not declared in \texttt{names:} are invisible $\to$
+        ``cannot find in scope''.}
+\end{itemize}
+
+\columnbreak
+
+\section{Result builders}
+Mark a type \texttt{@resultBuilder}; put it on a closure parameter or computed
+property (\texttt{@ViewBuilder var body}). The compiler \textbf{rewrites} the
+body at compile time; the \texttt{build\ldots} methods \textbf{run at runtime}
+with real values. Each statement kind needs its method:
+
+{\scriptsize
+\begin{tabular}{@{}L{0.52\linewidth}L{0.45\linewidth}@{}}
+\toprule
+\textbf{Method} & \textbf{Enables} \\ \midrule
+\texttt{buildBlock(\_ c: C...) -> C} & a block — the \textbf{only required} one \\
+\texttt{buildExpression(\_ e: E) -> C} & lifts each line; overload per input \\
+\texttt{buildOptional(\_ c: C?) -> C} & \texttt{if} without \texttt{else}, \texttt{if let} \\
+\texttt{buildEither(first:)} / \texttt{(second:)} & \texttt{if/else}, \texttt{switch} \\
+\texttt{buildArray(\_ cs: [C]) -> C} & \texttt{for\ldots in} \\
+\texttt{buildLimitedAvailability} & \texttt{if \#available} (erases type) \\
+\texttt{buildPartialBlock(first:)}, \texttt{(accumulated:next:)} & pairwise fold, any count (5.7) \\
+\texttt{buildFinalResult} & convert to the public type \\
+\bottomrule
+\end{tabular}}
+
+\begin{lstlisting}[language=SwiftSheet]
+@resultBuilder enum Lines {
+  static func buildBlock(_ p: String...) -> String {
+    p.joined(separator: "\n") }
+  static func buildOptional(_ p: String?) -> String {
+    if let p { p } else { "" } }
+}
+func doc(@Lines _ make: () -> String) -> String { make() }
+let s = doc { "title"; if vip { "gold" } }
+// = buildBlock("title", buildOptional(vip ? "gold" : nil))
+\end{lstlisting}
+
+\section{What \texttt{@ViewBuilder} builds}
+\begin{tikzpicture}[sheet]
+  \node[draw=sheetGrey, fill=tangoShade, font=\ttfamily\scriptsize, align=left,
+        inner sep=3pt, anchor=north west] (code) at (0,0.35)
+    {Text("Hi")\\if ok \{ Text("A") \}\\else \{ Image("b") \}\\if pro \{ Badge() \}};
+  \node[tn] (root) at (5.3,0) {TupleView<(Text, \_ConditionalContent<\ldots>, Badge?)>};
+  \draw[hot] (code.east) -- (root.west |- code.east);
+  \node[tn] (t) at (0.5,-1.65) {Text};
+  \node[tn, draw=sheetOrange, fill=sheetOrange!8] (cc) at (3.75,-1.65) {\_ConditionalContent<Text,Image>};
+  \node[tn] (op) at (7.2,-1.65) {Badge?};
+  \draw[flow] (root.south) -- node[el, pos=0.6]{buildExpression} (t.north);
+  \draw[flow] (root.south) -- node[el, pos=0.5]{buildEither} (cc.north);
+  \draw[flow] (root.south) -- node[el, pos=0.6]{buildOptional} (op.north);
+  \node[tn] (a) at (2.6,-2.4) {Text};
+  \node[tn] (b) at (4.9,-2.4) {Image};
+  \draw[flow] (cc) -- node[el, left=2pt]{first:} (a);
+  \draw[flow] (cc) -- node[el, right=2pt]{second:} (b);
+\end{tikzpicture}
+
+{\footnotesize\itshape\color{sheetBrown} The two branches are \textbf{different
+views} (structural identity): flipping \texttt{ok} destroys A's \texttt{@State}
+and runs a transition. Keep identity with a modifier:
+\texttt{.opacity(ok ? 1 : 0)}.}
+
+\section{Builder traps}
+\begin{itemize}
+  \trap{\texttt{ViewBuilder} has \textbf{no} \texttt{buildArray}: a
+        \texttt{for} in \texttt{body} does not compile — use \texttt{ForEach}
+        (it also carries per-row identity).}
+  \trap{An explicit \texttt{return} \textbf{turns the transform off}. Not
+        allowed: \texttt{while}, \texttt{repeat}, \texttt{guard},
+        \texttt{break}/\texttt{continue}, \texttt{defer}, \texttt{do-catch}.}
+  \trap{``Max 10 views'' came from \texttt{buildBlock} overloads — gone with
+        parameter packs (Swift 5.9).}
+\end{itemize}
+
+\section{Remember}
+\textbf{Macro = syntax in, syntax out, before types exist. Builder = one method
+per statement kind — Block, Expression, Optional, Either, Array.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} property wrappers · \texttt{@Observable} vs \texttt{ObservableObject} · SwiftUI view identity · opaque \texttt{some View} · RegexBuilder · Swift Testing \texttt{\#expect}}
+
+\end{document}

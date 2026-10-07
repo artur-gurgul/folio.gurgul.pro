@@ -1,0 +1,195 @@
+% swift-time-clock.tex — the Clock protocol, ContinuousClock vs SuspendingClock on a
+% timeline, Duration/Instant, measuring, Date vs monotonic time, Task.sleep, injecting a
+% clock for tests (Point-Free swift-clocks), timers and run-loop modes.
+% Sources (checked 2026-10-06):
+%   swift-evolution SE-0329 (Clock, Instant, Duration, 5.7: ContinuousClock keeps counting
+%     while the system sleeps, SuspendingClock does not) — checked against the evolution index
+%   developer.apple.com/documentation/swift/continuousclock · /swift/suspendingclock ·
+%     /swift/task/sleep(for:tolerance:clock:) · /foundation/date (an absolute instant — DST
+%     changes only its rendering) · /dispatch/dispatchtime · /quartzcore/1395996-
+%     cacurrentmediatime · /foundation/processinfo/systemuptime · /foundation/runloop/mode
+%   github.com/pointfreeco/swift-clocks (TestClock, ImmediateClock — not part of
+%     swift-async-algorithms) · github.com/apple/swift-async-algorithms (AsyncTimerSequence)
+% @labels: area=swift kind=api platform=apple topic=concurrency,testing discussion=168
+% @tags: clock, continuousclock, suspendingclock, duration, instant, task-sleep, monotonic-time, testclock, swift-clocks, timer, run-loop-modes, dispatchsourcetimer
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,actor,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,any,while,
+    true,false,AnyObject,Void,String,Bool,in},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  trk/.style={font=\scriptsize\ttfamily, anchor=east, inner sep=1pt},
+  run/.style={line width=3.2pt},
+}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+% minutes → x
+\newcommand\tx[1]{\fpeval{2.3+0.8*#1}}
+
+\begin{document}
+
+\sheettitle{Time in Swift — Clock, Duration, timers}{swift · folio}
+
+\oneliner{\texttt{Clock} (Swift 5.7, iOS 16) abstracts a time source: \texttt{now},
+\texttt{minimumResolution}, \texttt{sleep(until:tolerance:)}. \textbf{ContinuousClock} keeps
+counting while the system sleeps, \textbf{SuspendingClock} stops; both are
+\textbf{monotonic}, unlike \texttt{Date}, which is wall-clock and can jump. Measure elapsed
+time with a clock, store absolute moments as \texttt{Date}, and \textbf{inject} the clock so
+tests never really wait.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % sleep band
+  \fill[black!8] (\tx{2},-0.25) rectangle (\tx{7},2.45);
+  \node[lbl, font=\scriptsize\bfseries, text=sheetGrey] at (\tx{4.5},2.3) {system asleep (lid shut / idle deep sleep)};
+  % axis
+  \draw[->, sheetGrey] (\tx{0},1.8) -- (\tx{10.4},1.8) node[lbl, right]{real\\time};
+  \foreach \m in {0,...,10} {\draw[sheetGrey] (\tx{\m},1.75) -- (\tx{\m},1.85);
+    \node[lbl, above] at (\tx{\m},1.83) {\m};}
+  \node[lbl, anchor=east] at (\tx{0}-0.15,1.97) {min};
+  \node[lbl, text=sheetBlue, anchor=west, align=left] at (\tx{0.05},1.45)
+    {t=1: \texttt{try await clock.sleep(for: .seconds(180))}};
+  % continuous
+  \node[trk] at (\tx{0}-0.05,1.0) {ContinuousClock};
+  \draw[run, sheetGreen] (\tx{1},1.0) -- (\tx{4},1.0);
+  \draw[sheetRed, thick] (\tx{4},0.85) -- (\tx{4},1.15);
+  \node[lbl, text=sheetRed] at (\tx{4},0.72) {deadline passes};
+  \draw[->, thick, sheetGreen!60!black] (\tx{7},1.25) -- (\tx{7},1.02);
+  \node[lbl, anchor=west, text=sheetGreen!50!black] at (\tx{7.05},1.0) {resumes at wake (t=7, late)};
+  % suspending
+  \node[trk] at (\tx{0}-0.05,0.4) {SuspendingClock};
+  \draw[run, sheetOrange] (\tx{1},0.4) -- (\tx{2},0.4);
+  \draw[sheetOrange, dashed, thick] (\tx{2},0.4) -- (\tx{7},0.4);
+  \node[lbl, text=sheetOrange, fill=black!8] at (\tx{4.5},0.4) {frozen: 1 min counted, 2 to go};
+  \draw[run, sheetOrange] (\tx{7},0.4) -- (\tx{9},0.4);
+  \draw[->, thick, sheetOrange] (\tx{9},0.65) -- (\tx{9},0.42);
+  \node[lbl, anchor=west, text=sheetOrange] at (\tx{9.05},0.4) {t=9};
+  % date
+  \node[trk] at (\tx{0}-0.05,-0.1) {Date()};
+  \draw[thick, sheetBlue] (\tx{0},-0.1) -- (\tx{8},-0.1);
+  \draw[->, thick, sheetRed] (\tx{8},-0.1) -- (\tx{8},0.12);
+  \node[lbl, anchor=west, text=sheetRed, align=left] at (\tx{8.05},-0.02) {NTP / user sets\\clock back → $\Delta < 0$};
+  % right: which API is which
+  \draw[sheetGrey!40] (11.55,2.3) -- (11.55,-0.3);
+  \node[font=\bfseries\small, anchor=west] at (11.65,2.15) {Which source is which};
+  \node[lbl, anchor=north west, align=left, font=\scriptsize] at (11.65,1.9) {%
+    \textcolor{sheetGreen!50!black}{\textbf{counts through sleep}}\\
+    \texttt{ContinuousClock} · \texttt{mach\_continuous\_time}\\[2pt]
+    \textcolor{sheetOrange}{\textbf{uptime — stops in sleep}}\\
+    \texttt{SuspendingClock} · \texttt{mach\_absolute\_time}\\
+    \texttt{DispatchTime} · \texttt{CACurrentMediaTime()}\\
+    \texttt{ProcessInfo.systemUptime}\\[2pt]
+    \textcolor{sheetBlue}{\textbf{wall clock — can jump}}\\
+    \texttt{Date} · \texttt{DispatchWallTime}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How it works}
+\begin{itemize}
+  \item \texttt{protocol Clock<Duration>: Sendable} — \texttt{associatedtype Instant:
+        InstantProtocol}; requires \texttt{now}, \texttt{minimumResolution},
+        \texttt{sleep(until:tolerance:) async throws}. Extensions give
+        \texttt{sleep(for:)} and \texttt{measure \{\}} (sync + async).
+  \item \texttt{InstantProtocol}: \texttt{Comparable}, \texttt{Hashable};
+        \texttt{advanced(by:)}, \texttt{duration(to:)}; \texttt{instant + duration},
+        \texttt{instant - instant} → \texttt{Duration}. Each clock has its own
+        \texttt{Instant} type — mixing clocks does not compile.
+  \item \texttt{Duration}: clock-independent signed span, 128-bit
+        (\texttt{components}: \texttt{Int64} seconds + attoseconds).
+        \texttt{.seconds(1.5)}, \texttt{.milliseconds(250)}, \texttt{.microseconds},
+        \texttt{.nanoseconds}; \texttt{+ - * /}. Display:
+        \texttt{.formatted(.time(pattern: .hourMinuteSecond))} or
+        \texttt{.units(allowed:)} — no hand-rolled modulo.
+  \item \texttt{Task.sleep(for:tolerance:clock:)} — clock defaults to
+        \texttt{.continuous}. \textbf{Suspends} the task (frees the thread); throws
+        \texttt{CancellationError} early on cancel. \texttt{tolerance} lets the OS
+        coalesce wake-ups (energy). \texttt{Task.sleep(nanoseconds:)} = legacy raw
+        integer, no clock.
+  \item \texttt{Date} = seconds since 2001-01-01 (reference date), an absolute moment:
+        right for timestamps, calendars, persistence; wrong for elapsed time. Time
+        zones and DST change its \emph{display}, not its value.
+  \item An \texttt{Instant} means nothing after a reboot — never persist it.
+\end{itemize}
+
+\section{Example — inject, measure, test}
+\begin{lstlisting}[language=SwiftSheet]
+struct Poller<C: Clock<Duration>> {
+  let clock: C                      // injected
+  func run(_ tick: () async -> Void) async throws {
+    while true {
+      await tick()                  // sleep throws on cancel
+      try await clock.sleep(for: .seconds(30))
+    } }
+}
+let d = ContinuousClock().measure { parse(data) } // Duration
+print(d.formatted(.units(allowed: [.milliseconds])))
+// test (Point-Free swift-clocks):
+let clock = TestClock()
+let poll = Poller(clock: clock)
+let task = Task { try await poll.run { await hits.inc() } }
+await clock.advance(by: .seconds(60)) // ticks 0/30/60 at once
+task.cancel()
+\end{lstlisting}
+
+\columnbreak
+
+\section{Test clocks (Point-Free swift-clocks)}
+\texttt{TestClock}: virtual \texttt{now}, sleepers resume only on
+\texttt{await advance(by:)} / \texttt{run()} → assert ``nothing fired before 30 s''.
+\texttt{ImmediateClock}: every sleep returns at once (previews, happy-path tests).
+\texttt{UnimplementedClock}: fails the test if touched. Production takes
+\texttt{some}/\texttt{any Clock<Duration>}; a hard-coded \texttt{Task.sleep(for:)}
+cannot be redirected.
+
+\section{Timers}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}L{19mm}L{56mm}@{}}
+\toprule
+\textbf{API} & \textbf{Mechanism · trap} \\
+\midrule
+\texttt{Timer} & run-loop source; \texttt{scheduledTimer} adds it in \texttt{.default}
+  mode → \textbf{stops while scrolling} (\texttt{.tracking}); fix
+  \texttt{RunLoop.main.add(t, forMode: .common)}. Needs a \emph{running} run loop
+  (a GCD thread has none → never fires). Retains its target until
+  \texttt{invalidate()}. \\
+\texttt{DispatchSource} \texttt{TimerSource} & \texttt{schedule(deadline:repeating:leeway:)}
+  + \texttt{setEventHandler} + \texttt{resume()}; no run loop. Keep a strong ref;
+  never release it while suspended (crash). \\
+\texttt{AsyncTimer} \texttt{Sequence} & swift-async-algorithms:
+  \texttt{for await \_ in .repeating(every: .seconds(1))}; ends with the task. \\
+\texttt{CADisplayLink} & fires per screen refresh — animation, not scheduling. \\
+\bottomrule
+\end{tabular}}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{Date().timeIntervalSince(start)} for a timeout/benchmark: NTP or the
+        user moves the wall clock → negative or huge.}
+  \trap{\texttt{SuspendingClock} stops when the \textbf{system} sleeps — not when your
+        app is backgrounded or suspended.}
+  \trap{A test that waits 30 real seconds: the code hard-codes \texttt{Task.sleep} /
+        \texttt{ContinuousClock()} instead of taking a clock.}
+  \trap{\texttt{Thread.sleep} / \texttt{usleep} in \texttt{async} code blocks a
+        cooperative-pool thread.}
+  \trap{\texttt{TestClock} is from swift-clocks, not swift-async-algorithms.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Date = when, Clock = how long.} Continuous counts the night, Suspending sleeps with
+the machine; inject the clock, advance it in tests.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} async-and-network-testing ·
+async-sequences-streams (\texttt{AsyncStream} ticks) · concurrency (cancellation) ·
+background-execution (what runs while suspended)}
+
+\end{document}

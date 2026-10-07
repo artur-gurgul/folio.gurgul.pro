@@ -1,0 +1,196 @@
+% objc-interop.tex — the Objective-C an iOS codebase still contains (messaging, nil,
+% id, properties, blocks, categories, KVC/KVO, swizzling) + Swift <-> ObjC
+% interop (@objc, dynamic, NSObject, headers, nullability, what can't cross).
+% Sources (checked 2026-10-06):
+%   developer.apple.com/library/archive Objective-C Runtime Programming Guide (messaging,
+%     dynamic method resolution, forwarding) · Key-Value Observing Programming Guide
+%     (isa-swizzling) · Blocks Programming Topics (stack blocks copied to the heap)
+%   developer.apple.com/documentation/swift/importing-objective-c-into-swift ·
+%     /using-imported-c-enums-in-swift (NS_ENUM / NS_OPTIONS) · /improving-objective-c-api-
+%     declarations-for-swift (NS_REFINED_FOR_SWIFT) · /about-imported-cocoa-error-parameters
+%     (NSError ** <-> throws) · documentation/objectivec/nsobject/load + initialize
+%   swift-evolution SE-0160 (no @objc inference, Swift 4.0) — checked against the index
+% @labels: area=swift kind=concept platform=apple topic=language discussion=147
+% @tags: objective-c, objc-msgsend, message-forwarding, objc-dynamic, nsobject, bridging-header, nullability, kvo, kvc, method-swizzling, categories, blocks
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,true,false,dynamic,override,private,
+    NSObject,Double,String,Int,Any},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+\lstdefinelanguage{ObjCSheet}{
+  alsoletter={@_},
+  morekeywords={@interface,@implementation,@end,@property,nonatomic,strong,
+    weak,copy,assign,readonly,id,nil,self,void,return,if,YES,NO,BOOL,
+    __weak,__strong,__block,typeof,nullable,nonnull,instancetype},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.6mm},
+  ok/.style={sb, draw=sheetGreen, fill=sheetGreen!10},
+  bad/.style={sb, draw=sheetRed, fill=sheetRed!8},
+  q/.style={sb, draw=sheetOrange, fill=sheetOrange!10},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\small, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Objective-C essentials + Swift $\leftrightarrow$ ObjC interop}{swift · folio}
+
+\oneliner{An ObjC call is a \textbf{message}: \texttt{[obj sel]} becomes
+\texttt{objc\_msgSend(obj, @selector(sel))}, resolved \textbf{at runtime} in the
+receiver's class — hence nil messaging, categories, KVO, swizzling. Swift enters
+that world via \texttt{@objc} (\emph{visible} to the runtime) and \texttt{dynamic}
+(\emph{dispatched} through it), on \texttt{NSObject}-rooted classes.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[ttl] at (-0.1,2.45) {\texttt{[obj tap:x]} $\to$ \texttt{objc\_msgSend(obj, @selector(tap:), x)}};
+  \node[q] (nil) at (0.7,1.6) {obj nil?};
+  \node[ok, text width=13mm] (ret0) at (0.7,0.45) {return 0 / nil /\\\texttt{NO} — no crash};
+  \node[sb] (cache) at (2.45,1.6) {isa $\to$ class\\method cache};
+  \node[sb] (list) at (4.35,1.6) {method list\\(+ categories)};
+  \node[sb] (sup) at (6.25,1.6) {superclass\\chain};
+  \node[ok] (imp) at (4.35,0.45) {IMP found $\to$ tail-call\\\texttt{imp(obj, \_cmd, x)}};
+  \node[q] (res) at (8.2,1.6) {\texttt{+resolve}\\\texttt{InstanceMethod:}};
+  \node[q] (fwd) at (10.2,1.6) {\texttt{forwarding}\\\texttt{TargetForSelector:}};
+  \node[q] (inv) at (12.2,1.6) {\texttt{forward}\\\texttt{Invocation:}};
+  \node[bad] (crash) at (12.2,0.45) {\texttt{doesNotRecognize}\\\texttt{Selector:} $\to$ crash};
+  \draw[flow] (nil) -- node[lbl, left]{yes} (ret0);
+  \draw[flow] (nil) -- node[lbl, above]{no} (cache);
+  \draw[flow] (cache) -- node[lbl, above]{miss} (list);
+  \draw[flow] (list) -- node[lbl, above]{miss} (sup);
+  \draw[flow] (sup) -- node[lbl, above]{miss} (res);
+  \draw[flow] (res) -- (fwd); \draw[flow] (fwd) -- (inv);
+  \draw[flow] (inv) -- node[lbl, right]{no} (crash);
+  \draw[flow, draw=sheetGreen] (cache.south) -- node[lbl, left]{hit} (imp.north west);
+  \draw[flow, draw=sheetGreen] (list) -- (imp);
+  \draw[flow, draw=sheetGreen] (sup.south) -- (imp.north east);
+  \node[lbl, text=sheetBrown] at (9.5,0.45) {add a method → other target\\→ full forward (\texttt{NSInvocation})};
+  \node[lbl, text=sheetRed] at (6.55,0.45) {``unrecognized selector\\sent to instance''};
+  \draw[sheetGrey!40] (13.75,2.6) -- (13.75,0.1);
+  \node[ttl] at (13.8,2.45) {two headers, two directions};
+  \node[sb, fill=sheetGreen!10, draw=sheetGreen] (sw) at (14.4,1.35) {Swift};
+  \node[sb, fill=sheetOrange!10, draw=sheetOrange] (oc) at (16.3,1.35) {ObjC};
+  \draw[flow] (oc.north) to[out=150, in=30] node[lbl, above]{\texttt{T-Bridging-Header.h}} (sw.north);
+  \draw[flow] (sw.south) to[out=-30, in=-150] node[lbl, below]{\texttt{Module-Swift.h} (generated)} (oc.south);
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{ObjC}
+\begin{itemize}
+  \item \texttt{SEL} = interned name; \texttt{IMP} = C fn
+        \texttt{(id self, SEL \_cmd, ...)}. Cached lookup, never inlined.
+        \textbf{nil} receiver returns zero — a silent bug, not a crash.
+        \texttt{id} = any object, unchecked (Swift: \texttt{Any}).
+  \item \textbf{Properties:} default \texttt{atomic} (accessor lock only, not
+        thread safety). \texttt{strong} own · \texttt{weak} zeroing ·
+        \texttt{copy} for \texttt{NSString}/blocks (caller may pass a mutable
+        one) · \texttt{assign} scalars only (an object dangles; delegates are
+        \texttt{weak}) · \texttt{unsafe\_unretained} not zeroed.
+  \item \textbf{Blocks} capture locals \textbf{by value} at creation and
+        \textbf{retain} captured objects; \texttt{\_\_block} = by reference,
+        mutable. Born on the stack, ARC copies to heap when stored.
+        \texttt{self$\to$block$\to$self} cycle: weak/strong dance.
+  \item \textbf{Categories} add methods (not ivars — use associated objects)
+        to any class. Same selector twice = undefined winner $\Rightarrow$
+        prefix. \texttt{@interface C ()} = private extension in \texttt{.m}.
+  \item \textbf{KVC} \texttt{valueForKeyPath:@"a.b"}, \texttt{@sum.x};
+        bad key $\to$ \texttt{NSUnknownKeyException}. \textbf{KVO}
+        isa-swizzles the object to hidden \texttt{NSKVONotifying\_C} whose
+        setter wraps \texttt{will/didChangeValueForKey:}; fires on the
+        \emph{mutating} thread.
+  \item \textbf{Swizzle} with \texttt{method\_exchangeImplementations} in
+        \texttt{+load} + \texttt{dispatch\_once} (\texttt{+load}: pre-main,
+        per class and category; \texttt{+initialize}: lazy, may run twice).
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=ObjCSheet]
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, weak, nullable) id<PlayerDelegate> delegate;
+@property (nonatomic, copy) void (^onEnd)(void);
+__weak typeof(self) weakSelf = self;
+self.onEnd = ^{
+  __strong typeof(weakSelf) s = weakSelf;   // alive for the body
+  if (!s) return;
+  [s.delegate playerDidEnd:s]; };           // nil delegate: no-op
+\end{lstlisting}
+\begin{lstlisting}[language=SwiftSheet]
+final class Model: NSObject {
+  @objc dynamic var progress = 0.0     // KVO works
+  @objc var name = ""                  // visible, NOT KVO-safe
+  @objc(loadWithID:) func load(id: Int) {} }
+let token = model.observe(\.progress, options: [.new]) { m, c in
+  print(c.newValue as Any) }   // hold token; its deinit removes
+\end{lstlisting}
+
+\section{ObjC $\to$ Swift import}
+{\footnotesize
+\begin{tabular}{@{}ll@{\hspace{4mm}}ll@{}}
+\texttt{id} & \texttt{Any} & \texttt{Class} & \texttt{AnyClass} \\
+\texttt{instancetype} & \texttt{Self} & \texttt{SEL} & \texttt{Selector} \\
+\texttt{BOOL} & \texttt{Bool} & block & \texttt{@convention(block)} closure \\
+\texttt{NSInteger} & \texttt{Int} & category & \texttt{extension} \\
+\end{tabular}}
+
+\columnbreak
+
+\section{Interop}
+\begin{itemize}
+  \item \texttt{@objc} exposes (selector, \texttt{-Swift.h}) but may still be
+        vtable-called; \texttt{dynamic} forces \texttt{objc\_msgSend}
+        $\Rightarrow$ KVO, swizzling. \texttt{@objcMembers} = all members.
+        Swift 4 (SE-0160) stopped inferring \texttt{@objc}.
+  \item \texttt{@objc} class must inherit \texttt{NSObject};
+        \texttt{@objc protocol} is class-only, allows \texttt{optional}.
+  \item Bridging header: app/test targets (frameworks use umbrella header).
+        \texttt{-Swift.h}: \texttt{internal}+ in an app, \texttt{public} in a
+        framework; \texttt{\#import} in \texttt{.m}, \texttt{@class} in \texttt{.h}.
+  \item \texttt{nonnull}$\to$\texttt{T} · \texttt{nullable}$\to$\texttt{T?} ·
+        unannotated$\to$\texttt{T!}; use \texttt{NS\_ASSUME\_NONNULL\_BEGIN}.
+  \item \texttt{NS\_SWIFT\_NAME} renames · \texttt{NS\_REFINED\_FOR\_SWIFT}
+        $\to$ \texttt{\_\_name} · \texttt{NS\_ENUM}$\to$enum (\texttt{@unknown
+        default}) · \texttt{NS\_OPTIONS}$\to$\texttt{OptionSet} ·
+        \texttt{NSArray<NSString *>}$\to$\texttt{[String]} (else \texttt{[Any]}) ·
+        \texttt{NSError **}$\leftrightarrow$\texttt{throws}.
+  \item \textbf{Can't cross:} structs (bar bridged \texttt{String}/\texttt{Data}/%
+        \texttt{URL}…), enums with payloads (only \texttt{@objc enum E: Int}),
+        generics, tuples, \texttt{Int?} (use \texttt{NSNumber?}), PATs /
+        Swift-only protocols. Default args cross \emph{without} defaults.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{@objc} alone: Swift callers use the vtable and bypass KVO's
+        setter or a swizzled IMP — observation silently never fires.}
+  \trap{Swizzling: global, order-dependent, \texttt{\_cmd} changes; on an
+        \emph{inherited} method it swaps the superclass's
+        (\texttt{class\_addMethod} first); breaks across iOS versions.}
+  \trap{\texttt{[Int]}$\to$\texttt{NSArray} boxes each element in
+        \texttt{NSNumber}; \texttt{String}$\leftrightarrow$\texttt{NSString}
+        may transcode — costly in a loop.}
+  \trap{Overloads collide as one selector — \texttt{@objc(name:)}. No
+        \texttt{@objc} on an IB action $\to$ ``unrecognized selector''.}
+  \trap{Header says \texttt{nonnull}, ObjC returns nil $\to$ Swift crashes
+        on use. \texttt{@Published} is Combine, not KVO.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``@objc shows, dynamic sends.''} nil eats messages; categories add
+methods not storage; KVO = a secret subclass.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{arc-ownership}
+· \texttt{observation-and-combine} (KVO vs Combine) · \texttt{protocols-generics}
+(dispatch) · \texttt{swift-unsafe-and-reflection} (\texttt{Unmanaged}) ·
+\texttt{swift-runtime-and-compiler}}
+
+\end{document}
