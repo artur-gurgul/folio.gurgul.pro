@@ -1,0 +1,175 @@
+% signing-and-cicd.tex — iOS code signing chain, fastlane, TestFlight and release pipeline.
+% Sources (checked 2026-10-07):
+%   developer.apple.com/testflight (≤100 internal, ≤10,000 external) · App Store Connect Help,
+%     "TestFlight overview" (90 days; the first build added to a group is reviewed, later ones
+%     may not need a full review) · "Release a version update in phases" (1/2/5/10/20/50 %
+%     over 7 days, automatic-update users only, pause ≤30 days in total)
+%   Apple Developer Help, "Certificates overview" (Apple Distribution = designated test devices
+%     AND App Store Connect; in-house = iOS Distribution certificate)
+%   /documentation/appstoreconnectapi/creating-api-keys-for-app-store-connect-api (private key
+%     downloadable once; team keys carry a role; individual keys cannot use Provisioning) ·
+%     /generating-tokens-for-api-requests (ES256; lifetime ≤20 min; reuse until it expires)
+%   /bundleresources/information-property-list/cfbundleversion (1-3 integers)
+%   fastlane source: match/module.rb (types, storage modes) · match/encryption.rb (git and S3
+%     encrypted; google_cloud and gitlab_secure_files not) · match/options.rb (readonly) ·
+%     actions/setup_ci.rb (sets up the keychain for match on CI)
+%   Not confirmed, marked \unverified: CFBundleVersion uniqueness rule,
+%     automatic signing minting certificates, the errSecInternalComponent cause, Apple ID sessions.
+% @labels: area=security-build kind=process platform=apple topic=build,security discussion=257
+% @tags: code-signing, provisioning-profile, signing-certificate, entitlements, codesign, fastlane, fastlane-match, app-store-connect-api-key, testflight, phased-release, ci-cd, cfbundleversion
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{RubySheet}{
+  morekeywords={lane,do,end,true,false,ENV},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]"}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  sb/.style={box, font=\scriptsize, inner sep=2pt, minimum height=6mm},
+  key/.style={sb, draw=sheetRed, fill=sheetRed!7},
+  apple/.style={sb, draw=sheetGrey, fill=black!6},
+  pc/.style={cell, font=\tiny, minimum width=30mm, minimum height=3.8mm, anchor=north, fill=white, align=left, text width=28mm},
+  st/.style={sb, font=\tiny, minimum width=19mm, minimum height=10mm, text width=18mm},
+}
+
+\begin{document}
+
+\sheettitle{Code signing \& iOS CI/CD}{build · folio}
+
+\oneliner{A build runs on a device only if it is \textbf{signed with a certificate's private
+key} and carries a \textbf{provisioning profile} that lists that certificate, the
+\textbf{App ID}, the \textbf{entitlements} and (dev/ad hoc) the \textbf{device}. CI breaks
+because the runner has none of that — \textbf{fastlane match} + an \textbf{App Store Connect
+API key} make signing and upload reproducible and non-interactive.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── signing chain ──
+  \node[apple] (ca) at (0.9,3.4) {Apple WWDR CA};
+  \node[sb, minimum width=24mm] (cert) at (3.6,3.4) {Certificate\\\tiny public key · Team · expiry};
+  \node[key, minimum width=19mm] (pk) at (6.3,3.4) {Private key\\\tiny only in \emph{your} Keychain};
+  \draw[flow] (ca) -- node[lbl, above]{issues} (cert);
+  \draw[<->, thick, sheetRed] (cert) -- node[lbl, above]{pair} (pk);
+  \node[font=\scriptsize\bfseries, anchor=north west, align=left] at (0.0,2.75) {Provisioning\\profile};
+  \node[lbl, anchor=north west, align=left] at (0.0,2.1) {\texttt{.mobileprovision}\\signed by Apple;\\ties it all together};
+  \node[pc] (p1) at (3.6,2.7) {App ID \texttt{TEAMID.com.acme.app}};
+  \node[pc] (p2) at (p1.south) {certificate(s) allowed to sign};
+  \node[pc] (p3) at (p2.south) {entitlements (push, App Groups…)};
+  \node[pc] (p4) at (p3.south) {device UDIDs — dev / ad hoc only};
+  \node[pc] (p5) at (p4.south) {expiry date};
+  \node[draw=sheetBlue, thick, rounded corners=2pt, fit=(p1)(p5), inner sep=2pt] (prof) {};
+  \draw[flow] (cert.south) -- node[lbl, right]{listed in} (prof.north -| cert.south);
+  \node[sb, draw=sheetOrange, fill=sheetOrange!10, minimum width=19mm] (cs) at (6.3,1.95) {\texttt{codesign}};
+  \draw[hot] (pk) -- (cs);
+  \draw[hot] (prof.east |- cs) -- (cs.west);
+  \node[sb, draw=sheetGreen!70!black, fill=sheetGreen!10, align=center] (app) at (6.3,0.75) {App.app\\\tiny \texttt{\_CodeSignature/}\\\tiny\texttt{embedded.mobileprovision}};
+  \draw[hot] (cs) -- (app);
+  \node[lbl, anchor=north west, align=left, text=sheetBlue] at ($(prof.south west)+(0,-0.08)$) {\textbf{iOS checks at install/launch:}\\signature ↔ a cert in the profile ·\\entitlements $\subseteq$ profile · device listed\\(dev/ad hoc) · profile not expired};
+  % ── pipeline ──
+  \node[font=\bfseries\small, anchor=west] at (8.0,3.75) {CI pipeline (fastlane action)};
+  \foreach \t [count=\i] in {
+      {\textbf{1 checkout}\\resolve SPM/Pods;\\cache by lockfile},
+      {\textbf{2 signing}\\\texttt{setup\_ci} +\\\texttt{match(readonly)}},
+      {\textbf{3 test}\\\texttt{scan}: unit + UI;\\fail fast},
+      {\textbf{4 version}\\build no. = CI run\\(unique, rising)}}
+    \node[st, anchor=west] (a\i) at (8.0+\i*2.1-2.1,2.95) {\t};
+  \foreach \t [count=\i] in {
+      {\textbf{5 archive}\\\texttt{gym}: Release,\\\texttt{.ipa} + dSYMs},
+      {\textbf{6 symbols}\\upload dSYMs to\\crash reporter},
+      {\textbf{7 TestFlight}\\\texttt{pilot}: internal\\→ external},
+      {\textbf{8 App Store}\\\texttt{deliver} → review\\→ phased release}}
+    \node[st, anchor=west, fill=sheetGreen!8, draw=sheetGreen!70!black] (b\i) at (8.0+\i*2.1-2.1,1.65) {\t};
+  \foreach \i/\j in {1/2,2/3,3/4} { \draw[flow] (a\i) -- (a\j); \draw[flow] (b\i) -- (b\j); }
+  \draw[flow] (a4.south) -- ++(0,-0.12) -| (b1.north);
+  \node[lbl, anchor=north west, align=left] at (8.0,0.95) {\textbf{TestFlight:} internal $\le$100 team users, no review · external $\le$10{,}000; the \textbf{first build}\\added to a group goes to App Review, later ones may not need a full one · 90 days per build.\\\textbf{Phased release:} 1 · 2 · 5 · 10 · 20 · 50 · 100\,\% over 7 days, automatic updates only;\\pause $\le$30 days in total, not a rollback. \textbf{Secrets:} \texttt{MATCH\_PASSWORD}, ASC key \texttt{.p8}\\+ Key ID + Issuer ID in the CI secret store; ephemeral keychain per job.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Profile types}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{26mm}@{}}
+\toprule
+\textbf{Profile} & \textbf{Certificate} & \textbf{Devices} & \textbf{Use} \\
+\midrule
+Development & Apple Development & listed UDIDs & run + debug (\texttt{get-task-allow}) \\
+Ad Hoc & Apple Distribution & listed UDIDs & QA outside TestFlight \\
+App Store & Apple Distribution & none & TestFlight + App Store \\
+Enterprise & In-House (Enterprise Program) & none & internal staff only, never public \\
+\bottomrule
+\end{tabular}}
+
+\section{How it works}
+\begin{itemize}
+  \item The \textbf{profile} picks the channel, not the certificate: one Distribution
+        cert signs both Ad Hoc and App Store builds.
+  \item \textbf{Capability flow:} enable it on the App ID → regenerate the profile → add it
+        to \texttt{.entitlements}. All three must agree.
+  \item \textbf{Automatic signing} = Xcode creates certs/profiles with a logged-in Apple ID:
+        fine locally, flaky on CI. \textbf{Manual} = named profile + identity: reproducible.
+  \item \textbf{match} stores certs + profiles in git, S3, Google Cloud or GitLab Secure Files
+        and installs the same ones on every laptop and runner — \emph{encrypted} with
+        \texttt{MATCH\_PASSWORD} in git and S3 only; the others rely on bucket access.
+        \texttt{readonly: true} on CI so it never creates or revokes. iOS types:
+        \texttt{development}, \texttt{adhoc}, \texttt{appstore}, \texttt{enterprise}.
+  \item \textbf{ASC API key} = Issuer ID + Key ID + \texttt{.p8} (downloadable once); signs an
+        ES256 JWT that lives $\le$20 min, reused until it expires. No password, no 2FA,
+        role-scoped, revocable; a \emph{team} key — individual keys cannot reach the
+        provisioning endpoints. Apple ID auth needs 2FA sessions that expire\unverified.
+  \item \textbf{Version vs build:} \texttt{CFBundleShortVersionString} (2.4.0, user-facing)
+        vs \texttt{CFBundleVersion} (1387) — unique and increasing per upload of a
+        version\unverified.
+  \item \textbf{Build once, promote the artifact:} the \texttt{.ipa} you tested in TestFlight
+        is the one you submit; never rebuild for release.
+  \item \textbf{Caching:} key SPM/Pods caches on \texttt{Package.resolved} /
+        \texttt{Podfile.lock} + Xcode version — keyed on branch only, they go stale.
+\end{itemize}
+
+\section{Remember}
+\textbf{``Key + Cert + Profile = permission to run; match shares them, the API key
+uploads them.''}
+
+\columnbreak
+
+\section{Example — \texttt{Fastfile} (Ruby)}
+\begin{lstlisting}[language=RubySheet]
+lane :beta do
+  setup_ci                        # temp unlocked keychain on CI
+  key = app_store_connect_api_key(key_id: ENV["ASC_KEY_ID"],
+    issuer_id: ENV["ASC_ISSUER_ID"], key_content: ENV["ASC_P8"])
+  match(type: "appstore", readonly: true, api_key: key)
+  run_tests(scheme: "App")                         # scan
+  increment_build_number(build_number: ENV["CI_RUN_NUMBER"])
+  build_app(scheme: "App", export_method: "app-store")  # gym
+  upload_symbols_to_crashlytics                    # dSYMs
+  upload_to_testflight(api_key: key)               # pilot
+end
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{``Works on my Mac, fails on CI''}: your Keychain has the private key; the
+        runner doesn't. A \texttt{.cer} without its private key cannot sign.}
+  \trap{\texttt{errSecInternalComponent} / ``User interaction is not allowed'' = locked
+        keychain or key ACL\unverified{} → \texttt{setup\_ci} or \texttt{security
+        set-key-partition-list}.}
+  \trap{Automatic signing on CI keeps minting distribution certs until the account
+        limit\unverified.}
+  \trap{Capability works in Debug, missing in the App Store build → the distribution
+        profile was not regenerated after enabling it on the App ID.}
+  \trap{Duplicate \texttt{CFBundleVersion} → App Store Connect rejects the upload\unverified.}
+  \trap{Never commit \texttt{.p12}/\texttt{.p8} in plain text or \texttt{echo} a secret in a
+        job — CI logs are kept.}
+  \trap{Phased release can be paused, not rolled back; a bad build needs a new build.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} crashes \& symbolication (dSYMs) ·
+linking (Embed \& Sign) · build configurations / xcconfig · feature flags · Keychain}
+
+\end{document}

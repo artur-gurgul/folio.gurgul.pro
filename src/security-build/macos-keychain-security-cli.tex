@@ -1,0 +1,193 @@
+% macos-keychain-security-cli.tex — macOS keychains: file-based vs data protection keychain,
+% item classes, identities, ACLs + partition lists, and the `security` CLI recipe CI uses to sign.
+% Sources (checked 2026-09-26):
+%   developer.apple.com/documentation/technotes/tn3137-on-mac-keychains (two implementations,
+%     kSecUseDataProtectionKeychain, ACL vs access groups, SecKeychainCreate deprecated macOS 12 SDK)
+%   developer.apple.com/forums/thread/712005 (Apple DTS: Resolving errSecInternalComponent —
+%     unlock, import -T, set-key-partition-list, missing intermediate, SSH/sudo context)
+%   docs.github.com "Installing an Apple certificate on macOS runners" (create/settings -lut 21600/
+%     unlock/import -A -t cert -f pkcs12/set-key-partition-list -S apple-tool:,apple:/list-keychain)
+%   developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements (keychain
+%     prompts after a channel change = the DR no longer matches the ACL)
+% Not repeated: iOS SecItem API, accessibility classes, Secure Enclave (keychain-secure-enclave);
+% certificates + profiles basics (signing-and-cicd); fastlane match (cicd/fastlane-deep).
+% @labels: area=security-build kind=tooling platform=apple topic=security,build,tooling discussion=254
+% @tags: macos-keychain, security-cli, data-protection-keychain, keychain-acl, partition-list, errsecinternalcomponent, signing-identity, p12, ci-keychain, code-signing
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{ShSheet}{
+  morekeywords={security,codesign,xcodebuild,trap,export},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]",
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2 {>=}{{\hbox{>}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  kc/.style={draw=sheetGrey, minimum width=36mm, minimum height=4.2mm, font=\ttfamily\tiny, inner sep=1pt, anchor=north, align=center},
+  it/.style={box, font=\scriptsize, inner sep=1.5pt, align=center},
+  gate/.style={box, font=\tiny, text width=24mm, inner sep=1.5pt, align=left, draw=sheetOrange, fill=sheetOrange!8},
+  bad/.style={box, font=\tiny, text width=25mm, inner sep=1.5pt, align=left, draw=sheetRed, fill=sheetRed!7},
+}
+
+\begin{document}
+
+\sheettitle{macOS keychains \& the \ct{security} CLI (CI signing)}{security-build · folio}
+
+\oneliner{macOS has \textbf{two keychains}: the legacy \textbf{file-based} ones
+(\ct{login.keychain-db}, \ct{System.keychain}, any file you create) searched in a \textbf{search
+list} and guarded by per-item \textbf{ACLs + a partition list}, and the iOS-style \textbf{data
+protection keychain} (one per user, guarded by \textbf{access groups} from entitlements; needed for
+iCloud Keychain, biometrics, Secure Enclave). \ct{codesign} finds its \textbf{identity} (certificate +
+private key) in the \emph{file-based} search list — so CI must create, unlock and authorise a keychain.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── search list ──
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (-0.05,3.95) {1 · search list (file-based, per user)};
+  \node[kc, fill=sheetOrange!15] (k1) at (1.8,3.7) {build.keychain-db \textbf{(CI, first)}};
+  \node[kc, fill=sheetBlue!12, below=0pt of k1] (k2) {login.keychain-db — default};
+  \node[kc, fill=black!6, below=0pt of k2] (k3) {/Library/Keychains/System.keychain};
+  \node[kc, fill=black!3, below=0pt of k3] (k4) {SystemRootCertificates.keychain};
+  \node[lbl, anchor=north west, align=left] at (-0.05,1.88) {\ct{list-keychains -d user -s A B} \textbf{replaces}\\the list — pass login too. login unlocks\\with your login password; a CI one doesn't.\\\ct{codesign} walks the list top-down.};
+  \node[it, draw=sheetGreen!70!black, fill=sheetGreen!8, text width=34mm, font=\tiny] (dp) at (1.8,0.2) {\textbf{separate: data protection keychain}\\one per user · access groups · iCloud\\sync · \emph{not} in the search list};
+  \draw[sheetGrey!50] (3.95,4.05) -- (3.95,-0.15);
+  % ── identity ──
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (4.05,3.95) {2 · identity = cert + private key};
+  \node[it, text width=22mm] (cert) at (5.35,3.2) {\textbf{certificate} (\ct{cert})\\public key · Team ID\\issued by Apple WWDR};
+  \node[it, draw=sheetRed, fill=sheetRed!7, text width=22mm] (key) at (5.35,2.1) {\textbf{private key} (\ct{keys})\\+ ACL + partition list\\made by \emph{your} CSR};
+  \draw[<->, thick, sheetRed] (cert) -- node[lbl, left, fill=white]{same\\pub key} (key);
+  \node[draw=sheetBlue, thick, dashed, rounded corners=2pt, fit=(cert)(key), inner sep=2pt] (id) {};
+  \node[lbl, anchor=north, text=sheetBlue] at (id.south) {\ct{idnt}: a \emph{virtual} join, not stored};
+  \node[it, fill=sheetBrown!10, draw=sheetBrown, text width=22mm] (p12) at (5.35,0.55) {\ct{.p12} (PKCS\#12)\\cert + key, one password};
+  \draw[flow] (p12) -- node[lbl, right]{\ct{security import}} (id.south |- 1.3,1.25);
+  \draw[sheetGrey!50] (6.95,4.05) -- (6.95,-0.15);
+  % ── the gate ──
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (7.05,3.95) {3 · \ct{codesign} asks for the key — three gates};
+  \node[it, font=\tiny, text width=21mm] (cs) at (8.25,3.35) {\ct{codesign -s}\\\ct{"Apple Distribution"}};
+  \node[gate] (g1) at (10.9,3.35) {\textbf{A · keychain unlocked?}\\\ct{unlock-keychain -p}};
+  \node[gate] (g2) at (10.9,2.45) {\textbf{B · ACL}: caller in the\\trusted-apps list? (\ct{-T}/\ct{-A})};
+  \node[gate] (g3) at (10.9,1.5) {\textbf{C · partition list}: caller's\\partition ID listed?\\\ct{apple-tool:} · \ct{apple:} · \ct{teamid:X}};
+  \node[it, draw=sheetGreen!70!black, fill=sheetGreen!10, font=\tiny] (ok) at (10.9,0.45) {sign with the key};
+  \draw[hot] (cs) -- (g1);
+  \draw[flow] (g1) -- node[lbl, right]{yes} (g2);
+  \draw[flow] (g2) -- node[lbl, right]{yes} (g3);
+  \draw[flow] (g3) -- node[lbl, right]{yes} (ok);
+  \node[bad, text width=29mm] (b) at (14.7,2.45) {\textbf{no at A/B/C:} GUI $\to$ password\\prompt (``Always Allow'').\\SSH / CI / launchd / \ct{sudo}: no UI\\$\to$ \textbf{errSecInternalComponent}\\or ``User interaction is not\\allowed''};
+  \draw[->, thick, sheetRed] (g1.east) -- (b.north west);
+  \draw[->, thick, sheetRed] (g2.east) -- (b.west);
+  \draw[->, thick, sheetRed] (g3.east) -- (b.south west);
+  \node[lbl, anchor=north west, align=left, text=sheetBrown] at (12.85,1.25) {also \textbf{errSecInternalComponent}:\\missing \textbf{WWDR intermediate}\\(``unable to build chain to\\self-signed root'') $\to$ import it.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{File-based} = classic Mac OS heritage, ``on the road to deprecation''
+        (\ct{SecKeychainCreate} deprecated, macOS 12 SDK); \textbf{data protection} = iOS's, on
+        the Mac since iCloud Keychain (10.9) — opt in with \ct{kSecUseDataProtectionKeychain}.
+  \item \textbf{Item classes} (\ct{security} 4-letter codes): \ct{genp} generic password,
+        \ct{inet} internet password, \ct{cert}, \ct{keys}; \ct{idnt} = identity, assembled at
+        query time from a cert whose public key matches a stored private key.
+  \item \textbf{ACL} = which apps may use an item without a prompt (\ct{-T /usr/bin/codesign};
+        \ct{-A} = any app, no prompt). Code identity is the app's \textbf{designated
+        requirement}, so a re-signed or re-channelled app (e.g. TestFlight build) gets a
+        new prompt.
+  \item \textbf{Partition list} (added later to the file-based keychain, no public API): an
+        extra ACL tag on a key naming allowed \emph{signer groups} — \ct{apple:} (Apple-signed
+        system code), \ct{apple-tool:} (Apple tools such as \ct{codesign}/\ct{security}),
+        \ct{teamid:ABCDE12345}. A key imported by \ct{security import} gets only
+        \ct{apple-tool:}\unverified.
+  \item \textbf{Identity}: the \ct{.cer} Apple issues holds the public key only; the private
+        key was created on the Mac that made the CSR. Export both as a \ct{.p12}.
+\end{itemize}
+
+\hd{File-based vs data protection keychain}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{32mm}>{\raggedright\arraybackslash}p{28mm}@{}}
+\toprule
+& \textbf{file-based} & \textbf{data protection} \\ \midrule
+where & files (login, System, yours) in a \textbf{search list} & one per user, by caller context \\
+who may read & per-item \textbf{ACL} + partition list; prompts & \textbf{access groups} (entitlements) + \ct{SecAccessControl} \\
+sync & never & iCloud Keychain (\ct{kSecAttrSynchronizable}) \\
+daemons / root & yes (System keychain) & no — user login context only \\
+tools & \ct{security}, Keychain Access, \ct{codesign} & \ct{SecItem} on all Apple platforms \\
+\bottomrule
+\end{tabular}}
+
+\hd{Remember}
+\textbf{``Search list finds it, unlock opens it, ACL + partition list let \ct{codesign} touch it.''}
+
+\hd{Example — the CI keychain recipe}
+\begin{lstlisting}[language=ShSheet]
+KC="$RUNNER_TEMP/build.keychain-db"; PW="$(uuidgen)"   # throwaway
+security create-keychain -p "$PW" "$KC"
+security set-keychain-settings -lut 21600 "$KC"  # lock on sleep, after 6 h
+security unlock-keychain -p "$PW" "$KC"
+security import dist.p12 -k "$KC" -P "$P12_PW" -f pkcs12 \
+         -T /usr/bin/codesign -T /usr/bin/security   # ACL: these tools
+security set-key-partition-list -S apple-tool:,apple: -s -k "$PW" "$KC"
+security list-keychains -d user -s "$KC" login.keychain-db  # keep login!
+security find-identity -v -p codesigning "$KC"   # expect 1 valid identity
+xcodebuild archive ... OTHER_CODE_SIGN_FLAGS="--keychain $KC"
+security delete-keychain "$KC"                   # always, in a trap/post step
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Where the pieces come from}
+\begin{itemize}
+  \item \textbf{Apple WWDR intermediate} must be in a searched keychain or \ct{codesign} cannot
+        build the chain — download it from Apple PKI (apple.com/certificateauthority).
+  \item \textbf{Keychain Access} edits ACLs (``Access Control'' tab) of \emph{file-based} items
+        only; \ct{security dump-keychain -a} prints the ACLs.
+\end{itemize}
+
+\hd{\ct{security} — the commands you are asked about}
+{\footnotesize
+\begin{tabular}{@{}>{\ttfamily\raggedright\arraybackslash}p{36mm}>{\raggedright\arraybackslash}p{38mm}@{}}
+\toprule
+create-keychain -p & new file keychain (\ct{.keychain-db}) + password \\
+set-keychain-settings -lut & \ct{-l} lock on sleep · \ct{-u} lock after \ct{-t} secs; no flags = never lock \\
+unlock-keychain -p & gate A; again in every new session (SSH) \\
+import -k -P -T/-A -f & \ct{.p12}/\ct{.cer} into keychain \ct{-k}; \ct{-T} app into the key's ACL \\
+set-key-partition-list -S -s -k & partitions · signing keys only · keychain password \\
+list-keychains -d user -s & \textbf{set} the search list (no \ct{-s} = print it) \\
+default-keychain -s & where new items land; CI rarely needs it \\
+find-identity -v -p codesigning & valid signing identities: SHA-1 + name \\
+find-generic-password -s -a -w & read a secret (\ct{-w} prints only it) \\
+add-generic-password -U & store / update (\ct{-U}) a secret \\
+add-trusted-cert -r trustRoot & trust a private CA (\ct{-d}: admin domain) \\
+cms -D -i & decode CMS, e.g. a \ct{.mobileprovision} \\
+delete-keychain & remove the file + its search-list entry \\
+\bottomrule
+\end{tabular}}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Fixing the ACL won't help a \textbf{locked} keychain — unlock first (Apple DTS).}
+  \trap{\ct{list-keychains -s \$KC} alone \textbf{drops login} from the search list.}
+  \trap{\ct{find-identity}: ``0 valid identities'' though the cert is there $\to$ private key
+        missing (imported \ct{.cer}, not \ct{.p12}) or WWDR intermediate missing/expired.}
+  \trap{\ct{sudo codesign}: root can't see your login keychain.}
+  \trap{\ct{-A} on a long-lived keychain = every app reads the key silently; OK only on a
+        throwaway CI keychain.}
+  \trap{Mac \ct{SecItem} \emph{without} \ct{kSecUseDataProtectionKeychain} lands in the
+        \textbf{file-based} keychain — ACL prompts after re-signing, no access-group sharing.}
+  \trap{\ct{security find-generic-password -w} in a CI log prints the secret.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} code signing \& CI/CD · Keychain \& Secure Enclave
+(iOS \ct{SecItem}) · code signing internals (DR) · signing troubleshooting · fastlane match ·
+macOS security architecture}
+
+\end{document}

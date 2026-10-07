@@ -1,0 +1,169 @@
+% notarization-distribution.tex — Apple distribution channels compared (App Store, TestFlight,
+% Ad Hoc, Enterprise, Custom/Unlisted, Developer ID, EU alternative distribution) and the macOS
+% Developer ID path: hardened runtime, notarytool, stapler, packaging order, what Gatekeeper checks.
+% Sources (checked 2026-09-26):
+%   developer.apple.com/documentation/security/notarizing-macos-software-before-distribution
+%     (requirements, altool/Xcode 13- refused from 1 Nov 2023, 10.15 + 1 Jun 2019 rule, ticket online/stapled)
+%   developer.apple.com/documentation/security/resolving-common-notarization-issues
+%   developer.apple.com/documentation/security/customizing-the-notarization-workflow
+%     (store-credentials, submit --wait, log, ditto -c -k --keepParent, what can be stapled)
+%   developer.apple.com/help/account/devices/devices-overview (100 devices per product family per year)
+%   developer.apple.com/help/account/certificates/certificates-overview (cert types; expiry/revocation)
+%   developer.apple.com/programs/enterprise ($299, 100+ employees, internal use only)
+%   developer.apple.com/support/unlisted-app-distribution · .../volume-purchase-and-custom-apps
+%   developer.apple.com/support/dma-and-apps-in-the-eu (Notarization for iOS apps; iOS 17.4 / 17.5)
+% Not repeated: profiles, TestFlight limits, phased release (signing-and-cicd); signature format
+% (code-signing-internals); Gatekeeper/XProtect/SIP internals (macos/macos-security-architecture).
+% @labels: area=security-build kind=process platform=apple topic=security,build,tooling discussion=256
+% @tags: notarization, notarytool, stapler, developer-id, hardened-runtime, gatekeeper, ad-hoc-distribution, enterprise-program, custom-apps, alternative-app-marketplace, pkgbuild, dmg
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{ShSheet}{
+  morekeywords={codesign,xcrun,ditto,hdiutil,spctl,productbuild,productsign,pkgbuild},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]",
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  st/.style={box, font=\tiny, text width=20mm, inner sep=1.5pt, align=left, minimum height=13mm, anchor=north},
+}
+
+\begin{document}
+
+\sheettitle{Notarization \& distribution channels}{security-build · folio}
+
+\oneliner{The \textbf{channel} decides who may install and who vouches: App Store, TestFlight,
+Custom and Unlisted apps go through \textbf{App Review} and are \textbf{re-signed by Apple}; Ad Hoc
+and Enterprise run on \textbf{your} signature + profile; a Mac app outside the store is signed
+with \textbf{Developer ID}, uses the \textbf{hardened runtime} and is \textbf{notarized} — an
+automated malware + signing scan whose \textbf{ticket} Gatekeeper checks at first launch.
+``Notarization'' for \emph{iOS} (EU, via alternative marketplaces or the web) is a different thing: a
+baseline App Review.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (-0.05,2.05) {macOS Developer ID: build $\to$ sign $\to$ package $\to$ notarize $\to$ staple $\to$ first launch};
+  \node[st] (a) at (1.0,1.8) {\textbf{1 build}\\Release archive;\\Hardened Runtime\\on; no \ct{get-task-}\\\ct{allow}; SDK $\geq$ 10.9};
+  \node[st] (b) at (3.35,1.8) {\textbf{2 sign inside-out}\\Developer ID\\Application;\\\ct{-o runtime}\\\ct{\dd timestamp}};
+  \node[st] (c) at (5.7,1.8) {\textbf{3 package}\\\ct{.zip} (ditto) upload\\only · \ct{.dmg} signed\\(Dev ID App) · \ct{.pkg}\\(Dev ID Installer)};
+  \node[st, draw=sheetOrange, fill=sheetOrange!8] (d) at (8.05,1.8) {\textbf{4 notarytool}\\\ct{submit \dd wait}\\scan: malware +\\signing rules $\to$\\Accepted/Invalid};
+  \node[st, draw=sheetGreen!70!black, fill=sheetGreen!8] (e) at (10.4,1.8) {\textbf{5 ticket}\\published online;\\\ct{stapler staple}\\embeds it (app,\\dmg, pkg — not zip)};
+  \node[st, draw=sheetBlue, fill=sheetBlue!10] (f) at (12.75,1.8) {\textbf{6 download}\\browser/AirDrop\\sets the\\\ct{com.apple.}\\\ct{quarantine} xattr};
+  \node[st, draw=sheetRed, fill=sheetRed!6] (g) at (15.1,1.8) {\textbf{7 Gatekeeper}\\signature valid?\\Developer ID?\\ticket: stapled or\\\textbf{online lookup}};
+  \foreach \x/\y in {a/b,b/c,c/d,d/e,e/f,f/g} \draw[flow] (\x) -- (\y);
+  \node[lbl, anchor=north west, align=left, text=sheetGreen!50!black] at (-0.05,0.42) {Ticket keyed by \textbf{cdhash}: re-sign after notarizing $\to$ new cdhash, no ticket.};
+  \node[lbl, anchor=north west, align=left, text=sheetRed] at (-0.05,0.14) {Invalid $\to$ \ct{notarytool log <id>}: JSON listing every issue (unsigned nested dylib, no timestamp, no hardened runtime…)};
+  \node[lbl, anchor=north east, align=right, text=sheetBlue] at (16.3,0.42) {offline + not stapled $\to$ Gatekeeper can't look the ticket up};
+\end{tikzpicture}
+
+\vspace{2pt}
+{\footnotesize\setstretch{1.0}
+\noindent\begin{tabular}{@{}>{\raggedright\arraybackslash}p{21mm}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{58mm}@{}}
+\toprule
+\textbf{Channel} & \textbf{Signing} & \textbf{Who can install} & \textbf{Review} & \textbf{Know this} \\ \midrule
+App Store & Apple Distribution $\to$ Apple re-signs & public & App Review & store builds unaffected by your cert expiring \\
+TestFlight & same build + profile & internal / external testers & Beta App Review (external) & the \emph{same} \ct{.ipa} is promoted to the store \\
+Ad Hoc & Apple Distribution + ad hoc profile & registered UDIDs only & none & \textbf{100 devices per product family per membership year}; disabling frees no slot — reset only at renewal \\
+Enterprise / In-House & In-House cert + profile & own employees only (MDM) & none & Enterprise Program \$299/yr, 100+ employees; customer use breaks the agreement; revoked/expired cert $\to$ \textbf{every install stops launching} \\
+Custom app & Apple Distribution, App Store record set \emph{Private} & named orgs via Apple Business / School Manager & App Review & Apple's preferred path for internal apps; distribution method fixed once approved \\
+Unlisted app & App Store record + request & anyone with the link & App Review & not in search/charts; also assignable via ABM/ASM \\
+Developer ID (macOS) & Developer ID Application / Installer & anyone who downloads & notarization (automated) & expired cert: signed + timestamped builds keep running; \textbf{revoked}: no new installs \\
+Mac App Store & Mac App Distribution + Mac Installer Distribution & public & App Review & App Sandbox required \\
+EU alt. marketplace / Web Distribution & Apple encrypts + signs after notarization & EU users, iOS 17.4+ (web: 17.5+) & iOS Notarization (guideline subset, automated + human) & installed only from an authorised marketplace or your registered domain \\
+\bottomrule
+\end{tabular}}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How macOS notarization works}
+\begin{itemize}
+  \item \textbf{Requirements}: every executable signed with \textbf{Developer ID} (not
+        Development/Distribution/ad hoc) + \textbf{hardened runtime} + \textbf{secure
+        timestamp}; no \ct{get-task-allow}; SDK $\geq$ 10.9; ASCII-XML entitlements.
+        \textbf{Mandatory} since macOS 10.15 (software built after 1 June 2019).
+  \item \textbf{Hardened runtime} blocks JIT, \ct{DYLD\_*} env vars, foreign dylibs, debugger
+        attach — each re-enabled only by a \ct{com.apple.security.cs.*} entitlement
+        (\ct{allow-jit}, \ct{disable-library-validation}…).
+  \item \textbf{What is scanned}: malicious content + code-signing problems; an audit trail per
+        signing key is kept.
+  \item \textbf{Tools}: \ct{notarytool} (Xcode 13+). Apple stopped accepting \ct{altool} and
+        Xcode 13- uploads on \textbf{1 Nov 2023}. Auth: keychain profile (Apple ID +
+        app-specific password + Team ID) or an App Store Connect API key (\ct{\dd key \dd key-id
+        \dd issuer}).
+  \item \textbf{Packaging}: notarize the thing you ship; a \ct{.zip} can't be stapled (staple the
+        app, then re-zip). DMG: sign the app, build the DMG, sign the DMG, notarize + staple the
+        DMG. Installer: \ct{pkgbuild} (component) / \ct{productbuild} (product archive), signed
+        with \textbf{Developer ID Installer}; custom installers = two rounds (payload, then
+        installer).
+\end{itemize}
+
+\hd{iOS outside the App Store — EU (and Japan)}
+\begin{itemize}
+  \item Reviewed under the \textbf{Notarization Review Guidelines} only (security, privacy,
+        device integrity) $\to$ alternative channels only; full App Review $\to$ both.
+  \item Apple \textbf{encrypts and signs} every alternatively distributed app; install checks
+        for tampering and an authorised source; known malware $\to$ won't launch, installs blocked.
+  \item Marketplaces need Apple's authorisation (USD 1 M letter of credit). Japan: iOS
+        Notarization too.
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Sign inside-out with a timestamp and the runtime, notarize the outermost thing,
+staple what you ship.''}
+
+\columnbreak
+
+\hd{Example — Developer ID release of a DMG}
+\begin{lstlisting}[language=ShSheet]
+ID="Developer ID Application: Alice (ABCDE12345)"
+codesign -s "$ID" -o runtime --timestamp -f App.app   # after nested code
+hdiutil create -volname App -srcfolder App.app -ov -format UDZO App.dmg
+codesign -s "$ID" --timestamp App.dmg
+xcrun notarytool store-credentials AC --apple-id alice@example.com \
+      --team-id ABCDE12345            # prompts for an app-specific password
+xcrun notarytool submit App.dmg --keychain-profile AC --wait
+xcrun notarytool log <submission-id> --keychain-profile AC  # if Invalid
+xcrun stapler staple App.dmg && xcrun stapler validate App.dmg
+spctl -a -vvv -t exec App.app     # accepted, source=Notarized Developer ID
+productbuild --component App.app /Applications \
+      --sign "Developer ID Installer: Alice (ABCDE12345)" App.pkg
+\end{lstlisting}
+
+\hd{Certificate facts that decide channels}
+\begin{itemize}
+  \item One certificate \emph{of each distribution type} per team — except Developer ID; only
+        the Account Holder or an Admin can create distribution certificates.
+  \item Developer ID \textbf{Application} expired: existing builds still install and run;
+        \textbf{Installer} expired: pkgs install only if timestamped; \textbf{revoked}: no installs.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{\textbf{Notarized $\neq$ reviewed}: macOS notarization is automated malware/signing
+        scanning; App Review is a different process.}
+  \trap{Signing a DMG with \emph{Developer ID Installer}, or a pkg with \emph{Application} — each
+        container has its own certificate type.}
+  \trap{\ct{codesign \dd deep} ``fixes'' the notary's nested-code complaint but stamps the app's
+        entitlements on every helper — sign each item.}
+  \trap{Missing \ct{\dd timestamp}: the notary rejects it (``does not include a secure
+        timestamp''); for a pkg the timestamp is what keeps it installable after the
+        Installer cert expires.}
+  \trap{Enterprise cert for customers/betas — revoked $\to$ every copy dies; use Custom apps.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} code signing \& CI/CD (profiles, TestFlight) ·
+code signing internals (cdhash) · signing troubleshooting · macOS security architecture
+(Gatekeeper) · fastlane}
+
+\end{document}

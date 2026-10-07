@@ -1,0 +1,175 @@
+% crashes-symbolication.tex — reading an iOS crash report, exception types, dSYMs, MetricKit.
+% Sources (checked 2026-10-07):
+%   developer.apple.com/documentation/xcode/sigtrap_sigill (EXC_BREAKPOINT/SIGTRAP on ARM, SIGILL
+%     on x86_64; Swift runtime traps) · /xcode/sigkill (termination codes: 0x8badf00d watchdog,
+%     0xdead10cc file/SQLite lock during suspension) · /xcode/interpreting-the-json-format-of-a-
+%     crash-report (.ips JSON since iOS 15)
+%   Xcode 14 release notes (bitcode deprecated; no dSYM download for Xcode 14 submissions)
+%   developer.apple.com/documentation/metrickit/metricmanager (iOS 27; diagnosticReports AsyncSequence)
+%     · /diagnosticresult (crash, hang, cpuException, diskWriteException, appLaunch, memoryException)
+%     · /memoryexceptiondiagnostic (memory-limit termination) · /mxmetricmanager (deprecated 27.2;
+%     diagnostics immediately on iOS 15+, metrics at most daily)
+% @labels: area=security-build kind=tooling platform=apple topic=debugging,build discussion=251
+% @tags: crash-report, symbolication, dsym, atos, dwarfdump, exc-bad-access, exc-breakpoint, sigabrt, watchdog, jetsam, metrickit, mxdiagnosticpayload
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,import,
+    return,self,nil,true,false,some,for,in,guard,else,override},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+\lstdefinestyle{plain}{language={}, morecomment=[l]{\#}, commentstyle=\color{tangoComment}\itshape}
+
+\tikzset{
+  ln/.style={font=\ttfamily\tiny, anchor=west, inner sep=0.6pt},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  region/.style={rounded corners=1.5pt, inner sep=1.5pt},
+  tag/.style={font=\tiny\bfseries, anchor=east, align=right, inner sep=1pt},
+}
+
+\begin{document}
+
+\sheettitle{Crashes \& symbolication}{build · folio}
+
+\oneliner{A crash report says \textbf{what} killed the process (\emph{Exception Type +
+Termination Reason}), \textbf{where} (the crashed thread's backtrace of
+\emph{image + offset}), and \textbf{which build} (the \emph{UUID} of every binary image).
+Symbolication turns offsets into \texttt{function + file:line} using the \textbf{dSYM whose
+UUID matches} — no matching dSYM, no names, ever.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── the report ──
+  \def\dy{0.262}
+  \foreach \t [count=\i] in {
+    {Hardware Model:      iPhone14,5},
+    {Version:             2.4.0 (1387)},
+    {OS Version:          iPhone OS 17.5 (21F79)},
+    {Exception Type:      EXC\_BREAKPOINT (SIGTRAP)},
+    {Exception Codes:     0x1, 0x00000001045c3a10},
+    {Termination Reason:  SIGNAL 5 Trace/BPT trap: 5},
+    {Triggered by Thread: 0},
+    {Thread 0 Crashed:},
+    {0  MyApp    0x00000001045c3a10 0x104598000 + 178704},
+    {1  MyApp    0x00000001045b1f24 0x104598000 + 106276},
+    {2  SwiftUI  0x00000001a8c2e5b8 0x1a8a1c000 + 2172344},
+    {Binary Images:},
+    {0x104598000 - 0x10467ffff MyApp arm64 <4c4c44e2\dots a91f> \dots/MyApp},
+    {0x1a8a1c000 - 0x1a9f3bfff SwiftUI arm64e <\dots> /System/\dots}}
+    \node[ln, font=\ttfamily\scriptsize] (l\i) at (0,-\i*\dy) {\strut\t};
+  \begin{scope}[on background layer]
+    \node[region, fill=black!6, fit=(l1)(l3)] (rh) {};
+    \node[region, fill=sheetRed!12, fit=(l4)(l7)] (rx) {};
+    \node[region, fill=sheetOrange!15, fit=(l8)(l11)] (rt) {};
+    \node[region, fill=sheetBlue!12, fit=(l12)(l14)] (ri) {};
+  \end{scope}
+  \node[tag, text=sheetGrey] at ($(rh.west)+(-0.05,0)$) {header:\\build + device};
+  \node[tag, text=sheetRed] at ($(rx.west)+(-0.05,0)$) {WHAT\\killed it};
+  \node[tag, text=sheetOrange] at ($(rt.west)+(-0.05,0)$) {WHERE:\\image + offset};
+  \node[tag, text=sheetBlue] at ($(ri.west)+(-0.05,0)$) {WHICH build:\\load addr + UUID};
+  % address arithmetic: frame 0 → the image's load address
+  \coordinate (x13) at ($(l13.east)+(0.3,0)$);
+  \draw[hot] (l9.east) -- (l9.east -| x13) -- (x13) -- (l13.east);
+  \node[lbl, anchor=west, text=sheetOrange, align=left] at ($(l9.east -| x13)+(0.08,-0.45)$) {pc = load addr\\+ offset\\(0x2ba10 = 178704)};
+  % ── the dSYM match ──
+  \node[box, draw=sheetBlue, fill=sheetBlue!6, font=\scriptsize, align=left, anchor=north west] (dsym) at (9.0,-0.1)
+    {\textbf{MyApp.app.dSYM} (from the \emph{archive})\\\texttt{dwarfdump --uuid} →\\\texttt{4C4C44E2-\dots-A91F (arm64)}};
+  \draw[->, thick, sheetBlue] ($(ri.east)+(0,-0.22)$) -| ($(dsym.west)+(-0.3,0)$) node[lbl, pos=0.75, left, text=sheetBlue]{UUID\\must\\match} -- (dsym.west);
+  \node[box, draw=sheetGreen!70!black, fill=sheetGreen!10, font=\scriptsize, align=left, anchor=north west] (atos) at ($(dsym.south west)+(0,-0.35)$)
+    {\texttt{atos -arch arm64 -o …/DWARF/MyApp}\\\texttt{\ \ -l 0x104598000 0x1045c3a10}\\→ \texttt{CartVM.total() (CartVM.swift:42)}};
+  \draw[flow] (dsym) -- (atos);
+  \node[box, draw=sheetRed, fill=sheetRed!7, font=\scriptsize, align=left, anchor=north west] (miss) at ($(atos.south west)+(0,-0.3)$)
+    {UUID differs (rebuilt, lost dSYM) →\\hex offsets forever. Rebuilding the same\\commit gives a \textbf{new} UUID.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Exception type → cause → first move}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{21mm}>{\raggedright\arraybackslash}p{32mm}>{\raggedright\arraybackslash}p{22mm}@{}}
+\toprule
+\textbf{Type (signal)} & \textbf{Meaning} & \textbf{First move} \\
+\midrule
+\texttt{EXC\_BAD\_ACCESS} (SIGSEGV / SIGBUS) & bad pointer: freed object, \texttt{unowned}, unsafe pointer; \texttt{KERN\_INVALID\_ADDRESS} & Zombies, ASan \\
+\texttt{EXC\_BREAKPOINT} (SIGTRAP) & Swift trap: \texttt{!} on nil, index out of range, \texttt{fatalError}, \texttt{precondition}, \texttt{as!}, overflow & top app frame; the \emph{Fatal error} msg \\
+\texttt{EXC\_CRASH} (SIGABRT) & \texttt{abort()}: uncaught \texttt{NSException}, C \texttt{assert} & \emph{Last Exception Backtrace} \\
+\texttt{EXC\_CRASH} (SIGKILL) \texttt{0x8badf00d} & watchdog: main thread blocked at launch / resume / suspend & main stack; I/O off main \\
+\texttt{0xdead10cc} & held a file or SQLite lock while being suspended & \texttt{beginBackgroundTask}, release first \\
+no crash log & \textbf{jetsam} (memory limit) & iOS 27 MetricKit \texttt{.memoryException} \\
+\bottomrule
+\end{tabular}}
+
+\section{How it works}
+\begin{itemize}
+  \item Reports are JSON \texttt{.ips} (iOS 15+). Always read in order: exception type →
+        termination reason → crashed thread (main?) → first frame in \emph{your} image.
+  \item \textbf{dSYM} = DWARF debug info split out of the stripped binary
+        (\texttt{DEBUG\_INFORMATION\_FORMAT = dwarf-with-dsym}); the archive keeps it.
+        Find one by UUID: \texttt{mdfind "com\_apple\_xcode\_dsym\_uuids == <UUID>"}.
+  \item \textbf{Bitcode} is gone (deprecated in Xcode 14): the App Store no longer
+        recompiles, so the \emph{archive's} dSYM is the shipped one. Old bitcode builds
+        needed \emph{Download dSYMs} from App Store Connect.
+  \item Where crashes arrive: Xcode \textbf{Organizer} (opt-in users, delayed,
+        auto-symbolicated if the dSYM is known) · Crashlytics/Sentry (upload dSYMs from a
+        build phase or CI) · \textbf{MetricKit}.
+  \item \textbf{MetricKit} (iOS 27): one \texttt{MetricManager} instance;
+        \texttt{diagnosticReports} is an \texttt{AsyncSequence} of \texttt{DiagnosticReport}
+        (\texttt{Codable}); \texttt{result}: \texttt{.crash} · \texttt{.hang} ·
+        \texttt{.cpuException} · \texttt{.diskWriteException} · \texttt{.appLaunch} ·
+        \texttt{.memoryException} (memory-limit kills). Before: \texttt{MXMetricManager} +
+        subscriber \texttt{didReceive(\_:)} — deprecated in 27.2. Call stacks come
+        \emph{unsymbolicated}. Diagnostics arrive immediately (iOS 15+), metrics at most daily.
+\end{itemize}
+
+\section{Reproduce and triage}
+\begin{itemize}
+  \item Memory crashes: scheme → Diagnostics → \textbf{Zombie Objects} (message to a freed
+        object), \textbf{Address Sanitizer} (use-after-free, overflow),
+        \textbf{Thread Sanitizer} (races; not with ASan), Main Thread Checker.
+  \item Hangs/watchdog: Time Profiler, Hangs instrument. OOM: Allocations, Memory Graph,
+        downsample images, drop caches on memory warning.
+\end{itemize}
+
+\columnbreak
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+let metrics = MetricManager()        // iOS 27: hold ONE instance
+Task {
+  for await report in metrics.diagnosticReports { // never throws
+    switch report.result {
+    case .crash, .hang, .memoryException:
+      send(report)                 // Codable; stacks unsymbolicated
+    default: break
+    }
+  }
+}
+\end{lstlisting}
+\begin{lstlisting}[style=plain]
+dwarfdump --uuid MyApp.app/MyApp MyApp.app.dSYM  # equal?
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Swift traps are \textbf{not} SIGABRT: on arm64 they are \texttt{EXC\_BREAKPOINT
+        (SIGTRAP)} (\texttt{EXC\_BAD\_INSTRUCTION}/SIGILL on Intel simulators).}
+  \trap{``No crash log'' $\neq$ no crash — jetsam kills leave only a \texttt{JetsamEvent} log.}
+  \trap{\texttt{0x8badf00d} is not a bug at the top frame: it is where the main thread
+        \emph{was} when time ran out.}
+  \trap{Optimized builds inline code: a frame may show the caller's line or skip callees.}
+  \trap{Never trust ``I rebuilt the same commit'' — different UUID, dSYM useless.}
+\end{itemize}
+
+\section{Remember}
+\textbf{``What · Where · Which build.''} Type tells the \emph{category}, the backtrace the
+\emph{place}, the UUID the \emph{dSYM}. \texttt{8badf00d} = too slow, \texttt{dead10cc} = lock on suspend.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} linking \& launch time ·
+signing \& CI (archive keeps dSYMs) · memory management / retain cycles · Instruments · threading}
+
+\end{document}
