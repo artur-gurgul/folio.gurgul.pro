@@ -1,0 +1,96 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>TLS 1.3 &amp; PKI — handshake, trust, pinning — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/networking/tls-pki.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">230</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area current" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">TLS 1.3 &amp; PKI — handshake, trust, pinning</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">networking · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> TLS gives <strong>confidentiality</strong> (AEAD), <strong>integrity</strong> and <strong>server
+authentication</strong>: an <strong>ephemeral ECDHE</strong> exchange makes the keys (forward secrecy), and a
+<strong>certificate chain</strong> ending in a root the device already trusts proves the key belongs to the
+<strong>hostname</strong>. TLS 1.3 (RFC 8446) does it in <strong>1 RTT</strong>; resumption can send data in <strong>0 RTT</strong> — replayable.</p>
+<p class="sheet-tools"><a class="sheet-download" href="tls-pki.pdf" download>Download PDF</a> <a href="tls-pki.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/networking/tls-pki.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="tls-pki-fig1.svg" width="596" height="185" class="wide" alt="TLS 1.3 &amp; PKI — handshake, trust, pinning — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">How it works</span></h3>
+<ul>
+<li><strong>Key exchange</strong>: each side sends an <em>ephemeral</em> ECDHE public key; the shared secret  feeds HKDF <span class="math">→</span> handshake, then traffic keys. The certificate key only <strong>signs</strong>  (CertificateVerify) — it never encrypts a secret.</li>
+<li><strong>Forward secrecy</strong>: ephemeral keys are discarded, so a server key stolen later  <em>cannot</em> decrypt recorded sessions. 1.2 static-RSA key transport had no FS.</li>
+<li><strong>1.3 suites</strong> name only AEAD + hash: <code>TLS_AES_128_GCM_SHA256</code>,  <code>TLS_AES_256_GCM_SHA384</code>, <code>TLS_CHACHA20_POLY1305_SHA256</code>. Group (x25519, P-256)  and signature (ECDSA, RSA-PSS, Ed25519) are negotiated separately; a 1.2 suite bundled all  four (<code>ECDHE-RSA-AES128-GCM-SHA256</code>).</li>
+<li>Wrong key_share guess <span class="math">→</span> <strong>HelloRetryRequest</strong> <span class="math">→</span> 2 RTT. Resumption: ticket <span class="math">→</span>  PSK; PSK + fresh ECDHE keeps FS, 0-RTT data does not.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">TLS 1.2 (RFC 5246) vs 1.3</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th><strong>1.2</strong></th><th><strong>1.3</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>handshake</td><td>2 RTT (Hello <span class="math">→</span> KeyExchange + Finished)</td><td>1 RTT; 0-RTT on resumption</td></tr>
+<tr><td>key exchange</td><td>RSA transport <em>or</em> (EC)DHE</td><td>(EC)DHE only: FS mandatory</td></tr>
+<tr><td>certificate</td><td>sent in <strong>cleartext</strong></td><td>encrypted</td></tr>
+<tr><td>removed</td><td>—</td><td>RSA kx, CBC, RC4, SHA-1, compression, renegotiation</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Validation — what SecTrust checks</span></h3>
+<ol>
+<li><strong>Path</strong> leaf <span class="math">→</span> intermediates <span class="math">→</span> a root in the trust store; <strong>signature</strong>  at every link; intermediates <code>CA:TRUE</code>.</li>
+<li><strong>Validity</strong>: notBefore <span class="math">≤</span> now <span class="math">≤</span> notAfter — the <em>device clock</em>.</li>
+<li><strong>Hostname</strong> vs <strong>SAN</strong> (iOS 13+: CN ignored; EKU serverAuth, RSA <span class="math">≥</span> 2048, SHA-2).</li>
+<li><strong>Revocation</strong>: CRL (list) · OCSP (live query, leaks who you visit) · <strong>stapling</strong>  (server attaches a signed OCSP answer). Clients <strong>soft-fail</strong>: blocked responder <span class="math">=</span>  pass. Let’s Encrypt ended OCSP in 2025 (CRLs).</li>
+<li><strong>CT</strong> (RFC 6962): public append-only logs; Apple requires SCTs. Then <strong>your
+ policy</strong>: ATS, pins — <em>after</em> default validation, never instead.</li>
+</ol>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — mTLS: answer the client-certificate challenge</span></h3>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">func</span> <span class="hljs-title function_">urlSession</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">s</span>: <span class="hljs-type">URLSession</span>, <span class="hljs-params">didReceive</span> <span class="hljs-params">c</span>: <span class="hljs-type">URLAuthenticationChallenge</span>)
+    <span class="hljs-keyword">async</span> -&gt; (<span class="hljs-type">URLSession</span>.<span class="hljs-type">AuthChallengeDisposition</span>, <span class="hljs-type">URLCredential</span>?) {
+  <span class="hljs-keyword">switch</span> c.protectionSpace.authenticationMethod {
+  <span class="hljs-keyword">case</span> <span class="hljs-type">NSURLAuthenticationMethodClientCertificate</span>:
+    <span class="hljs-keyword">let</span> id <span class="hljs-operator">=</span> keychainIdentity()  <span class="hljs-comment">// SecIdentity = cert + private key</span>
+    <span class="hljs-keyword">return</span> (.useCredential, <span class="hljs-type">URLCredential</span>(identity: id,
+            certificates: <span class="hljs-literal">nil</span>, persistence: .forSession))
+  <span class="hljs-keyword">default</span>:                       <span class="hljs-comment">// server trust: keep default checks</span>
+    <span class="hljs-keyword">return</span> (.performDefaultHandling, <span class="hljs-literal">nil</span>)
+  }
+}</code></pre>
+<h3 class="sheet-hd"><span class="c-sheetblue">Pinning — what to pin</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>Pin</strong></th><th><strong>Survives</strong></th><th><strong>Risk</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>leaf <em>cert</em></td><td>nothing: every renewal</td><td>bricks old binaries every 90 days</td></tr>
+<tr><td>leaf <strong>SPKI</strong></td><td>renewal with same key</td><td>key compromise <span class="math">→</span> backup pin</td></tr>
+<tr><td>interm. SPKI</td><td>any leaf re-key by that CA</td><td>CA rotates its intermediate</td></tr>
+<tr><td>root SPKI</td><td>almost everything</td><td>weak: any leaf of that CA passes</td></tr>
+</tbody>
+</table></p>
+<p>Always <span class="math">≥</span> 2 pins: current + an <strong>offline backup key</strong>. No code: <code>NSPinnedDomains</code> <span class="math">→</span> <code>NSPinnedLeafIdentities</code> / <code>NSPinnedCAIdentities</code> (<code>SPKI-SHA256-BASE64</code>). Have a kill path (pins in remote config) or accept a forced update.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">mTLS and ATS</span></h3>
+<p><strong>mTLS</strong>: server sends CertificateRequest; client answers Certificate + CertificateVerify — proves <em>possession of a key</em>, no bearer secret on the wire. Cost: issuing + rotating a per-device cert (<code>SecPKCS12Import</code> of a <code>.p12</code>). <strong>ATS</strong>: HTTPS, TLS <span class="math">≥</span> 1.2, FS suites, valid chain; narrow <code>NSExceptionDomains</code>; <code>NSAllowsArbitraryLoads</code> needs a review reason.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Failures you actually meet</span></h3>
+<p><table class="sheet-table">
+<tbody>
+<tr><td>missing intermediate</td><td>browser OK, others fail: serve the full chain</td></tr>
+<tr><td>expired root / cross-sign</td><td>DST Root CA X3 (30 Sep 2021) broke old devices</td></tr>
+<tr><td>device clock wrong</td><td><code>-1201</code> bad date · <code>-1204</code> not yet valid</td></tr>
+<tr><td>name not in SAN</td><td><code>-1202</code> server certificate untrusted</td></tr>
+<tr><td>private CA / self-signed</td><td><code>-1203</code> unknown root: trust the <em>root</em>, not the leaf</td></tr>
+<tr><td><code>http://</code> under ATS</td><td><code>-1022</code> (ATS requires a secure connection)</td></tr>
+<tr><td>proxy / captive portal</td><td>MITM certificate: pinning fails, as designed</td></tr>
+</tbody>
+</table></p>
+<p>URLError names checked; the numeric codes<span class="unverified">(unverified)</span>.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">“Disable validation for testing” ships a MITM: encryption to <em>the attacker</em>. Use a test CA.</li>
+<li class="trap">0-RTT is not free speed: early data is <strong>replayable</strong> — idempotent GETs only.</li>
+<li class="trap">A DV cert proves <em>domain control at issuance</em>, not honesty.</li>
+<li class="trap">SNI leaks the hostname in cleartext; ECH closes it.</li>
+<li class="trap"><code>SecKeyCopyExternalRepresentation</code> gives the <em>raw</em> key, not SPKI — prepend the  ASN.1 header before hashing or the pin never matches.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<h3 class="sheet-hd">“Ephemeral keys encrypt, certificates sign, the chain proves the name.”</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> urlsession-networking (pinning code) ·
+keychain-secure-enclave · app-hardening-privacy (ATS) · http-deep (QUIC carries TLS 1.3) · oauth-oidc-jwt</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=networking" title="area">networking</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=general" title="platform">general</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=security" title="topic">security</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=networking" title="topic">networking</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=protocols" title="topic">protocols</a></li><li class="sheet-tag"><a href="/folios.html?tag=tls13">tls13</a></li><li class="sheet-tag"><a href="/folios.html?tag=tls-handshake">tls-handshake</a></li><li class="sheet-tag"><a href="/folios.html?tag=forward-secrecy">forward-secrecy</a></li><li class="sheet-tag"><a href="/folios.html?tag=ecdhe">ecdhe</a></li><li class="sheet-tag"><a href="/folios.html?tag=0-rtt">0-rtt</a></li><li class="sheet-tag"><a href="/folios.html?tag=x509">x509</a></li><li class="sheet-tag"><a href="/folios.html?tag=chain-of-trust">chain-of-trust</a></li><li class="sheet-tag"><a href="/folios.html?tag=ocsp">ocsp</a></li><li class="sheet-tag"><a href="/folios.html?tag=certificate-transparency">certificate-transparency</a></li><li class="sheet-tag"><a href="/folios.html?tag=certificate-pinning">certificate-pinning</a></li><li class="sheet-tag"><a href="/folios.html?tag=spki">spki</a></li><li class="sheet-tag"><a href="/folios.html?tag=mtls">mtls</a></li><li class="sheet-tag"><a href="/folios.html?tag=ats">ats</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=networking%2Ftls-pki.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/232">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

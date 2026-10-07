@@ -1,0 +1,198 @@
+% http-deep.tex — HTTP/1.1 → HTTP/2 → HTTP/3 (stack + head-of-line blocking drawn), caching and
+% validation, Vary, CORS, cookies, compression, keep-alive, what URLSession does for you.
+% Status codes / REST / ETag-for-concurrency live in design/api-design.tex; URLCache policies in
+% ios-swift/urlsession-networking.tex — cross-referenced, not repeated.
+% Sources (checked 2026-10-06):
+%   rfc-editor.org: RFC 9110 (semantics) · 9111 (caching; no-store = MUST NOT store) · 9112
+%     (HTTP/1.1) · 9113 (HTTP/2: client streams odd-numbered; server push) · 9114 (HTTP/3) · 9000
+%     (QUIC)
+%   developer.apple.com/documentation/foundation/urlrequest/assumeshttp3capable (iOS 14.5; QUIC
+%     racing without discovery) · /urlsessiondatadelegate/urlsession(_:datatask:willcacheresponse:…)
+%     (cached only if ≤ ~5% of the disk cache, 2xx, from the server)
+%   Not in those sources, marked \unverified: Chrome removing push (2022); URLCache surfacing a
+%     revalidated 304 as 200.
+% @labels: area=networking kind=concept platform=general topic=networking,protocols,performance discussion=224
+% @tags: http2, http3, quic, head-of-line-blocking, hpack, cache-control, etag, conditional-requests, vary, cors, cookies, urlsessiontaskmetrics
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,for,in,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{HTTP/1.1 · HTTP/2 · HTTP/3 — and the headers that matter}{networking · folio}
+
+\oneliner{Same \textbf{semantics} (methods, status, headers — RFC 9110) on three \textbf{wire formats}:
+1.1 = text, one request at a time per TCP connection; \textbf{2} = binary frames, many
+\textbf{streams multiplexed} on one TCP connection (TCP head-of-line blocking remains);
+\textbf{3} = the same over \textbf{QUIC/UDP} with TLS 1.3 built in — per-stream loss recovery,
+fast setup, \textbf{connection migration}.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    ly/.style={draw=sheetGrey, fill=black!3, minimum width=27mm, minimum height=4.6mm,
+               font=\scriptsize, inner sep=1pt, align=center},
+    ht/.style={ly, draw=sheetBlue, fill=sheetBlue!8},
+    tl/.style={ly, draw=sheetGreen, fill=sheetGreen!10},
+    qu/.style={ly, draw=sheetOrange, fill=sheetOrange!10},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center}]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.3,3.55) {The stacks};
+  % column x: 1.2, 4.3, 7.4
+  \foreach \x/\t in {1.2/{HTTP/1.1}, 4.3/{HTTP/2}, 7.4/{HTTP/3}}
+    \node[font=\bfseries\footnotesize] at (\x,3.15) {\t};
+  % HTTP/1.1
+  \node[ht] at (1.2,2.7) {text: \ct{GET /a HTTP/1.1}};
+  \node[ly] at (1.2,2.2) {1 request in flight\\[-1pt] per connection};
+  \node[tl] at (1.2,1.7) {TLS 1.2 / 1.3};
+  \node[ly] at (1.2,1.2) {TCP};
+  \node[ly] at (1.2,0.7) {IP};
+  % HTTP/2
+  \node[ht] at (4.3,2.7) {binary frames · HPACK};
+  \node[ht] at (4.3,2.2) {streams 1,3,5… multiplexed};
+  \node[tl] at (4.3,1.7) {TLS (ALPN \ct{h2})};
+  \node[ly] at (4.3,1.2) {TCP — one ordered byte stream};
+  \node[ly] at (4.3,0.7) {IP};
+  % HTTP/3
+  \node[ht] at (7.4,2.7) {HTTP/3 frames · QPACK};
+  \node[qu, minimum height=9.6mm] at (7.4,1.95) {\textbf{QUIC} (RFC 9000)\\streams · loss recovery\\\textbf{TLS 1.3 inside} · conn IDs};
+  \node[ly] at (7.4,1.2) {UDP};
+  \node[ly] at (7.4,0.7) {IP};
+  % setup cost row
+  \node[l, text=sheetRed] at (1.2,0.2) {TCP 1 + TLS1.3 1 = \textbf{2 RTT}\\(TLS 1.2: 3 RTT)};
+  \node[l, text=sheetRed] at (4.3,0.2) {same 2 RTT — but only\\\textbf{once} per origin};
+  \node[l, text=sheetGreen!50!black] at (7.4,0.2) {\textbf{1 RTT}; 0-RTT on resume\\found via \ct{Alt-Svc} / HTTPS DNS};
+
+  \draw[sheetGrey!40] (9.05,3.7) -- (9.05,-0.35);
+
+  % ---------- HOL blocking ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (9.2,3.55) {One lost packet};
+  \node[l, anchor=west, font=\scriptsize\bfseries] at (9.2,3.1) {HTTP/2 over TCP};
+  \foreach \y/\s in {2.7/A, 2.35/B, 2.0/C} {
+    \node[l, anchor=east] at (9.8,\y) {\s};
+    \foreach \i in {0,...,6} \node[cell, minimum width=3mm, minimum height=2.6mm, fill=sheetBlue!10] at (10.05+\i*0.38,\y) {};
+  }
+  \node[cell, minimum width=3mm, minimum height=2.6mm, fill=sheetRed!60] at (10.05+2*0.38,2.35) {};
+  \foreach \y in {2.7,2.0} \foreach \i in {3,...,6} \node[cell, minimum width=3mm, minimum height=2.6mm, fill=sheetRed!12, draw=sheetRed] at (10.05+\i*0.38,\y) {};
+  \foreach \i in {3,...,6} \node[cell, minimum width=3mm, minimum height=2.6mm, fill=sheetRed!12, draw=sheetRed] at (10.05+\i*0.38,2.35) {};
+  \node[l, anchor=west, text=sheetRed, align=left] at (12.8,2.35) {kernel holds \textbf{all} later bytes\\until the retransmit: A and C\\wait for B's packet};
+  \node[l, anchor=west, font=\scriptsize\bfseries] at (9.2,1.55) {HTTP/3 over QUIC};
+  \foreach \y/\s in {1.15/A, 0.8/B, 0.45/C} {
+    \node[l, anchor=east] at (9.8,\y) {\s};
+    \foreach \i in {0,...,6} \node[cell, minimum width=3mm, minimum height=2.6mm, fill=sheetGreen!15] at (10.05+\i*0.38,\y) {};
+  }
+  \node[cell, minimum width=3mm, minimum height=2.6mm, fill=sheetRed!60] at (10.05+2*0.38,0.8) {};
+  \foreach \i in {3,...,6} \node[cell, minimum width=3mm, minimum height=2.6mm, fill=sheetRed!12, draw=sheetRed] at (10.05+\i*0.38,0.8) {};
+  \node[l, anchor=west, text=sheetGreen!50!black, align=left] at (12.8,0.8) {only stream B waits;\\A and C keep delivering};
+  \node[l, anchor=west, align=left] at (9.2,0.05) {\textbf{Migration}: QUIC names the connection by an ID, not the\\IP/port 4-tuple — Wi-Fi $\to$ cellular keeps the connection.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{1.1} (RFC 9112): connections are \textbf{persistent by default} (\ct{Connection: close}
+        ends one) — reuse skips TCP + TLS setup. One response at a time: \textbf{pipelining} had
+        to answer in order (one slow response blocks the rest) and proxies broke it — off
+        everywhere. Workaround: $\sim$6 connections per host.
+  \item \textbf{2} (RFC 9113): frames (\ct{HEADERS DATA SETTINGS WINDOW\_UPDATE RST\_STREAM PING
+        GOAWAY}); client streams have odd ids; flow control per stream \emph{and} connection.
+        \ct{RST\_STREAM} cancels one request without killing the connection. \textbf{HPACK}: static
+        + dynamic table + Huffman — a repeated cookie costs a byte or two. Server push: dead (Chrome
+        removed it, 2022\unverified) — use \ct{103 Early Hints}.
+  \item \textbf{3} (RFC 9114): streams are independent in QUIC, so loss stalls only its stream.
+        \textbf{QPACK} replaces HPACK (HPACK assumes in-order delivery). UDP blocked $\to$ the client
+        falls back to TCP.
+\end{itemize}
+
+\hd{Caching (RFC 9111) — freshness, then validation}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{25mm}>{\raggedright\arraybackslash}p{47mm}@{}}
+\toprule
+\ct{max-age=60} & fresh for 60 s — served with no request \\
+\ct{no-cache} & \textbf{may store}, must revalidate before every use \\
+\ct{no-store} & never write it anywhere (secrets, PII) \\
+\ct{private} / \ct{public} & only the end client / shared caches (CDN) too \\
+\ct{s-maxage} & freshness for shared caches only \\
+\ct{must-revalidate} & no stale reuse after expiry \\
+\ct{stale-while-revalidate} & serve stale now, refresh in background \\
+\ct{immutable} & never revalidate (hashed asset URLs) \\
+\bottomrule
+\end{tabular}}\par
+\textbf{Validation}: response \ct{ETag: "v7"} (opaque; \ct{W/} = weak) or \ct{Last-Modified} $\to$
+request \ct{If-None-Match} / \ct{If-Modified-Since} $\to$ \textbf{304} (no body, reuse cache) or
+200. \textbf{\ct{Vary: Accept-Encoding}} adds those request headers to the cache key;
+\ct{Vary: *} makes it uncacheable.
+
+\hd{Example — which protocol did I get?}
+\begin{lstlisting}[language=SwiftSheet]
+final class Probe: NSObject, URLSessionTaskDelegate {
+  func urlSession(_ s: URLSession, task: URLSessionTask,
+                  didFinishCollecting m: URLSessionTaskMetrics) {
+    for t in m.transactionMetrics {
+      print(String(describing: t.networkProtocolName), // h2, h3
+            t.isReusedConnection,                        // keep-alive hit
+            t.resourceFetchType)                // .localCache?
+    }
+  }
+}
+var req = URLRequest(url: url)
+req.assumesHTTP3Capable = true  // race QUIC (iOS 14.5+)
+\end{lstlisting}
+
+\columnbreak
+
+\hd{What URLSession does for you}
+\begin{itemize}
+  \item Negotiates \textbf{h2} via ALPN and \textbf{h3} once the server advertises it — no code.
+        Pools and reuses connections \emph{per session}.
+  \item Sends \ct{Accept-Encoding: gzip, deflate, br} and decodes transparently; \emph{request}
+        bodies are never compressed for you. \ct{expectedContentLength} may be $-1$.
+  \item \ct{URLCache} obeys \ct{Cache-Control}; when \emph{it} revalidates, a 304 reaches you as
+        200 + the cached body\unverified. Responses over $\sim$5\,\% of the disk cache are not stored.
+  \item Cookies: \ct{HTTPCookieStorage} (\ct{httpShouldSetCookies}). \ct{WKWebView} keeps its
+        own \ct{WKHTTPCookieStore} — sync them yourself.
+\end{itemize}
+
+\hd{CORS — a browser rule}
+The \textbf{browser} blocks JS from \emph{reading} a cross-origin response unless the server opts in
+(\ct{Access-Control-Allow-Origin}). ``Simple'' requests (GET/HEAD/POST with form types, no custom
+headers) go straight out; others — \ct{application/json}, \ct{Authorization}, PUT/DELETE — get an
+\ct{OPTIONS} \textbf{preflight} (\ct{Access-Control-Request-Method/-Headers} $\to$
+\ct{Allow-Methods/-Headers/-Max-Age}). \ct{Allow-Origin: *} is refused with credentials.
+\ct{URLSession} never enforces it; JS inside \ct{WKWebView} does.
+
+\hd{Cookies}
+\ct{Secure} (HTTPS only) · \ct{HttpOnly} (no JS — limits XSS theft) · \ct{SameSite=Strict/Lax/None}
+(cross-site sending — the CSRF defence; \ct{None} needs \ct{Secure}; Chrome defaults to Lax) ·
+prefix \ct{\_\_Host-} $=$ Secure, no Domain, Path=/.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{\ct{no-cache} is not ``don't cache'' — that is \ct{no-store}.}
+  \trap{``HTTP/2 removed head-of-line blocking'' — only at the HTTP layer; TCP still stalls all streams.}
+  \trap{Setting \ct{If-None-Match} yourself: now \emph{you} get the raw 304 with an empty body — decode fails.}
+  \trap{Per-user response without \ct{private}: a CDN can serve user A's data to user B.}
+  \trap{``CORS error in my iOS app'' — impossible in URLSession; and CORS protects users' browsers,
+        it is not API auth.}
+  \trap{1.1-era domain sharding hurts h2: one connection is the point.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``1.1 queues, 2 multiplexes over one pipe, 3 gives every stream its own pipe.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} api-design (status codes, idempotency, 412) ·
+urlsession-networking (cache policies) · tls-pki (TLS 1.3 inside QUIC) · websockets-realtime · poor-network-engineering}
+
+\end{document}

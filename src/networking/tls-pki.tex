@@ -1,0 +1,196 @@
+% tls-pki.tex — TLS 1.3 handshake, 1.2 differences, forward secrecy, the chain of trust,
+% validation, revocation, CT, mTLS, pinning choices, ATS, the failures you actually meet.
+% Pinning MECHANICS (delegate, SecTrust) live in ios-swift/urlsession-networking.tex — not repeated.
+% Sources (checked 2026-10-06):
+%   rfc-editor.org: RFC 8446 (TLS 1.3: mandatory TLS_AES_128_GCM_SHA256, CHACHA20 suites,
+%     HelloRetryRequest, 0-RTT) · 5246 (TLS 1.2) · 5280 (X.509) · 6962 (CT)
+%   support.apple.com/103769 (iOS 13 / macOS 10.15 server certificates: RSA ≥ 2048, SHA-2, DNS
+%     name in SAN, EKU serverAuth, ≤ 825 days)
+%   developer.apple.com/documentation/foundation/urlerror/code (serverCertificateHasBadDate ·
+%     Untrusted · HasUnknownRoot · NotYetValid · appTransportSecurityRequiresSecureConnection)
+%   letsencrypt.org/2025/08/06/ocsp-service-has-reached-end-of-life (OCSP ended 2025)
+%   Not confirmed, marked \unverified: the numeric URLError codes (swift-corelibs-foundation's
+%     table is shifted by one against Apple's SDK, so it cannot settle them).
+% @labels: area=networking kind=concept platform=general topic=security,networking,protocols discussion=232
+% @tags: tls13, tls-handshake, forward-secrecy, ecdhe, 0-rtt, x509, chain-of-trust, ocsp, certificate-transparency, certificate-pinning, spki, mtls, ats
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false,switch,case,default},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+% compact section heading (the sheet is dense; \section's spacing costs a third of a column)
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{TLS 1.3 \& PKI — handshake, trust, pinning}{networking · folio}
+
+\oneliner{TLS gives \textbf{confidentiality} (AEAD), \textbf{integrity} and \textbf{server
+authentication}: an \textbf{ephemeral ECDHE} exchange makes the keys (forward secrecy), and a
+\textbf{certificate chain} ending in a root the device already trusts proves the key belongs to the
+\textbf{hostname}. TLS 1.3 (RFC 8446) does it in \textbf{1 RTT}; resumption can send data in \textbf{0 RTT} — replayable.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    m/.style={font=\scriptsize, inner sep=1pt, align=center},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    ca/.style={box, font=\scriptsize, text width=27mm, inner sep=2pt}]
+  % ---------- TLS 1.3 handshake ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.2,3.6) {TLS 1.3 full handshake (1-RTT)};
+  \node[box, font=\scriptsize, minimum width=12mm] at (0.5,3.15) {client};
+  \node[box, font=\scriptsize, minimum width=12mm] at (7.0,3.15) {server};
+  \draw[sheetGrey, thick] (0.5,2.9) -- (0.5,-0.05);
+  \draw[sheetGrey, thick] (7.0,2.9) -- (7.0,-0.05);
+  \draw[hot, draw=sheetBlue] (0.5,2.75) -- node[m, above, sloped]{\textbf{ClientHello} {\tiny key\_share (x25519 pub) · SNI (cleartext) · ALPN · sig\_algs}} (7.0,2.5);
+  \draw[hot, draw=sheetBlue] (7.0,2.2) -- node[m, above, sloped]{\textbf{ServerHello} + key\_share {\tiny(last cleartext message)}} (0.5,1.95);
+  \node[l, text=sheetGreen!50!black] at (3.75,1.72) {both: ECDHE(own priv, peer pub) $\to$ HKDF $\to$ \textbf{handshake keys}};
+  \draw[hot, very thick] (7.0,1.4) -- node[m, above, sloped, text=sheetOrange!80!black]{\{EncExtensions · \textbf{Certificate} · \textbf{CertificateVerify} · Finished\}} (0.5,1.15);
+  \draw[hot, very thick, draw=sheetGreen] (0.5,0.85) -- node[m, above, sloped, text=sheetGreen!50!black]{\{Finished\} + \textbf{GET /feed} (app data)} (7.0,0.6);
+  \draw[hot, draw=sheetGreen] (7.0,0.3) -- node[m, above, sloped]{200 + NewSessionTicket {\tiny(PSK for resumption)}} (0.5,0.05);
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}, sheetRed, thick] (0.3,2.75) -- (0.3,0.85)
+     node[midway, left, l, text=sheetRed]{1 RTT};
+  \node[l, anchor=west, align=left, text=sheetGrey] at (-0.2,-0.3)
+     {\{\ldots\} = encrypted. CertificateVerify = signature over the transcript with the \emph{leaf's} private key.};
+  \node[l, anchor=west, align=left, text=sheetRed] at (-0.2,-0.68)
+     {\textbf{0-RTT}: ClientHello + psk + early\_data carries app data at once; it is keyed from\\the resumption PSK only — \textbf{replayable}, no forward secrecy for that data.};
+
+  \draw[sheetGrey!40] (7.75,3.75) -- (7.75,-0.95);
+
+  % ---------- chain of trust ----------
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (7.95,3.6) {Chain of trust (X.509, RFC 5280)};
+  \node[ca, draw=sheetGreen, fill=sheetGreen!10] (root) at (9.7,2.8) {\textbf{Root CA} — self-signed\\in the OS trust store};
+  \node[ca] (int) at (9.7,1.6) {\textbf{Intermediate CA}\\CA:TRUE · online issuer};
+  \node[ca, draw=sheetOrange, fill=sheetOrange!8] (leaf) at (9.7,0.4) {\textbf{Leaf}: SAN api.example.com\\EKU serverAuth · 90 days};
+  \draw[flow] (root) -- node[l, right]{signs} (int);
+  \draw[flow] (int) -- node[l, right]{signs} (leaf);
+  \draw[hot, draw=sheetRed] (8.1,0.4) -- node[l, text=sheetRed, rotate=90, above]{client verifies upward} (8.1,2.8);
+  \draw[decorate, decoration={brace, amplitude=3pt}, sheetBrown, thick] (11.35,1.9) -- (11.35,0.1)
+     node[midway, right, l, text=sheetBrown, align=left]{server sends\\\textbf{leaf +}\\\textbf{intermediates}\\(fullchain.pem)};
+  \node[l, anchor=west, align=left, text=sheetGreen!50!black] at (11.45,2.8) {device already has it; root key\\kept offline in an HSM};
+  \node[l, anchor=west, align=left, text=sheetOrange!80!black] at (13.3,1.6) {pin \textbf{CA SPKI}: survives leaf\\re-keying; trusts every leaf\\that CA issues \emph{you}};
+  \node[l, anchor=west, align=left, text=sheetOrange!80!black] at (13.3,0.45) {pin \textbf{leaf SPKI}: tightest;\\renew with the SAME key\\+ a backup pin};
+  \node[l, anchor=west, align=left] at (7.95,-0.5) {Missing intermediate: some clients fetch it via AIA or have it cached $\to$ ``works in\\Safari, fails in curl / Android / the app'' — fix the server, not the client.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{How it works}
+\begin{itemize}
+  \item \textbf{Key exchange}: each side sends an \emph{ephemeral} ECDHE public key; the shared secret
+        feeds HKDF $\to$ handshake, then traffic keys. The certificate key only \textbf{signs}
+        (CertificateVerify) — it never encrypts a secret.
+  \item \textbf{Forward secrecy}: ephemeral keys are discarded, so a server key stolen later
+        \emph{cannot} decrypt recorded sessions. 1.2 static-RSA key transport had no FS.
+  \item \textbf{1.3 suites} name only AEAD + hash: \ct{TLS\_AES\_128\_GCM\_SHA256},
+        \ct{TLS\_AES\_256\_GCM\_SHA384}, \ct{TLS\_CHACHA20\_POLY1305\_SHA256}. Group (x25519, P-256)
+        and signature (ECDSA, RSA-PSS, Ed25519) are negotiated separately; a 1.2 suite bundled all
+        four (\ct{ECDHE-RSA-AES128-GCM-SHA256}).
+  \item Wrong key\_share guess $\to$ \textbf{HelloRetryRequest} $\to$ 2 RTT. Resumption: ticket $\to$
+        PSK; PSK + fresh ECDHE keeps FS, 0-RTT data does not.
+\end{itemize}
+
+\hd{TLS 1.2 (RFC 5246) vs 1.3}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{16mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{29mm}@{}}
+\toprule
+& \textbf{1.2} & \textbf{1.3} \\ \midrule
+handshake & 2 RTT (Hello $\to$ KeyExchange + Finished) & 1 RTT; 0-RTT on resumption \\
+key exchange & RSA transport \emph{or} (EC)DHE & (EC)DHE only: FS mandatory \\
+certificate & sent in \textbf{cleartext} & encrypted \\
+removed & — & RSA kx, CBC, RC4, SHA-1, compression, renegotiation \\
+\bottomrule
+\end{tabular}}
+
+\hd{Validation — what SecTrust checks}
+\begin{enumerate}
+  \item \textbf{Path} leaf $\to$ intermediates $\to$ a root in the trust store; \textbf{signature}
+        at every link; intermediates \ct{CA:TRUE}.
+  \item \textbf{Validity}: notBefore $\leq$ now $\leq$ notAfter — the \emph{device clock}.
+  \item \textbf{Hostname} vs \textbf{SAN} (iOS 13+: CN ignored; EKU serverAuth, RSA $\geq$ 2048, SHA-2).
+  \item \textbf{Revocation}: CRL (list) · OCSP (live query, leaks who you visit) · \textbf{stapling}
+        (server attaches a signed OCSP answer). Clients \textbf{soft-fail}: blocked responder $=$
+        pass. Let's Encrypt ended OCSP in 2025 (CRLs).
+  \item \textbf{CT} (RFC 6962): public append-only logs; Apple requires SCTs. Then \textbf{your
+        policy}: ATS, pins — \emph{after} default validation, never instead.
+\end{enumerate}
+
+\hd{Example — mTLS: answer the client-certificate challenge}
+\begin{lstlisting}[language=SwiftSheet]
+func urlSession(_ s: URLSession, didReceive c: URLAuthenticationChallenge)
+    async -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+  switch c.protectionSpace.authenticationMethod {
+  case NSURLAuthenticationMethodClientCertificate:
+    let id = keychainIdentity()  // SecIdentity = cert + private key
+    return (.useCredential, URLCredential(identity: id,
+            certificates: nil, persistence: .forSession))
+  default:                       // server trust: keep default checks
+    return (.performDefaultHandling, nil)
+  }
+}
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Pinning — what to pin}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{25mm}>{\raggedright\arraybackslash}p{32mm}@{}}
+\toprule
+\textbf{Pin} & \textbf{Survives} & \textbf{Risk} \\ \midrule
+leaf \emph{cert} & nothing: every renewal & bricks old binaries every 90 days \\
+leaf \textbf{SPKI} & renewal with same key & key compromise $\to$ backup pin \\
+interm. SPKI & any leaf re-key by that CA & CA rotates its intermediate \\
+root SPKI & almost everything & weak: any leaf of that CA passes \\
+\bottomrule
+\end{tabular}}\par
+Always $\geq$ 2 pins: current + an \textbf{offline backup key}. No code: \ct{NSPinnedDomains} $\to$
+\ct{NSPinnedLeafIdentities} / \ct{NSPinnedCAIdentities} (\ct{SPKI-SHA256-BASE64}). Have a kill path
+(pins in remote config) or accept a forced update.
+
+\hd{mTLS and ATS}
+\textbf{mTLS}: server sends CertificateRequest; client answers Certificate + CertificateVerify —
+proves \emph{possession of a key}, no bearer secret on the wire. Cost: issuing + rotating a per-device
+cert (\ct{SecPKCS12Import} of a \ct{.p12}). \textbf{ATS}: HTTPS, TLS $\geq$ 1.2, FS suites,
+valid chain; narrow \ct{NSExceptionDomains}; \ct{NSAllowsArbitraryLoads} needs a review reason.
+
+\hd{Failures you actually meet}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{25mm}>{\raggedright\arraybackslash}p{47mm}@{}}
+\toprule
+missing intermediate & browser OK, others fail: serve the full chain \\
+expired root / cross-sign & DST Root CA X3 (30 Sep 2021) broke old devices \\
+device clock wrong & \ct{-1201} bad date · \ct{-1204} not yet valid \\
+name not in SAN & \ct{-1202} server certificate untrusted \\
+private CA / self-signed & \ct{-1203} unknown root: trust the \emph{root}, not the leaf \\
+\ct{http://} under ATS & \ct{-1022} (ATS requires a secure connection) \\
+proxy / captive portal & MITM certificate: pinning fails, as designed \\
+\bottomrule
+\end{tabular}}\par
+{\tiny URLError names checked; the numeric codes\unverified.}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Disable validation for testing'' ships a MITM: encryption to \emph{the attacker}. Use a test CA.}
+  \trap{0-RTT is not free speed: early data is \textbf{replayable} — idempotent GETs only.}
+  \trap{A DV cert proves \emph{domain control at issuance}, not honesty.}
+  \trap{SNI leaks the hostname in cleartext; ECH closes it.}
+  \trap{\ct{SecKeyCopyExternalRepresentation} gives the \emph{raw} key, not SPKI — prepend the
+        ASN.1 header before hashing or the pin never matches.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Ephemeral keys encrypt, certificates sign, the chain proves the name.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} urlsession-networking (pinning code) ·
+keychain-secure-enclave · app-hardening-privacy (ATS) · http-deep (QUIC carries TLS 1.3) · oauth-oidc-jwt}
+
+\end{document}

@@ -1,0 +1,184 @@
+% data-transfer-optimisation.tex — moving fewer bytes, fewer times: the lever ladder (don't send →
+% send less → encode smaller → compress → right-size media → adapt), gzip/brotli/zstd and what iOS
+% decodes, JSON vs binary (computed example), pagination / field selection / delta sync / batching,
+% image formats + CDN sizing, HLS adaptive streaming (drawn), caching pointers, a transfer-time table.
+% Sources (checked 2026-09-25): webkit.org/blog/17798 (zstd in Safari 26.3 on iOS/macOS 26.3, "support
+% comes from the system networking stack"); webkit.org Safari 14/16/17 feature posts (WebP, AVIF,
+% JPEG XL); developer.apple.com: COMPRESSION_ZLIB (raw DEFLATE, RFC 1951, level 5),
+% compression_algorithm list, URLSessionTaskTransactionMetrics (countOfResponseBodyBytesReceived /
+% AfterDecoding), HLS Authoring Specification (7.5/7.6 target + segment 6 s, 1.13 IDR every 2 s,
+% 1.32 default variant 2000 kbit/s listed first, 14.2 LL-HLS part target >= P95 RTT, 1 s recommended);
+% RFC 1952 (gzip 10-byte header + 8-byte trailer), RFC 7932 (brotli), RFC 8878 (zstd), RFC 8216
+% (HLS), RFC 6902 / 7396 (JSON Patch / Merge Patch). Byte counts and transfer times are arithmetic.
+% HTTP caching headers are in http-deep; image decode/downsampling memory in rendering-pipeline.
+% @labels: area=networking kind=concept platform=ios topic=networking,performance,data discussion=220
+% @tags: compression, brotli, zstd, gzip, payload-size, pagination, delta-sync, image-formats, avif, heic, hls, adaptive-bitrate, cdn, batching
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,for,in,case,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,import,
+    true,false},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{Data transfer optimisation — fewer bytes, fewer times}{networking · folio}
+
+\oneliner{The cheapest byte is the one \textbf{never sent}. Work down the ladder: \textbf{don't send}
+(cache, 304), \textbf{send less} (fields, pages, deltas), \textbf{encode smaller} (binary, no names),
+\textbf{compress} (brotli / zstd / gzip), \textbf{right-size media} (pixels you display, modern formats),
+and \textbf{adapt} to the link (HLS). On mobile, fewer \emph{requests} matter as much as fewer bytes:
+every one costs RTTs and radio time.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    rung/.style={box, font=\scriptsize, text width=40mm, align=left, inner sep=2pt, anchor=west, minimum height=5.4mm},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    seg/.style={draw=white, minimum height=3.6mm, minimum width=6.5mm, inner sep=0pt, font=\tiny}]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.2,4.05) {The lever ladder — try the top first};
+  \foreach \y/\n/\c/\t in {3.6/1/sheetGreen/{\textbf{Don't send}: fresh cache, \ct{ETag} $\to$ 304},
+                           3.05/2/sheetGreen/{\textbf{Send less}: fields, pages, deltas},
+                           2.5/3/sheetBlue/{\textbf{Encode smaller}: binary, short keys},
+                           1.95/4/sheetBlue/{\textbf{Compress}: br / zstd / gzip (text)},
+                           1.4/5/sheetOrange/{\textbf{Right-size media}: px, AVIF/HEIC},
+                           0.85/6/sheetOrange/{\textbf{Adapt}: ABR ladder (HLS), prefetch}}
+    \node[rung, draw=\c, fill=\c!8] at (0.1,\y) {\n\ \ \t};
+  \draw[->, very thick, sheetRed] (4.75,3.75) -- node[l, rotate=-90, above, text=sheetRed]{bigger win $\to$ smaller win} (4.75,0.7);
+  \node[l, anchor=north west, align=left, text width=48mm] at (-0.2,0.45) {Each rung multiplies the next: a cached response needs no compression; a right-sized image needs no ABR.};
+  \draw[sheetGrey!40] (5.25,4.2) -- (5.25,-0.6);
+  % ---- HLS
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (5.4,4.05) {HLS adaptive bitrate — the player picks a variant per segment};
+  \node[box, font=\tiny, text width=24mm, align=left, anchor=north west] (mv) at (5.45,3.75)
+     {\ct{master.m3u8} (multivariant)\\\ct{\#EXT-X-STREAM-INF:}\\\ct{BANDWIDTH=…,RESOLUTION=…}\\one line per variant; the \textbf{first}\\listed plays first (Apple: the\\2000\,kbit/s one)};
+  \foreach \y/\r/\c in {3.45/{high}/sheetGreen, 2.75/{2000 kbit/s}/sheetBlue, 2.05/{low}/sheetOrange}
+    \node[l, anchor=east, text=\c, font=\tiny\bfseries] at (9.35,\y) {\r};
+  \draw[flow] (mv.east) -- (8.6,2.75);
+  % segment grid: 11 segments
+  \foreach \i in {0,...,10} {
+    \node[seg, fill=sheetGreen!12] at (9.75+\i*0.66,3.45) {};
+    \node[seg, fill=sheetBlue!12] at (9.75+\i*0.66,2.75) {};
+    \node[seg, fill=sheetOrange!12] at (9.75+\i*0.66,2.05) {};
+  }
+  % chosen path: 2000,2000,high,high,high,2000,low,low,2000,2000,high
+  \foreach \i/\y in {0/2.75,1/2.75,2/3.45,3/3.45,4/3.45,5/2.75,6/2.05,7/2.05,8/2.75,9/2.75,10/3.45}
+    \node[seg, fill=sheetRed!55, text=white] at (9.75+\i*0.66,\y) {\i};
+  \draw[very thick, sheetRed, rounded corners=1pt] (9.75,2.75) -- (10.41,2.75) -- (11.07,3.45) -- (12.39,3.45) -- (13.05,2.75) -- (13.71,2.05) -- (14.37,2.05) -- (15.03,2.75) -- (15.69,2.75) -- (16.35,3.45);
+  % throughput strip
+  \draw[sheetGrey] (9.42,1.25) -- (16.7,1.25);
+  \draw[thick, sheetBrown] plot[smooth] coordinates {(9.42,1.45) (10.4,1.5) (11.1,1.75) (12.4,1.72) (13.0,1.4) (13.7,1.3) (14.4,1.33) (15.0,1.5) (15.7,1.55) (16.4,1.75)};
+  \node[l, anchor=east, text=sheetBrown] at (9.35,1.5) {measured\\throughput};
+  \node[l, anchor=north west, align=left, text width=113mm] at (5.4,0.95) {Segments: target duration \textbf{6\,s}, IDR every 2\,s (Apple authoring spec) — switches happen at segment
+     boundaries. Arithmetic: a 6\,s segment at 2000\,kbit/s $=$ 12\,Mbit $=$ 1.5\,MB; on a 1\,Mbit/s link it takes 12\,s to fetch 6\,s of video
+     $\Rightarrow$ the buffer drains $\Rightarrow$ step down. LL-HLS: parts $\approx$1\,s (at least the P95 RTT).};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Compression}
+\begin{itemize}
+  \item \textbf{gzip} (DEFLATE + 10-byte header + 8-byte CRC/size trailer, RFC 1952): everywhere.
+        \textbf{Brotli} (\ct{br}, RFC 7932): built-in static dictionary of web text — best on text, slow
+        at max level (pre-compress static assets). \textbf{zstd} (RFC 8878): fast, trainable dictionaries.
+  \item \textbf{Negotiation}: \ct{Accept-Encoding} $\to$ \ct{Content-Encoding} + \ct{Vary:
+        Accept-Encoding}. URLSession decodes gzip, deflate, br itself; zstd came to the
+        \emph{system networking stack} in iOS 26.3 (WebKit, for Safari) — log your app's
+        \ct{Accept-Encoding} before relying on it.
+  \item \textbf{Request bodies are never compressed for you}: compress, set \ct{Content-Encoding},
+        and make sure the server accepts it. Apple's \ct{Compression} offers zlib, LZFSE, LZ4, LZMA,
+        brotli — \ct{COMPRESSION\_ZLIB} is \textbf{raw DEFLATE} (no gzip/zlib header).
+  \item Skip already-compressed data (JPEG, HEIC, MP4, zip) and tiny bodies (framing $>$ saving).
+\end{itemize}
+
+\hd{Send less, encode smaller}
+\begin{itemize}
+  \item \textbf{Field selection}: \ct{?fields=id,name}, sparse fieldsets, or GraphQL — list endpoints
+        return \emph{summaries}, detail endpoints the rest.
+  \item \textbf{Pagination}: cursor-based (\ct{after=<opaque>}, stable under inserts) beats offset;
+        page size tuned to one screen + a prefetch margin.
+  \item \textbf{Delta sync}: \ct{since=<syncToken>} returns only changes + tombstones; edits as
+        \ct{PATCH} with JSON Merge Patch (RFC 7396) or JSON Patch (RFC 6902).
+  \item \textbf{Binary}: one record is 54 B as JSON, \textbf{16 B} as protobuf (no names, no text
+        digits); gzip narrows the gap on big payloads only.
+  \item \textbf{Batching}: many small writes in one request (analytics, receipts) — fewer radio wakes,
+        fewer server round trips. HTTP/2 makes requests cheap, not free.
+\end{itemize}
+
+\hd{Example — right-sized image + measuring the wire}
+\begin{lstlisting}[language=SwiftSheet]
+let px = Int(side * traitCollection.displayScale)  // 100 pt @3x = 300 px
+var c = URLComponents(string: "https://img.example.com/p/42")!
+c.queryItems = [URLQueryItem(name: "w", value: "\(px)")]  // CDN resizes
+var req = URLRequest(url: c.url!)
+req.setValue("image/avif,image/webp,image/*;q=0.8",
+             forHTTPHeaderField: "Accept")   // CDN negotiates + Vary: Accept
+
+// URLSessionTaskDelegate, didFinishCollecting metrics:
+let t = metrics.transactionMetrics.last!
+let wire = t.countOfResponseBodyBytesReceived       // compressed
+let body = t.countOfResponseBodyBytesAfterDecoding  // after br/gzip
+log("ratio", Double(body) / Double(max(wire, 1)))
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Images and media}
+{\footnotesize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{42mm}@{}}
+\toprule
+\textbf{format} & \textbf{Apple support} & \textbf{use} \\ \midrule
+JPEG / PNG & always & baseline; PNG for flat art / alpha \\
+HEIC & camera, iOS 11+ & device photos; convert for web / Android \\
+WebP & Safari 14 / iOS 14 & web images, alpha, animation \\
+AVIF & Safari 16 / iOS 16 & smallest photos; slow to encode \\
+JPEG XL & Safari 17 / iOS 17 & lossless re-pack of existing JPEGs \\
+\bottomrule
+\end{tabular}}\par
+\textbf{Size by pixels}: request \emph{points $\times$ scale}; a CDN resizes + converts on the fly.
+Tiny placeholder / progressive JPEG first. Video: HLS; cap on cellular with
+\ct{AVPlayerItem.preferredPeakBitRate} / \ct{preferredMaximumResolution}. AVPlayer plays HLS, not
+MPEG-DASH\unverified{} (the ISO equivalent used on Android/web).
+
+\hd{Transfer time $=$ RTTs + bytes / bandwidth}
+{\footnotesize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{25mm}>{\raggedleft\arraybackslash}p{13mm}>{\raggedleft\arraybackslash}p{13mm}>{\raggedleft\arraybackslash}p{13mm}@{}}
+\toprule
+\textbf{payload} (1 KB $=$ 1000 B) & \textbf{1 Mbit/s} & \textbf{10 Mbit/s} & \textbf{100 Mbit/s} \\ \midrule
+50 KB JSON page & 0.4 s & 40 ms & 4 ms \\
+500 KB photo & 4 s & 0.4 s & 40 ms \\
+1.5 MB 6 s HLS segment & 12 s & 1.2 s & 0.12 s \\
+5 MB unsized hero image & 40 s & 4 s & 0.4 s \\
+\bottomrule
+\end{tabular}}\par
+Pure serialisation, before RTTs and slow start. At 100\,Mbit/s a 50\,KB page is RTT-bound — so
+batch and reuse connections; at 1\,Mbit/s bytes dominate — so shrink.
+
+\hd{Prefetch and cache}
+Prefetch the \emph{next} page while the radio is up (\ct{UICollectionViewDataSourcePrefetching},
+cancel in \ct{cancelPrefetchingForItemsAt}). Hashed URLs + \ct{immutable}; the rest \ct{ETag} $\to$ 304.
+Low Data Mode: no prefetch, lower variants.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Downloading a 4000-px photo for a 100-pt cell: bytes, decode time and memory all wasted.}
+  \trap{``HTTP/2 made batching pointless'' — headers are cheap now; radio wakes and server work are not.}
+  \trap{Gzipping a request with \ct{COMPRESSION\_ZLIB} and labelling it \ct{gzip} — it is raw DEFLATE.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Don't send, send less, encode small, compress, size to pixels, adapt.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} http-deep (caching, Vary) · grpc-protobuf ·
+graphql-apollo (field selection) · rendering-pipeline (image decode) · app-size-and-energy · poor-network-engineering}
+
+\end{document}

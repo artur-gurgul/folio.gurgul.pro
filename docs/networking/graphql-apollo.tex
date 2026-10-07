@@ -1,0 +1,209 @@
+% graphql-apollo.tex — GraphQL on iOS: schema/types, query/mutation/subscription, fragments, variables,
+% vs REST (over/under-fetching, HTTP caching), server N+1, error model (partial data + errors[], HTTP 200),
+% Apollo iOS 2.x: codegen, normalised cache + cache IDs, cache policies, watchers, optimistic updates
+% (by hand), connections pagination, persisted queries, subscriptions over WebSocket.
+% Picture: one response flattened into records by cache ID; a second query and a mutation share one record.
+% Sources (checked 2026-09-25): apollographql.com/docs/ios — migrations/2.0, fetching/fetching-data,
+% fetching/queries (watch + policy descriptions), fetching/error-handling, fetching/subscriptions,
+% fetching/persisted-queries, caching/introduction, caching/cache-setup, caching/cache-key-resolution,
+% caching/cache-transactions, pagination/introduction, code-generation/introduction;
+% github.com/apollographql/apollo-ios/releases (2.x line; WebSocket transport in 2.1).
+% Optimistic UI: no built-in optimisticResponse in Apollo iOS (issues #1196, #3358) — sheet says so.
+% Not printed (not confirmed for 2.x): the closure/stream signature of watch(query:).
+% @labels: area=networking kind=api platform=ios topic=networking,data discussion=222
+% @tags: graphql, apollo-ios, normalized-cache, typepolicy, cache-policy, fragments, n-plus-one, dataloader, persisted-queries, relay-connections, subscriptions, codegen
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,for,in,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,catch,do,
+    true,false},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+\lstdefinelanguage{GQL}{
+  morekeywords={query,mutation,subscription,fragment,on,extend,type},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{GraphQL on iOS — Apollo iOS 2.x}{networking · folio}
+
+\oneliner{\textbf{GraphQL} is a typed query language over \textbf{one endpoint}: the server publishes a
+\textbf{schema}, the client sends an \textbf{operation} naming exactly the fields it wants (+ typed
+\textbf{variables}), and gets back JSON of the same shape as \ct{\{data, errors\}}. \textbf{Apollo iOS}
+generates Swift types from your \ct{.graphql} files and keeps a \textbf{normalised cache}: every object
+with a cache ID is stored \emph{once}, so every query that contains it sees the same, updated value.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    rec/.style={draw=sheetBlue, fill=sheetBlue!6, rounded corners=1.5pt, font=\ttfamily\scriptsize,
+                align=left, inner sep=2pt, anchor=north west},
+    qb/.style={draw=sheetGrey, fill=black!3, rounded corners=1.5pt, font=\ttfamily\scriptsize,
+               align=left, inner sep=2pt, anchor=north west},
+    ref/.style={->, thick, draw=sheetBlue},
+    l/.style={font=\scriptsize, text=black!75, align=center, inner sep=1pt},
+    hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west}]
+  % ---- 1 response tree
+  \node[hd] at (-0.2,4.25) {1 · response = a tree};
+  \node[qb] (resp) at (-0.2,3.95) {\textcolor{sheetGrey}{\# query Hero(\$id: ID!)}\\
+    \{"hero": \{\\
+    \ \ "\_\_typename": "Droid",\\
+    \ \ "id": "2001", "name": "R2-D2",\\
+    \ \ "friends": [\\
+    \ \ \ \ \{"\_\_typename": "Human",\\
+    \ \ \ \ \ "id": "1000", "name": "Luke"\},\\
+    \ \ \ \ \{"\_\_typename": "Human",\\
+    \ \ \ \ \ "id": "1003", "name": "Leia"\}]\}\}};
+  \draw[hot] (resp.east) -- node[l, above]{normalise} (5.0,2.3);
+  % ---- 2 records
+  \node[hd] at (4.95,4.25) {2 · flattened records, keyed by cache ID};
+  \node[rec, draw=sheetGrey, fill=black!4] (root) at (5.05,3.95) {\textbf{QUERY\_ROOT}\\hero(id:"2001") $\to$ \textcolor{sheetBlue}{Droid:2001}};
+  \node[rec] (droid) at (5.05,2.7) {\textbf{Droid:2001}\\name: "R2-D2"\\friends: [\textcolor{sheetBlue}{Human:1000},\\\ \ \ \ \ \ \ \ \ \textcolor{sheetBlue}{Human:1003}]};
+  \node[rec, very thick, draw=sheetOrange, fill=sheetOrange!8] (luke) at (8.75,3.55) {\textbf{Human:1000}\\name: "Luke"\\\textcolor{sheetOrange}{\ \ $\to$ "Luke S."}};
+  \node[rec] (leia) at (8.75,1.75) {\textbf{Human:1003}\\name: "Leia"};
+  \draw[ref] ([xshift=3mm]root.south west) -- ([xshift=3mm]droid.north west);
+  \draw[ref] ([yshift=2mm]droid.east) -- (luke.south west);
+  \draw[ref] ([yshift=-3mm]droid.east) -- (leia.west);
+  \node[l, anchor=north west, align=left, text=sheetGreen!45!black] at (4.95,1.2)
+    {key = \ct{\_\_typename:keyFields}, from \ct{@typePolicy(keyFields: "id")}};
+  \node[l, anchor=north west, align=left, text=sheetRed] at (4.95,0.75)
+    {no cache ID $\to$ keyed by \emph{path} (\ct{QUERY\_ROOT.hero.friends.0}):\\a second query gets its own copy — nothing is shared};
+  % ---- 3 sharing
+  \draw[sheetGrey!50] (11.75,4.35) -- (11.75,-0.25);
+  \node[hd] at (11.8,4.25) {3 · one record, many screens};
+  \node[qb] (q2) at (13.3,3.95) {query Profile \{\\\ \ human(id: "1000")\\\ \ \ \ \{ id name \} \}};
+  \node[qb, draw=sheetOrange, fill=sheetOrange!8] (mut) at (13.3,2.4) {mutation Rename \{\\\ \ rename(id: "1000",\\\ \ \ \ to: "Luke S.")\\\ \ \ \ \{ id name \} \}};
+  \draw[ref] (q2.west) -- node[l, above, sloped]{reads} ([yshift=2mm]luke.east);
+  \draw[hot, very thick] (mut.west) -- node[l, below, sloped]{writes} ([yshift=-3mm]luke.east);
+  \node[l, anchor=north west, align=left] at (11.8,0.75)
+    {the mutation selects \ct{id} $\to$ its result\\lands in \textbf{Human:1000} $\to$ \textbf{both}\\watchers (Hero, Profile) re-emit, no refetch};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\footnotesize\setstretch{1.0}\raggedright
+
+\hd{GraphQL}
+\begin{itemize}
+  \item \textbf{Schema} (SDL): object types, scalars (\ct{Int} = 32-bit, \ct{Float}, \ct{String},
+        \ct{Boolean}, \ct{ID}), \ct{!} = non-null, lists, enums, \textbf{interfaces} / \textbf{unions},
+        \ct{input} types. Introspection lets tools download it.
+  \item \textbf{Operations} over \ct{POST /graphql} with \ct{\{query, operationName, variables\}}:
+        \textbf{query} (read; sibling fields may resolve in parallel), \textbf{mutation} (write;
+        top-level fields run \emph{in order}), \textbf{subscription} (a stream of events, usually
+        over WebSocket).
+  \item \textbf{Fragments} = named, reusable selection sets (\ct{fragment X on Character});
+        \textbf{inline fragments} \ct{... on Droid} pick fields per concrete type of an interface /
+        union — which is why the client asks for \ct{\_\_typename}.
+  \item \textbf{Variables} are typed (\ct{\$id: ID!}) and sent separately — never string-build a query.
+  \item \textbf{vs REST}: no \textbf{over-fetching} (only the fields asked for), no
+        \textbf{under-fetching} (nested data in one round trip, not N calls), a typed contract. Costs:
+        one URL + POST $\to$ no free HTTP/CDN caching; query-cost limits; schema evolution by
+        \emph{deprecating} fields, not versioned URLs.
+  \item \textbf{Server N+1}: one resolver per field $\to$ \ct{friends} for 50 heroes = 50 DB queries.
+        Fix: \textbf{DataLoader} — batch the keys requested in one tick into one query, cache per request.
+  \item \textbf{Errors}: \ct{\{"data": \{…\}, "errors": [\{message, locations, path, extensions\}]\}}.
+        A failing field becomes \ct{null} (bubbling up to the nearest nullable parent) and the rest is
+        \textbf{partial data}. Typically \textbf{HTTP 200} anyway — check \ct{errors}, not the status.
+\end{itemize}
+
+\hd{Example — operation + Apollo iOS 2.x call}
+\begin{lstlisting}[language=GQL]
+# Hero.graphql  (codegen -> HeroQuery, HeroDetails)
+fragment HeroDetails on Character { id name }
+query Hero($id: ID!) {
+  hero(id: $id) { ...HeroDetails friends { ...HeroDetails } }
+}
+# schema extension (.graphqls): cache ID per type
+extend type Human @typePolicy(keyFields: "id")
+\end{lstlisting}
+\begin{lstlisting}[language=SwiftSheet]
+let store  = ApolloStore(cache: try SQLiteNormalizedCache(fileURL: url))
+let client = ApolloClient(networkTransport: transport, store: store)
+let res = try await client.fetch(query: HeroQuery(id: "2001"),
+                                 cachePolicy: .cacheFirst)
+if let errors = res.errors { log(errors) }  // GraphQL errors: not thrown
+show(res.data?.hero?.name)                  // may be partial
+// network / parsing failure -> thrown; catch it
+\end{lstlisting}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``200 OK, so it worked'' — read \ct{errors[]}; \ct{data} may be partial or null.}
+  \trap{Not selecting \ct{id} (or no \ct{@typePolicy}) — path keys, duplicate copies, a mutation
+        result that updates nothing on screen.}
+  \trap{Blaming GraphQL for N+1 — it is the resolvers; DataLoader batches.}
+  \trap{``GraphQL is cached like REST'' — POST to one URL; the client cache does the work (or
+        persisted-query GETs).}
+  \trap{Forgetting to \ct{cancel()} a watcher; one giant query instead of per-view fragments.}
+  \trap{Expecting Apollo iOS to roll back an optimistic write for you — it has no
+        \ct{optimisticResponse}; you revert.}
+  \trap{2.x: GraphQL \ct{Int} \emph{inputs} are generated as Swift \ct{Int32} (the spec's 32 bits).}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Ask for the shape, get the shape; flatten by \ct{\_\_typename:id}; 200 can still be an error.}
+
+\columnbreak
+
+\hd{Apollo iOS — the moving parts}
+\begin{itemize}
+  \item \textbf{Codegen}: \ct{apollo-ios-cli} (\ct{init}, \ct{fetch-schema}, \ct{generate}) +
+        \ct{apollo-codegen-config.json}. Schema + \ct{.graphql} operations $\to$ a schema-types module +
+        one Swift type per operation / fragment, with nested \ct{Data} models. Fields you didn't select
+        don't exist in Swift.
+  \item \textbf{2.x = async/await rewrite}, Swift 6 strict concurrency, most types \ct{Sendable};
+        iOS 15+; CocoaPods dropped. \ct{fetch} returns a \ct{GraphQLResponse} (\ct{data} +
+        \ct{errors}); multi-result policies return an \ct{AsyncThrowingStream}. Interceptors split into
+        \ct{GraphQLInterceptor}, \ct{HTTPInterceptor} (e.g. auth header), \ct{CacheInterceptor},
+        \ct{ResponseParsingInterceptor}. A cache \emph{miss} is \ct{nil}, not a thrown error.
+  \item \textbf{Cache policies} (2.x): \ct{.cacheFirst} (default) · \ct{.networkFirst} (network, cache
+        on failure) · \ct{.networkOnly} · \ct{.cacheOnly} · \ct{.cacheAndNetwork} (cached, then fresh:
+        two emissions). 1.x names: \ct{returnCacheDataElseFetch}, \ct{fetchIgnoringCacheData}, \ldots
+  \item \textbf{Cache}: \ct{ApolloStore} over \ct{InMemoryNormalizedCache} or \ct{SQLiteNormalizedCache}
+        (persists). Cache IDs via \ct{@typePolicy(keyFields:)} (\ct{@fieldPolicy} maps a field's
+        arguments to an ID) or programmatically in \ct{SchemaConfiguration}.
+  \item \textbf{Watchers}: \ct{client.watch(query:)} $\to$ \ct{GraphQLQueryWatcher}; re-delivers
+        whenever \emph{any} record it read changes. \ct{cancel()} it when the owner goes — or it leaks.
+  \item \textbf{Optimistic updates}: Apollo iOS has \textbf{no} \ct{optimisticResponse} (Apollo Client
+        web and Kotlin do). Write the expected value yourself in
+        \ct{store.withinReadWriteTransaction} (a \ct{@apollo\_client\_ios\_localCacheMutation}
+        operation gives mutable models), then send the mutation; on error write the old value back.
+  \item \textbf{Pagination}: Relay \textbf{connections} — \ct{first/after} args,
+        \ct{edges \{ cursor node \}}, \ct{pageInfo \{ hasNextPage endCursor \}}. The
+        \ct{apollo-ios-pagination} package's \ct{GraphQLQueryPager} (\ct{fetch}, \ct{loadNext},
+        \ct{loadPrevious}, \ct{refetch}) watches and merges pages; cursor or offset.
+  \item \textbf{Persisted queries}: send a \textbf{SHA-256 id} instead of the document.
+        \textbf{APQ} (\ct{autoPersistQueries: true}): unknown id $\to$ server error $\to$ client retries
+        with the full text (\ct{useGETForPersistedQueryRetry} makes it a CDN-cacheable GET).
+        \textbf{Persisted query list} (\ct{operationManifest}): a \emph{safelist} — the server runs only
+        registered operations.
+  \item \textbf{Subscriptions}: \ct{client.subscribe(subscription:)} $\to$ async sequence; over HTTP
+        multipart, or WebSocket (\ct{ApolloWebSocket}, \ct{graphql-transport-ws}, 2.1+) with
+        \ct{SplitNetworkTransport} sending queries over HTTP and subscriptions over the socket.
+\end{itemize}
+
+\hd{REST or GraphQL? — say the trade-off}
+{\scriptsize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{33mm}>{\raggedright\arraybackslash}p{41mm}@{}}
+\toprule
+\textbf{situation} & \textbf{lean} \\ \midrule
+many clients, each needing different slices & GraphQL: one schema, per-screen queries \\
+public, cache-heavy reads (CDN) & REST (or GraphQL GET + persisted ids) \\
+simple CRUD, one client & REST: less machinery \\
+large file upload / download & REST or pre-signed URL; send the reference via GraphQL \\
+live updates & subscriptions, or a plain WebSocket \\
+\bottomrule
+\end{tabular}}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} http-deep (caching, HTTP/2) · websockets-realtime
+(subscriptions' transport) · ios-client-system-design (normalised store, cursor pagination) ·
+urlsession-networking · api-design (REST)}
+
+\end{document}

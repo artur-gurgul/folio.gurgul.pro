@@ -1,0 +1,208 @@
+% grpc-protobuf.tex — Protocol Buffers wire format (tags, varints, wire types; a message encoded byte
+% by byte and drawn), schema-evolution rules and old app versions, gRPC over HTTP/2 (framing, trailers,
+% four call kinds, deadlines, status codes), gRPC-Web / Connect / gRPC Swift 2, REST vs GraphQL vs gRPC.
+% Sources (checked 2026-09-25): protobuf.dev/programming-guides/encoding (wire types, tag formula,
+% 08 96 01 example, ZigZag, packed, last-one-wins, 2 GiB) and /proto3 (field ranges 1..536,870,911,
+% 19000-19999 reserved, 1-15 one byte, reserved, compatible int types, unknown fields preserved,
+% optional = explicit presence, enum zero first); github.com/grpc/grpc doc/PROTOCOL-HTTP2.md
+% (POST, /service/method, application/grpc, grpc-timeout units, 1+4-byte prefix, grpc-status trailers,
+% Trailers-Only); grpc.io/docs/guides/status-codes; swift.org/blog/grpc-swift-2 (Feb 2025) and
+% github.com/grpc/grpc-swift-2 (hello-world example: withGRPCClient, .http2NIOPosix);
+% connectrpc.com/docs/swift (Connect, gRPC, gRPC-Web; URLSession default; ConnectNIO for gRPC).
+% The byte counts (16 B protobuf vs 54 B JSON) are computed by hand from the encoding rules.
+% @labels: area=networking kind=api platform=general topic=networking,protocols,data discussion=223
+% @tags: grpc, protobuf, varint, wire-format, schema-evolution, field-numbers, http2-trailers, grpc-status, deadlines, grpc-web, connect-rpc, grpc-swift
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,for,in,case,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,import,
+    true,false},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2}
+\lstdefinelanguage{Proto}{
+  morekeywords={syntax,package,message,service,rpc,returns,stream,repeated,optional,reserved,
+    enum,string,int32,int64,sint32,bool,bytes,import},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{gRPC \& Protocol Buffers — wire format, evolution, HTTP/2}{networking · folio}
+
+\oneliner{\textbf{Protocol Buffers} is a schema-first binary encoding: every field travels as
+\textbf{(field number, wire type) + value} — names never do, so the \textbf{field numbers are the
+contract}. \textbf{gRPC} is RPC over \textbf{HTTP/2}: \ct{POST /pkg.Service/Method}, length-prefixed
+protobuf messages on one stream, the result in \textbf{trailers} (\ct{grpc-status}); unary + three
+streaming kinds, \textbf{deadlines} built in.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    by/.style={draw=sheetGrey, minimum width=5.2mm, minimum height=4.6mm, font=\tiny\ttfamily, inner sep=0pt},
+    tg/.style={by, fill=sheetBlue!18},
+    ln/.style={by, fill=sheetBrown!18},
+    vl/.style={by, fill=sheetGreen!15},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    fr/.style={draw=sheetGrey, rounded corners=1pt, font=\tiny, inner sep=1.5pt, align=left, anchor=west}]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.2,3.85) {One \ct{User} message on the wire — 16 bytes};
+  % bytes: x start 0, step 0.55
+  \foreach \i/\b/\s in {0/08/tg,1/96/vl,2/01/vl,
+                        3/12/tg,4/03/ln,5/42/vl,6/6F/vl,7/62/vl,
+                        8/1A/tg,9/04/ln,10/01/vl,11/02/vl,12/AC/vl,13/02/vl,
+                        14/20/tg,15/01/vl}
+    \node[\s] (b\i) at (0.3+\i*0.55,2.9) {\b};
+  \draw[decorate, decoration={brace, amplitude=2.5pt}, thick, sheetBlue] (0.05,3.2) -- (1.65,3.2) node[midway, above=2pt, l]{\ct{id = 1} varint};
+  \draw[decorate, decoration={brace, amplitude=2.5pt}, thick, sheetBlue] (1.7,3.2) -- (4.4,3.2) node[midway, above=2pt, l]{\ct{name = 2} LEN};
+  \draw[decorate, decoration={brace, amplitude=2.5pt}, thick, sheetBlue] (4.45,3.2) -- (7.7,3.2) node[midway, above=2pt, l]{\ct{tags = 3} packed LEN};
+  \draw[decorate, decoration={brace, amplitude=2.5pt}, thick, sheetBlue] (7.75,3.2) -- (8.8,3.2) node[midway, above=2pt, l]{\ct{active = 4}};
+  \node[l, anchor=north west, align=left] at (-0.2,2.55) {\textcolor{sheetBlue}{\textbf{tag}} $=$ (field\_number \ct{\hbox{<}\hbox{<}} 3) \ct{|} wire\_type: \ct{08} $=$ 1·8+0 · \ct{12} $=$ 2·8+2 · \ct{1A} $=$ 3·8+2 · \ct{20} $=$ 4·8+0\\
+     \textcolor{sheetBrown}{\textbf{length}} before every LEN value · \textcolor{sheetGreen!50!black}{\textbf{value}}: \ct{"Bob"} $=$ UTF-8 \ct{42 6F 62}; packed \ct{1, 2, 300} $=$ \ct{01 02 AC 02}};
+  % varint decode
+  \node[font=\bfseries\scriptsize, anchor=west] at (-0.2,1.6) {Varint \ct{96 01} $\to$ 150};
+  \node[fr, fill=sheetGreen!8] at (-0.2,1.1) {\ct{96} $=$ \textcolor{sheetRed}{1}\ct{001 0110} \quad \ct{01} $=$ \textcolor{sheetRed}{0}\ct{000 0001}};
+  \node[fr] at (-0.2,0.6) {drop \textcolor{sheetRed}{continuation bits}; groups are \textbf{little-endian}:\ \ct{0000001}\,\ct{0010110} $=$ 150};
+  \node[fr, draw=sheetRed, fill=sheetRed!5] at (-0.2,0.1) {7 bits/byte, 1–10 B · \textbf{negative \ct{int32}} $=$ \textbf{10 B} $\to$ \ct{sint32} (ZigZag)};
+  \node[l, anchor=west, align=left, text=sheetRed] at (6.25,0.95) {Same object as JSON:\\\ct{\{"id":150,"name":"Bob",}\\\ct{"tags":[1,2,300],}\\\ct{"active":true\}} $=$ \textbf{54 B}\\vs \textbf{16 B}: the saving is the\\\emph{names} + text numbers.};
+  \draw[sheetGrey!40] (9.35,3.95) -- (9.35,-0.15);
+  % ---- gRPC on an HTTP/2 stream
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (9.5,3.85) {One unary call $=$ one HTTP/2 stream};
+  \node[box, font=\tiny, minimum width=9mm] at (9.95,3.4) {client};
+  \node[box, font=\tiny, minimum width=9mm] at (16.4,3.4) {server};
+  \draw[sheetGrey, thick] (9.95,3.2) -- (9.95,-0.1);
+  \draw[sheetGrey, thick] (16.4,3.2) -- (16.4,-0.1);
+  \draw[hot, draw=sheetBlue] (9.95,2.45) -- (16.4,2.45);
+  \node[l, anchor=south west, align=left, font=\tiny\ttfamily, fill=white] at (10.05,2.47) {HEADERS :method POST :path /demo.UserService/GetUser\\content-type: application/grpc · te: trailers\\grpc-timeout: 500m};
+  \draw[hot, draw=sheetBlue] (9.95,1.95) -- (16.4,1.95);
+  \node[l, anchor=south west, align=left, fill=white] at (10.05,1.97) {DATA \ct{00 | 00 00 00 10} + 16-byte message \emph{(flag + 4-byte length)} · END\_STREAM};
+  \draw[hot, draw=sheetGreen] (16.4,1.45) -- (9.95,1.45);
+  \node[l, anchor=south east, fill=white] at (16.3,1.47) {HEADERS \ct{:status 200} — HTTP 200 even when the call fails};
+  \draw[hot, draw=sheetGreen] (16.4,0.95) -- (9.95,0.95);
+  \node[l, anchor=south east, fill=white] at (16.3,0.97) {DATA length-prefixed \ct{User} (a stream: many DATA messages)};
+  \draw[hot, draw=sheetRed] (16.4,0.4) -- (9.95,0.4);
+  \node[l, anchor=south east, fill=white] at (16.3,0.42) {\textbf{trailers} HEADERS \ct{grpc-status: 0} (\ct{grpc-message} on error)};
+  \node[l, anchor=west, text=sheetRed] at (9.5,0.05) {immediate error $\to$ \emph{Trailers-Only} response · cancel $\to$ \ct{RST\_STREAM}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Protocol Buffers}
+\begin{itemize}
+  \item \textbf{Wire types}: 0 \ct{VARINT} (int32/64, uint, sint, bool, enum) · 1 \ct{I64} (fixed64,
+        double) · 2 \ct{LEN} (string, bytes, messages, packed repeated) · 5 \ct{I32} (fixed32, float);
+        3/4 = deprecated groups.
+  \item \textbf{Field numbers} 1–536,870,911 (19000–19999 reserved by protobuf). 1–15 cost a
+        \textbf{1-byte} tag, 16–2047 two — give hot fields 1–15.
+  \item \textbf{Defaults are not sent} (proto3): \ct{0}, \ct{""}, \ct{false} look exactly like ``unset''.
+        Need the difference? \ct{optional} (explicit presence, \ct{hasX}) or a wrapper message.
+  \item Field order is irrelevant; a non-repeated field seen twice: \textbf{last one wins}.
+        \textbf{Unknown fields are preserved} and re-serialised (proto3).
+  \item No self-description: without the \ct{.proto} the bytes are numbers and blobs. Max 2\,GiB.
+\end{itemize}
+
+\hd{Schema evolution — old apps live for years}
+\begin{itemize}
+  \item \textbf{Never change or reuse a field number.} Deleting a field? \ct{reserved 3;} and
+        \ct{reserved "email";} so nobody reuses it.
+  \item \textbf{Add} fields with new numbers: old clients skip them (unknown), new clients read
+        defaults from old data. Safe type swaps: \ct{int32/uint32/int64/uint64/bool}.
+  \item \textbf{Renaming} is wire-safe (names are not sent) but breaks the \textbf{JSON} mapping.
+  \item \textbf{Enums}: first value \ct{0 = X\_UNSPECIFIED}; old apps get unknown numbers (Swift:
+        \ct{.UNRECOGNIZED(Int)}) — handle a default.
+  \item Breaking: singular $\leftrightarrow$ repeated, scalar $\leftrightarrow$ message. Add a new
+        field / RPC or a \ct{pkg.v2} service instead; gate in CI (\ct{buf breaking}).
+\end{itemize}
+
+\hd{Example — contract + Swift client (gRPC Swift 2)}
+\begin{lstlisting}[language=Proto]
+syntax = "proto3";
+package demo;
+message User {
+  int32 id = 1;  string name = 2;  repeated int32 tags = 3;
+  bool active = 4;
+  optional string nickname = 6;    // presence: hasNickname
+  reserved 5; reserved "email";    // deleted in v1.4
+}
+service UserService {
+  rpc GetUser (GetUserRequest) returns (User);            // unary
+  rpc Watch (WatchRequest) returns (stream Event);        // server
+  rpc Upload (stream Chunk) returns (UploadResult);       // client
+  rpc Chat (stream Msg) returns (stream Msg);             // bidi
+}
+\end{lstlisting}
+\begin{lstlisting}[language=SwiftSheet]
+try await withGRPCClient(transport: .http2NIOPosix(
+    target: .dns(host: "api.example.com", port: 443),
+    transportSecurity: .plaintext)) { client in   // local dev only
+  let users = Demo_UserService.Client(wrapping: client)
+  let user = try await users.getUser(.with { $0.id = 150 })
+}
+\end{lstlisting}
+
+\columnbreak
+
+\hd{gRPC}
+\begin{itemize}
+  \item \textbf{Four kinds} (see the \ct{service}): each call is one HTTP/2 stream on a shared connection.
+  \item \textbf{Deadlines}: \ct{grpc-timeout} (units \ct{H M S m u n}; \ct{500m} $=$ 500\,ms);
+        propagate the remaining budget downstream. Expiry $\to$ \ct{DEADLINE\_EXCEEDED}.
+  \item \textbf{Load balancing}: one long-lived HTTP/2 connection pins every call to one backend
+        behind an L4 balancer — use L7 (Envoy) or client-side balancing.
+  \item \textbf{Browsers} can't read trailers $\to$ \textbf{gRPC-Web} (via a proxy) or
+        \textbf{Connect} (plain POST, HTTP/1.1 OK, JSON or binary).
+  \item \textbf{Swift}: \textbf{gRPC Swift 2} (Feb 2025): async/await, Swift 6, pluggable transports
+        (HTTP/2 on SwiftNIO, in-process for tests). \textbf{Connect-Swift}: Connect / gRPC-Web /
+        gRPC over URLSession (gRPC needs \ct{ConnectNIO}).
+\end{itemize}
+
+\hd{Status codes you will be asked about}
+{\footnotesize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{36mm}>{\raggedright\arraybackslash}p{39mm}@{}}
+\toprule
+0 \ct{OK} & 1 \ct{CANCELLED} (caller gave up) \\
+3 \ct{INVALID\_ARGUMENT} (bad input) & 4 \ct{DEADLINE\_EXCEEDED} (maybe done!) \\
+5 \ct{NOT\_FOUND} · 6 \ct{ALREADY\_EXISTS} & 7 \ct{PERMISSION\_DENIED} \\
+8 \ct{RESOURCE\_EXHAUSTED} (quota) & 9 \ct{FAILED\_PRECONDITION} \\
+12 \ct{UNIMPLEMENTED} (old server!) & 13 \ct{INTERNAL} · 2 \ct{UNKNOWN} \\
+\textbf{14 \ct{UNAVAILABLE}: retry + backoff} & 16 \ct{UNAUTHENTICATED} (refresh token) \\
+\bottomrule
+\end{tabular}}
+
+\hd{REST/JSON vs GraphQL vs gRPC}
+{\footnotesize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{24mm}@{}}
+\toprule
+& \textbf{REST/JSON} & \textbf{GraphQL} & \textbf{gRPC} \\ \midrule
+contract & optional (OpenAPI) & SDL schema & \ct{.proto}, required \\
+payload & text + names & JSON, per query & binary, numbers \\
+transport & any HTTP & POST one URL & HTTP/2 (Connect: 1.1) \\
+streaming & SSE / WebSocket & subscriptions & 4 native kinds \\
+caching & HTTP / CDN for free & client store & none built in \\
+browser & native & native & proxy or Connect \\
+errors & HTTP status & \ct{errors[]}, 200 & \ct{grpc-status} trailer \\
+evolution & versioned URLs & deprecate fields & new field numbers \\
+\bottomrule
+\end{tabular}}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Reusing a deleted field number: old apps misread new data — silent corruption.}
+  \trap{Checking the HTTP status of a gRPC call — it is 200; read \ct{grpc-status}.}
+  \trap{Retrying \ct{DEADLINE\_EXCEEDED} blindly — the server may have finished it.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Numbers on the wire; never reuse one; status in trailers.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} graphql-apollo (the GraphQL column) · http-deep
+(HTTP/2 frames) · api-design (REST, idempotency) · poor-network-engineering (retries) ·
+data-transfer-optimisation}
+
+\end{document}

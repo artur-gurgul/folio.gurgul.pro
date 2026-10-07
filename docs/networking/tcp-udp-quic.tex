@@ -1,0 +1,198 @@
+% tcp-udp-quic.tex — TCP header essentials, 3-way handshake + 4-way close + TIME_WAIT (drawn with
+% states), seq/ack, flow control (rwnd) vs congestion control (slow start, cwnd, Reno/CUBIC/BBR;
+% cwnd graph drawn), Nagle + delayed ACK, head-of-line blocking, UDP semantics, why QUIC.
+% Sources (checked 2026-09-25): RFC 9293 (TCP, MSL), RFC 5681 (slow start, fast retransmit, loss
+% window), RFC 6928 (IW10), RFC 7323 (window scale <= 14), RFC 9438 (CUBIC: beta 0.7, C 0.4,
+% W(t) = C(t-K)^3 + Wmax), RFC 896 (Nagle), RFC 1122 (delayed ACK < 0.5 s), RFC 768 (UDP),
+% RFC 9000 (QUIC: 3x anti-amplification, 1200-byte Initial, stream-ID bits, PATH_CHALLENGE,
+% 0-RTT replay), RFC 9001, RFC 9002; developer.apple.com Network framework (NWProtocolTCP.Options,
+% NWProtocolQUIC, iOS 15). HTTP/2 vs HTTP/3 stacks + HOL picture are in http-deep — not redrawn.
+% @labels: area=networking kind=concept platform=general topic=networking,protocols,performance discussion=230
+% @tags: tcp, udp, quic, three-way-handshake, time-wait, slow-start, cwnd, cubic, bbr, nagle, delayed-ack, head-of-line-blocking, nwconnection
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,for,in,case,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,import,
+    true,false},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{TCP · UDP · QUIC — handshakes, windows, and why QUIC exists}{networking · folio}
+
+\oneliner{\textbf{TCP} turns lossy IP packets into one \textbf{reliable, ordered byte stream}: a 3-way
+handshake agrees on sequence numbers, ACKs + retransmission recover loss, the \textbf{receive window}
+protects the receiver (flow control), the \textbf{congestion window} protects the network. \textbf{UDP}
+is ports + checksum and nothing else. \textbf{QUIC} rebuilds TCP's guarantees \emph{per stream} on
+UDP with TLS 1.3 inside — 1-RTT setup, no cross-stream head-of-line blocking, survives an IP change.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet,
+    m/.style={font=\tiny, inner sep=0.5pt, align=center, fill=white},
+    st/.style={font=\tiny\ttfamily, text=sheetBrown, inner sep=1pt},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center}]
+  % ---------------- handshake + close ----------------
+  \begin{scope}[y=0.78cm]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.9,4.35) {Open, send, close — with the states};
+  \node[box, font=\scriptsize, minimum width=12mm, inner sep=1.5pt] at (0.6,3.95) {client};
+  \node[box, font=\scriptsize, minimum width=12mm, inner sep=1.5pt] at (5.6,3.95) {server};
+  \draw[sheetGrey, thick] (0.6,3.7) -- (0.6,-0.6);
+  \draw[sheetGrey, thick] (5.6,3.7) -- (5.6,-0.6);
+  \node[st, anchor=west] at (5.65,3.6) {LISTEN};
+  \draw[hot, draw=sheetBlue] (0.6,3.45) -- node[m, above, sloped]{SYN seq=x} (5.6,3.2);
+  \node[st, anchor=east] at (0.55,3.45) {SYN\_SENT};
+  \node[st, anchor=west] at (5.65,3.2) {SYN\_RCVD};
+  \draw[hot, draw=sheetBlue] (5.6,3.05) -- node[m, above, sloped]{SYN-ACK seq=y ack=x+1} (0.6,2.8);
+  \draw[hot, draw=sheetBlue] (0.6,2.65) -- node[m, above, sloped]{ACK ack=y+1 (may carry data)} (5.6,2.4);
+  \node[st, anchor=east] at (0.55,2.75) {ESTABLISHED};
+  \node[st, anchor=west] at (5.65,2.4) {ESTABLISHED};
+  \node[l, anchor=west, text=sheetRed] at (5.65,2.95) {\textbf{1 RTT}};
+  \draw[hot, draw=sheetGreen] (0.6,2.15) -- node[m, above, sloped]{data seq=x+1, 1000 B} (5.6,1.9);
+  \draw[hot, draw=sheetGreen] (5.6,1.75) -- node[m, above, sloped]{ACK ack=x+1001 win=65535} (0.6,1.5);
+  \node[l, text=sheetGreen!50!black] at (3.1,1.3) {ack $=$ next byte expected (cumulative) · win $=$ rwnd};
+  \draw[hot, draw=sheetRed] (0.6,1.05) -- node[m, above, sloped]{FIN} (5.6,0.8);
+  \node[st, anchor=east] at (0.55,1.05) {FIN\_WAIT\_1};
+  \node[st, anchor=west] at (5.65,0.8) {CLOSE\_WAIT};
+  \draw[hot, draw=sheetRed] (5.6,0.65) -- node[m, above, sloped]{ACK} (0.6,0.4);
+  \node[st, anchor=east] at (0.55,0.4) {FIN\_WAIT\_2};
+  \draw[hot, draw=sheetRed] (5.6,0.15) -- node[m, above, sloped]{FIN (when the app closes)} (0.6,-0.1);
+  \node[st, anchor=west] at (5.65,0.15) {LAST\_ACK};
+  \draw[hot, draw=sheetRed] (0.6,-0.25) -- node[m, above, sloped]{ACK} (5.6,-0.5);
+  \node[st, anchor=west] at (5.65,-0.5) {CLOSED};
+  \node[st, anchor=east, text=sheetRed] at (0.55,-0.2) {\textbf{TIME\_WAIT}};
+  \node[l, anchor=east, text=sheetRed, align=right] at (0.55,-0.6) {2$\times$MSL $\to$ CLOSED};
+  \node[l, anchor=north west, align=left] at (0.7,-0.62) {the \emph{active closer} waits: re-ACKs a lost FIN; old segments die out};
+  \end{scope}
+
+  \draw[sheetGrey!40] (6.95,3.5) -- (6.95,-0.85);
+
+  % ---------------- cwnd graph ----------------
+  \begin{scope}[xshift=7.55cm, yshift=-0.35cm, y=0.66cm]
+  \node[font=\bfseries\small, text=sheetBlue, anchor=west] at (-0.5,5.6) {Congestion window over time (Reno shape; CUBIC grows as a cubic)};
+  \draw[->, thick] (0,0) -- (8.7,0) node[below left, l]{time (RTTs)};
+  \draw[->, thick] (0,0) -- (0,4.9) node[right, l]{cwnd};
+  \draw[dashed, sheetBrown] (0,3.2) -- (2.95,3.2) node[pos=0.2, above, l, text=sheetBrown]{ssthresh};
+  \draw[dashed, sheetBrown] (2.95,2.0) -- (6.15,2.0);
+  \draw[dashed, sheetBrown] (6.15,1.8) -- (8.5,1.8);
+  \draw[very thick, sheetBlue] plot[smooth, domain=0:1.5] (\x,{0.25*2^(\x*1.75)});
+  \draw[very thick, sheetGreen!70!black] (1.5,1.55) -- (2.95,4.0);
+  \draw[very thick, sheetRed, dashed] (2.95,4.0) -- (2.95,2.0);
+  \node[l, text=sheetRed, anchor=west, align=left] at (3.05,4.3) {3 dup ACKs: fast retransmit,\\cwnd $\times$0.5 (Reno) / $\times$0.7 (CUBIC)};
+  \draw[very thick, sheetGreen!70!black] (2.95,2.0) -- (6.15,3.6);
+  \draw[very thick, sheetRed, dashed] (6.15,3.6) -- (6.15,0.12);
+  \node[l, text=sheetRed, anchor=west, align=left] at (6.25,4.0) {RTO timeout:\\cwnd $\to$ 1 segment,\\slow start again};
+  \draw[very thick, sheetBlue] plot[smooth, domain=0:1.0] ({6.15+\x},{0.12*2^(\x*3.9)});
+  \draw[very thick, sheetGreen!70!black] (7.15,1.8) -- (8.45,2.5);
+  \node[l, text=sheetBlue, anchor=west, align=left] at (0.15,2.35) {\textbf{slow start}:\\$\times$2 per RTT\\from IW $=$ 10 seg.};
+  \node[l, text=sheetGreen!50!black, anchor=west, align=left] at (3.6,1.05) {\textbf{congestion avoidance}:\\+1 segment per RTT};
+  \node[l, anchor=north west, align=left] at (-0.5,-0.15) {In flight $\leq$ \textbf{min(cwnd, rwnd)}. Full speed needs in-flight $\geq$ \textbf{BDP} $=$ bandwidth $\times$ RTT:\\
+      50\,Mbit/s $\times$ 100\,ms $=$ 625\,KB. Small transfers never leave slow start $\Rightarrow$ \emph{RTT} sets their speed.};
+  \end{scope}
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{TCP}
+\begin{itemize}
+  \item \textbf{Header} (20–60 B): ports · \textbf{seq} (number of the first payload byte) ·
+        \textbf{ack} (next byte expected) · flags \ct{SYN ACK FIN RST PSH URG ECE CWR} · 16-bit
+        \textbf{window} · checksum · options (MSS, window scale $\leq$14 $\Rightarrow$ 1\,GiB, SACK,
+        timestamps). The 4-tuple (IPs + ports) \emph{is} the connection.
+  \item \textbf{Open}: random ISNs (anti-spoofing); SYN and FIN each consume a sequence number;
+        MSS 1460 on a 1500-byte MTU (IPv4). \textbf{Close}: each direction separately (half-close)
+        $\to$ 4 segments; the first closer holds \textbf{TIME\_WAIT} 2$\times$MSL (RFC MSL 2\,min;
+        Linux 60\,s). \ct{RST} aborts at once.
+  \item \textbf{Loss}: 3 duplicate ACKs $\to$ fast retransmit; RTO expiry $\to$ retransmit + slow
+        start from 1 segment. \textbf{SACK} reports which ranges arrived.
+  \item \textbf{Flow control} $\neq$ \textbf{congestion control}: \textbf{rwnd} $=$ receiver's free
+        buffer, in every ACK (0 $\to$ sender stops, probes); \textbf{cwnd} $=$ sender's guess of the
+        \emph{network}. Reno, CUBIC (RFC 9438, Linux's default) are loss-based; \textbf{BBR}
+        (Google) models bottleneck bandwidth + min RTT and paces — better on lossy radio and
+        against bufferbloat.
+  \item \textbf{Nagle} (RFC 896) holds small segments while data is unacked; \textbf{delayed ACK}
+        (RFC 1122: $<$0.5\,s, every 2nd full segment) holds the ACK $\Rightarrow$ write-write-read
+        stalls tens to hundreds of ms. Fix: \ct{TCP\_NODELAY} (\ct{noDelay}) or one write.
+  \item \textbf{Head-of-line blocking}: in-order delivery — one lost segment stalls every byte
+        behind it, i.e.\ every HTTP/2 stream on the connection.
+\end{itemize}
+
+\hd{UDP — what you do \emph{not} get}
+8-byte header (ports, length, checksum). No handshake, order, retransmission or congestion
+control; message boundaries kept; oversize datagrams fragment or drop. Used by DNS, QUIC,
+RTP/WebRTC, games, mDNS. NATs forget idle UDP mappings fast $\to$ keepalives.
+
+\hd{Example — Network.framework knobs}
+\begin{lstlisting}[language=SwiftSheet]
+import Network
+let tcp = NWProtocolTCP.Options()
+tcp.noDelay = true            // Nagle off: small RPC-style writes
+tcp.connectionTimeout = 5     // seconds for the handshake
+tcp.enableKeepalive = true; tcp.keepaliveIdle = 30
+let conn = NWConnection(host: "api.example.com", port: 443,
+               using: NWParameters(tls: .init(), tcp: tcp))
+conn.stateUpdateHandler = { state in  // preparing/ready/waiting/failed
+  if case .waiting(let err) = state { print("no path yet", err) } }
+conn.start(queue: .main)
+// QUIC (iOS 15): NWParameters(quic: NWProtocolQUIC.Options(alpn: ["h3"]))
+// URLSession: h3 when offered (iOS 15); MPTCP: multipathServiceType
+\end{lstlisting}
+
+\columnbreak
+
+\hd{QUIC — why it exists (RFC 9000/9001/9002, 2021)}
+\begin{itemize}
+  \item \textbf{Ossification}: TCP lives in kernels and middleboxes that drop the unfamiliar. QUIC
+        runs in user space over UDP and \textbf{encrypts almost all of its header} (even packet
+        numbers), so the network cannot come to depend on it.
+  \item \textbf{Streams} native, loss per stream. Stream-ID bit 0 $=$ opener (client 0 / server 1),
+        bit 1 $=$ bidi 0 / uni 1. \textbf{Packet numbers never reused} (a retransmission is a new
+        packet) $\to$ unambiguous RTT samples; ACK ranges $=$ built-in SACK.
+  \item \textbf{Migration}: \textbf{connection IDs}, not the 4-tuple; a new IP is checked with
+        \ct{PATH\_CHALLENGE}/\ct{PATH\_RESPONSE} and the connection continues.
+  \item \textbf{Anti-amplification}: the client pads its first Initial to $\geq$\textbf{1200 B}; an
+        unvalidated server sends $\leq$\textbf{3$\times$} what it received.
+  \item \textbf{Costs}: more CPU than kernel TCP; UDP blocked or throttled on some networks $\to$
+        clients race / fall back to TCP; opaque to middleboxes (by design).
+\end{itemize}
+
+\hd{Compare}
+{\footnotesize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{21mm}>{\raggedright\arraybackslash}p{10mm}>{\raggedright\arraybackslash}p{31mm}@{}}
+\toprule
+& \textbf{TCP} & \textbf{UDP} & \textbf{QUIC} \\ \midrule
+setup & 1 RTT (+1 TLS 1.3) & 0 & 1 RTT incl. TLS; 0-RTT resume \\
+delivery & ordered bytes & none & ordered \emph{per stream} \\
+HOL & whole connection & — & per stream \\
+congestion & kernel: CUBIC, BBR & yours & in app (RFC 9002: NewReno) \\
+identity & 4-tuple & — & connection ID $\to$ migrates \\
+crypto & optional TLS on top & none & mandatory, headers too \\
+\bottomrule
+\end{tabular}}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Flow control $\neq$ congestion control: receiver buffer (rwnd) vs network capacity (cwnd).}
+  \trap{Thousands of \ct{TIME\_WAIT}s on a server: the server closes first. Let clients close, keep
+        connections alive; don't shrink MSL.}
+  \trap{Half-open sockets look alive; TCP keepalive defaults to 2\,h — use app heartbeats.}
+  \trap{More bandwidth rarely speeds a small API call: it is RTT- and slow-start-bound.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``rwnd: receiver, cwnd: network, TIME\_WAIT: who hangs up first; QUIC $=$ TCP per stream.''}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} http-deep (h2/h3 stacks, HOL picture) · tls-pki ·
+what-happens-tap-a-url · websockets-realtime (heartbeats) · poor-network-engineering}
+
+\end{document}
