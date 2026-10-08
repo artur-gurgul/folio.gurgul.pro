@@ -1,0 +1,277 @@
+% logging-signposts-power.tex — unified logging (Logger, levels + persistence, privacy, reading it:
+% Xcode console, Console, log, OSLogStore), signposts (OSSignposter intervals/events, interval-state
+% assertions, Points of Interest, Xcode 27 per-name tracks, recording modes), CI (xctrace,
+% XCTOSSignpostMetric), power (Power Profiler, Energy Impact gauge, subsystem → metric → fix),
+% field data (iOS 27 MetricKit custom signposts, Organizer Battery/Energy + Xcode 27 panes).
+% Sources (checked 2026-10-07):
+%   developer.apple.com/documentation/os/generating-log-messages-from-your-code (level/persistence
+%     table; process chain on error/fault; ints/floats/bools shown, dynamic strings + objects
+%     redacted; hash unique per process) · /os/viewing-log-messages (binary compressed, formatted
+%     on read) · /os/logging (iOS 10+, supersedes ASL + syslog) · /os/logger/trace(_:), warning(_:),
+%     critical(_:), log(_:) (= debug, error, fault, notice) · /os/oslogprivacy (auto, public,
+%     private, sensitive = private, mask) · /os/os_log_with_type (long messages may be truncated)
+%     · /oslog/oslogstore (iOS 15; init(scope:) throws; .currentProcessIdentifier)
+%   /os/ossignposter (iOS 15; .exclusive default id; withIntervalSignpost; isEnabled; .disabled) ·
+%     /os/ossignpostintervalstate (assertions; crash in debug builds, error attached in production;
+%     Codable) · /os/recording-performance-data
+%   WWDC20 10168 "Explore logging in Swift" (debug discarded unless streamed, message code not
+%     run; fault slowest; log collect from a device) · WWDC23 10226 "Debug with structured
+%     logging" (Xcode 15 console metadata, filters, Quick Look, jump to source, error yellow /
+%     fault red; stdout is for command-line UI) · WWDC18 405 "Measuring performance using logging"
+%     (Points of Interest auto-included with Time Profiler; immediate mode bypasses OS buffering,
+%     windowed mode; disabled handle ~ no-op)
+%   support.apple.com/guide/console/cnsl35710 (Action > Include Info/Debug Messages; live stream
+%     only, archives already contain them) · log(1) man page (stream --level, show --info --debug
+%     --last, collect --start "YYYY-MM-DD HH:MM:SS" --output) · xctrace(1) man page, Xcode 27
+%     (--window ring buffer, --no-prompt, --run-name, --recording-options, export --input .atrc,
+%     --time-start / --time-end / --duration)
+%   Xcode 26 release notes (Power Profiler: iOS/iPadOS device, process metrics only with Launch or
+%     Attach, on-device traces as .atrc; xctrace run-name) · Xcode 27 release notes (os_signpost
+%     track per name; --recording-options; export from .atrc/.logarchive + time range; os_log
+%     overlay on thread tracks; StateReporting in Points of Interest; Instruments needs iOS 17+
+%     devices; Organizer Insights Overview, Hitches replaces Scrolling, Storage, metric goals,
+%     Generate Recommendations)
+%   /xcode/measuring-your-app-s-power-use-with-power-profiler (iOS/iPadOS 26; system power as a
+%     fraction of battery per hour; charger, thermal state, brightness, sleep; charging reads 0;
+%     values not comparable across models; Performance Trace up to 10 h; .aar → .atrc; next tool per
+%     subsystem) · WWDC25 226 (Control Center control; lower Time Profiler sample rate; impact is a
+%     score) · /xcode/analyzing-your-app-s-battery-use (Battery Usage normalised to 24 h, off power;
+%     categories; energy reports + 14-day trend; Energy Impact gauge; MetricKit power metrics) ·
+%     /xcode/scheduling-cpu-work-efficiently (event-driven, lowest QoS, 10-100 ms operations) ·
+%     /xcode/reducing-networking-and-bluetooth-power-usage (one URLSession, batch + compress,
+%     waitsForConnectivity, isDiscretionary waits for charging or Wi-Fi) ·
+%     /xcode/accessing-the-device-s-location-efficiently · /xcode/improving-your-app-s-rendering-
+%     efficiency (Flash Updated Regions, solid backgrounds, GlassEffectContainer, brighter pixels
+%     cost more)
+%   /metrickit/monitoring-app-performance-with-metrickit (logHandle + mxSignpost fill cpuTime,
+%     logicalWrites, averageMemory, OSSignposter on that handle does not; Simulate MetricKit
+%     Payloads) · /metrickit/metricmanager · /metrickit/mxmetricmanager (deprecated 27.2) ·
+%     /metrickit/mxsignpostmetric (custom signposts are capped) · /metrickit/signpostrecord ·
+%     /metrickit/pixelluminancemetric (APL 0-100, OLED only) · /statereporting (iOS 27)
+%   /xctest/xctossignpostmetric (iOS 13; no result without a begin/end pair) · /xctest/xctcpumetric
+% Not repeated: Instruments workflow (ios-swift/instruments-performance); MetricKit metric families,
+% hang definitions, Organizer regression rule (debugging/production-performance-metrics); radio tail
+% and energy habits (ios-platform/app-size-and-energy); crash diagnostics
+% (security-build/crashes-symbolication).
+% @labels: area=debugging kind=tooling platform=apple topic=debugging,performance
+% @tags: oslog, logger, log-levels, log-privacy, ossignposter, points-of-interest, xctrace, power-profiler, energy, metrickit, metricmanager, mxsignpost, xcode-organizer
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={import,extension,static,let,var,func,defer,self,private,struct,
+    class,final,return,true,false,for,case,in,await,async,throws,try},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={==}{{\hbox{=}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2 {??}{{\hbox{?}\hbox{?}}}2}
+\lstdefinelanguage{ShSheet}{
+  morekeywords={log,xcrun,xctrace,stream,show,collect,record,export},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]',
+  literate={--}{{\hbox{-}\hbox{-}}}2 {==}{{\hbox{=}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\footnotesize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}
+
+\tikzset{
+  col/.style={box, font=\scriptsize, align=left, inner sep=2pt, anchor=north},
+  hd/.style={font=\bfseries\small, anchor=south},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  lv/.style={cell, font=\ttfamily\tiny, minimum width=9.5mm, minimum height=4mm},
+}
+
+\begin{document}
+
+\sheettitle{Logging, signposts \& power — from code to field data}{debugging · folio}
+
+\oneliner{\textbf{\ct{Logger}} writes \emph{words} into the OS's unified log
+(binary, levelled, redacted by default), \textbf{\ct{OSSignposter}} writes
+\emph{time} (intervals and events Instruments draws as tracks), and the OS meters
+\emph{power} per subsystem. Read it live (Xcode console, Console, \ct{log}),
+recorded (Instruments, Power Profiler, \ct{xctrace}), or aggregated from users a day
+later (MetricKit, Organizer).}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── code ──
+  \node[hd, text=sheetBlue] at (1.6,0.05) {1 your code};
+  \node[col, text width=30mm, minimum height=25mm] (code) at (1.6,0) {%
+    \ct{Logger(subsystem:category:)}\\\ \ \ct{.debug .info .notice}\\\ \ \ct{.error .fault}\\[2pt]
+    \ct{OSSignposter}\\\ \ \ct{beginInterval / endInterval}\\\ \ \ct{emitEvent}\\[2pt]
+    \ct{mxSignpost(…)} (MetricKit handle)};
+  % ── OS store ──
+  \node[hd, text=sheetBrown] at (6.05,0.05) {2 the OS};
+  \node[col, draw=sheetBrown, fill=sheetBrown!6, text width=40mm, minimum height=25mm] (os) at (6.05,0) {};
+  \node[font=\scriptsize, anchor=north west, align=left] at (4.0,-0.08) {unified log: binary, formatted \emph{on read}};
+  \foreach \t/\f/\x in {debug/sheetRed!12/4.55, info/sheetOrange!15/5.5, notice/sheetGreen!15/6.45, error/sheetGreen!15/7.4}
+    \node[lv, fill=\f] at (\x,-0.72) {\t};
+  \node[lv, fill=sheetGreen!15] at (7.4,-1.14) {fault};
+  \node[lbl, anchor=west, align=left] at (3.98,-1.24) {\textcolor{sheetRed}{debug}: never on disk\\\textcolor{sheetOrange}{info}: only if collected};
+  \node[lbl, anchor=north west, align=left] at (3.98,-1.62) {notice · error · fault: disk, oldest purged\\signposts · power + thermal telemetry\\daily MetricKit aggregation (on device)};
+  % ── desk tools ──
+  \node[hd, text=sheetGreen!55!black] at (11.0,0.05) {3a on your desk (dev)};
+  \node[col, draw=sheetGreen!70!black, fill=sheetGreen!8, text width=40mm, minimum height=13mm] (desk) at (11.0,0) {%
+    Xcode console (metadata, filters, jump to source)\\
+    Console.app · \ct{log stream / show / collect}\\
+    Instruments: \textbf{os\_signpost}, \textbf{Points of Interest},\\\textbf{Power Profiler} (\ct{.atrc}) · \ct{xctrace} in CI};
+  % ── field tools ──
+  \node[hd, text=sheetOrange, anchor=north] at (11.0,-1.35) {3b from users (field)};
+  \node[col, draw=sheetOrange, fill=sheetOrange!8, text width=40mm, minimum height=10mm] (field) at (11.0,-1.7) {%
+    \textbf{MetricKit}: \ct{MetricManager} (iOS 27), daily\\
+    \textbf{Organizer}: Apple-aggregated, consenting users —\\Battery · Energy · Insights · Hitches · Storage};
+  \draw[hot] (code.east) -- (os.west);
+  \draw[flow] (os.east) -- ++(0.25,0) |- (desk.west);
+  \draw[flow] (os.east) -- ++(0.25,0) |- (field.west);
+  \node[lbl, anchor=north west, align=left] at (13.15,-0.02) {live /\\recorded};
+  \node[lbl, anchor=north west, align=left] at (13.15,-1.72) {aggregated,\\a day late};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\small\setstretch{1.0}\raggedright
+
+\section{Unified logging (iOS 10+; \ct{Logger} iOS 14)}
+\begin{itemize}
+  \item \ct{Logger(subsystem: "com.acme.app", category: "network")}: reverse-DNS area +
+        component, both filter keys. Replaced ASL and syslog.
+  \item Stored \textbf{binary + compressed}, formatted only when read; a discarded \ct{debug}
+        is near-free (the compiler skips building its message). \ct{print} = stdout, ``for
+        command-line UI'': no level, metadata or redaction.
+\end{itemize}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{36mm}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{10mm}@{}}
+\toprule
+\textbf{level} & \textbf{persisted (Apple's table)} & \textbf{alias} & \textbf{shown}\\ \midrule
+\ct{debug} & no — memory only & \ct{trace} & \\
+\ct{info} & only if collected with \ct{log} & & \\
+\ct{notice} & yes, to a storage limit (default) & \ct{log} & \\
+\ct{error} & yes + the activity's process chain & \ct{warning} & yellow\\
+\ct{fault} & same; the slowest level & \ct{critical} & red\\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item \textbf{Privacy} (\ct{.auto}): ints, floats, bools shown; dynamic strings and objects
+        \textbf{redacted}. \ct{.public} shows; \ct{.private} = \ct{.sensitive} redact;
+        \ct{mask: .hash} prints a per-process hash instead, so equal values correlate.
+  \item \textbf{Xcode 15+ console}: metadata under each line, tokenised filters, Space =
+        Quick Look, jump to the source line. \textbf{Console.app}: \emph{Action > Include
+        Info / Debug Messages} — live stream only; a \ct{.logarchive} already has them.
+  \item \textbf{Field}: \ct{try OSLogStore(scope:} \ct{.currentProcessIdentifier)} (iOS 15)
+        reads your own entries back for a report; or a sysdiagnose.
+\end{itemize}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+import os
+extension Logger {
+  static let net = Logger(subsystem: "com.acme.app",
+                          category: "network") }
+Logger.net.info("GET \(url.path, privacy: .public)")
+Logger.net.error("HTTP \(code) user \(uid,
+                 privacy: .private(mask: .hash))")
+let sp = OSSignposter(logger: .net)
+func fetch() async throws -> Feed {
+  let st = sp.beginInterval("Fetch", id: sp.makeSignpostID())
+  defer { sp.endInterval("Fetch", st) }  // same StaticString name
+  sp.emitEvent("CacheMiss")               // a point, not a span
+  return try await api.feed()
+}
+\end{lstlisting}
+\begin{lstlisting}[language=ShSheet]
+log stream --level debug --predicate 'subsystem == "com.acme.app"'
+log collect --device --start 2026-10-07 --output bug.logarchive
+xcrun xctrace record --template 'Time Profiler' --time-limit 30s \
+  --window 5s --no-prompt --output feed.trace --launch -- MyApp.app
+\end{lstlisting}
+
+\section{Signposts — time, not words}
+\begin{itemize}
+  \item \textbf{Interval}: begin/end with the same static name. The returned
+        \ct{OSSignpostIntervalState} enforces one end per begin, same name, same log — a
+        violation \textbf{crashes Debug builds}; Release attaches an error to the end.
+  \item ID \ct{.exclusive} (default) if only one such interval runs at a time, else
+        \ct{makeSignpostID()}. \textbf{Event} = \ct{emitEvent}, an instant.
+  \item \ct{.pointsOfInterest} category $\to$ \emph{Points of Interest}, auto-included with
+        Time Profiler. \ct{OSSignposter.disabled} $\approx$ no-op; gate costly metadata on
+        \ct{isEnabled}.
+  \item \textbf{Xcode 27}: a track \textbf{per signpost name} under its category; os\_log
+        overlaid on Time/CPU Profiler thread tracks; StateReporting states in Points of Interest.
+  \item CI: \ct{XCTOSSignpostMetric(subsystem:category:name:)} in \ct{measure(metrics:)} —
+        no result without a begin/end pair. \ct{xctrace}: \ct{\dd{}run-name} (26);
+        \ct{\dd{}recording-options}, \ct{export} straight from \ct{.atrc}/\ct{.logarchive}
+        with \ct{\dd{}time-start}/\ct{\dd{}time-end}/\ct{\dd{}duration} (27).
+\end{itemize}
+
+\columnbreak
+
+\section{Power Profiler (Xcode 26; iOS / iPadOS 26)}
+\begin{itemize}
+  \item Blank template + \emph{Power Profiler}. System track: \textbf{\% of battery per hour},
+        charger, thermal state, brightness, SoC sleep. App lanes: \textbf{power impact} of
+        \textbf{CPU · GPU · display · networking} — a score; fix the highest first.
+        \emph{All Processes} = system only; app lanes need Launch or Attach.
+  \item \textbf{No Mac}: Settings > Developer > \emph{Performance Trace} $\to$ Power Profiler
+        mode $\to$ tick the app $\to$ Control Center control; up to \textbf{10\,h}; share the
+        \ct{.aar} $\to$ \ct{.atrc} $\to$ Instruments (+ a lower-rate Time Profiler). Testers too.
+\end{itemize}
+
+\section{One subsystem — metric — fix}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{39mm}@{}}
+\toprule
+\textbf{lane} & \textbf{MetricKit (iOS 27)} & \textbf{fix (Apple's guidance)}\\ \midrule
+CPU & \ct{CPUTime}, \ct{CPUInstructionsCount} & events, not polling; lowest QoS that fits; 10--100\,ms operations\\
+GPU & \ct{GPUTime} & redraw less (\emph{Flash Updated Regions}); solid backgrounds over blur\\
+display & \ct{PixelLuminance} (APL 0--100, OLED) & brighter pixels cost more: Dark Mode; stop finished animations\\
+network & \ct{TotalWiFi…}, \ct{TotalCellular…} up/down & one \ct{URLSession}; batch + compress; \ct{isDiscretionary} (waits for charging or Wi-Fi)\\
+location (no lane) & \ct{LocationActivityTime} & low \ct{desiredAccuracy}, \ct{distanceFilter}; stop when stationary\\
+\bottomrule
+\end{tabular}}
+
+\section{Field — MetricKit \& Organizer}
+\begin{itemize}
+  \item \textbf{iOS 27} \ct{MetricManager} (\ct{MX…} deprecated in 27.2):
+        \ct{logHandle(category:)} + \ct{mxSignpost} $\to$ daily \ct{SignpostIntervalMetric}
+        (count, duration histogram, \ct{cpuTime}, \ct{logicalWrites}, \ct{averageMemory} — the
+        last three only from \ct{mxSignpost}, not \ct{OSSignposter}). Custom signposts are capped — critical paths only. Diagnostics list the signposts
+        active around the event. Test: \emph{Debug > MetricKit > Simulate MetricKit Payloads}.
+\end{itemize}
+\begin{lstlisting}[language=SwiftSheet]
+let mk = MetricManager()                  // iOS 27: keep ONE
+let h = MetricManager.logHandle(category: "Feed")
+mxSignpost(.begin, log: h, name: "Load")  // ... work ...
+mxSignpost(.end, log: h, name: "Load")
+Task { for await r in mk.metricReports {  // daily, never throws
+  for case .signpostInterval(let m)
+      in r.intervalEntries.fullDayEntry.values { upload(m) } } }
+\end{lstlisting}
+\begin{itemize}
+  \item \textbf{Organizer} (anonymised, consenting users, needs volume). \emph{Battery Usage}:
+        on-screen \% per 24\,h off power, + background, by Audio · Networking · Processing ·
+        Display · Bluetooth · Location · Camera · Torch · NFC. \emph{Energy}: exception
+        reports with a sample stack + 14-day trend.
+  \item \textbf{Xcode 27}: \emph{Insights Overview}, \emph{Hitches} (all animations, was
+        Scrolling), \emph{Storage}; goals per metric; \emph{Generate Recommendations}.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Support asks for logs and there is nothing: \ct{debug}/\ct{info} weren't
+        persisted — log what support needs at \ct{notice}+.}
+  \trap{\ct{privacy: .public} on a token or email — a PII leak; \ct{.hash} correlates instead.}
+  \trap{Power profiled on a charger (cable or MagSafe) reads \textbf{0} — pair wirelessly.
+        Impact scores from two device models don't compare.}
+  \trap{Thousands of signposts/s recorded \emph{immediately} skip OS buffering — use \ct{\dd{}window}.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Logger = words · signposts = time · Power Profiler = \%/h per subsystem · MetricKit /
+Organizer = the field, a day late.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Instruments \& performance ·
+Performance in production · App size \& energy · SwiftUI hitches \& hangs ·
+Crashes \& symbolication · Feature flags \& observability}
+
+\end{document}

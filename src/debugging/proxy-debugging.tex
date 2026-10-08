@@ -1,0 +1,239 @@
+% proxy-debugging.tex — debugging app traffic through an HTTPS proxy (Charles, Proxyman, mitmproxy, Burp):
+% the CONNECT + upstream-certificate-sniffing sequence, the four tools side by side, trusting the root CA on
+% iOS / the Simulator / Android (debug-overrides, overridePins), the rules a minted leaf must pass, a
+% symptom -> cause -> fix table, map / rewrite / breakpoints / throttling, protobuf + gRPC payloads, what a
+% proxy cannot see and the no-proxy alternatives.
+% Sources (checked 2026-10-07):
+%   docs.mitmproxy.org/stable/concepts/how-mitmproxy-works (explicit HTTPS: CONNECT, 200 Connection
+%     Established, SNI pause, upstream handshake, CN + SANs copied into the interception cert)
+%     · /concepts/modes (regular = default, port 8080, mitm.it; client isolation; Android apps bypass the
+%     system proxy; local capture on Windows/Linux/macOS; WireGuard) · /concepts/protocols (HTTP/3 in
+%     reverse, local and WireGuard mode; no h2c; tcp_hosts / udp_hosts) · /concepts/certificates (CA made on
+%     first start in ~/.mitmproxy, unique per install; objection, ssl-kill-switch2, apk-mitm,
+%     android-unpinner) · /concepts/options (ignore_hosts, allow_hosts, ssl_insecure, protobuf_definitions =
+%     a .proto file, hardump) · /addons/overview (-s, live reload)
+%   github.com/mitmproxy/mitmproxy CHANGELOG (12.0.0, 29 Apr 2025: interactive Protobuf view, YAML
+%     re-encoded to binary) · mitmproxy/net/encoding.py (gzip, deflate, br, zstd)
+%   charlesproxy.com/documentation: proxying/ssl-proxying (named hosts only, * = all) · using-charles/
+%     ssl-certificates (root unique per install since v3.10; chls.pro/ssl; Install ... in iOS Simulators)
+%     · faqs/using-charles-from-an-iphone (port usually 8888) · tools/* (no scripting tool; map-local,
+%     map-remote, rewrite = header / URL / query / body rules, repeat-advanced = iterations + concurrency)
+%     · proxying/breakpoints (Execute / Abort / Cancel) · proxying/throttling (bandwidth + latency)
+%     · using-charles/protocol-buffers (FileDescriptorSet via Content-Type desc= + messageType=)
+%   docs.proxyman.com: debug-devices/ios-device (9090 default; proxy.man/ssl) · basic-features/ssl-proxying
+%     (include / exclude list: app, domain, wildcard) · advanced-features/protobuf (.desc only since 3.6.0)
+%     · advanced-features/network-throttling (presets, 3G < 780 kbps, 100% lost; per domain)
+%     · basic-features/import-export (HAR 1.2) · scripting/script (JavaScript) · advanced-features/
+%     custom-certificates (root CA generated locally on your machine) · atlantis/atlantis-for-ios +
+%     github.com/ProxymanApp/atlantis README (swizzles NSURLSession, Bonjour to the Mac, inspector only)
+%   portswigger.net/burp/documentation/desktop: settings/tools/proxy (one listener, 8080, loopback; unique CA
+%     per install; TLS pass through) · mobile/config-ios-device (listener on all interfaces; http://burpsuite)
+%     · extend-burp/extensions/creating (Montoya API, Java / Kotlin)
+%   support.apple.com/en-us/102390 (manually installed profile not trusted for TLS until Certificate Trust
+%     Settings; Configurator / MDM payloads trusted automatically) · /103769 (iOS 13: SAN, SHA-2, RSA >= 2048,
+%     EKU serverAuth, <= 825 days) · /102028 (398-day cap does not affect user-added roots) · /103214 (CT
+%     policy = publicly trusted certificates) · support.apple.com/guide/iphone (iOS 27: VPN & Device Management)
+%   developer.apple.com/documentation: security/preventing-insecure-network-connections (anchor may be
+%     user- or admin-installed; ATS: TLS 1.2+, ECDHE, AES, key sizes) · network/recording-a-packet-trace
+%     (rvictl -s <UDID>, rvi0) · foundation/analyzing-http-traffic-with-instruments · network/debugging-
+%     https-problems-with-cfnetwork-diagnostic-logging (CFNETWORK_DIAGNOSTICS 0-3) · foundation/
+%     urlsessionconfiguration (timeoutIntervalForRequest default 60; connectionProxyDictionary nil = system)
+%     · foundation/urlsession/authchallengedisposition/cancelauthenticationchallenge · foundation/urlerror/code
+%   developer.apple.com/videos/play/wwdc2020/10647 (simctl keychain booted add-root-cert; drag onto window)
+%   developer.android.com/privacy-and-security/security-config (target API <= 23 trusts user CAs, 24+ system
+%     only; debug-overrides only when debuggable; overridePins; CT default from Android 17, off for the user
+%     store) · /reference/android/security/KeyChain (from Android 11 a CA installs only via Settings)
+%     · /studio/run/emulator-commandline (-http-proxy, -writable-system + adb remount)
+%   source.android.com/docs/core/ota/modular-system/conscrypt (Android 14: roots in the Conscrypt APEX)
+%   github.com/square/okhttp CertificatePinner.kt (SSLPeerUnverifiedException "Certificate pinning failure!",
+%     lists the chain's pins) · OkHttpClient.kt (connect / read / write 10 s)
+%   github.com/dart-lang/sdk sdk/lib/_http/http.dart (findProxy unset = direct; "PROXY host:port")
+%   github.com/facebook/react-native RCTHTTPRequestHandler.mm (NSURLSession) · OkHttpClientProvider.kt
+%   github.com/grpc/grpc doc/PROTOCOL-HTTP2.md (1-byte flag + 4-byte big-endian length; grpc-status trailer)
+%   RFC 9110 §9.3.6 (CONNECT host:port, port mandatory, 2xx = tunnel) · RFC 9298 (UDP the way CONNECT does TCP)
+% NOT checked: the numeric iOS codes (-999 / -1202) — Apple's pages give only names; the names are printed.
+% Not repeated here: the TLS handshake and pin choices (TLS 1.3 & PKI, Certificate pinning in 2026).
+% @labels: area=debugging kind=tooling platform=cross-platform topic=debugging,networking,security
+% @tags: charles, proxyman, mitmproxy, burp-suite, https-proxy, root-ca, certificate-trust-settings, network-security-config, certificate-pinning, app-transport-security, grpc, protobuf
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+% XML / Python listings — literate kills the mono font's ligatures (-- -> == !=)
+\lstdefinelanguage{XMLSheet}{
+  sensitive=true, morestring=[b]", morecomment=[s]{<!--}{-->},
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2 {/>}{{\hbox{/}\hbox{>}}}2}
+\lstdefinelanguage{PySheet}{
+  morekeywords={from,import,def,if,return,and,or,not,in},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]",
+  literate={==}{{\hbox{=}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2 {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{Debugging through a proxy — Charles · Proxyman · mitmproxy · Burp}{debugging · folio}
+
+\oneliner{An HTTPS debugging proxy is a \textbf{consensual man-in-the-middle}: it \textbf{terminates TLS}
+with a leaf certificate \textbf{minted on the fly} and signed by \textbf{its own root CA} — which \emph{you}
+installed and trusted on the device — and opens a \emph{second} TLS connection to the real server. Whatever
+refuses that root (\textbf{pinning}, Android's default distrust of user CAs, clients that ignore the proxy)
+shows up as a failed handshake or no traffic.}
+
+\vspace{3pt}
+\noindent\begin{tikzpicture}[sheet,
+    ent/.style={box, font=\scriptsize, inner sep=2pt},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    side/.style={font=\tiny, inner sep=1pt, align=left, text width=15mm},
+    msg/.style={->, thick, draw=sheetGrey},
+    life/.style={draw=sheetGrey!60, dashed}]
+  \node[ent, text width=31mm] (dev) at (1.75,0) {\textbf{app on the device}\\[1pt]{\tiny trusts system roots \textbf{+ your proxy root}}};
+  \node[ent, draw=sheetOrange, fill=sheetOrange!8, text width=56mm] (px) at (8.3,0) {\textbf{proxy on the Mac}\\[1pt]{\tiny decrypts $\to$ shows, maps, rewrites, holds, throttles $\to$ re-encrypts}};
+  \node[ent, draw=sheetGreen, fill=sheetGreen!8, text width=25mm] (srv) at (14.85,0) {\textbf{api.example.com}\\[1pt]{\tiny real certificate}};
+  \draw[life] (1.75,-0.45) -- (1.75,-2.75);
+  \draw[life] (8.3,-0.45) -- (8.3,-2.75);
+  \draw[life] (14.85,-0.45) -- (14.85,-2.75);
+  % the six steps (mitmproxy's explicit-HTTPS flow; Charles, Proxyman and Burp mint the same way)
+  \draw[msg] (1.75,-0.78) -- node[l, above]{\textbf{1}\; \ct{CONNECT api.example.com:443} — port mandatory, no default} (8.3,-0.78);
+  \draw[msg] (8.3,-1.14) -- node[l, above]{\textbf{2}\; \ct{200 Connection Established} — as if a tunnel were open} (1.75,-1.14);
+  \draw[msg, draw=sheetBlue] (1.75,-1.5) -- node[l, above, text=sheetBlue]{\textbf{3}\; ClientHello, SNI = api.example.com $\to$ \textbf{paused}} (8.3,-1.5);
+  \draw[msg, draw=sheetGreen!60!black] (8.3,-1.5) -- node[l, above, text=sheetGreen!50!black]{\textbf{4}\; its own handshake, same SNI} (14.85,-1.5);
+  \draw[msg, dashed, draw=sheetGreen!60!black] (14.85,-1.86) -- node[l, above, text=sheetGreen!50!black]{real leaf $\leftarrow$ intermediate $\leftarrow$ public root} (8.3,-1.86);
+  \draw[msg, draw=sheetOrange] (8.3,-2.22) -- node[l, above, text=sheetOrange]{\textbf{5}\; minted leaf: CN + SANs copied, signed by the \textbf{proxy root}} (1.75,-2.22);
+  \draw[msg, very thick, draw=sheetBlue] (1.75,-2.58) -- node[l, above, text=sheetBlue]{\textbf{6}\; \ct{GET /v1/feed} over \textbf{TLS \#1}} (8.3,-2.58);
+  \draw[msg, very thick, draw=sheetGreen!60!black] (8.3,-2.58) -- node[l, above, text=sheetGreen!50!black]{re-sent over \textbf{TLS \#2}} (14.85,-2.58);
+  \node[side, anchor=north east, align=right, text=sheetBlue] at (1.65,-0.7) {checks step 5 against \textbf{its own} store: passes only if you trusted the root};
+  \node[side, anchor=north west, text=sheetGreen!50!black] at (14.95,-0.7) {proxy validates like any client (\ct{ssl\_insecure} skips it — don't)};
+  % pinning
+  \node[l, anchor=north west, align=left, text width=163mm, text=sheetRed] at (0,-2.82) {\textbf{Pinned app}: the chain
+    validates (you trusted the root), then the pin check finds the \emph{proxy's} key, not yours $\to$ OkHttp
+    \ct{SSLPeerUnverifiedException: Certificate pinning failure!} (it lists the chain's \ct{sha256/} pins); a
+    URLSession delegate cancels the challenge $\to$ \ct{URLError.cancelled}. The server is untouched — the
+    \textbf{client} was told to trust the proxy, which is why this is not a vulnerability.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\setstretch{1.0}
+
+\hd{Four proxies, one trick}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{14mm}@{}}
+\toprule
+ & \textbf{Charles 5} & \textbf{Proxyman} & \textbf{mitmproxy 12} & \textbf{Burp} \\ \midrule
+port & \ct{8888} & \ct{9090} & \ct{8080} & \ct{8080}, loopback only \\
+CA page & \ct{chls.pro/ssl} & \ct{proxy.man/ssl} & \ct{mitm.it} & \ct{burpsuite} \\
+decrypts & named hosts (\ct{*} = all) & include list: apps, domains, wildcards & all but \ct{ignore\_hosts} & all but TLS pass through \\
+extend & no scripts: Rewrite rules & JavaScript & Python addons, live reload & Java / Kotlin (Montoya) \\
+\bottomrule
+\end{tabular}}
+
+Every install makes its \textbf{own} root CA (Charles since 3.10); its private key can impersonate any
+site to every phone that trusts it.
+
+\hd{Trusting the root, per platform}
+\begin{itemize}
+  \item \textbf{Route}: phone and Mac on one Wi-Fi; Settings $\to$ Wi-Fi $\to$ (i) $\to$ Configure Proxy
+        $\to$ Manual: the Mac's IP + port. The \textbf{Simulator} uses the Mac's own network settings.
+  \item \textbf{iOS device}: Safari $\to$ CA page $\to$ Settings $\to$ \emph{Profile Downloaded} $\to$ Install
+        (then listed in General $\to$ VPN \& Device Management) $\to$ \textbf{General $\to$ About $\to$
+        Certificate Trust Settings} $\to$ full trust. Skip it and HTTP works while every HTTPS call fails;
+        MDM and Configurator payloads are trusted at once.
+  \item \textbf{Simulator}: \ct{xcrun simctl keychain booted add-root-cert ca.pem}, or drag the file onto
+        its window; Charles (Help menu) and Proxyman automate it.
+  \item \textbf{Android}: apps targeting API $\leq$ 23 trust user CAs; \textbf{API 24+} only system CAs, so
+        your debug build opts in (below). From Android 11 a CA installs only via Settings. Someone else's
+        app: root, or an emulator with \ct{-writable-system} + \ct{adb remount}, to reach the system store —
+        since Android 14 roots also live in the updatable Conscrypt APEX. Emulator \ct{-http-proxy host:port}
+        sends all its TCP through the proxy.
+\end{itemize}
+
+\hd{Example — Android debug trust + a mitmproxy addon}
+\begin{lstlisting}[language=XMLSheet]
+<!-- manifest: android:networkSecurityConfig="@xml/nsc" -->
+<network-security-config>
+  <debug-overrides>        <!-- ignored unless debuggable -->
+    <trust-anchors>
+      <certificates src="user" overridePins="true"/>
+    </trust-anchors>      <!-- user CAs + they skip pins -->
+  </debug-overrides>
+</network-security-config>
+\end{lstlisting}
+\begin{lstlisting}[language=PySheet]
+# fail_feed.py  -- mitmdump -s fail_feed.py (reloads on save)
+from mitmproxy import http
+def response(flow: http.HTTPFlow):
+    if flow.request.path.startswith("/v1/feed"):
+        flow.response.status_code = 503   # test the error UI
+        flow.response.headers["Retry-After"] = "30"
+\end{lstlisting}
+
+\hd{The minted leaf must pass the device's rules}
+iOS 13+ rules bind \emph{every} TLS server certificate, minted ones too: DNS name in the \textbf{SAN} (CN
+ignored), SHA-2, RSA $\geq$ 2048, EKU \ct{serverAuth}, $\leq$ 825 days. ATS adds TLS 1.2+, ECDHE, AES-128/256
+and accepts a user- or admin-installed anchor — no exception needed. Exempt: the 398-day cap (user-added
+roots), Apple's CT policy (public CAs only) and Android 17's default-on CT (skips the user store).
+
+\columnbreak
+
+\hd{Symptom $\to$ cause $\to$ fix}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{32mm}>{\raggedright\arraybackslash}p{25mm}@{}}
+\toprule
+\textbf{symptom} & \textbf{cause} & \textbf{fix} \\ \midrule
+nothing arrives & phone cannot reach the Mac: IP / port, Wi-Fi \textbf{client isolation}, Burp on loopback & same network; listen on all interfaces \\
+one app is missing & ignores the system proxy: Flutter \ct{HttpClient} (direct unless \ct{findProxy}), many Android apps & \ct{findProxy} $\to$ \ct{"PROXY host:8888"}; mitmproxy \ct{local} / \ct{wireguard} \\
+host is a bare \ct{CONNECT}, no body & not on the SSL Proxying list & add it (\ct{*} = all) \\
+one host fails, the rest decrypt & \textbf{pinning} (Apple's App Store too) & debug: \ct{overridePins}; else \ct{ignore\_hosts} \\
+fails while held at a breakpoint & client timeout: OkHttp 10 s, URLSession 60 s & release fast; longer timeout in debug \\
+gRPC shows 200, call failed & status rides the trailers: \ct{grpc-status} & read the trailers \\
+HTTP/3 missing & CONNECT tunnels TCP (UDP needs RFC 9298 CONNECT-UDP); QUIC is UDP & mitmproxy reverse / local / WireGuard mode \\
+\bottomrule
+\end{tabular}}
+
+\hd{What you can do with it}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{14mm}>{\raggedright\arraybackslash}p{63mm}@{}}
+\toprule
+Map Local & answer a URL from a local file: empty, huge, malformed JSON \\
+Map Remote & serve some live URLs from a dev server, no rebuild; HTTP $\leftrightarrow$ HTTPS \\
+Rewrite & regex find / replace on headers, URL, query, body (Charles' four rule types) \\
+Breakpoints & hold a request or response, edit it, then Execute / Abort / Cancel \\
+Throttle & Charles: bandwidth + latency · Proxyman: 2G \ldots{} Wi-Fi, ``100\% lost'', per domain \\
+Repeat & replay; Charles \emph{Repeat Advanced}: iterations + concurrency (races, idempotency) \\
+Export & HAR 1.2 (Proxyman; mitmproxy \ct{hardump}) \\
+\bottomrule
+\end{tabular}}
+
+\hd{Binary payloads}
+Protobuf has no field names on the wire: Charles and Proxyman read a \textbf{FileDescriptorSet}
+(\ct{protoc -oapi.desc api.proto}), mitmproxy 12 a \ct{.proto} (\ct{protobuf\_definitions}; edit as YAML,
+re-encoded). No schema: field numbers + wire types only (\ct{protoc \hbox{-}\hbox{-}decode\_raw}).
+\textbf{gRPC} = \ct{application/grpc} on \textbf{HTTP/2}: 1-byte flag + 4-byte big-endian length + message.
+
+\hd{Beyond the proxy}
+Raw TCP / UDP: mitmproxy \ct{tcp\_hosts} / \ct{udp\_hosts} still MITM TLS and DTLS. \textbf{No proxy at all}
+(iOS): Instruments \textbf{HTTP Traffic} (Network template: URLSession headers + bodies, decrypted) · scheme env
+\ct{CFNETWORK\_DIAGNOSTICS} = 1–3 · Proxyman \textbf{Atlantis} (swizzles NSURLSession, Bonjour to the Mac;
+inspect only) · \ct{rvictl -s <UDID>} $\to$ \ct{rvi0} $\to$ Wireshark (all packets, encrypted).
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Charles reads any app's HTTPS'' — only with a CA the \emph{device owner} trusted, never through
+        pinning; others' apps need objection (Frida) or apk-mitm — authorised tests only.}
+  \trap{Pins off in \textbf{debug} only; \ct{src="user"} in \ct{base-config} ships MITM to every user CA.
+        React Native \ct{fetch} rides NSURLSession / OkHttp.}
+  \trap{Done? Untrust the root, proxy off (Mac asleep = ``no internet''). HAR files, HTTP Traffic traces and
+        CFNetwork logs keep tokens in clear.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Route · trust · (un)pin in debug · look · untrust.''}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} TLS 1.3 \& PKI · certificate pinning in 2026 ·
+URLSession \& networking · HTTP/1.1, HTTP/2, HTTP/3 · gRPC \& Protocol Buffers · app hardening \& privacy (ATS)
+· iOS reverse engineering · release-only bugs}
+
+\end{document}

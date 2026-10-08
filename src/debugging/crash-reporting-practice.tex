@@ -1,0 +1,255 @@
+% crash-reporting-practice.tex — running crash reporting in production: the capture -> upload ->
+% symbolicate -> group -> alert -> triage pipeline, crash-free users vs sessions and why vendors'
+% numbers differ, grouping, context, alerts and regression rules, deaths no handler sees (watchdog
+% terminations, hangs, ANRs), symbol upload in CI, tool choice, session-replay privacy.
+% Not repeated: report anatomy, exception types, dSYM UUIDs, MetricKit cases (security-build/
+% crashes-symbolication); exit counters, Organizer metrics (debugging/production-performance-metrics).
+% Sources (checked 2026-10-07):
+%   firebase.google.com/docs/crashlytics/crash-free-metrics (user = an installation; session = cold
+%     start or foreground after >= 30 min in background; fatal events only)
+%   firebase.google.com/docs/crashlytics/ios/customize-crash-reports (64 keys, extra not saved, 1 kB
+%     each; logs 64 kB, oldest deleted; 8 most recent non-fatals per session, sent next launch; NSErrors
+%     grouped by domain + code; recording unwinds the stack + writes to disk synchronously, another
+%     queue loses the stack; breadcrumbs from Google Analytics; FirebaseCrashlyticsCollectionEnabled
+%     + setCrashlyticsCollectionEnabled, persists, stored reports sent once enabled)
+%   firebase.google.com/docs/crashlytics/alerts + /alerts-default (new fatal / non-fatal, regressed,
+%     trending, velocity; regressed + trending on by default; velocity 1 % of sessions + 25 users in
+%     30 min per version, once per issue per version; Slack, Jira, PagerDuty)
+%   firebase.google.com/docs/crashlytics/troubleshooting (regression = closed issue recurs in a version
+%     unknown when closed, since Feb 2022; variants; Mobile Ads handler conflict; ANRs Android 11+ only)
+%   firebase.google.com/docs/crashlytics/ios/get-started (debugger blocks reports; DWARF with dSYM for
+%     all build types; run script = last build phase; Input Files under user script sandboxing)
+%   firebase.google.com/docs/crashlytics/android/get-deobfuscated-reports (plugin uploads mapping) ·
+%     /android/get-started-ndk (nativeSymbolUploadEnabled, uploadCrashlyticsSymbolFile, GNU build ID)
+%   firebase.google.com/pricing (Crashlytics no-cost) · firebase.google.com/support/privacy (90 days)
+%   docs.sentry.io/product/releases/health/ (session start, < 30 s in background continues it;
+%     healthy / errored / crashed / unhandled / abnormal; sessions not sampled or filtered;
+%     adoption = share of sessions / users over the last 24 h; crash-rate monitors)
+%   docs.sentry.io/concepts/data-management/event-grouping/ (fingerprint -> stack trace -> exception ->
+%     message; in-app frames: module, normalized filename, context line; minified JS; AI grouping
+%     merges new issues only, never splits)
+%   docs.sentry.io/product/issues/states-triage/ (new < 7 days; resolve in next / current release;
+%     archive pauses alerts until the issue gets worse; escalating = over its forecast)
+%   docs.sentry.io/platforms/apple/configuration/app-hangs/ (watchdog thread, 2 s default; fully /
+%     non-fully blocking, default in 9.0.0; fatal app hangs reported next launch; app hang rate counts
+%     fatal hangs only) · /watchdog-terminations/ (the conditions checked at the next launch)
+%   docs.sentry.io/platforms/apple/guides/ios/session-replay/ (text, images, input masked by default;
+%     onErrorSampleRate buffer up to 30 s)
+%   docs.sentry.io/platforms/apple/dsym/ (DWARF with dSYM is the default for Release, not Debug)
+%   docs.sentry.io/platforms/react-native/sourcemaps/ + /uploading/hermes/ (compose-source-maps.js)
+%   docs.expo.dev/guides/using-sentry (sentry-expo-upload-sourcemaps dist after eas update)
+%   develop.sentry.dev/self-hosted/ (self-hosted Sentry; FSL licence)
+%   developer.apple.com/documentation/xcode/acquiring-crash-reports-and-diagnostic-logs (sharing users
+%     + all TestFlight testers; watchdog, jetsam, code-signature reports not in the Crashes
+%     organizer; the debugger intercepts a crash)
+%   developer.apple.com/documentation/metrickit/metricmanager (iOS 27) · /mxmetricmanager ·
+%     /mxhangdiagnostic (both deprecated 27.2 -> MetricManager, HangDiagnostic)
+%   developer.android.com/topic/performance/vitals (1.09 % / 0.47 %, 8 % per phone model; per daily
+%     user vs per session: 1 crash in 3 sessions = 100 % vs 33 %; Play installs, certified devices,
+%     sharing users) · support.google.com/googleplay/android-developer/answer/9844486 (daily user =
+%     user x device x day; user-perceived crash e.g. activity shown / foreground service;
+%     user-perceived ANR = input dispatching only) · developer.android.com/topic/performance/
+%     vitals/anr (input not handled in 5 s)
+%   developer.android.com/topic/performance/app-optimization/troubleshoot-the-optimization
+%     (build/outputs/mapping/<variant>/mapping.txt, overwritten every build)
+%   reactnative.dev/docs/performance (ScrollView scrolls while the JS thread is locked)
+%   man7.org/linux/man-pages/man7/signal-safety.7.html (async-signal-safe: open, write; not malloc)
+% @labels: area=debugging kind=tooling platform=cross-platform topic=debugging,tooling
+% @tags: crash-reporting, crash-free-users, crash-free-sessions, fingerprinting, breadcrumbs, custom-keys, non-fatal-errors, anr, app-hangs, watchdog, symbol-upload, crashlytics, sentry, android-vitals, session-replay
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={let,var,func,return,in,self,true,false,try,catch,do,await},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={==}{{\hbox{=}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {??}{{\hbox{?}\hbox{?}}}2}
+\lstset{basicstyle=\ttfamily\footnotesize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+
+\tikzset{
+  st/.style={box, font=\tiny, text width=24mm, minimum height=15.5mm, inner sep=1.5pt, align=flush left, anchor=north},
+  hd/.style={font=\bfseries\scriptsize, anchor=south},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Crash reporting in practice — from signal to fixed}{debugging · folio}
+
+\oneliner{A crash reporter is a pipeline: an \textbf{in-process handler} writes the
+report at the moment of death, the SDK \textbf{uploads it on the next launch}, the
+server \textbf{symbolicates} it with the artefacts \emph{you} uploaded for that exact
+build, \textbf{fingerprints} it into an issue, \textbf{alerts} on new, regressed or
+fast-growing issues, and a human \textbf{triages} by users affected. Every stage has a
+way to silently lose the crash.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x/\n/\c/\h/\b in {
+    0/a/sheetRed/{1 capture (device)}/{signal / Mach exception, \ct{NSException}, JVM, JS, NDK handlers. Signal handler: \textbf{async-signal-safe} calls only (\ct{write} yes, \ct{malloc} no) $\to$ file.},
+    2.8/b/sheetOrange/{2 context}/{ring buffers already in memory: \textbf{breadcrumbs}, \textbf{custom keys}, logs, user id, release, flag arms, device, free memory.},
+    5.6/c/sheetBrown/{3 next launch}/{SDK starts \emph{first thing}, finds the file, uploads. Dies before SDK init $\to$ lost. Jetsam / watchdog kill without notice: no handler, at best \emph{inferred}.},
+    8.4/d/sheetBlue/{4 symbolicate}/{by build: \textbf{dSYM} (UUID), \textbf{mapping.txt} (R8), NDK \ct{.so} (build ID), JS \textbf{source map} (per build \emph{and} per OTA update).},
+    11.2/e/sheetBlue!70!black/{5 group + alert}/{fingerprint $\to$ issue; alerts: \textbf{new}, \textbf{regressed}, \textbf{velocity} (default 1\,\% of sessions and 25 users in 30\,min, one version).},
+    14.0/f/sheetGreen!60!black/{6 triage}/{sort by \textbf{users affected} in the newest version; owner, severity, ticket; ``resolved in $x$'' $\to$ regression alert.}}
+  { \node[hd, text=\c] at (\x+1.15,0.05) {\h};
+    \node[st, draw=\c, fill=\c!6] (\n) at (\x+1.15,0) {\b}; }
+  \foreach \p/\q in {a/b,b/c,c/d,d/e,e/f} \draw[flow] (\p.east) -- (\q.west);
+  \draw[hot] (f.south) -- ++(0,-0.18) -| (a.south);
+  \node[lbl, text=sheetOrange, anchor=north] at (12.5,-1.86) {fix ships $\to$ the new version's crash-free is back to baseline = done};
+  \foreach \x/\t in {1.15/{lost: debugger attached;\\a 2nd crash SDK took the handler},
+      4.9/{lost: crash before SDK init;\\user never reopens the app},
+      8.5/{hex stacks: artefact not\\uploaded for \emph{this} build}}
+    \node[lbl, text=sheetRed, anchor=north] at (\x,-1.86) {\t};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\small\setstretch{1.0}\raggedright
+
+\section{The two numbers — and three yardsticks}
+\begin{itemize}
+  \item \textbf{Crash-free users} = 1 $-$ crashed users\,/\,all users;
+        \textbf{crash-free sessions} = 1 $-$ crashed sessions\,/\,all sessions.
+        Worked: 1\,000 users, 5\,000 sessions; 10 users crash 20 times $\to$
+        users \textbf{99.0\,\%}, sessions \textbf{99.6\,\%}. Users = breadth, sessions
+        = frequency; always \emph{per version}, with a minimum sample.
+\end{itemize}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{25mm}>{\raggedright\arraybackslash}p{24mm}@{}}
+\toprule
+& \textbf{a user is} & \textbf{a session is} & \textbf{what counts}\\ \midrule
+Crashlytics & one \emph{install} & cold start, or foreground after $\ge$\,30\,\textbf{min} away & fatal only — not ANRs, not non-fatals\\
+Sentry & a distinct user & launch / foreground; back within 30\,\textbf{s} = same one & ends healthy · errored · crashed · unhandled · abnormal (no clean end: battery died)\\
+Play vitals & user × device × \textbf{day} & — (per daily user) & user-perceived (activity shown, foreground service); ANR = input timeouts only\\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item Same day, 3 sessions, 1 crash: vitals \textbf{100\,\%}, Crashlytics \textbf{33\,\%}.
+        Vitals sees only Play installs on certified devices of users who share data;
+        Sentry sessions are never sampled or filtered (crash events $\neq$ crashed sessions).
+  \item Sentry \textbf{adoption} = a release's share of all sessions (or users) in the last
+        24\,h — read crash-free next to it: at 1\,\% adoption it is a small sample.
+\end{itemize}
+
+\section{Grouping — the fingerprint}
+\begin{itemize}
+  \item Sentry: \textbf{fingerprint} $\to$ \textbf{stack trace} (\textbf{in-app frames} only:
+        module, normalized filename, context line) $\to$ exception type + value $\to$ message.
+  \item \textbf{Splits}: minified JS without source maps, a new wrapper frame, ids or URLs in
+        the message. \textbf{Merges}: every network error through one helper.
+  \item Crashlytics: fatals by stack, \emph{variants} = same failure point; logged
+        \ct{NSError}s by \textbf{domain + code} — never put ids there.
+  \item Fix: fingerprint rules (\ct{\{\{ default \}\}} + route), stack-trace rules (wrappers
+        not in-app), merge / unmerge. Sentry's AI grouping only merges \emph{new} issues.
+\end{itemize}
+
+\section{Context that makes a crash fixable}
+\begin{itemize}
+  \item \textbf{Breadcrumbs}: screens, requests (method, route, status — no bodies), taps,
+        lifecycle, memory warnings; Crashlytics takes them from Google Analytics.
+  \item \textbf{Custom keys}: cart size, flag arm, sync state. Crashlytics: \textbf{64}
+        pairs (more are not saved), 1\,kB each; logs \textbf{64\,kB}, oldest deleted.
+  \item \textbf{Non-fatals} (decode failure, 5xx): Crashlytics keeps the \textbf{8} latest per
+        session. Recording unwinds the stack + writes to disk \emph{synchronously}; on
+        another queue the stack is lost. \textbf{User id}: pseudonymous.
+  \item \textbf{Consent}: Info.plist \ct{FirebaseCrashlyticsCollectionEnabled} = \ct{NO}, then
+        \ct{setCrashlyticsCollectionEnabled(true)} after opt-in (persists across launches);
+        reports stored on the device meanwhile are sent once it is enabled.
+\end{itemize}
+
+\section{Example — enrich, then report}
+\begin{lstlisting}[language=SwiftSheet]
+let c = Crashlytics.crashlytics()
+c.setUserID(account.pseudonymousID)          // never email
+c.setCustomKeysAndValues(["cart_items": cart.count,
+                          "exp_checkout": flags.checkoutArm])
+c.log("checkout: pay tapped")                // 64 kB ring
+do { try await pay() } catch {
+  c.record(error: error)                     // non-fatal
+  // Sentry instead: split one call site by route
+  SentrySDK.capture(error: error) { scope in
+    scope.setFingerprint(["{{ default }}", "/v1/pay"]) } }
+\end{lstlisting}
+
+\columnbreak
+
+\section{Alerts and issue states}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{16mm}>{\raggedright\arraybackslash}p{51mm}>{\raggedright\arraybackslash}p{7mm}@{}}
+\toprule
+\textbf{Crashlytics} & \textbf{fires when} & \textbf{def.}\\ \midrule
+new fatal & a crash or ANR never seen before (new non-fatal: same) & off\\
+regressed & a \emph{closed} issue recurs in a version not yet seen when it was closed & \textbf{on}\\
+trending & an issue is emerging & \textbf{on}\\
+velocity & one issue $\ge$\,1\,\% of sessions and $\ge$\,25 users in 30\,min, one version; once per issue + version & off\\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item \textbf{Sentry}: \emph{new} = first seen $<$\,7 days. Plain \emph{Resolve}: any later
+        event regresses it; \emph{in next release} (prod 1.8.0, fix merged $\to$ only 1.9.0+
+        reopens). Archive = alerts paused until it escalates. Crash-rate alert: crash-free
+        users or sessions below a set \%.
+  \item \textbf{Route}: page on a new fatal or velocity alert in the newest version; ticket
+        regressed, trending, non-fatals. Slack, Jira, PagerDuty are built in.
+\end{itemize}
+
+\section{Deaths no handler sees}
+\begin{itemize}
+  \item \textbf{Watchdog / memory kill} (iOS): no signal. Sentry infers one at next launch
+        if the last run: didn't crash · was in foreground · wasn't the first launch · had no
+        debugger · same app + OS version · wasn't quit by user or OS.
+  \item \textbf{iOS hang}: a thread pings main (Sentry \textbf{2\,s}; since 9.0.0 split into fully
+        / non-fully blocking); killed during it $\to$ \emph{fatal} hang, sent next launch —
+        Sentry's \emph{app hang rate} counts only these.
+        MetricKit \ct{HangDiagnostic} (iOS 27; \ct{MXHangDiagnostic} deprecated 27.2).
+  \item \textbf{ANR}: input unhandled \textbf{5\,s}. RN: a locked JS thread is \emph{not} one —
+        \ct{ScrollView} still scrolls on main.
+\end{itemize}
+
+\section{Symbols — upload in CI, per build}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{37mm}@{}}
+\toprule
+\textbf{code} & \textbf{artefact} & \textbf{how / trap}\\ \midrule
+Swift/ObjC & dSYM: \ct{dwarf-with-dsym} in \emph{all} configs (default: Release only) & run script = \textbf{last} phase; sandboxed $\to$ list Input Files\\
+Kotlin/Java & \ct{mapping.txt}, overwritten every build & Gradle plugin uploads; archive per release\\
+NDK & unstripped \ct{.so} + GNU build ID & \ct{nativeSymbolUploadEnabled} + upload task\\
+JS (RN) & source map (Hermes: composed with \ct{hermesc}'s) & per build \emph{and} per OTA: \ct{sentry-expo-upload-sourcemaps}\\
+\bottomrule
+\end{tabular}}
+
+\section{Which tool}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{14mm}>{\raggedright\arraybackslash}p{62mm}@{}}
+\toprule
+Crashlytics & no-cost; crashes, non-fatals, ANRs (Android 11+); data kept 90 days\\
+Sentry & + release health, hangs, replay; custom grouping; self-host (FSL)\\
+Organizer & no SDK; sharing users + \emph{all} TestFlight testers; no watchdog, jetsam or code-signature reports\\
+MetricKit & \ct{MetricManager} (iOS 27; \ct{MXMetricManager} deprecated 27.2)\\
+Play vitals & per daily user; bad $\ge$\,1.09\,\% crash, 0.47\,\% ANR, 8\,\% one phone\\
+\bottomrule
+\end{tabular}}
+{\footnotesize Run \textbf{one} crash SDK — two fight over the handlers (Firebase: Mobile Ads
+$\to$ \ct{disableSDKCrashReporting}).}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Debugger attached — it catches the crash first; detach, relaunch to upload.}
+  \trap{99.9\,\% overall hiding 100\,\% for one locale/device — slice first.}
+  \trap{Logging \emph{after} a recorded error rotates the useful lines out of 64\,kB.}
+  \trap{PII in keys, logs, breadcrumbs (emails, tokens, request bodies).}
+  \trap{Session replay: Sentry masks all text, images, input by default — unmask only after
+        custom masks; \ct{onErrorSampleRate} keeps a 30\,s buffer.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Crashes \& symbolication (report anatomy,
+dSYM UUIDs, MetricKit) · Mobile production incident playbook · Performance in production ·
+Logging, signposts \& power · Android ANRs \& native crashes · Tooling \& release (Expo, EAS, OTA)}
+
+\end{document}

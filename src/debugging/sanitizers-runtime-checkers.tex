@@ -1,0 +1,247 @@
+% sanitizers-runtime-checkers.tex — ASan, TSan, UBSan, MSan, Main Thread Checker, Thread
+% Performance Checker, hardware memory tagging, malloc debugging, Zombies, Swift exclusivity and
+% dynamic actor isolation: what each catches, what it costs, where it runs, how to read a report.
+% Sources (checked 2026-10-07):
+%   developer.apple.com/documentation/xcode/diagnosing-memory-thread-and-crash-issues-early (ASan
+%     2–5× CPU, 2–3× memory, misses leaks / uninitialised reads / integer overflow; TSan 2–20× CPU,
+%     5–10× memory, Simulator or 64-bit macOS only; MTC 1–2 % CPU, ≤100 ms launch, on by default,
+%     injectable dylib; UBSan ~20 %, C languages only; -O1; clang / swiftc / xcodebuild flags)
+%     · /xcode/diagnosing-performance-issues-early (TPC: on for Run, macOS + iOS only, semaphore /
+%     group waits cannot donate priority, PERFC_SUPPRESSION_FILE, Profile action; Runtime API
+%     Checking warnings by default, "On (as Failure)") · /xcode/overflow-and-underflow-of-buffers,
+%     /use-of-deallocated-memory (Xcode 7) · /use-of-stack-memory-after-function-return (off by
+%     default) · /data-races, /thread-leaks, /uninitialized-mutexes (Xcode 8) · /swift-access-races,
+%     /races-on-collections-and-other-apis, /misaligned-pointer, /integer-overflow (Xcode 9)
+%     · /investigating-crashes-for-zombie-objects · /gathering-information-about-memory-use (Malloc
+%     Stack) · /enabling-enhanced-security-for-your-app (hardware memory tagging, soft mode,
+%     A19 / M5 or later)
+%   Xcode 26 release notes (ASan container-overflow checks on, not switchable in build settings;
+%     Zombies template removed; runtime issues detected in tests; nonatomic-setter sentinel
+%     0x400000000000bad0) · Xcode 27 release notes (ASan on 27.0 OSes needs Xcode 26.5+)
+%     · developer.apple.com archive "What's New in Xcode 9" (UBSan, Main Thread Checker)
+%   developer.apple.com/videos WWDC15 413 (ASan: shadow = addr / 8 + offset, works on devices;
+%     NSZombie in the Diagnostics tab) · WWDC22 10082 (TPC new in Xcode 14)
+%   clang.llvm.org/docs AddressSanitizer (bug classes, use-after-return mode, not for production)
+%     · ThreadSanitizer (64-bit only) · UndefinedBehaviorSanitizer (recover / trap modes)
+%     · MemorySanitizer (3×, Linux / NetBSD / FreeBSD only) · UsersManual (address, thread, memory
+%     cannot be combined)
+%   github.com/llvm/llvm-project compiler-rt: asan_internal.h (shadow byte values), asan_flags.inc
+%     (halt_on_error=1, redzone ≥16 B), tsan_defs.h (4 shadow slots per 8 B), tsan_rtl_access.cpp
+%     (full cell: replace a random slot), tsan_vector_clock.h (clocks for threads and sync
+%     objects), tsan_flags.inc (halt_on_error=0), tsan_report.cpp (report kinds)
+%     · clang/lib/Driver/SanitizerArgs.cpp (incompatible groups: UBSan in none)
+%     · github.com/google/sanitizers wiki AddressSanitizerAlgorithm (8 B → 1 shadow byte, k bytes)
+%   developer.apple.com archive: Malloc Debug Environment Variables release notes (0x55 / 0xAA,
+%     guard pages on blocks ≥4096 B) · Enabling the Malloc Debugging Features (Guard Malloc: Mac +
+%     Simulator) · TN2239 (NSZombieEnabled, NSDeallocateZombies=NO) · libmalloc man page malloc(3)
+%   swift.org/blog/swift-5-exclusivity (Release default, dynamic cases, trap message, flags)
+%     · swift-evolution SE-0423 (dynamic actor isolation, Swift 6.0) · Swift migration guide
+%     DataRaceSafety / CommonProblems (@unchecked Sendable, nonisolated(unsafe) skip the check)
+% @labels: area=debugging kind=tooling platform=apple topic=debugging,memory,concurrency
+% @tags: asan, tsan, ubsan, msan, shadow-memory, redzone, happens-before, data-race, main-thread-checker, thread-performance-checker, memory-tagging, malloc-scribble, nszombie, exclusivity-enforcement
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={final,class,var,let,func,inout,return,self},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={==}{{\hbox{=}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2 {+=}{{\hbox{+}\hbox{=}}}2}
+\lstdefinelanguage{ReportSheet}{
+  sensitive=true, morekeywords={ERROR,WARNING,SUMMARY,READ,Write},
+  morecomment=[l]{//},
+  literate={==}{{\hbox{=}\hbox{=}}}2 {--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2}
+\lstdefinestyle{plain}{language={}, morecomment=[l]{\#}, commentstyle=\color{tangoComment}\itshape}
+\lstset{basicstyle=\ttfamily\footnotesize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+
+\tikzset{
+  mem/.style={draw=sheetGrey, minimum height=5mm, font=\ttfamily\tiny, inner sep=0.5pt},
+  sh/.style={draw=sheetGrey, minimum height=4mm, font=\ttfamily\tiny, inner sep=0.5pt},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  ev/.style={circle, fill=#1, inner sep=0pt, minimum size=1.8mm},
+}
+
+\begin{document}
+
+\sheettitle{Sanitizers \& runtime checkers — make the bug crash \emph{here}}{debugging · folio}
+
+\oneliner{Memory and threading bugs corrupt silently and crash \emph{later, elsewhere}.
+Sanitizers are \textbf{compiler instrumentation + a runtime} that check every access as it
+happens and report the \textbf{first bad access} with the stacks that explain it. Runtime
+checkers — Main Thread Checker (MTC), Thread Performance Checker (TPC), exclusivity — need no
+special build. ASan and TSan cost 2–20$\times$ and their runtimes are not meant for production:
+Debug schemes, test plans, CI. Hardware memory tagging is the one built to ship.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ================= ASan
+  \node[hd] at (-0.1,2.75) {ASan: shadow memory + redzones + quarantine};
+  \node[lbl, anchor=west, align=left] at (-0.1,1.72) {app\\heap};
+  \node[mem, minimum width=10mm, fill=sheetRed!18] (rz1) at (1.35,1.72) {redzone};
+  \node[mem, minimum width=22mm, fill=sheetGreen!15] (blk) at (2.95,1.72) {\ct{malloc(16)} block};
+  \node[mem, minimum width=10mm, fill=sheetRed!18] (rz2) at (4.55,1.72) {redzone};
+  \node[mem, minimum width=13mm, fill=sheetGrey!25] (fr) at (6.3,1.72) {freed};
+  \node[lbl, anchor=west, align=left] at (-0.1,1.05) {shadow\\1 B : 8 B};
+  \node[sh, minimum width=10mm, fill=sheetRed!18] at (1.35,1.05) {fa fa};
+  \node[sh, minimum width=22mm, fill=sheetGreen!15] at (2.95,1.05) {00 00};
+  \node[sh, minimum width=10mm, fill=sheetRed!18] at (4.55,1.05) {fa fa};
+  \node[sh, minimum width=13mm, fill=sheetGrey!25] at (6.3,1.05) {fd fd};
+  \foreach \x in {1.35,2.95,4.55,6.3} \draw[sheetGrey!60, densely dotted] (\x,1.47) -- (\x,1.25);
+  \node[lbl, anchor=south, text=sheetGrey] at (6.3,1.97) {quarantine queue};
+  \node[lbl, anchor=north, text=sheetRed] at (1.35,0.83) {$\ge$16 B};
+  \draw[hot, sheetRed] (4.2,2.3) node[above, lbl, text=sheetRed]{\ct{p[16]}: overflow} -- (rz2.north);
+  \draw[hot, sheetRed] (5.2,2.3) node[above, lbl, text=sheetRed]{stale \ct{p}} -- (fr.north west);
+  \node[lbl, anchor=north west, align=left, text width=76mm] at (-0.1,0.62) {before every load/store:
+  shadow byte at \ct{(addr >> 3) + offset} — \ct{00} = all 8 B addressable, \ct{01}–\ct{07} = only the
+  first $k$, \ct{fa} = heap redzone, \ct{fd} = freed. \ct{free} parks the block in a \textbf{quarantine}
+  queue (not reused for a while), so a stale pointer lands on poison $\to$ report + stop.};
+  \draw[sheetGrey!50] (7.95,2.9) -- (7.95,-0.3);
+  % ================= TSan
+  \node[hd] at (8.05,2.75) {TSan: is there a happens-before edge?};
+  \node[lbl, anchor=east] at (9.0,1.75) {main};
+  \node[lbl, anchor=east] at (9.0,1.05) {T2};
+  \draw[flow] (9.05,1.75) -- (12.3,1.75); \draw[flow] (9.05,1.05) -- (12.3,1.05);
+  \node[ev=sheetBlue, label={[lbl]above:read \ct{x}}] (r1) at (9.55,1.75) {};
+  \node[ev=sheetOrange, label={[lbl]below:write \ct{x}}] (w1) at (10.65,1.05) {};
+  \draw[<->, thick, sheetRed, dashed] (r1) -- (w1);
+  \node[lbl, anchor=west, text=sheetRed] at (10.55,1.42) {no edge: \textbf{race}};
+  \node[lbl, anchor=east] at (13.2,1.75) {main};
+  \node[lbl, anchor=east] at (13.2,1.05) {T2};
+  \draw[flow] (13.25,1.75) -- (16.55,1.75); \draw[flow] (13.25,1.05) -- (16.55,1.05);
+  \node[ev=sheetBlue, label={[lbl]above:read}] at (13.55,1.75) {};
+  \node[ev=sheetGreen!60!black, label={[lbl]above:unlock}] (u) at (14.3,1.75) {};
+  \node[ev=sheetGreen!60!black, label={[lbl]below:lock}] (l) at (15.2,1.05) {};
+  \node[ev=sheetOrange, label={[lbl]below:write}] at (16.0,1.05) {};
+  \draw[->, thick, sheetGreen!60!black] (u) -- (l);
+  \node[lbl, anchor=west, text=sheetGreen!45!black] at (15.0,1.45) {edge: ok};
+  \node[lbl, anchor=north west, align=left, text width=84mm] at (8.05,0.62) {per 8 B of memory,
+  \textbf{4 shadow slots} keep recent accesses (thread, epoch, read/write); a full cell overwrites a
+  random slot. Every thread and every lock / queue / atomic carries a \textbf{vector clock}:
+  release $\to$ acquire is an edge. Same address, $\ge$1 write, no edge $\to$ race — even if this run
+  \emph{happened} to be fine.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\small\setstretch{1.0}\raggedright
+
+\section{Tool $\to$ catches $\to$ cost $\to$ where}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{33mm}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{15mm}@{}}
+\toprule
+\textbf{tool} & \textbf{catches} & \textbf{cost} & \textbf{where}\\ \midrule
+\textbf{ASan} & heap / stack / global overflow, use-after-free, use-after-scope, double + invalid free; use-after-return opt-in. C + Swift & 2–5$\times$ CPU, 2–3$\times$ mem & device + Simulator\\
+\textbf{TSan} & data races, Swift access races, NS/CF mutable-collection races, bad mutexes, thread leaks & 2–20$\times$ CPU, 5–10$\times$ mem & \textbf{Simulator, 64-bit macOS}\\
+\textbf{UBSan} & C UB: divide by 0, misaligned, null, signed overflow, shift, bool / enum, bounds. \textbf{Not Swift} (Swift traps itself) & $\approx$20\,\% CPU & with ASan or TSan\\
+\textbf{MSan} & uninitialised reads & 3$\times$ & \textbf{not Apple}\\
+\textbf{MTC} & UIKit / AppKit / WebKit API off main & 1–2\,\%; launch +$\le$100\,ms & on by default\\
+\textbf{TPC} & priority inversion; sync I/O + networking on main & minimal & Run; macOS + iOS\\
+\textbf{HW tags} & use-after-free, out-of-bounds: pointer tag $\neq$ memory tag & ships & A19+, M5+ chips\\
+Exclusivity & overlapping \ct{inout} / \ct{mutating} access (Swift) & small & Release too\\
+Dynamic isolation & actor-isolated code called off its actor & crash, not race & Swift 6 mode\\
+\bottomrule
+\end{tabular}}\par
+\textbf{Malloc debugging} (scheme checkboxes): \emph{Scribble} alloc $\to$ \ct{0xAA}, free $\to$
+\ct{0x55} · \emph{Guard Edges} a guard page each side of blocks $\ge$4096\,B · \emph{Guard Malloc}
+own VM page per alloc, freed page removed (Mac + Simulator) · \emph{Malloc Stack} alloc
+backtraces in the Memory Graph.
+
+\section{How they work}
+\begin{itemize}
+  \item \textbf{ASan} replaces \ct{malloc}/\ct{free}, checks both buffers of \ct{memcpy}-style
+        calls; \ct{halt\_on\_error=1}: the first report ends the run. Misses leaks,
+        uninitialised reads, integer overflow. \ct{-O1} trims its memory (TSan too).
+  \item \textbf{TSan} instruments accesses \emph{and} sync calls; \ct{halt\_on\_error=0}: it keeps
+        running, one report per race. Swift 6 mode rejects races at compile time, but
+        \ct{@unchecked Sendable} and \ct{nonisolated(unsafe)} switch that check off — TSan still
+        sees them, and C / ObjC.
+  \item \textbf{MTC / TPC} swap system methods for thread-checking variants — no recompile;
+        \ct{libMainThreadChecker.dylib} can be injected into an existing macOS binary. TPC:
+        \ct{dispatch\_semaphore\_wait} / \ct{dispatch\_group\_wait} cannot donate priority $\to$
+        inversion; silence known ones with \ct{PERFC\_SUPPRESSION\_FILE}.
+  \item \textbf{Zombies}: freed objects stay as zombies (\ct{NSDeallocateZombies=NO}): ``message
+        sent to deallocated instance'' + trap. Field signs: \ct{objc\_msgSend} / \ct{objc\_retain} / \ct{objc\_release} on
+        top, or an unrecognised selector (memory reused).
+  \item \textbf{HW tags}: Enhanced Security $\to$ \emph{Enable Hardware Memory Tagging}
+        (\ct{…checked-allocations} entitlement); \emph{soft mode} writes a simulated crash
+        report instead of killing — off before users get the build.
+  \item \textbf{Exclusivity}: static where provable, dynamic (\ct{swift\_beginAccess}) for class
+        properties, statics, globals, escaping closures; \ct{-enforce-exclusivity=unchecked}
+        drops the Release checks. \textbf{Dynamic isolation} (SE-0423): \ct{@objc} thunks,
+        \ct{@preconcurrency} conformances, closures passed to unaudited APIs;
+        \ct{-disable-dynamic-actor-isolation} opts out.
+\end{itemize}
+
+\section{Since}
+\textbf{Xcode 7} ASan · \textbf{8} TSan · \textbf{9} UBSan, MTC, Swift access races ·
+\textbf{Swift 5} exclusivity checks in Release · \textbf{Xcode 14} TPC · \textbf{Swift 6} dynamic
+actor isolation · \textbf{Xcode 26} runtime issues in tests, no Zombies template, C++
+container-overflow on · \textbf{Xcode 27} ASan on 27.0 OSes needs $\ge$26.5.
+
+\columnbreak
+
+\section{Turning them on}
+\ct{clang -fsanitize=address} (or \ct{thread}, \ct{undefined}) · \ct{swiftc -sanitize=address}
+(or \ct{thread}; no UBSan) · \ct{xcodebuild test -enableAddressSanitizer YES} (\ct{…Thread…},
+\ct{…UndefinedBehavior…}). Scheme $\to$ Run $\to$ \textbf{Diagnostics}; tests: test-plan
+configurations, one per sanitizer.
+\emph{Runtime API Checking} warns by default; \emph{On (as Failure)} fails the test. UBSan
+continues after a report; \ct{-fno-sanitize-recover} exits, \ct{-fsanitize-trap} traps
+(SIGILL / SIGTRAP, no runtime). Container-overflow noise:
+\ct{ASAN\_OPTIONS=detect\_container\_overflow=0} in the Run scheme and each ASan test plan —
+build settings cannot switch it off.
+
+\section{Reading a report {\normalfont\scriptsize(ASan, abridged)}}
+\begin{lstlisting}[language=ReportSheet]
+==4242==ERROR: AddressSanitizer: heap-use-after-free
+READ of size 8 at 0x60200000eff0 thread T0
+  #0 parse_header  buf.c:42        // 1 WHERE: bad access
+0x60200000eff0 is located 0 bytes inside of 16-byte region
+freed by thread T0 here:
+  #1 conn_close    conn.c:88       // 2 WHO freed it
+previously allocated by thread T0 here:
+  #1 conn_open     conn.c:31       // 3 WHO made it
+SUMMARY: AddressSanitizer: heap-use-after-free buf.c:42
+\end{lstlisting}
+Bug type first, then three stacks: access, free, allocation — the fix is usually in \#2 or \#3,
+not \#1. More shadow bytes: \ct{f1}/\ct{f2}/\ct{f3} stack left / mid / right redzone · \ct{f5}
+stack after return · \ct{f8} after scope · \ct{f9} global redzone · \ct{fc} container overflow.
+
+\textbf{TSan} \ct{WARNING: ThreadSanitizer: data race}: \emph{Write \dots\ by thread T3} +
+\emph{Previous read \dots\ by main thread} — two stacks, two threads, one address, no edge: fix the
+\emph{ownership} (actor, serial queue, \ct{Mutex}), not the timing. Other kinds: Swift access race ·
+thread leak · lock-order-inversion (potential deadlock) · invalid or unlocked mutex ·
+signal-unsafe call inside of a signal.
+
+\section{Exclusivity trap at run time}
+\begin{lstlisting}[language=SwiftSheet]
+final class Counter { var n = 0 }
+func bump(_ x: inout Int, by c: Counter) { x += c.n }
+let c = Counter()
+bump(&c.n, by: c)   // modify of c.n open, then a read of c.n
+// Simultaneous accesses to 0x..., but modification requires
+//   exclusive access. Previous access (a modification) started
+//   at ... Current access (a read) started at: swift_beginAccess
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{ASan + TSan in one run — impossible: two test-plan configurations, two CI runs.}
+  \trap{Clean TSan run $\neq$ race-free: unexecuted interleavings and overwritten slots go unseen.}
+  \trap{Crash on \ct{0x400000000000bad0}: synthesized \ct{nonatomic} ObjC setters briefly store
+        this sentinel — two threads mutated the property.}
+\end{itemize}
+
+\section{Remember}
+\textbf{ASan = where memory, TSan = when threads, UBSan = C rules, MTC / TPC = the main thread,
+tags = the one that ships.} Crash here, not later.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Crashes \& symbolication · Instruments ·
+Swift 6 strict concurrency · Ownership, exclusivity \& memory layout · Debugging Swift Concurrency ·
+Release-only bugs · Locks \& synchronisation}
+
+\end{document}

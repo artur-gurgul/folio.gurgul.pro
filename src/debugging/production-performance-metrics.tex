@@ -1,0 +1,276 @@
+% production-performance-metrics.tex — measuring performance on real users' devices: lab vs field,
+% MetricKit on iOS 27 (MetricManager, MetricReport / DiagnosticReport, MetricResult types, StateReporting,
+% extended launch) and the deprecated MX* API, hang / hitch / launch definitions and thresholds, termination
+% reasons, Organizer (p50 / p90, regression rule, goals, margin of error), percentiles vs averages (worked),
+% phased rollout, sampling; Android vitals thresholds, ApplicationExitInfo, TTID / TTFD.
+% Not repeated (neighbours): Logger / OSSignposter / Power Profiler / Organizer Xcode 27 panes (Logging,
+% signposts & power), crash pipeline + crash-free rates (Crash reporting in practice), the phased-release
+% schedule (Progressive delivery), Instruments workflow (Instruments).
+% Sources (checked 2026-10-07):
+%   developer.apple.com/documentation/metrickit (metric reports at most once a day for the previous 24 h;
+%     diagnostics immediately on iOS 15+; iOS 27 MetricManager + async sequences; StateReporting)
+%     · /updates/metrickit (June 2026: MetricManager replaces MXMetricManager and its subscriber)
+%     · /metrickit/metricmanager (instance, not a singleton; two tasks on one sequence each get a
+%     non-deterministic subset) · /metricreport (Codable + Sendable; state entries only for hang, hitch,
+%     terminations, signposts, run time) · /diagnosticreport (not every event: hangs only with hang
+%     detection or a sampling group) · /diagnosticresult · /callstacktree · /callstackframe
+%     · /metricgroup · /memoryexceptiondiagnostic · /crashdiagnostic · /hangdiagnostic
+%     · /cpuexceptiondiagnostic · /diskwriteexceptiondiagnostic · /applaunchdiagnostic
+%     · /timetofirstdrawmetric (ends at the first Core Animation commit) · /optimizedtimetofirstdrawmetric
+%     (prewarm) · /extendedlaunchmetric · /hangtimemetric (> 9 s in the last bucket) · /hitchtimemetric
+%     · /hitchtimeratio (ms per s) · /foregroundterminationmetric · /backgroundterminationmetric (+ each
+%     counter) · /peakmemorymetric · /suspendedmemorymetric · /signpostintervalmetric
+%     · /metricmanager/loghandle(category:) · /metricmanager/tracklaunchtask(id:ontrackingerror:_:)
+%     · /launchtaskid · /statereporting · /statereportingdomain
+%     · /monitoring-app-performance-with-metrickit (Simulate MetricKit Payloads; stable metadata only;
+%     hasExceededStateLimit; OSSignposter does not fill the resource fields) · /analyzing-app-performance-
+%     with-metrickit (histograms, AverageStatistics, environment fields; memoryException iOS only)
+%     · /track-performance-by-app-state-using-metrickit (no reports on simulated devices)
+%     · /mxmetricmanager (iOS 13, deprecated 27.2; > 1 payload a day possible) · /mxdiagnosticpayload
+%     (iOS 14) · /mxapplaunchmetric · /mxanimationmetric (scroll ratio iOS 14, all-animation ratio
+%     iOS 26) · /mxmetricmanager/makeloghandle(category:) · /mxsignpost(...)
+%   developer.apple.com/documentation/xcode/understanding-hangs-in-your-app (< 100 ms rarely noticeable;
+%     tools report > 250 ms; + 10-50 ms outside the run loop) · /analyzing-responsiveness-issues-in-your-
+%     shipping-app (hang rate = s per hour counting > 250 ms; median + 90th percentile; backtrace sampled
+%     at >= 1 s; consenting users) · /understanding-hitches-in-your-app (10 / 25 / 50 ms/s)
+%     · /reducing-your-app-s-launch-time (tap to first frame after the launch screen; 50th / 90th
+%     percentile; launch vs resume; cold-warm spectrum) · /analyzing-the-performance-of-your-shipping-app
+%     (75 % vs the average of the previous four; once per 24 h; margin of error; goals) · /reduce-
+%     terminations-in-your-app · /addressing-watchdog-terminations (scene-create / scene-update)
+%     · /sigkill (0x8badf00d, 0xdead10cc, 0x2182bad2) · /identifying-high-memory-use-with-jetsam-event-
+%     reports (per-process-limit, vm-pageshortage; no backtraces)
+%   developer.apple.com/documentation/xctest/xctmetric (+ xcthitchmetric, iOS 26)
+%   developer.apple.com/help/app-store-connect/update-your-app/release-a-version-update-in-phases
+%     (random sample of automatic-update users; manual download any time; pause 30 days in total)
+%   developer.android.com/topic/performance/vitals (crash 1.09 / 8 / 4 %, ANR 0.47 / 8 / 5 %; 28 days;
+%     per daily active user vs per session; consenting users; memory from February 2027)
+%     · /vitals/anr (input 5 s) · /vitals/launch-time (TTID, TTFD, reportFullyDrawn, Displayed)
+%     · /jankstats · /benchmarking/macrobenchmark-overview · reference/android/app/ApplicationExitInfo
+%     and /ActivityManager (getHistoricalProcessExitReasons, API 30)
+% @labels: area=debugging kind=tooling platform=cross-platform topic=performance,debugging
+% @tags: metrickit, metricmanager, mxdiagnosticpayload, hang-rate, launch-time, app-termination, jetsam, watchdog, percentiles, regression-detection, android-vitals, xcode-organizer
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,static,init,for,in,
+    if,else,return,guard,self,nil,try,await,async,throws,true,false,defer,Task},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  st/.style={box, font=\tiny, text width=26mm, inner sep=1.5pt, align=flush left, anchor=north},
+  hdx/.style={font=\bfseries\scriptsize, anchor=south},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Performance in production — field metrics, not lab numbers}{debugging · folio}
+
+\oneliner{The lab tells you \emph{whether a build can} be fast; only the \textbf{field} tells you
+whether users' devices \emph{are}. The OS measures launch, hangs, hitches, memory, disk, CPU,
+battery and \textbf{why the app died}, aggregates it per day, and hands it to you (MetricKit) or to
+Apple (Organizer) / Google (Play vitals). Read \textbf{percentiles per app version and device},
+never an average, and gate each release on them.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x/\n/\c/\h/\b in {
+    0/lab/sheetGrey/{0 lab (CI)}/{XCTest \ct{measure(metrics:)}: launch, signpost, memory, clock, CPU, storage, hitches (iOS 26) · Instruments · Android Macrobenchmark. Fixed device + scenario $\to$ baseline, CI gate.},
+    3.3/dev/sheetBrown/{1 user's device}/{OS records launch, hang time, hitches, CPU, memory, disk writes, exits by reason; \textbf{your} signposts (\ct{mxSignpost}); \textbf{your} app state (StateReporting, iOS 27).},
+    6.6/rep/sheetOrange/{2 delivery}/{\textbf{metric report}: $\le$ once a day, previous 24\,h (+ undelivered).\\\textbf{diagnostic}: one event + stack tree, \textbf{immediately} (iOS 15+).},
+    9.9/be/sheetBlue/{3 your backend}/{upload JSON (\ct{Codable}); symbolicate stacks (dSYM by UUID); bucket by \textbf{version × device × OS}; merge histograms $\to$ p50 / p90.},
+    13.2/act/sheetGreen!60!black/{4 act}/{dashboard per version; alert on a regression vs the previous version; pause the phased rollout.}}
+  { \node[hdx, text=\c] at (\x+1.4,0.05) {\h};
+    \node[st, draw=\c, fill=\c!6, minimum height=15mm] (\n) at (\x+1.4,0) {\b}; }
+  \foreach \p/\q in {dev/rep,rep/be,be/act} \draw[flow] (\p.east) -- (\q.west);
+  \draw[flow, dashed] (lab.east) -- (dev.west);
+  \node[box, font=\tiny, draw=sheetGrey, fill=black!4, text width=58mm, align=left, anchor=north west] (org) at (3.35,-1.68)
+    {\textbf{Apple Organizer} (no SDK): from users who share data with developers — launch, hang rate, hitches, memory, disk writes, battery, terminations; \textbf{p50 (typical) or p90} per version × device; \textbf{high-impact regression} = latest version $\ge$ 75\,\% worse than the average of the previous four.};
+  \node[box, font=\tiny, draw=sheetGreen!60!black, fill=sheetGreen!6, text width=62mm, align=left, anchor=north west] (pv) at (9.95,-1.68)
+    {\textbf{Play vitals} (Android, no SDK): from users who share data, \textbf{per daily active user}, rolling \textbf{28 days}, checked daily; over a bad-behaviour threshold $\to$ Play may reduce visibility and warn on the store listing. \ct{ApplicationExitInfo} = your own exit reasons.};
+  \draw[flow] ([xshift=-8mm]dev.south) -- ([xshift=-8mm]dev.south |- org.north);
+  \node[lbl, text=sheetRed, anchor=north west, align=left] at (-0.1,-1.72) {lab: one device, warm\\caches, office Wi-Fi.\\field: many models, app\\evicted, bad network.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\small\setstretch{1.0}
+
+\hd{MetricKit — the iOS 27 API}
+\begin{itemize}
+  \item \ct{MetricManager} — an \emph{instance}, not a singleton: keep \textbf{one}. With two, loops
+        over one sequence each get a non-deterministic \emph{subset}.
+  \item \ct{metricReports} $\to$ a daily \ct{MetricReport}: \ct{intervalEntries} (incl. the full day) +
+        \ct{stateEntries}, values are \ct{MetricResult} cases with a \ct{metricGroup}.
+        \ct{diagnosticReports} $\to$ one \ct{DiagnosticReport} per event. Both never throw; \ct{Codable}.
+  \item \textbf{Deprecated in 27.2}: \ct{MXMetricManager} + subscriber \ct{didReceive(\_:)} (iOS 13
+        metrics, 14 diagnostics) and every other \ct{MX…} type.
+  \item \textbf{Device only}; \emph{Debug › MetricKit › Simulate MetricKit Payloads} = sample data, not yours.
+  \item \textbf{StateReporting} (27): domains passed to \ct{init(enabledStateReportingDomains:)}; one
+        state per domain at a time (A/B arm, tab); only \emph{stable} metadata counts; too many states
+        $\to$ \ct{hasExceededStateLimit}.
+\end{itemize}
+
+\hd{What each metric measures (iOS 27 names)}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{57mm}@{}}
+\toprule
+\textbf{metric} & \textbf{measures}\\ \midrule
+TimeToFirstDraw & tap $\to$ first Core Animation commit = Organizer \emph{Launch Time}\\
+OptimizedTTFD & perceived launch if the system \textbf{started it early}\\
+ApplicationResume & back into a live (even suspended) process\\
+ExtendedLaunch & to the later of first frame and all \ct{trackLaunchTask} work\\
+HangTime & histogram; everything $>$\,9\,s lands in the last bucket\\
+HitchTime & \textbf{ms per s} of animation; all animations since 26\\
+Fg/BgTermination & exit counts per reason (table $\to$)\\
+Peak / Suspended Memory & peak footprint · mean footprint at suspension (+ count, $\sigma$)\\
+SignpostInterval & count, duration histogram; CPU / writes via \ct{mxSignpost}\\
+also & CPU time + instructions, GPU, disk writes, network bytes, signal bars, location / audio time, luminance, Metal fps, files\\
+\bottomrule
+\end{tabular}}
+
+\noindent{\footnotesize Per state: hang, hitch, terminations, signposts, run time; not CPU, memory, launch.}
+
+\hd{Diagnostics — one event, one call-stack tree}
+\begin{itemize}
+  \item \ct{.crash} (exception type, code, signal, ObjC reason) · \ct{.hang} (\ct{hangDuration}) ·
+        \ct{.cpuException} · \ct{.diskWriteException} (\ct{totalBytesWritten}) · \ct{.appLaunch} (slow
+        launch) · \textbf{\ct{.memoryException}} (27, iOS only: killed over the memory limit).
+  \item Frames = \ct{binaryUUID} + offset + \ct{sampleCount}: symbolicate with the dSYM.
+        \ct{environment}: version, OS, device, states.
+  \item Hangs come only from devices with hang detection on or in a sampling group.
+\end{itemize}
+
+\hd{Example — collect (iOS 27)}
+\begin{lstlisting}[language=SwiftSheet]
+let mk = MetricManager(enabledStateReportingDomains: ["com.acme.ab"])
+Task { for await r in mk.metricReports {          // ~daily
+         try await api.upload(JSONEncoder().encode(r)) } }
+Task { for await d in mk.diagnosticReports {      // per event
+         try await api.upload(JSONEncoder().encode(d)) } }
+let log = MetricManager.logHandle(category: "Checkout")
+mxSignpost(.begin, log: log, name: "Pay")   // + CPU, memory, writes
+defer { mxSignpost(.end, log: log, name: "Pay") }
+try await mk.trackLaunchTask(id: "feed") { try await feed.load() }
+\end{lstlisting}
+
+\hd{Android}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{14mm}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{15mm}@{}}
+\toprule
+\textbf{bad behaviour} & \textbf{overall} & \textbf{per phone} & \textbf{per watch}\\ \midrule
+user-perceived crash rate & 1.09\,\% & 8\,\% & 4\,\%\\
+user-perceived ANR rate & 0.47\,\% & 8\,\% & 5\,\%\\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item Per \textbf{daily user}: 3 sessions, 1 crash = 100\,\% in vitals, 33\,\% per session
+        (Crashlytics). Memory vitals may cost visibility from February 2027.
+  \item Input ANR = not handled in 5\,s. \ct{getHistoricalProcessExitReasons()} (API 30):
+        \ct{REASON\_LOW\_MEMORY}, \ct{REASON\_ANR} (+ trace). \textbf{TTID} = first frame (logcat
+        \ct{Displayed}); \textbf{TTFD} = \ct{reportFullyDrawn()}.
+\end{itemize}
+
+\columnbreak
+
+\hd{Thresholds on one axis}
+\noindent\begin{tikzpicture}[sheet]
+  % log axis 10 ms .. 10 s: x = 2.55 * (log10(ms) - 1)
+  \fill[sheetGreen!25] (0,0) rectangle (2.55,0.2);
+  \fill[sheetOrange!30] (2.55,0) rectangle (3.57,0.2);
+  \fill[sheetRed!25] (3.57,0) rectangle (7.8,0.2);
+  \draw[sheetGrey] (0,0) -- (7.8,0);
+  \foreach \x/\t in {2.55/100\,ms, 3.57/250\,ms, 5.1/1\,s, 6.88/5\,s, 7.53/9\,s}
+    { \draw[sheetGrey] (\x,0) -- (\x,-0.07); \node[lbl, anchor=north] at (\x,-0.07) {\t}; }
+  \draw[sheetGrey] (0,0) -- (0,-0.07); \node[lbl, anchor=north west] at (0,-0.07) {10\,ms};
+  \node[lbl, anchor=south, text=sheetGreen!50!black] at (1.3,0.22) {rarely noticed};
+  \node[lbl, anchor=south] at (3.45,0.22) {\textbf{hang}: Apple tools\\report it; hang rate\\counts from here};
+  \node[lbl, anchor=south] at (5.25,0.22) {Organizer\\samples a\\backtrace};
+  \node[lbl, anchor=south east] at (7.85,0.22) {HangTime:\\$>$\,9\,s = last\\bucket};
+  \node[lbl, anchor=north, text=sheetGreen!45!black] at (6.88,-0.36) {Android ANR:\\input, 5\,s};
+  \node[lbl, anchor=north west, align=left] at (0,-0.36) {+10–50\,ms outside the main run loop\\(input delivery, rendering)};
+  % hitch rate bands
+  \node[lbl, anchor=west, align=left] at (0,-1.02) {\textbf{hitch rate} (Organizer Hitches), ms of hitch per s of animation:};
+  \foreach \a/\b/\f/\t in {0/1.25/sheetGreen!30/good $\le$\,10, 1.25/3.13/sheetOrange!30/warning $\le$\,25,
+                           3.13/6.25/sheetRed!25/critical $\le$\,50, 6.25/7.8/sheetRed!55/$>$\,50 act now}
+    { \fill[\f] (\a,-1.5) rectangle (\b,-1.22); \node[lbl] at ({(\a+\b)/2},-1.36) {\t}; }
+\end{tikzpicture}
+
+\hd{Definitions}
+\begin{itemize}
+  \item \textbf{Launch} = tap $\to$ first frame \emph{after} the launch screen. \textbf{Resume} = process
+        still alive: reported apart, much faster. Cold–warm is a spectrum.
+  \item \textbf{Hang} = the main run loop busy between two waits. \textbf{Hang rate} = seconds of hang
+        per \textbf{hour}, counting $>$\,250\,ms only. A \textbf{hitch} is a late frame — another metric.
+\end{itemize}
+
+\hd{Why the app died — termination counters}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{16mm}>{\raggedright\arraybackslash}p{5mm}>{\raggedright\arraybackslash}p{55mm}@{}}
+\toprule
+\textbf{counter} & \textbf{in} & \textbf{meaning}\\ \midrule
+normal & fg bg & user quit / swiped away — expected\\
+abnormal & fg bg & \ct{abort()}: uncaught exception, failed \ct{assert} — a crash\\
+badAccess, illegalInstr. & fg bg & invalid memory access, undefined instruction — crashes\\
+watchdog & fg bg & \ct{0x8badf00d}: \ct{scene-create} = no first frame in time, \ct{scene-update} = UI stuck\\
+memoryLimit & fg bg & over the per-app limit (jetsam \ct{per-process-limit}, no backtrace); 27: \ct{.memoryException}\\
+systemPressure & bg & evicted for the foreground app (\ct{vm-pageshortage}) — normal; cut memory at suspension\\
+fileLock & bg & \ct{0xdead10cc}: suspended holding a file / SQLite lock\\
+taskTimeout & bg & background task over its time (\ct{0x2182bad2})\\
+highCPU & bg & too much CPU time in the background\\
+\bottomrule
+\end{tabular}}
+
+\hd{Percentiles, not averages — worked}
+\noindent\begin{tikzpicture}[sheet]
+  \draw[sheetGrey] (0,0) -- (7.8,0);
+  \foreach \v in {0,1,2,3,4,5,6} { \draw[sheetGrey] (\v*1.25,0) -- (\v*1.25,-0.06); \node[lbl, anchor=north] at (\v*1.25,-0.06) {\v\,s}; }
+  \foreach \v/\k in {0.40/0,0.40/1,0.45/0,0.45/1,0.50/0,0.50/1,0.55/0,0.60/0,0.90/0,6.00/0}
+    \fill[sheetBlue] (\v*1.25,0.08+\k*0.11) circle (1.4pt);
+  \draw[sheetGreen!60!black, thick] (0.625,0) -- (0.625,0.78) node[lbl, anchor=west, text=sheetGreen!50!black] {p50 = 0.50 (typical user)};
+  \draw[sheetOrange, thick] (1.125,0) -- (1.125,0.5) node[lbl, anchor=west, text=sheetOrange] {p90 = 0.90 (9th of 10)};
+  \draw[sheetRed, thick, dashed] (1.344,0) -- (1.344,0.24) node[lbl, anchor=west, text=sheetRed] {mean = 1.08 — describes nobody};
+  \node[lbl, anchor=south east] at (7.8,0.16) {one 6\,s launch};
+\end{tikzpicture}
+10 launches (s): 0.40 0.40 0.45 0.45 0.50 0.50 0.55 0.60 0.90 6.00 — one outlier doubles the mean
+(0.53 $\to$ 1.08) and leaves p50 where it was.
+\begin{itemize}
+  \item MetricKit sends \textbf{histograms}: merge buckets across devices, \emph{then} read the
+        percentile — never average per-device averages or percentiles.
+  \item \textbf{Rates need a denominator}: hang s per hour, crashes per daily user or session, exits
+        per 1\,000 launches. Raw counts grow with adoption.
+\end{itemize}
+
+\hd{Organizer and the rollout}
+\begin{itemize}
+  \item Thin data $\to$ a \textbf{margin of error} or ``Insufficient usage data''; goals show only when
+        you are worse; regression notice $\le$\,1 per 24\,h.
+  \item Phased release = a \textbf{random sample} of auto-update users (manual updates any time):
+        gate each step on p90 launch, hang rate, exits.
+  \item Sample frequent diagnostics, keep every rare one, and \textbf{store the rate}.
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Average launch is 1\,s'' — say p50/p90 per device and version.}
+  \trap{\ct{OSSignposter} on the MetricKit handle: no CPU / memory / writes.}
+  \trap{Memory kills read as ``no crashes'' — read the termination counters.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Lab proves it can be fast; field proves it is.} Percentiles · per version · per device ·
+with a denominator.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Logging, signposts \& power · Crash reporting in
+practice · Crashes \& symbolication · SwiftUI instrument, hitches \& hangs · Instruments · Progressive delivery}
+
+\end{document}

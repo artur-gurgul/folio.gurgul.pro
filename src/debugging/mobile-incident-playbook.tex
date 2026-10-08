@@ -1,0 +1,233 @@
+% mobile-incident-playbook.tex — a production incident on a mobile app: detection signals and their basis,
+% declaring + incident roles, triage, severity, who each lever reaches, the store levers (App Store phased release,
+% Play staged rollout, halting a 100 % release, removal), hotfix + review, force update, kill-switch timing,
+% crash-loop recovery, blameless postmortem.
+% Sources (checked 2026-10-07):
+%   developer.apple.com/help/app-store-connect/update-your-app/release-a-version-update-in-phases (7 days
+%     1/2/5/10/20/50/100 %, random sample of automatic-update users; manual download by anyone at any time; pause
+%     30 days in total, any number of pauses, resumes on the day it stopped; Release to All Users any time; removal
+%     from sale ends phased release for that version, reinstated = all users at once)
+%   .../manage-your-apps-availability/make-a-version-unavailable-for-download (a Ready for Distribution version
+%     with an issue: submit an update, else remove the app) · .../manage-availability-for-your-app-on-the-app-store
+%     (Remove App From Sale: gone within 24 h; redownload from purchase history) · .../update-your-app/
+%     create-a-new-version (incremental version number; increment the build string)
+%   developer.apple.com/help/app-review/after-submitting-for-review/request-expedited-review (at least 50 % < 24 h,
+%     90 % < 48 h; only submissions already sent; critical bug in the Notes field; as availability and demand allow)
+%     · .../bug-fix-submissions (non-legal/safety issues deferred to the next update, once) · developer.apple.com/
+%     distribute/app-review/ (steps to reproduce the bug on the current version)
+%   developer.apple.com/documentation/xcode/acquiring-crash-reports-and-diagnostic-logs (Crashes organizer: users
+%     who share diagnostics, TestFlight always; no watchdog, jetsam, thermal, code-signature events)
+%     · /metrickit/mxmetricmanager (diagnostics immediately on iOS 15+; deprecated 27.2) · /metrickit/metricmanager (iOS 27)
+%   support.google.com/googleplay/android-developer/answer/6346149 (staged rollout: updates only, random new +
+%     existing users, % never rises by itself; halt = no additional users, who has it stays; resume)
+%     · /answer/16285429 (halt a fully rolled-out release: previous full release served; not the first release on a
+%     track, not internal testing, not a policy-violating previous release)
+%   developer.android.com/topic/performance/vitals (crash 1.09 %, ANR 0.47 %, 8 % per phone model; 28-day average
+%     checked daily; visibility + listing warning; per daily active user vs Crashlytics per session)
+%   developer.android.com/studio/publish/versioning (greater versionCode each release, no reuse, max 2100000000)
+%   developer.android.com/guide/playcore/in-app-updates (+ /kotlin-java) (flexible / immediate; Android 5.0+;
+%     inAppUpdatePriority 0-5 via the Play Developer API, set at rollout, never changed)
+%   firebase.google.com/docs/crashlytics/alerts (increasing-velocity: one crash/ANR type, % of users, 30 minutes,
+%     one version; not sent by default) · /crashlytics/crash-free-metrics (1 - crashed/all, aggregated over time)
+%   firebase.google.com/docs/remote-config/ios (default minimum fetch interval 12 h; real-time bypasses it, Apple SDK
+%     10.7.0+) · /remote-config/ios/real-time (invalidation signal, foreground only)
+%   docs.expo.dev/eas-update/rollbacks (eas update:rollback: previous update or embedded) · /error-recovery
+%     (5 s timer; rollback only before first render; not caught > 10 s after it) · /download-updates (checked on cold
+%     start, used on the next) · /how-it-works (runtime versions must match exactly)
+%   sre.google/sre-book/managing-incidents/ (IC, Ops, Communication, Planning; when to declare; living incident
+%     document) · /effective-troubleshooting/ (stop the bleeding first) · /postmortem-culture/ (triggers, blameless)
+%   response.pagerduty.com/before/severity_levels/ (SEV-1..5; unsure = the higher; above SEV-3 = major incident)
+% @labels: area=debugging kind=process platform=cross-platform topic=debugging,build
+% @tags: incident-response, severity-levels, phased-release, staged-rollout, kill-switch, force-update, expedited-review, eas-update-rollback, crash-free-users, velocity-alert, blameless-postmortem, five-whys
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{JSONSheet}{morekeywords={true,false,null}, sensitive=true,
+  morecomment=[l]{//}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\footnotesize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+
+\tikzset{
+  ph/.style={draw=white, line width=0.8pt, minimum height=5mm, inner sep=0pt,
+             font=\scriptsize\bfseries, text=white, anchor=west},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  mk/.style={dashed, thin},
+}
+
+\begin{document}
+
+\sheettitle{Mobile production incident — the playbook}{debugging · folio}
+
+\oneliner{\textbf{A build already on users' phones cannot be recalled} — pausing or halting a rollout only
+stops it reaching \emph{more} people. So: \textbf{detect} per version, \textbf{stop the spread} (pause / halt),
+\textbf{neutralise the bad path server-side} (kill switch, compatibility shim, OTA JS rollback), \textbf{ship a fix}
+(hotfix + expedited review, then force-update), \textbf{communicate}, and learn in a \textbf{blameless postmortem}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x/\w/\c/\t in {0/2.3/sheetRed/DETECT, 2.3/2.0/sheetOrange/TRIAGE,
+      4.3/3.4/sheetBrown/MITIGATE, 7.7/3.6/sheetBlue/FIX, 11.3/2.9/sheetGreen!70!black/RECOVER,
+      14.2/2.3/sheetGrey/LEARN}
+    \node[ph, minimum width=\w cm, fill=\c] at (\x,1.62) {\t};
+  \draw[->, sheetGrey] (0,0) -- (16.5,0) node[lbl, anchor=north east]{time $\to$};
+  \draw[->, sheetGrey] (0,0) -- (0,1.3);
+  \fill[sheetRed!18] (0.4,0) -- (0.9,0.12) -- (1.6,0.3) -- (2.4,0.55) -- (3.2,0.75)
+      -- (7.6,0.95) -- (9.8,1.02) -- (11.2,0.8) -- (12.2,0.45) -- (13.0,0.12) -- (16.4,0.05) -- (16.4,0) -- cycle;
+  \draw[sheetRed, thick] (0.4,0) -- (0.9,0.12) -- (1.6,0.3) -- (2.4,0.55) -- (3.2,0.75)
+      -- (7.6,0.95) -- (9.8,1.02) -- (11.2,0.8) -- (12.2,0.45) -- (13.0,0.12) -- (16.4,0.05);
+  \node[lbl, text=sheetRed, anchor=west, fill=white] at (4.75,1.12) {installs of the bad build — \textbf{no recall}};
+  \draw[sheetOrange, very thick] (0.4,0) -- (0.9,0.1) -- (1.6,0.25) -- (2.4,0.46) -- (3.2,0.62)
+      -- (4.3,0.68) -- (4.55,0.04) -- (16.4,0.04);
+  \node[lbl, text=sheetOrange, anchor=west, fill=white] at (4.75,0.32) {users \emph{hitting} the bug — cut by the kill switch};
+  \foreach \x/\t/\c in {0.4/{release\\1\,\% day 1}/sheetGrey, 1.6/{velocity alert,\\crash-free $\downarrow$}/sheetRed,
+      3.2/{pause phased /\\halt staged}/sheetOrange, 4.4/{kill switch /\\shim / OTA}/sheetOrange,
+      7.8/{hotfix +\\expedite}/sheetBlue, 9.8/{fix live}/sheetBlue, 11.3/{min-version\\gate on}/sheetGreen!55!black,
+      14.3/{postmortem\\+ actions}/sheetGrey}
+    { \draw[mk, draw=\c] (\x,0) -- (\x,1.35); \node[lbl, text=\c, anchor=north] at (\x,-0.05) {\t}; }
+  \node[lbl, anchor=west, align=left, text=sheetGrey] at (11.4,1.05) {decay = adoption of the fix;\\manual downloads still get a\\paused App Store release};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\small\setstretch{1.0}\raggedright
+
+\section{Detect — per version, fastest first}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{49mm}@{}}
+\toprule
+\textbf{signal} & \textbf{basis} & \textbf{what it says}\\ \midrule
+Crashlytics velocity & 30 min, one version & one crash/ANR type hits a set \% of users — not sent until you pick a
+  channel (regressed + trending: on by default)\\
+crash-free users & a period & $1 -$ crashed\,/\,all users, aggregated, not averaged; sessions beside it\\
+Play vitals & 28-day avg, daily & user-perceived crash \textbf{1.09\,\%}, ANR \textbf{0.47\,\%}, \textbf{8\,\%}
+  on one phone model; over $\to$ Play may cut visibility, warn on the listing\\
+Xcode Crashes organizer & opt-in users & TestFlight: all users; \textbf{no} watchdog, jetsam, thermal or
+  code-signature kills\\
+MetricKit & on device & diagnostics delivered immediately (iOS 15+); iOS 27: \ct{MetricManager}\\
+backend · business & live & 4xx/5xx, latency, payments by an \ct{App-Version} header · funnel, logins; reviews and
+  tickets lag\\
+\bottomrule
+\end{tabular}}\par
+Units differ: vitals count per daily active user, Crashlytics per session — 1 crash in a user's 3 sessions =
+\textbf{100\,\%} vs \textbf{33\,\%}.
+
+\section{Declare, organise, triage}
+\begin{itemize}
+  \item \textbf{Declare} if any holds: a second team is needed · customers can see it · unsolved after an hour of
+        concentrated analysis. Declaring early and closing on a simple fix beats starting hours in.
+  \item \textbf{Stop the bleeding first} — make the system work as well as it can; root cause later.
+\end{itemize}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{10mm}>{\raggedright\arraybackslash}p{66mm}@{}}
+\toprule
+\textbf{role} & \textbf{holds}\\ \midrule
+IC & the state and every role not delegated; the \textbf{living incident document}; explicit handoff\\
+Ops & the \emph{only} hands changing the system — flags, rollout, backend\\
+Comms & the public face: periodic updates to team + stakeholders (status page, in-app banner)\\
+Planning & bugs, handoffs, every divergence (flag, shim) so it can be reverted\\
+\bottomrule
+\end{tabular}}
+\begin{enumerate}
+  \item \textbf{Blast radius}: version/build, OS, device, region, locale, flag arm; \% of DAU.
+  \item \textbf{What changed}: release, config/flag, backend deploy, OS release — line up the timelines.
+  \item \textbf{Harm}: data, money, security/privacy — or annoyance? \textbf{Workaround?}
+\end{enumerate}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{8mm}>{\raggedright\arraybackslash}p{38mm}>{\raggedright\arraybackslash}p{30mm}@{}}
+\toprule
+\textbf{sev} & \textbf{scale (PagerDuty)} & \textbf{mobile example}\\ \midrule
+SEV-1 & critical, many customers, or customer data exposed; public notice & launch crash for most; payments down\\
+SEV-2 & many customers cannot use the product & core flow broken\\
+SEV-3 & partial loss, not most customers; may grow into SEV-2 & one OS or locale broken\\
+SEV-4 & minor; product still usable & slow screen\\
+SEV-5 & cosmetic & typo\\
+\bottomrule
+\end{tabular}}\par
+SEV-1/2 = major incident, IC paged. Unsure? Take the \textbf{higher}; argue in the postmortem.
+
+\section{Who each lever reaches}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{7mm}>{\raggedright\arraybackslash}p{7mm}>{\raggedright\arraybackslash}p{43mm}@{}}
+\toprule
+\textbf{lever} & \textbf{has it} & \textbf{more} & \textbf{catch}\\ \midrule
+pause phased & $\times$ & part & auto-updates only: manual downloads, new installs still get it\\
+halt staged / 100\,\% & $\times$ & \checkmark & Play serves the previous release instead\\
+remove from sale & $\times$ & \checkmark & App Store, whole app, $\le$\,24\,h\\
+kill switch / flag & \checkmark & \checkmark & only if built in; at the next config fetch\\
+backend shim & \checkmark & \checkmark & old response shape for build $X$; server debt\\
+OTA rollback & \checkmark & \checkmark & JS only, same runtime version; next cold start\\
+hotfix + force update & \checkmark & \checkmark & review + adoption; the gate must be in the old build\\
+\bottomrule
+\end{tabular}}
+
+\columnbreak
+
+\section{Stop the spread — the stores}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{10mm}>{\raggedright\arraybackslash}p{32mm}>{\raggedright\arraybackslash}p{33mm}@{}}
+\toprule
+& \textbf{App Store — phased} & \textbf{Google Play — staged}\\ \midrule
+pace & fixed 1·2·5·10·20·50·100\,\% over 7 days; random auto-update users & your \%, never rises by itself; random
+  new + existing users\\
+for & version updates & updates, not the first publish\\
+stop & \textbf{pause}: 30 days in total, any number of times; resumes on the same day & \textbf{halt}: no
+  additional users; resume to any \%\\
+leak & anyone may download it manually & —\\
+at 100\,\% & submit an update, or remove the app & \textbf{halt} it too: the previous full release is served to
+  new users and all not on it — not a track's first release\\
+has it & keeps it & keeps it\\
+\bottomrule
+\end{tabular}}
+
+\section{Fix — hotfix, review, adoption}
+\begin{itemize}
+  \item Smallest diff, cherry-picked to the release branch. App Store: incremental version + incremented build
+        string; Play: \ct{versionCode} above every previous one (max 2\,100\,000\,000).
+  \item \textbf{Review}: $\ge$\,50\,\% in $<$\,24\,h, 90\,\% in $<$\,48\,h. \textbf{Expedited}: only a submission
+        already sent; critical bug + steps to reproduce on the current version in \emph{Notes}; granted as
+        availability allows. A rejected bug-fix with no legal/safety issue may ship, fixed next time — once per
+        issue. Then phased, or \textbf{Release to All Users} at any time.
+  \item \textbf{Force update}: \ct{min\_supported} in config $\to$ blocking screen $\to$ store. Play in-app updates:
+        \ct{IMMEDIATE} (full screen; Play installs + restarts) or \ct{FLEXIBLE} (background);
+        \ct{inAppUpdatePriority} 0–5 set at rollout via the Play Developer API, never changed.
+  \item \textbf{Recovered} = that version's crash-free / funnel back at \emph{baseline}, not ``PR merged''.
+\end{itemize}
+
+\section{Kill switch — config, timing, crash loops}
+\begin{lstlisting}[language=JSONSheet]
+{ "min_supported": { "ios": "4.12.1", "android": 41201 },
+  "kill": { "new_checkout": { "ios": ["4.13.0"] } },
+  "banner": { "text": "Payments delayed, fixing now" } }
+\end{lstlisting}
+\begin{itemize}
+  \item Firebase Remote Config: default minimum fetch interval \textbf{12\,h}; values apply on \ct{activate}.
+        Real-time listener (Apple SDK 10.7.0+): server invalidation $\to$ fetch past the interval, foreground only.
+  \item \textbf{expo-updates} guards JS crash loops: an error before the first render on an update's first launch
+        marks it failed, waits 5\,s for a newer one, else reloads the last that launched; $>$\,10\,s after first
+        render it is not caught. \ct{eas update:rollback} $\to$ a previous update or the embedded one.
+\end{itemize}
+
+\section{Learn — blameless postmortem}
+\begin{itemize}
+  \item \textbf{Triggers}: user-visible degradation past a threshold · any data loss · on-call intervention
+        · resolution time past a threshold · a monitoring failure · any stakeholder asks.
+  \item \textbf{Record}: timeline (UTC; TTD, TTM, TTR), impact in numbers, actions, root cause(s), follow-ups with
+        owner + date. \textbf{Blameless}: causes, not culprits — everyone acted in good faith on what they knew.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Launch crash before config loads: no kill switch reaches it — guard crash loops, cache config.}
+  \trap{Removing from sale to stop a phased release: reinstated, the version goes to 100\,\% at once.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Stop the spread, kill the path, ship the fix, force the stragglers, write it down.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} crash reporting in practice · crashes \& symbolication ·
+feature flags \& observability · progressive delivery · release engineering · store policy · EAS Update}
+
+\end{document}

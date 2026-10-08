@@ -1,0 +1,258 @@
+% release-only-bugs.tex — bugs that appear only in Release / production builds: what differs between
+% Debug and Release (optimiser + WMO, assert / precondition / overflow per -O level, object lifetimes,
+% exclusivity, dSYM, #if DEBUG / __DEV__, R8, signing + entitlements, APNs and StoreKit environments,
+% cleartext, timing), a symptom -> cause -> fix table, and how to reproduce.
+% Sources (checked 2026-10-07):
+%   developer.apple.com/documentation/swift/assert(_:_:file:line:) · /precondition(_:_:file:line:) ·
+%     /assertionfailure(_:file:line:) · /preconditionfailure(_:file:line:) (-Onone = Xcode Debug
+%     default, -O = Release default; behaviour under -Onone / -O / -Ounchecked) · /int/+(_:_:)
+%     ("Overflow checking is not performed in -Ounchecked builds")
+%   github.com/swiftlang/swift: stdlib/public/core/Assert.swift (-O precondition traps with the fixed
+%     text "precondition failure"; fatalError keeps its message) · include/swift/Option/Options.td
+%     (-Ounchecked "remove runtime safety checks") · docs/SIL/Ownership.md (lexical lifetimes; deinit
+%     barriers = syncs, weak/unowned loads, pointer access, global/class-member access; the
+%     weak-reference example)
+%   swift.org blog: "Swift 5.7 Released" (lexical scope tracked; common patterns safe without
+%     withExtendedLifetime(); Xcode 14) · "Swift 5 Exclusivity Enforcement" (runtime checks in Release
+%     since Swift 5, Debug only in Swift 4) · "Whole-Module Optimization" (default for new projects
+%     since Xcode 8)
+%   github.com/swiftlang/swift-book TheBasics (assert / precondition / fatalError by build) ·
+%     swift-migration-guide DataRaceSafety (races "often seem to work"; Swift 6 mode rejects them)
+%   WWDC21 10216 "ARC in Swift" (lifetime ends at last use; observed lifetimes are emergent)
+%   WWDC18 408 (Xcode's default Compilation Mode for Debug is incremental) · WWDC19 411 (Profile
+%     action uses Release by default) · WWDC26 268 (Profile = a release build)
+%   github.com/swiftlang/swift docs/OptimizationTips.rst (-Osize "meant for most production code")
+%   developer.android.com/tools/apkanalyzer (manifest debuggable)
+%   developer.apple.com/documentation/xcode/build-settings-reference (ENABLE_DEBUG_DYLIB,
+%     ENABLE_TESTABILITY, SWIFT_COMPILATION_MODE, ENABLE_NS_ASSERTIONS) ·
+%     /xcode/building-your-app-to-include-debugging-information (Debug: symbols in the binary,
+%     Release: dSYM; UUID must match) · /xcode/diagnosing-memory-thread-and-crash-issues-early (ASan
+%     misses uninitialised reads; TSan Simulator/macOS only, 2-20x slower)
+%   clang.llvm.org/docs: MemorySanitizer (Linux, NetBSD, FreeBSD only) · ClangCommandLineReference
+%     (-ftrivial-auto-var-init: pattern) · AutomaticReferenceCounting (local
+%     variables do not have precise lifetime; objc_precise_lifetime)
+%   developer.apple.com: bundleresources/entitlements/aps-environment (development profile ->
+%     development; production + TestFlight -> production) · usernotifications/sending-notification-
+%     requests-to-apns (api.sandbox.push.apple.com / api.push.apple.com) · .../handling-notification-
+%     responses-from-apns (400 BadDeviceToken: token must match the environment) · TN2415
+%     (get-task-allow lets the debugger attach) · TN3125 (codesign --entitlements, --xml) ·
+%     storekit/testing-in-app-purchases-with-sandbox (Xcode-run and TestFlight apps use the sandbox) ·
+%     storekit/transaction/environment + storekit/appstore/environment (iOS 16; production, sandbox,
+%     xcode) · bundleresources/information-property-list/nsapptransportsecurity (ATS since iOS 9)
+%   developer.android.com: build/shrink-code (R8; full mode default since AGP 8.0) ·
+%     topic/performance/app-optimization/troubleshoot-the-optimization (reflection exceptions,
+%     configuration.txt, -whyareyoukeeping, mapping.txt overwritten every build) · .../add-keep-rules
+%     (the Gson -if rule) · .../choose-libraries-wisely (codegen over reflection) ·
+%     .../customize-which-resources-to-keep (tools:keep) · reference/androidx/annotation/Keep ·
+%     privacy-and-security/security-config (cleartext off from Android 9; debug-overrides only when
+%     debuggable) · guide/topics/manifest/profileable-element (API 29; debuggable apps distort timing)
+%   reactnative.dev/docs: debugging (Dev Menu, LogBox off in release) · performance (dev mode slow;
+%     console.log in bundled apps) · hermes (bytecode at build time) · signed-apk-android ·
+%     publishing-to-app-store (--mode="Release")
+%   github.com/facebook/react-native: gradle-plugin AgpConfiguratorUtils.kt (usesCleartextTraffic true
+%     in debug, false in release) · TaskConfiguration.kt (bundled variants: dev false, Metro minify
+%     off when Hermes) · scripts/react-native-xcode.sh ("Hermes doesn't require JS minification") ·
+%     React/CoreModules/RCTExceptionsManager.mm (release fatal -> RCTFatal "Unhandled JS Exception";
+%     maxReloadAttempts defaults to 0) · ExceptionsManagerModule.kt (fatal -> throw
+%     JavascriptException) ·
+%     react-native-community/template Info.plist (NSAllowsLocalNetworking)
+% @labels: area=debugging kind=concept platform=cross-platform topic=debugging,build
+% @tags: release-build, compiler-optimization, whole-module-optimization, object-lifetime, withextendedlifetime, exclusivity, r8, proguard-keep-rules, dev-flag, aps-environment, cleartext-traffic, testflight-sandbox, heisenbug
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={final,class,struct,weak,var,let,func,return,if,guard,else,self,nil,
+    true,false,init,in},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={==}{{\hbox{=}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {??}{{\hbox{?}\hbox{?}}}2}
+\lstdefinelanguage{KeepSheet}{morekeywords={keep,if,whyareyoukeeping,class},
+  sensitive=true, morecomment=[l]{\#}, literate={->}{{\hbox{-}\hbox{>}}}2
+  {**}{{\hbox{*}\hbox{*}}}2}
+\lstset{basicstyle=\ttfamily\footnotesize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}
+
+\tikzset{
+  dv/.style={box, font=\tiny, text width=24mm, minimum height=5.2mm, inner sep=1.2pt,
+             draw=sheetGreen!70!black, fill=sheetGreen!8, align=left},
+  rv/.style={dv, draw=sheetRed, fill=sheetRed!6},
+  ly/.style={font=\scriptsize\bfseries, anchor=east, align=right, inner sep=1pt},
+  bug/.style={font=\tiny, text=sheetOrange!80!black, anchor=west, align=left, inner sep=1pt},
+  rung/.style={box, font=\tiny, text width=46mm, minimum height=5mm, inner sep=1.2pt, align=flush left},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Release-only bugs — when Debug lies}{debugging · folio}
+
+\oneliner{A Release build is a \textbf{different program in a different environment}:
+optimised code (no asserts, different interleavings, different \emph{observed} object lifetimes),
+shrunk bytecode (R8), no dev flags (\ct{DEBUG}, \ct{\_\_DEV\_\_}), distribution signing with
+\textbf{production} entitlements and services, and no debugger slowing every thread. A bug that
+``only happens in prod'' is a hidden assumption that one of these flips.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\small, text=sheetGreen!60!black] at (3.2,3.55) {Debug};
+  \node[font=\bfseries\small, text=sheetRed] at (5.95,3.55) {Release / store};
+  \node[font=\bfseries\small, text=sheetOrange] at (9.2,3.55) {bug it exposes};
+  \foreach \y/\l/\d/\r/\b in {
+    3.05/compiler/{\ct{-Onone}, per file, \ct{assert} on}/{\ct{-O} + WMO, \ct{assert} gone}/{races surface; work inside \ct{assert}\\skipped; precondition text lost},
+    2.4/binary/{symbols in the binary;\\code in \ct{.debug.dylib} + stub}/{symbols in a dSYM beside it}/{hex stacks unless that build's\\dSYM UUID matches},
+    1.75/Android/{no R8, \ct{debuggable}}/{R8 full mode + \ct{shrinkResources}}/{reflective classes renamed or\\removed; stacks obfuscated},
+    1.1/flags/{\ct{\#if DEBUG}, \ct{\_\_DEV\_\_} true}/{false: mocks, logs, LogBox gone; JS bundled}/{code path never run in dev;\\a JS fatal error = native crash},
+    0.45/signing/{dev profile, \ct{get-task-allow}}/{distribution: prod APNs, groups}/{push \ct{BadDeviceToken}, App Group /\\Keychain group missing},
+    -0.2/services/{sandbox APNs + IAP;\\RN Android: \ct{http://} OK}/{prod APNs; IAP still sandbox in TestFlight}/{\ct{http://} blocked; TestFlight IAP\\$\ne$ App Store IAP},
+    -0.85/timing/{debugger; TSan 2–20$\times$;\\\ct{debuggable} app}/{full speed, cold caches}/{Heisenbug: the race wins\\only when nothing is slow}}
+  {
+    \node[ly] at (1.75,\y) {\l};
+    \node[dv] (dd) at (3.2,\y) {\d};
+    \node[rv] (rr) at (5.95,\y) {\r};
+    \draw[flow] (dd.east) -- (rr.west);
+    \draw[hot] (rr.east) -- ++(0.2,0);
+    \node[bug] at (7.37,\y) {\b};
+  }
+  % reproduction ladder
+  \draw[sheetGrey!40] (11.05,3.75) -- (11.05,-1.15);
+  \node[font=\bfseries\small, anchor=west] at (11.2,3.55) {Reproduce — climb only as far as needed};
+  \foreach \i/\t/\c in {
+    1/{\textbf{1} Debug + the \emph{release data}: prod-like account, locale, flags}/sheetGreen,
+    2/{\textbf{2} Run scheme $\to$ Build Configuration = \textbf{Release}, debugger kept; Android \ct{release} with \ct{isDebuggable = true}}/sheetBlue,
+    3/{\textbf{3} \textbf{Profile} action (Release by default): Instruments, no debugger; Android: release + \ct{<profileable>} (API 29+)}/sheetBlue,
+    4/{\textbf{4} archive / signed AAB: TestFlight, Play internal test — real entitlements}/sheetOrange,
+    5/{\textbf{5} production: logs, crash keys, breadcrumbs, a flag to toggle}/sheetRed}
+    \node[rung, draw=\c, fill=\c!7, anchor=west] at (11.2,3.55-\i*0.86) {\t};
+  \draw[->, thick, sheetGrey] (16.55,2.7) -- (16.55,-0.75) node[lbl, pos=0.5, right, rotate=90, anchor=south]{closer to prod};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\small\setstretch{1.0}\raggedright
+
+\section{Why the program changes}
+\begin{itemize}
+  \item \textbf{Optimiser}: \ct{-O} (Release default; whole-module optimisation on for new
+        projects since Xcode 8) inlines across files, devirtualises, drops retain/release pairs.
+        A data race is a bug at every level yet ``can often seem to work'' — a faster build
+        changes the interleaving. Swift 6 mode rejects races at compile time; TSan finds the
+        rest (Simulator/macOS only, 2–20$\times$ slower). Swift's own docs call \ct{-Osize}
+        ``meant for most production code''; Xcode still defaults Release to \ct{-O}.
+  \item \textbf{Lifetimes}: an object is guaranteed only until its \emph{last use}; observed
+        lifetimes are an emergent property of the optimiser (WWDC21). Since \textbf{Swift 5.7}
+        (Xcode 14) a named variable is anchored to its scope: its end cannot move across a
+        \emph{deinit barrier} (syncs, weak/unowned loads, pointer access, global or class-member
+        access) — so the classic ``weak ref to a local'' no longer needs
+        \ct{withExtendedLifetime}. Code that depends on \emph{when} a deinit runs stays fragile.
+        ObjC ARC locals have \emph{imprecise} lifetime unless marked \ct{objc\_precise\_lifetime}.
+  \item \textbf{Exclusivity}: ``Simultaneous accesses to …, but modification requires exclusive
+        access'' traps in Release too since Swift 5 (Debug only in Swift 4).
+  \item \textbf{C / ObjC}: an uninitialised local is indeterminate — whatever was there, which
+        changes with the optimisation level. ASan does \emph{not} detect it; MSan runs only on
+        Linux and the BSDs. Use \ct{-Wuninitialized}, the analyzer, or
+        \ct{-ftrivial-auto-var-init=pattern}.
+  \item \textbf{R8} (full mode by default since AGP 8.0) inlines, merges classes, renames, and
+        removes what it cannot see used. Reflection (Gson, \ct{Class.forName},
+        \ct{::class.constructors}) then throws \ct{ClassNotFoundException},
+        \ct{NoSuchFieldException} … — add keep rules or \ct{@Keep}, or use codegen (Moshi codegen,
+        Kotlin Serialization). Names built for \ct{getIdentifier()}: \ct{tools:keep}.
+  \item \textbf{RN}: release embeds the bundle (\ct{dev=false}) as Hermes bytecode compiled at
+        build time (Metro minify off). No Dev Menu, no LogBox: a fatal JS error is a native
+        crash. Dev mode is \emph{slower} — measure in release:
+        \ct{npm run android \dd{} \dd{}mode="release"}, iOS \ct{\dd{}mode="Release"}.
+\end{itemize}
+
+\section{Swift checks by optimisation level}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{22mm}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{21mm}>{\raggedright\arraybackslash}p{16mm}@{}}
+\toprule
+ & \textbf{\ct{-Onone}} (Debug) & \textbf{\ct{-O}} (Release) & \textbf{\ct{-Ounchecked}}\\ \midrule
+\ct{assert}, \ct{assertionFailure} & trap + message & \textbf{not evaluated} / no effect & assumed true / unreachable\\
+\ct{precondition}, \ct{preconditionFailure} & trap + message & trap; message replaced by ``precondition failure'' & assumed true / unreachable\\
+\ct{fatalError} & trap + message & trap + message & trap + message\\
+\ct{+} overflow & trap & trap & not checked\\
+\bottomrule
+\end{tabular}}
+
+\section{Example}
+\begin{lstlisting}[language=SwiftSheet]
+assert(cache.warmUp())                 // -O: never runs
+let ok = cache.warmUp(); assert(ok)    // fixed
+precondition(i < n, "i=\(i) n=\(n)")   // -O: message dropped
+\end{lstlisting}
+\begin{lstlisting}[language=KeepSheet]
+# Gson reads fields by reflection (Android's conditional rule)
+-if class ** { @com.google.gson.annotations.SerializedName
+               <fields>; }
+-keep class <1> { @com.google.gson.annotations.SerializedName
+                  <fields>; <init>(...); }
+-whyareyoukeeping class com.example.Report   # why kept?
+\end{lstlisting}
+
+\columnbreak
+
+\section{Which backend each build talks to}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{22mm}>{\raggedright\arraybackslash}p{17mm}@{}}
+\toprule
+\textbf{build} & \textbf{APNs} (\ct{aps-environment}) & \textbf{in-app purchase} & \textbf{debugger}\\ \midrule
+Xcode Run, dev profile & development & sandbox (\ct{.xcode} with a \ct{.storekit} file) & attaches: \ct{get-task-allow}\\
+TestFlight & \textbf{production} & \textbf{sandbox}, always & no\\
+App Store & production & production & no\\
+\bottomrule
+\end{tabular}}
+
+\noindent Hosts: \ct{api.sandbox.push.apple.com} / \ct{api.push.apple.com}; a token works on
+one only, the other answers \ct{400 BadDeviceToken}. \ct{Transaction.environment} (iOS 16):
+\ct{.production} / \ct{.sandbox} / \ct{.xcode}.
+
+\section{Symptom $\to$ likely cause $\to$ fix}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{21mm}>{\raggedright\arraybackslash}p{34mm}>{\raggedright\arraybackslash}p{21mm}@{}}
+\toprule
+\textbf{symptom (Release only)} & \textbf{likely cause} & \textbf{fix}\\ \midrule
+random crash / wrong value under load & data race; \ct{-O} changed the interleaving & Swift 6 mode; TSan; actor / lock\\
+logic skipped silently & work inside \ct{assert}, or a \ct{\#if DEBUG} branch & move work out; diff the flags\\
+Android JSON fields null, \ct{ClassNotFound} & R8 renamed / removed reflective classes & keep rule, \ct{@Keep}, codegen\\
+push works from Xcode, not TestFlight & token is \emph{development}; TestFlight uses production APNs & store the env with the token\\
+App Group / shared Keychain empty & entitlement missing in the distribution profile & regenerate profile; \ct{codesign -d}\\
+API calls fail, dev fine & \ct{http://}: RN's Android debug build allows cleartext; Android 9+ blocks it; ATS applies in every config & HTTPS; scoped exceptions\\
+purchase works in TestFlight, fails live & TestFlight IAP is \textbf{sandbox}; server checks the wrong env & branch on \ct{environment}\\
+RN app crashes at launch & fatal JS error $\to$ \ct{RCTFatal} (iOS), \ct{JavascriptException} (Android) & global handler + error boundary\\
+\bottomrule
+\end{tabular}}
+
+\section{Find the flip — diff the two builds}
+\begin{itemize}
+  \item \ct{xcodebuild -showBuildSettings -configuration Debug} vs \ct{Release}:
+        \ct{SWIFT\_OPTIMIZATION\_LEVEL}, \ct{SWIFT\_COMPILATION\_MODE},
+        \ct{SWIFT\_ACTIVE\_COMPILATION\_CONDITIONS}, \ct{ENABLE\_TESTABILITY},
+        \ct{ENABLE\_NS\_ASSERTIONS}, per-config Info.plist.
+  \item \ct{codesign -d \dd{}entitlements - \dd{}xml} on the \emph{archived} app.
+  \item Android: diff the build types; \ct{apkanalyzer manifest debuggable app.apk} on the
+        shipped file; merged R8 rules are in
+        \ct{build/outputs/mapping/configuration.txt}; \ct{mapping.txt} is overwritten every
+        build — keep one per release.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{A \ct{print} or a breakpoint makes it vanish — a timing bug. Use signposts/logs, TSan,
+        or a stress loop, not the debugger.}
+  \trap{\ct{-Onone} in Release to ``fix'' it — hides the race, slower app.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Compiler · binary · R8 · flags · signing · services · timing} — seven things flip;
+find which one your bug depends on.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Sanitizers · Crashes \& symbolication ·
+Code signing \& CI/CD · Push notifications · StoreKit 2 · Android build · Ownership \& exclusivity
+· Error handling in React Native}
+
+\end{document}
