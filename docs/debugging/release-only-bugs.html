@@ -1,0 +1,108 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Release-only bugs — when Debug lies — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/debugging/release-only-bugs.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">249</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area current" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Release-only bugs — when Debug lies</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">debugging · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A Release build is a <strong>different program in a different environment</strong>:
+optimised code (no asserts, different interleavings, different <em>observed</em> object lifetimes),
+shrunk bytecode (R8), no dev flags (<code>DEBUG</code>, <code>__DEV__</code>), distribution signing with
+<strong>production</strong> entitlements and services, and no debugger slowing every thread. A bug that
+“only happens in prod” is a hidden assumption that one of these flips.</p>
+<p class="sheet-tools"><a class="sheet-download" href="release-only-bugs.pdf" download>Download PDF</a> <a href="release-only-bugs.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/debugging/release-only-bugs.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="release-only-bugs-fig1.svg" width="597" height="191" class="wide" alt="Release-only bugs — when Debug lies — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Why the program changes</h2>
+<ul>
+<li><strong>Optimiser</strong>: <code>-O</code> (Release default; whole-module optimisation on for new  projects since Xcode 8) inlines across files, devirtualises, drops retain/release pairs.  A data race is a bug at every level yet “can often seem to work” — a faster build  changes the interleaving. Swift 6 mode rejects races at compile time; TSan finds the  rest (Simulator/macOS only, 2–20<span class="math">×</span> slower). Swift’s own docs call <code>-Osize</code>  “meant for most production code”; Xcode still defaults Release to <code>-O</code>.</li>
+<li><strong>Lifetimes</strong>: an object is guaranteed only until its <em>last use</em>; observed  lifetimes are an emergent property of the optimiser (WWDC21). Since <strong>Swift 5.7</strong>  (Xcode 14) a named variable is anchored to its scope: its end cannot move across a  <em>deinit barrier</em> (syncs, weak/unowned loads, pointer access, global or class-member  access) — so the classic “weak ref to a local” no longer needs  <code>withExtendedLifetime</code>. Code that depends on <em>when</em> a deinit runs stays fragile.  ObjC ARC locals have <em>imprecise</em> lifetime unless marked <code>objc_precise_lifetime</code>.</li>
+<li><strong>Exclusivity</strong>: “Simultaneous accesses to …, but modification requires exclusive  access” traps in Release too since Swift 5 (Debug only in Swift 4).</li>
+<li><strong>C / ObjC</strong>: an uninitialised local is indeterminate — whatever was there, which  changes with the optimisation level. ASan does <em>not</em> detect it; MSan runs only on  Linux and the BSDs. Use <code>-Wuninitialized</code>, the analyzer, or  <code>-ftrivial-auto-var-init=pattern</code>.</li>
+<li><strong>R8</strong> (full mode by default since AGP 8.0) inlines, merges classes, renames, and  removes what it cannot see used. Reflection (Gson, <code>Class.forName</code>,  <code>::class.constructors</code>) then throws <code>ClassNotFoundException</code>,  <code>NoSuchFieldException</code> … — add keep rules or <code>@Keep</code>, or use codegen (Moshi codegen,  Kotlin Serialization). Names built for <code>getIdentifier()</code>: <code>tools:keep</code>.</li>
+<li><strong>RN</strong>: release embeds the bundle (<code>dev=false</code>) as Hermes bytecode compiled at  build time (Metro minify off). No Dev Menu, no LogBox: a fatal JS error is a native  crash. Dev mode is <em>slower</em> — measure in release:  <code>npm run android -- --mode=&quot;release&quot;</code>, iOS <code>--mode=&quot;Release&quot;</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Swift checks by optimisation level</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th><strong><code>-Onone</code></strong> (Debug)</th><th><strong><code>-O</code></strong> (Release)</th><th><strong><code>-Ounchecked</code></strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>assert</code>, <code>assertionFailure</code></td><td>trap + message</td><td><strong>not evaluated</strong> / no effect</td><td>assumed true / unreachable</td></tr>
+<tr><td><code>precondition</code>, <code>preconditionFailure</code></td><td>trap + message</td><td>trap; message replaced by “precondition failure”</td><td>assumed true / unreachable</td></tr>
+<tr><td><code>fatalError</code></td><td>trap + message</td><td>trap + message</td><td>trap + message</td></tr>
+<tr><td><code>+</code> overflow</td><td>trap</td><td>trap</td><td>not checked</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Example</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-built_in">assert</span>(cache.warmUp())                 <span class="hljs-comment">// -O: never runs</span>
+<span class="hljs-keyword">let</span> ok <span class="hljs-operator">=</span> cache.warmUp(); <span class="hljs-built_in">assert</span>(ok)    <span class="hljs-comment">// fixed</span>
+<span class="hljs-built_in">precondition</span>(i <span class="hljs-operator">&lt;</span> n, <span class="hljs-string">&quot;i=<span class="hljs-subst">\(i)</span> n=<span class="hljs-subst">\(n)</span>&quot;</span>)   <span class="hljs-comment">// -O: message dropped</span></code></pre>
+<pre class="sheet-code"><code class="hljs language-plaintext"># Gson reads fields by reflection (Android&#x27;s conditional rule)
+-if class ** { @com.google.gson.annotations.SerializedName
+               &lt;fields&gt;; }
+-keep class &lt;1&gt; { @com.google.gson.annotations.SerializedName
+                  &lt;fields&gt;; &lt;init&gt;(...); }
+-whyareyoukeeping class com.example.Report   # why kept?</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Which backend each build talks to</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>build</strong></th><th><strong>APNs</strong> (<code>aps-environment</code>)</th><th><strong>in-app purchase</strong></th><th><strong>debugger</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>Xcode Run, dev profile</td><td>development</td><td>sandbox (<code>.xcode</code> with a <code>.storekit</code> file)</td><td>attaches: <code>get-task-allow</code></td></tr>
+<tr><td>TestFlight</td><td><strong>production</strong></td><td><strong>sandbox</strong>, always</td><td>no</td></tr>
+<tr><td>App Store</td><td>production</td><td>production</td><td>no</td></tr>
+</tbody>
+</table></p>
+<p>Hosts: <code>api.sandbox.push.apple.com</code> / <code>api.push.apple.com</code>; a token works on one only, the other answers <code>400 BadDeviceToken</code>. <code>Transaction.environment</code> (iOS 16): <code>.production</code> / <code>.sandbox</code> / <code>.xcode</code>.</p>
+</section>
+<section class="sheet-section">
+<h2>Symptom <span class="math">→</span> likely cause <span class="math">→</span> fix</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>symptom (Release only)</strong></th><th><strong>likely cause</strong></th><th><strong>fix</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>random crash / wrong value under load</td><td>data race; <code>-O</code> changed the interleaving</td><td>Swift 6 mode; TSan; actor / lock</td></tr>
+<tr><td>logic skipped silently</td><td>work inside <code>assert</code>, or a <code>#if DEBUG</code> branch</td><td>move work out; diff the flags</td></tr>
+<tr><td>Android JSON fields null, <code>ClassNotFound</code></td><td>R8 renamed / removed reflective classes</td><td>keep rule, <code>@Keep</code>, codegen</td></tr>
+<tr><td>push works from Xcode, not TestFlight</td><td>token is <em>development</em>; TestFlight uses production APNs</td><td>store the env with the token</td></tr>
+<tr><td>App Group / shared Keychain empty</td><td>entitlement missing in the distribution profile</td><td>regenerate profile; <code>codesign -d</code></td></tr>
+<tr><td>API calls fail, dev fine</td><td><code>http://</code>: RN’s Android debug build allows cleartext; Android 9+ blocks it; ATS applies in every config</td><td>HTTPS; scoped exceptions</td></tr>
+<tr><td>purchase works in TestFlight, fails live</td><td>TestFlight IAP is <strong>sandbox</strong>; server checks the wrong env</td><td>branch on <code>environment</code></td></tr>
+<tr><td>RN app crashes at launch</td><td>fatal JS error <span class="math">→</span> <code>RCTFatal</code> (iOS), <code>JavascriptException</code> (Android)</td><td>global handler + error boundary</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Find the flip — diff the two builds</h2>
+<ul>
+<li><code>xcodebuild -showBuildSettings -configuration Debug</code> vs <code>Release</code>:  <code>SWIFT_OPTIMIZATION_LEVEL</code>, <code>SWIFT_COMPILATION_MODE</code>,  <code>SWIFT_ACTIVE_COMPILATION_CONDITIONS</code>, <code>ENABLE_TESTABILITY</code>,  <code>ENABLE_NS_ASSERTIONS</code>, per-config Info.plist.</li>
+<li><code>codesign -d --entitlements - --xml</code> on the <em>archived</em> app.</li>
+<li>Android: diff the build types; <code>apkanalyzer manifest debuggable app.apk</code> on the  shipped file; merged R8 rules are in  <code>build/outputs/mapping/configuration.txt</code>; <code>mapping.txt</code> is overwritten every  build — keep one per release.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">A <code>print</code> or a breakpoint makes it vanish — a timing bug. Use signposts/logs, TSan,  or a stress loop, not the debugger.</li>
+<li class="trap"><code>-Onone</code> in Release to “fix” it — hides the race, slower app.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>Compiler · binary · R8 · flags · signing · services · timing</strong> — seven things flip; find which one your bug depends on.</p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> Sanitizers · Crashes &amp; symbolication ·
+Code signing &amp; CI/CD · Push notifications · StoreKit 2 · Android build · Ownership &amp; exclusivity
+· Error handling in React Native</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=debugging" title="area">debugging</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=cross-platform" title="platform">cross-platform</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=debugging" title="topic">debugging</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=build" title="topic">build</a></li><li class="sheet-tag"><a href="/folios.html?tag=release-build">release-build</a></li><li class="sheet-tag"><a href="/folios.html?tag=compiler-optimization">compiler-optimization</a></li><li class="sheet-tag"><a href="/folios.html?tag=whole-module-optimization">whole-module-optimization</a></li><li class="sheet-tag"><a href="/folios.html?tag=object-lifetime">object-lifetime</a></li><li class="sheet-tag"><a href="/folios.html?tag=withextendedlifetime">withextendedlifetime</a></li><li class="sheet-tag"><a href="/folios.html?tag=exclusivity">exclusivity</a></li><li class="sheet-tag"><a href="/folios.html?tag=r8">r8</a></li><li class="sheet-tag"><a href="/folios.html?tag=proguard-keep-rules">proguard-keep-rules</a></li><li class="sheet-tag"><a href="/folios.html?tag=dev-flag">dev-flag</a></li><li class="sheet-tag"><a href="/folios.html?tag=aps-environment">aps-environment</a></li><li class="sheet-tag"><a href="/folios.html?tag=cleartext-traffic">cleartext-traffic</a></li><li class="sheet-tag"><a href="/folios.html?tag=testflight-sandbox">testflight-sandbox</a></li><li class="sheet-tag"><a href="/folios.html?tag=heisenbug">heisenbug</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=debugging%2Frelease-only-bugs.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/274">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>
