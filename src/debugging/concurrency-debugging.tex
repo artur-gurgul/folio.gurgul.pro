@@ -1,0 +1,236 @@
+% concurrency-debugging.tex — the cooperative pool's forward-progress contract and the four
+% failures it produces (main-actor blocking, actor contention, pool exhaustion, continuation
+% misuse); where each shows up in Instruments and LLDB, release by release (Xcode 14 → 27);
+% the runtime's own messages (continuation misuse, the Swift 6 dynamic isolation check).
+% Basics (GCD vs await, actors, reentrancy, Sendable) are ios-swift/concurrency.tex and
+% sanitizer internals are debugging/sanitizers-runtime-checkers.tex — neither repeated.
+% Sources (checked 2026-10-07):
+%   developer.apple.com/videos/play/wwdc2021/10254 "Swift concurrency: Behind the scenes"
+%     (pool spawns only as many threads as CPU cores; forward-progress contract; locks safe for
+%     a tight critical section, semaphores / condition variables unsafe; strict debug runtime via
+%     an env var; main-actor hops = context switches, batch them; actors may run higher priority first)
+%   github.com/apple-oss-distributions/libdispatch src/queue.c (LIBDISPATCH_COOPERATIVE_POOL_STRICT
+%     → width 1, strict per QoS bucket) · src/internal.h ("BUG IN CLIENT OF LIBDISPATCH: Assertion
+%     failed: ") · src/init.c (main queue label com.apple.main-thread)
+%   developer.apple.com/videos/play/wwdc2022/110350 "Visualize and optimize Swift concurrency"
+%     (the four problems; Running / Alive / Total Tasks; Task Forest; creation backtrace; narrative;
+%     Enqueued = waiting for exclusive access to an actor; pool deadlock; continuation exactly once)
+%   developer.apple.com/videos/play/wwdc2023/10248 "Analyze hangs with Instruments" (Time Profiler
+%     samples what is on the CPU; Thread State Trace: Blocked + the syscall's exact backtrace;
+%     an idle main thread is also "blocked" — judge by the Hangs instrument, not thread states)
+%   developer.apple.com/videos/play/wwdc2025/268 "Embracing Swift concurrency" (main-actor default
+%     on for new app projects in Xcode 26; Approachable Concurrency setting = a suite of upcoming
+%     features; @concurrent always switches off the actor)
+%   swift.org/blog/swift-6.2-released (Approachable Concurrency: async functions in the caller's
+%     execution context, @concurrent)
+%   developer.apple.com/documentation/xcode-release-notes: Xcode 14 (Swift 5.7; Swift Concurrency template =
+%     Swift Tasks + Swift Actors, needs iOS 16 / macOS 13 runtime; Thread Performance Checker; Hang
+%     Tracing; leaks / heap identify Swift AsyncTask allocations) · Xcode 26 (Swift 6.2; task names; debugger
+%     follows a migrated Task; ObjC nonatomic sentinel 0x400000000000bad0) · Xcode 27 (Swift 6.4;
+%     Swift Executors; Swift Task Collection; Profile detail; queue-interval waiting tasks;
+%     pre-trace tasks + "Unknown" state; all-process grouping; System Trace unified plot, ←/→
+%     scheduling chain, priority graph; Thread Activity QoS; language swift task tree; devices iOS 17+)
+%   github.com/swiftlang/swift-evolution SE-0461 (Swift 6.2, NonisolatedNonsendingByDefault,
+%     @concurrent) · SE-0469 (6.2, Task(name:), Task.name, addTask(name:)) · SE-0462 (6.2, escalation
+%     of awaited task + children, never lowered) · SE-0423 (6.0, the four dynamic-check sites, crash
+%     instead of race, -disable-dynamic-actor-isolation)
+%   github.com/swiftlang/swift stdlib/public/Concurrency/CheckedContinuation.swift (misuse messages)
+%     · Actor.cpp (since Swift 6 the default is to crash; old-SDK apps log "data race detected";
+%     main-executor check = dispatch_assert_queue)
+%   github.com/swiftlang/llvm-project swift/release/6.2 lldb .../SwiftLanguageRuntime.cpp
+%     (language swift task backtrace / select / info; absent from swift/release/6.1)
+%   developer.apple.com/documentation/swift/task/yield() (highest-priority task resumes at once)
+%     · /swift/checkedcontinuation (runtime checks; UnsafeContinuation: same interface, no checks)
+%   developer.apple.com/documentation/xcode/diagnosing-performance-issues-early (Thread Performance
+%     Checker: on for Run, iOS + macOS, dispatch_semaphore_wait / dispatch_group_wait cannot
+%     propagate priority, PERFC_SUPPRESSION_FILE, its overhead can show in call stacks — use Profile)
+% Not printed (could not confirm): the full list of task-state names; whether Xcode 27's LLDB has
+% `language swift task list` (seen only on the open-source development branch).
+% @labels: area=debugging kind=tooling platform=apple topic=concurrency,debugging discussion=268
+% @tags: cooperative-thread-pool, thread-starvation, actor-contention, mainactor, continuation, swift-concurrency-instrument, swift-executors, system-trace, thread-performance-checker, priority-inversion, task-tree, dynamic-actor-isolation
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={func,let,var,return,async,await,in,nil,@concurrent,Task},
+  alsoletter={@}, sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2}
+\lstdefinestyle{plain}{language={}, morecomment=[l]{//}, commentstyle=\color{tangoComment}\itshape}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  ln/.style={font=\scriptsize\bfseries, anchor=east, inner sep=1pt, align=right},
+  run/.style={draw=sheetBlue, fill=sheetBlue!15, rounded corners=1pt, minimum height=4mm,
+              font=\scriptsize, inner sep=1pt, anchor=west},
+  blk/.style={run, draw=sheetRed, fill=sheetRed!20},
+  act/.style={run, draw=sheetOrange, fill=sheetOrange!22},
+  tk/.style={circle, draw=sheetGrey, fill=white, minimum size=3.6mm, inner sep=0pt,
+             font=\tiny},
+}
+
+\begin{document}
+
+\sheettitle{Debugging Swift Concurrency — pool, actors, executors}{debugging · folio}
+
+\oneliner{Tasks run on the \textbf{cooperative thread pool} (as many threads as CPU cores,
+\textbf{never grows}) or on the \textbf{main actor}'s main thread. The runtime's contract is
+\textbf{forward progress}: \texttt{await} suspends and frees the thread; a \emph{blocked} thread
+is simply lost. Four failures follow — \textbf{main-actor blocking} (hang), \textbf{actor
+contention} and \textbf{pool exhaustion} (parallel code turned serial, or deadlock),
+\textbf{continuation misuse} (leak or crash). Concurrency instruments show task / actor /
+executor \emph{state}; System Trace shows \emph{why} a thread is not running.}
+
+\medskip
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \y/\t in {3.0/Main Actor, 2.4/pool thread 1, 1.8/pool thread 2, 1.2/pool thread 3, 0.6/pool thread 4}
+    { \node[ln] at (2.2,\y) {\t}; \draw[sheetGrey!40] (2.3,\y) -- (11.3,\y); }
+  \node[ln] at (2.2,0.0) {runnable tasks};
+  \draw[->, sheetGrey] (2.3,-0.4) -- (11.3,-0.4) node[lbl, right]{time};
+  % main actor
+  \node[run, minimum width=6mm] at (2.35,3.0) {UI};
+  \node[run, minimum width=6mm] at (3.05,3.0) {UI};
+  \node[blk, minimum width=58mm] at (3.8,3.0) {\texttt{@MainActor} \texttt{decode()} 400~ms — \textbf{hang}};
+  \node[run, minimum width=6mm] at (9.75,3.0) {UI};
+  % pool 1: healthy
+  \foreach \x/\t in {2.35/A,3.3/B,4.25/C,5.2/D,6.15/E,7.1/F,8.05/G,9.0/H,9.95/I}
+    \node[run, minimum width=8mm] at (\x,2.4) {\t};
+  % pool 2 + 3: blocked
+  \node[run, minimum width=6mm] at (2.35,1.8) {J};
+  \node[blk, minimum width=80mm] at (3.1,1.8) {\texttt{semaphore.wait()} — Blocked, 0 \% CPU, thread lost};
+  \node[run, minimum width=12mm] at (2.35,1.2) {K};
+  \node[blk, minimum width=73mm] at (3.7,1.2) {sync I/O \texttt{Data(contentsOf:)} — Blocked in a syscall};
+  % pool 4: actor
+  \node[act, minimum width=45mm] at (2.35,0.6) {\texttt{ImageStore} actor job (resize inside)};
+  \node[act, minimum width=9mm] at (6.95,0.6) {t5};
+  \node[act, minimum width=9mm] at (7.95,0.6) {t6};
+  % queue
+  \foreach \x/\t in {4.0/t7,4.5/t8,5.0/t9,5.5/t10,6.0/t11} \node[tk] at (\x,0.0) {\t};
+  \node[lbl, anchor=west, text=sheetRed] at (6.3,0.0) {ready, no free thread = \textbf{exhaustion}};
+  \node[lbl, anchor=west, align=left, text=sheetOrange!85!black] at (8.95,0.6) {t5, t6 waited \emph{Enqueued}\\on the actor = \textbf{contention}};
+  % right: which tool shows it
+  \begin{scope}[shift={(11.75,0)}]
+    \node[font=\bfseries\scriptsize, anchor=west] at (0,3.3) {where it shows};
+    \node[lbl, anchor=north west, text width=4.8cm, align=left] at (0,3.1)
+      {\textcolor{sheetRed}{\textbf{hang}}: Hangs · Main Actor track (27) · Time Profiler on main.
+       \emph{Fix}: \texttt{@concurrent}\\[2pt]
+       \textcolor{sheetRed}{\textbf{blocked threads}}: System Trace — \emph{Blocked} + the syscall's
+       exact backtrace; Cooperative Thread Pool track (27). Time Profiler samples only on-CPU code:
+       almost nothing. \emph{Fix}: async API or a continuation\\[2pt]
+       \textcolor{sheetOrange!85!black}{\textbf{contention}}: Swift Actors — time \emph{Enqueued};
+       (27) select an Actor / Executor Queue interval $\to$ its waiting tasks. \emph{Fix}: only
+       state mutation on the actor\\[2pt]
+       \textbf{stuck task}: in the continuation state forever; LLDB
+       \texttt{language swift task tree} (27). \emph{Fix}: resume on every path};
+  \end{scope}
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{How the runtime behaves}
+\begin{itemize}
+  \item \textbf{Pool width = CPU cores}, fixed. A GCD concurrent queue adds a thread when one
+        blocks; the pool does not.
+  \item \textbf{Safe}: \texttt{await}; a lock around a tight, known critical section
+        (\texttt{Mutex}, \texttt{os\_unfair\_lock}, \texttt{NSLock}). \textbf{Unsafe}: semaphores,
+        condition variables, \texttt{DispatchGroup.wait()}, blocking file / network I/O — they hide
+        the dependency from the runtime. All pool threads waiting on pool work = \textbf{deadlock}.
+  \item \texttt{LIBDISPATCH\_COOPERATIVE\_POOL\_STRICT=1} (scheme $\to$ Run $\to$ Arguments):
+        pool width \textbf{1 per QoS}, so a hidden blocking wait deadlocks \emph{now}, in dev.
+  \item \textbf{Main actor} = the main thread. Each hop main $\leftrightarrow$ actor is a context
+        switch: hand over arrays, not one item per hop.
+  \item \textbf{Where code runs (Swift 6.2)}: new app projects in Xcode 26 default to
+        \texttt{MainActor} isolation; \emph{Approachable Concurrency} turns on SE-0461, so a
+        \texttt{nonisolated async} func runs on the \emph{caller's} actor; \texttt{@concurrent}
+        always switches off it.
+  \item \textbf{Priority}: awaiting a task escalates it and its children, never lowered (SE-0462);
+        an actor may run a higher-priority job first. A semaphore or continuation hides who will
+        resume you — no escalation (6.2: \texttt{withTaskPriorityEscalationHandler}).
+        \textbf{Thread Performance Checker} (TPC; on for Run, iOS + macOS) flags such waits:
+        \texttt{dispatch\_semaphore\_wait} / \texttt{dispatch\_group\_wait} cannot pass priority on.
+        Mute known ones: \texttt{PERFC\_SUPPRESSION\_FILE}.
+\end{itemize}
+
+\section{Instruments + LLDB, release by release}
+{\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{65mm}@{}}
+\toprule
+\textbf{Xcode (Swift)} & \textbf{adds} \\
+\midrule
+14 (5.7) &\textbf{Swift Concurrency} template = \emph{Swift Tasks} (Running / Alive / Total
+  Tasks, state per task, Task Forest, creation backtrace, narrative: which Task it waits on) +
+  \emph{Swift Actors} (queueing per actor). Needs an iOS 16 / macOS 13 runtime. Thread
+  Performance Checker; Hang Tracing; \texttt{leaks} / \texttt{heap} label Swift AsyncTask
+  allocations. \\
+26 (6.2) & \texttt{Task(name:)} names shown (SE-0469; read with \texttt{Task.name},
+  groups: \texttt{addTask(name:)}). Stepping follows a Task migrated to another thread. LLDB
+  \texttt{language swift task backtrace | select} \emph{<task>}, \texttt{info} (new in 6.2). \\
+27 (6.4) & \textbf{Swift Executors}: tracks for the Cooperative Thread Pool, the Main Actor, each
+  \texttt{TaskExecutor} / \texttt{SerialExecutor} (OS 27; older: ``Unknown executor'').
+  \textbf{Swift Task Collection}: tasks grouped by name or creation site, lifetimes or states.
+  \emph{Profile} detail = call tree of samples taken while a Task / Collection / Actor / Executor
+  was \emph{Running} (+ Time or CPU Profiler). Tasks begun before the trace now shown (state
+  ``Unknown''); all-process recordings group Tasks and Executors per process. \textbf{System Trace}: syscalls, VM faults, thread states in one plot; ←/→ walks
+  the scheduling chain; \textbf{priority over time} graph. Thread Activity: effective QoS per thread.
+  LLDB \texttt{language swift task tree}. Instruments needs iOS 17+ devices. \\
+\bottomrule
+\end{tabular}}
+
+\columnbreak
+
+\section{Example — suspend, don't block}
+\begin{lstlisting}[language=SwiftSheet]
+// BAD: parks a pool thread until the callback fires
+func thumb(_ u: URL) async -> UIImage? {
+  let sem = DispatchSemaphore(value: 0); var img: UIImage?
+  legacyLoad(u) { img = $0; sem.signal() }
+  sem.wait(); return img }          // Blocked, thread lost
+// GOOD: the task suspends; resume exactly once
+func thumb(_ u: URL) async -> UIImage? {
+  await withCheckedContinuation { c in
+    legacyLoad(u) { c.resume(returning: $0) } } }
+// CPU work off the caller's actor (6.2); a named task
+@concurrent func decode(_ d: Data) async -> UIImage? {
+  UIImage(data: d) }
+Task(name: "thumb") { await show(thumb(url)) }
+\end{lstlisting}
+
+\section{The runtime's own messages}
+\begin{lstlisting}[style=plain]
+SWIFT TASK CONTINUATION MISUSE: load() leaked its
+  continuation without resuming it.   // task waits forever
+SWIFT TASK CONTINUATION MISUSE: load() tried to resume
+  its continuation more than once, returning ... // fatalError
+BUG IN CLIENT OF LIBDISPATCH: Assertion failed: Block was
+  expected to execute on queue [com.apple.main-thread (0x...)]
+\end{lstlisting}
+Lines 1–2: \texttt{CheckedContinuation} only — \texttt{UnsafeContinuation} (same API) checks nothing.
+Line 3 = Swift 6's \textbf{dynamic isolation check} (SE-0423, 6.0): synchronous isolated code
+reachable from unchecked callers (\texttt{@objc} thunks, \texttt{@preconcurrency} witnesses,
+closures given to unchecked APIs, calls into Swift 6 modules) gets a compiler-inserted executor
+check (main actor: \texttt{dispatch\_assert\_queue}) and \textbf{crashes instead of racing}.
+Old-SDK apps only log ``data race detected''; opt-out: \texttt{-disable-dynamic-actor-isolation}.
+\texttt{0x400000000000bad0} in a crash (ObjC, Xcode 26) = a racing \texttt{nonatomic} property:
+synthesized setters store that value briefly.
+
+\section{Traps}
+\begin{itemize}
+  \trap{``Spawn more tasks'' — the pool never grows.}
+  \trap{\texttt{Task.yield()} is no starvation fix: the highest-priority task resumes at once.}
+  \trap{\emph{Blocked} $\neq$ hang: an idle main thread is blocked too — ask Hangs, not thread states.}
+  \trap{Queue inspector (27) skips tasks enqueued before the trace.}
+  \trap{Profiling a \emph{Run}-launched app: TPC's checks can show in stacks — use \emph{Profile}.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Suspend, never block — the pool never grows.}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Concurrency, GCD \& async/await ·
+Actors \& reentrancy · Swift 6 strict concurrency · Locks \& synchronisation · Instruments ·
+Sanitizers · SwiftUI hitches \& hangs}
+
+\end{document}

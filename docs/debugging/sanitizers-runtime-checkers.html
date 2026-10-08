@@ -1,0 +1,97 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sanitizers &amp; runtime checkers — make the bug crash here — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/debugging/sanitizers-runtime-checkers.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">249</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area current" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Sanitizers &amp; runtime checkers — make the bug crash here</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">debugging · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Memory and threading bugs corrupt silently and crash <em>later, elsewhere</em>.
+Sanitizers are <strong>compiler instrumentation + a runtime</strong> that check every access as it
+happens and report the <strong>first bad access</strong> with the stacks that explain it. Runtime
+checkers — Main Thread Checker (MTC), Thread Performance Checker (TPC), exclusivity — need no
+special build. ASan and TSan cost 2–20<span class="math">×</span> and their runtimes are not meant for production:
+Debug schemes, test plans, CI. Hardware memory tagging is the one built to ship.</p>
+<p class="sheet-tools"><a class="sheet-download" href="sanitizers-runtime-checkers.pdf" download>Download PDF</a> <a href="sanitizers-runtime-checkers.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/debugging/sanitizers-runtime-checkers.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="sanitizers-runtime-checkers-fig1.svg" width="635" height="129" class="wide" alt="Sanitizers &amp; runtime checkers — make the bug crash here — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Tool <span class="math">→</span> catches <span class="math">→</span> cost <span class="math">→</span> where</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>tool</strong></th><th><strong>catches</strong></th><th><strong>cost</strong></th><th><strong>where</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><strong>ASan</strong></td><td>heap / stack / global overflow, use-after-free, use-after-scope, double + invalid free; use-after-return opt-in. C + Swift</td><td>2–5<span class="math">×</span> CPU, 2–3<span class="math">×</span> mem</td><td>device + Simulator</td></tr>
+<tr><td><strong>TSan</strong></td><td>data races, Swift access races, NS/CF mutable-collection races, bad mutexes, thread leaks</td><td>2–20<span class="math">×</span> CPU, 5–10<span class="math">×</span> mem</td><td><strong>Simulator, 64-bit macOS</strong></td></tr>
+<tr><td><strong>UBSan</strong></td><td>C UB: divide by 0, misaligned, null, signed overflow, shift, bool / enum, bounds. <strong>Not Swift</strong> (Swift traps itself)</td><td><span class="math">≈</span>20 % CPU</td><td>with ASan or TSan</td></tr>
+<tr><td><strong>MSan</strong></td><td>uninitialised reads</td><td>3<span class="math">×</span></td><td><strong>not Apple</strong></td></tr>
+<tr><td><strong>MTC</strong></td><td>UIKit / AppKit / WebKit API off main</td><td>1–2 %; launch +<span class="math">≤</span>100 ms</td><td>on by default</td></tr>
+<tr><td><strong>TPC</strong></td><td>priority inversion; sync I/O + networking on main</td><td>minimal</td><td>Run; macOS + iOS</td></tr>
+<tr><td><strong>HW tags</strong></td><td>use-after-free, out-of-bounds: pointer tag <span class="math">≠</span> memory tag</td><td>ships</td><td>A19+, M5+ chips</td></tr>
+<tr><td>Exclusivity</td><td>overlapping <code>inout</code> / <code>mutating</code> access (Swift)</td><td>small</td><td>Release too</td></tr>
+<tr><td>Dynamic isolation</td><td>actor-isolated code called off its actor</td><td>crash, not race</td><td>Swift 6 mode</td></tr>
+</tbody>
+</table></p>
+<p><strong>Malloc debugging</strong> (scheme checkboxes): <em>Scribble</em> alloc <span class="math">→</span> <code>0xAA</code>, free <span class="math">→</span> <code>0x55</code> · <em>Guard Edges</em> a guard page each side of blocks <span class="math">≥</span>4096 B · <em>Guard Malloc</em> own VM page per alloc, freed page removed (Mac + Simulator) · <em>Malloc Stack</em> alloc backtraces in the Memory Graph.</p>
+</section>
+<section class="sheet-section">
+<h2>How they work</h2>
+<ul>
+<li><strong>ASan</strong> replaces <code>malloc</code>/<code>free</code>, checks both buffers of <code>memcpy</code>-style  calls; <code>halt_on_error=1</code>: the first report ends the run. Misses leaks,  uninitialised reads, integer overflow. <code>-O1</code> trims its memory (TSan too).</li>
+<li><strong>TSan</strong> instruments accesses <em>and</em> sync calls; <code>halt_on_error=0</code>: it keeps  running, one report per race. Swift 6 mode rejects races at compile time, but  <code>@unchecked Sendable</code> and <code>nonisolated(unsafe)</code> switch that check off — TSan still  sees them, and C / ObjC.</li>
+<li><strong>MTC / TPC</strong> swap system methods for thread-checking variants — no recompile;  <code>libMainThreadChecker.dylib</code> can be injected into an existing macOS binary. TPC:  <code>dispatch_semaphore_wait</code> / <code>dispatch_group_wait</code> cannot donate priority <span class="math">→</span>  inversion; silence known ones with <code>PERFC_SUPPRESSION_FILE</code>.</li>
+<li><strong>Zombies</strong>: freed objects stay as zombies (<code>NSDeallocateZombies=NO</code>): “message  sent to deallocated instance” + trap. Field signs: <code>objc_msgSend</code> / <code>objc_retain</code> / <code>objc_release</code> on  top, or an unrecognised selector (memory reused).</li>
+<li><strong>HW tags</strong>: Enhanced Security <span class="math">→</span> <em>Enable Hardware Memory Tagging</em>  (<code>…checked-allocations</code> entitlement); <em>soft mode</em> writes a simulated crash  report instead of killing — off before users get the build.</li>
+<li><strong>Exclusivity</strong>: static where provable, dynamic (<code>swift_beginAccess</code>) for class  properties, statics, globals, escaping closures; <code>-enforce-exclusivity=unchecked</code>  drops the Release checks. <strong>Dynamic isolation</strong> (SE-0423): <code>@objc</code> thunks,  <code>@preconcurrency</code> conformances, closures passed to unaudited APIs;  <code>-disable-dynamic-actor-isolation</code> opts out.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Since</h2>
+<p><strong>Xcode 7</strong> ASan · <strong>8</strong> TSan · <strong>9</strong> UBSan, MTC, Swift access races · <strong>Swift 5</strong> exclusivity checks in Release · <strong>Xcode 14</strong> TPC · <strong>Swift 6</strong> dynamic actor isolation · <strong>Xcode 26</strong> runtime issues in tests, no Zombies template, C++ container-overflow on · <strong>Xcode 27</strong> ASan on 27.0 OSes needs <span class="math">≥</span>26.5.</p>
+</section>
+<section class="sheet-section">
+<h2>Turning them on</h2>
+<p><code>clang -fsanitize=address</code> (or <code>thread</code>, <code>undefined</code>) · <code>swiftc -sanitize=address</code> (or <code>thread</code>; no UBSan) · <code>xcodebuild test -enableAddressSanitizer YES</code> (<code>…Thread…</code>, <code>…UndefinedBehavior…</code>). Scheme <span class="math">→</span> Run <span class="math">→</span> <strong>Diagnostics</strong>; tests: test-plan configurations, one per sanitizer. <em>Runtime API Checking</em> warns by default; <em>On (as Failure)</em> fails the test. UBSan continues after a report; <code>-fno-sanitize-recover</code> exits, <code>-fsanitize-trap</code> traps (SIGILL / SIGTRAP, no runtime). Container-overflow noise: <code>ASAN_OPTIONS=detect_container_overflow=0</code> in the Run scheme and each ASan test plan — build settings cannot switch it off.</p>
+</section>
+<section class="sheet-section">
+<h2>Reading a report (ASan, abridged)</h2>
+<pre class="sheet-code"><code class="hljs language-plaintext">==4242==ERROR: AddressSanitizer: heap-use-after-free
+READ of size 8 at 0x60200000eff0 thread T0
+  #0 parse_header  buf.c:42        // 1 WHERE: bad access
+0x60200000eff0 is located 0 bytes inside of 16-byte region
+freed by thread T0 here:
+  #1 conn_close    conn.c:88       // 2 WHO freed it
+previously allocated by thread T0 here:
+  #1 conn_open     conn.c:31       // 3 WHO made it
+SUMMARY: AddressSanitizer: heap-use-after-free buf.c:42</code></pre>
+<p>Bug type first, then three stacks: access, free, allocation — the fix is usually in #2 or #3, not #1. More shadow bytes: <code>f1</code>/<code>f2</code>/<code>f3</code> stack left / mid / right redzone · <code>f5</code> stack after return · <code>f8</code> after scope · <code>f9</code> global redzone · <code>fc</code> container overflow.</p>
+<p><strong>TSan</strong> <code>WARNING: ThreadSanitizer: data race</code>: <em>Write … by thread T3</em> + <em>Previous read … by main thread</em> — two stacks, two threads, one address, no edge: fix the <em>ownership</em> (actor, serial queue, <code>Mutex</code>), not the timing. Other kinds: Swift access race · thread leak · lock-order-inversion (potential deadlock) · invalid or unlocked mutex · signal-unsafe call inside of a signal.</p>
+</section>
+<section class="sheet-section">
+<h2>Exclusivity trap at run time</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">final</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">Counter</span> { <span class="hljs-keyword">var</span> n <span class="hljs-operator">=</span> <span class="hljs-number">0</span> }
+<span class="hljs-keyword">func</span> <span class="hljs-title function_">bump</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">x</span>: <span class="hljs-keyword">inout</span> <span class="hljs-type">Int</span>, <span class="hljs-params">by</span> <span class="hljs-params">c</span>: <span class="hljs-type">Counter</span>) { x <span class="hljs-operator">+=</span> c.n }
+<span class="hljs-keyword">let</span> c <span class="hljs-operator">=</span> <span class="hljs-type">Counter</span>()
+bump(<span class="hljs-operator">&amp;</span>c.n, by: c)   <span class="hljs-comment">// modify of c.n open, then a read of c.n</span>
+<span class="hljs-comment">// Simultaneous accesses to 0x..., but modification requires</span>
+<span class="hljs-comment">//   exclusive access. Previous access (a modification) started</span>
+<span class="hljs-comment">//   at ... Current access (a read) started at: swift_beginAccess</span></code></pre>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">ASan + TSan in one run — impossible: two test-plan configurations, two CI runs.</li>
+<li class="trap">Clean TSan run <span class="math">≠</span> race-free: unexecuted interleavings and overwritten slots go unseen.</li>
+<li class="trap">Crash on <code>0x400000000000bad0</code>: synthesized <code>nonatomic</code> ObjC setters briefly store  this sentinel — two threads mutated the property.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>ASan = where memory, TSan = when threads, UBSan = C rules, MTC / TPC = the main thread,
+tags = the one that ships.</strong> Crash here, not later.</p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> Crashes &amp; symbolication · Instruments ·
+Swift 6 strict concurrency · Ownership, exclusivity &amp; memory layout · Debugging Swift Concurrency ·
+Release-only bugs · Locks &amp; synchronisation</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=debugging" title="area">debugging</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=tooling" title="kind">tooling</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=debugging" title="topic">debugging</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=memory" title="topic">memory</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=concurrency" title="topic">concurrency</a></li><li class="sheet-tag"><a href="/folios.html?tag=asan">asan</a></li><li class="sheet-tag"><a href="/folios.html?tag=tsan">tsan</a></li><li class="sheet-tag"><a href="/folios.html?tag=ubsan">ubsan</a></li><li class="sheet-tag"><a href="/folios.html?tag=msan">msan</a></li><li class="sheet-tag"><a href="/folios.html?tag=shadow-memory">shadow-memory</a></li><li class="sheet-tag"><a href="/folios.html?tag=redzone">redzone</a></li><li class="sheet-tag"><a href="/folios.html?tag=happens-before">happens-before</a></li><li class="sheet-tag"><a href="/folios.html?tag=data-race">data-race</a></li><li class="sheet-tag"><a href="/folios.html?tag=main-thread-checker">main-thread-checker</a></li><li class="sheet-tag"><a href="/folios.html?tag=thread-performance-checker">thread-performance-checker</a></li><li class="sheet-tag"><a href="/folios.html?tag=memory-tagging">memory-tagging</a></li><li class="sheet-tag"><a href="/folios.html?tag=malloc-scribble">malloc-scribble</a></li><li class="sheet-tag"><a href="/folios.html?tag=nszombie">nszombie</a></li><li class="sheet-tag"><a href="/folios.html?tag=exclusivity-enforcement">exclusivity-enforcement</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=debugging%2Fsanitizers-runtime-checkers.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/275">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>
