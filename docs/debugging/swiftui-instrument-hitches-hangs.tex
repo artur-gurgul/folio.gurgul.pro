@@ -1,0 +1,285 @@
+% swiftui-instrument-hitches-hangs.tex — the SwiftUI instrument (Instruments 26+: lanes and
+% their thresholds, the two drill-down workflows, the Cause & Effect Graph, Xcode 27 additions),
+% hang vs hitch by Apple's definitions, hitch duration, busy / async / blocked hangs, and the
+% checks before release.
+% Not repeated: render loop + commit/render hitch mechanics (swiftui/rendering-pipeline.tex),
+% identity + dependency rules (swiftui/swiftui-performance-identity.tex), the Instruments tool
+% map (ios-swift/instruments-performance.tex), MetricKit + hang rate in depth
+% (debugging/production-performance-metrics.tex), main-actor fixes (debugging/concurrency-debugging.tex).
+% Sources (checked 2026-10-07):
+%   developer.apple.com/videos/play/wwdc2025/306 "Optimize SwiftUI performance with Instruments"
+%     (template = SwiftUI instrument + Time Profiler + Hangs + Hitches; the four lanes; orange/red
+%     = likelihood; Command-I builds Release; Show Updates -> Set Inspection Range and Zoom -> Time
+%     Profiler; launch-time long updates do not hitch; AttributeGraph transaction / outdated flag;
+%     graph nodes Gesture, State change + backtrace, External Environment, EnvironmentWriter, dimmed
+%     = body not run, edges update / Creation, blue = your code; environment check cost; the
+%     per-row @Observable model fix)
+%   developer.apple.com/documentation/xcode/understanding-and-improving-swiftui-performance
+%     (Long View Body: orange > 500 us, red > 1000 us; "Long Platform View Updates"; Other = geometry
+%     + text layout; per-module subtracks; Flame Graph; "Show Calls Made by"; Summary: All Updates;
+%     blue / grey nodes; one changed property per edge; blue -> grey -> blue loop, e.g.
+%     onGeometryChange -> act past a threshold)
+%   /xcode/understanding-user-interface-responsiveness (hang felt at ~50-100 ms vs hitch at one
+%     refresh interval; potential hangs reported without input; hitches only when a frame is due;
+%     render-server delays rarely hang; fix hangs first) · /xcode/understanding-hangs-in-your-app
+%     (< 100 ms rarely noticeable; tools report > 250 ms; Hangs threshold can be lowered; delivery +
+%     render add 10-50 ms) · /xcode/understanding-hitches-in-your-app (hitch duration = actual -
+%     expected frame lifetime; Organizer Hitches 10 / 25 / 50 ms/s)
+%   /xcode/improving-app-responsiveness (budgets: < 100 ms discrete, under half for main; < 5 ms per
+%     frame; XCTest 100 ms / 5 ms; on-device Hang Detection, development + TestFlight builds)
+%     · /xcode/analyzing-responsiveness-issues-in-your-shipping-app (hang rate = s/h counting > 250 ms,
+%     median + p90)
+%   developer.apple.com/tutorials/instruments/getting-started-with-hang-analysis (busy vs blocked main
+%     thread as CPU-usage graphs)
+%   WWDC23 10248 "Analyze hangs with Instruments" (100 / 250 micro hang / 500 ms; busy, asynchronous,
+%     blocked; Thread State Trace; 70 bodies x ~50 ms > 3 s; .task inherits the main actor; a lazy
+%     static let initialises synchronously; blocked != unresponsive)
+%   WWDC22 10082 "Track down hangs with Xcode and on-device detection" (Hang Threshold 250 ms minimum,
+%     500 ms or higher; hang log + tailspin)
+%   WWDC23 10160 "Demystify SwiftUI performance" (_printChanges: debug-only, best effort)
+%   github.com/swiftlang/swift-evolution proposals/0461-async-function-isolation.md (Swift 6.2,
+%     flag NonisolatedNonsendingByDefault: nonisolated async runs on the caller's actor; @concurrent
+%     always switches off it)
+%   Xcode 26 release notes (next-gen SwiftUI instrument + Cause & Effect Graph; Animation Hitches
+%     redesigned; Show View Hierarchy; old View Body / View Properties instruments deprecated)
+%   Xcode 27 release notes (Summary of Updates focus action; layout passes + why a layout was not
+%     cached; Animation Hitches on visionOS 27; Organizer Hitches replaces Scrolling; Instruments
+%     targets iOS 17+ devices)
+% Not printed (could not confirm): the duration at which Instruments labels a hang "Severe".
+% @labels: area=debugging kind=tooling platform=apple topic=performance,ui,debugging discussion=276
+% @tags: swiftui-instrument, cause-and-effect-graph, attributegraph, long-view-body, hitches, commit-hitch, animation-hitches, hangs, micro-hang, hang-rate, frame-deadline, time-profiler, xcode-organizer, observable
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\tikzset{
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  tr/.style={font=\scriptsize\bfseries, anchor=east, inner sep=1pt, align=right},
+  ug/.style={draw=none, fill=black!25},
+  lg/.style={draw=sheetRed, fill=sheetRed!25, thick},
+  sl/.style={draw=sheetGrey, fill=black!4, minimum height=3.4mm, minimum width=6.6mm,
+             inner sep=0pt, font=\scriptsize},
+  nd/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.6mm},
+  mine/.style={nd, draw=sheetBlue, fill=sheetBlue!18},
+  sys/.style={nd, draw=sheetGrey, fill=black!6},
+  bd/.style={nd, draw=sheetOrange, fill=sheetBlue!18, minimum width=17mm},
+  dim/.style={nd, draw=black!25, fill=white, text=black!40, dashed},
+  ed/.style={->, thick, draw=sheetGrey},
+}
+
+\begin{document}
+
+\sheettitle{SwiftUI instrument · Cause \& Effect · hitches \& hangs}{debugging · folio}
+
+\oneliner{The \textbf{SwiftUI} template (Instruments 26+) times \emph{every} SwiftUI update:
+lanes flag the long ones, Time Profiler shows \emph{what} ran, the \textbf{Cause \& Effect
+Graph} shows \emph{why}. A \textbf{hitch} = a frame left on screen too long (one late refresh is
+enough); a \textbf{hang} = a discrete input (tap, key) left waiting on a busy or blocked main
+thread.}
+
+\medskip
+\noindent\begin{tikzpicture}[sheet]
+  % ── SwiftUI-template trace mock, 120 Hz: one vsync interval = 8.33 ms = 0.78 cm ──
+  \def\f{0.78}
+  \def\o{2.75}
+  \foreach \k in {0,...,10} \draw[sheetGrey!45, densely dashed] ({\o+\k*\f},0.12) -- ({\o+\k*\f},2.38);
+  \node[tr, text=sheetGrey] at (2.65,2.62) {vsync = 8.33~ms};
+  \node[tr] at (2.65,2.18) {Update Groups};
+  \node[tr] at (2.65,1.75) {Long View Body};
+  \node[tr] at (2.65,1.32) {Time Profiler};
+  \node[tr] at (2.65,0.89) {Hitches};
+  \node[tr] at (2.65,0.40) {display};
+  \node[tr] at (2.65,-0.11) {D's lifetime};
+  \foreach \k/\n in {0/A,1/B,2/C,6/E,7/F,8/G,9/H} {
+    \fill[ug] ({\o+\k*\f+0.03},2.09) rectangle ({\o+\k*\f+0.33},2.27);
+    \node[font=\tiny] at ({\o+\k*\f+0.18},2.18) {\n};
+  }
+  \fill[lg] ({\o+3*\f},2.09) rectangle ({\o+3*\f+2.06},2.27);
+  \node[font=\tiny] at ({\o+3*\f+1.03},2.18) {D};
+  \draw[lg] ({\o+3*\f},1.66) rectangle ({\o+3*\f+2.06},1.84);
+  \node[font=\tiny, text=sheetRed] at ({\o+3*\f+1.03},1.75) {\texttt{Row.body} 22~ms};
+  \node[lbl, anchor=west, fill=white] at ({\o+3*\f+2.12},1.75) {red: > 1~ms · orange: > 0.5~ms};
+  \fill[sheetOrange!45] ({\o+3*\f},1.23) rectangle ({\o+3*\f+2.06},1.41);
+  \node[font=\tiny] at ({\o+3*\f+1.03},1.32) {formatters built in \texttt{body}};
+  \node[lbl, anchor=west, fill=white] at ({\o+3*\f+2.12},1.32) {samples inside the range = what it did};
+  \draw[sheetRed, very thick] ({\o+4*\f},2.03) -- ({\o+4*\f},2.5);
+  \node[lbl, text=sheetRed, anchor=west, fill=white] at ({\o+4*\f+0.03},2.5) {D's commit deadline: missed};
+  \fill[sheetRed] ({\o+5*\f},0.8) rectangle ({\o+7*\f},0.98);
+  \node[lbl, text=sheetRed, anchor=west, fill=white] at ({\o+7*\f+0.05},0.89) {hitch = 16.7~ms};
+  \foreach \k/\n in {0/{·},1/{·},2/A,3/B,4/C,7/D,8/E,9/F}
+    \node[sl] at ({\o+\k*\f+\f/2},0.40) {\n};
+  \foreach \k in {5,6} \node[sl, draw=sheetRed, fill=sheetRed!20] at ({\o+\k*\f+\f/2},0.40) {C};
+  \draw[|-|, thick, sheetGreen!70!black] ({\o+3*\f},0.02) -- node[lbl, above=-1pt, fill=white] {expected: 2} ({\o+5*\f},0.02);
+  \draw[|-|, thick, sheetRed] ({\o+3*\f},-0.22) -- node[lbl, below=-1pt] {actual: 4 vsyncs} ({\o+7*\f},-0.22);
+  \node[lbl, anchor=west, align=left] at ({\o+7*\f+0.1},-0.11) {hitch duration =\\actual $-$ expected};
+  % ── hang thresholds ruler + busy vs blocked main thread ──
+  \begin{scope}[shift={(11.4,0)}]
+    \node[font=\bfseries\scriptsize, anchor=west] at (0,2.62) {Hangs (discrete input), ms};
+    \fill[sheetGreen!35]  (0,1.98) rectangle (0.85,2.38);
+    \fill[sheetOrange!20] (0.85,1.98) rectangle (2.1,2.38);
+    \fill[sheetOrange!55] (2.1,1.98) rectangle (4.2,2.38);
+    \fill[sheetRed!55]    (4.2,1.98) rectangle (5.15,2.38);
+    \node[font=\tiny, align=center] at (0.425,2.18) {rarely\\noticed};
+    \node[font=\tiny, align=center] at (1.475,2.18) {depends};
+    \node[lbl, align=center] at (3.15,2.18) {\textbf{micro hang}};
+    \node[lbl, align=center, text=white] at (4.675,2.18) {\textbf{hang}};
+    \foreach \x/\t in {0/0,0.85/100,2.1/250,4.2/500} {
+      \draw[sheetGrey] (\x,1.98) -- (\x,1.88); \node[lbl, anchor=north] at (\x,1.87) {\t};
+    }
+    \node[lbl, text=sheetBlue, anchor=north west] at (2.0,1.63) {$\uparrow$ Apple's tools report from here};
+    % CPU usage of the main thread during a hang
+    \foreach \px/\kind in {0/busy, 2.75/blocked} {
+      \draw[sheetGrey] (\px,0) -- ({\px+2.4},0);
+      \fill[sheetRed!55] ({\px+6*0.085},0.72) rectangle ({\px+26*0.085},0.88);
+      \node[font=\tiny, text=white] at ({\px+16*0.085},0.8) {hang};
+    }
+    \foreach \i/\h in {0/0.12,1/0.2,2/0.08,3/0.15,4/0.1,5/0.18,6/0.6,7/0.66,8/0.62,9/0.66,
+                       10/0.55,11/0.66,12/0.64,13/0.6,14/0.66,15/0.57,16/0.66,17/0.62,18/0.66,
+                       19/0.58,20/0.66,21/0.64,22/0.61,23/0.66,24/0.56,25/0.66,26/0.15,27/0.1}
+      \fill[sheetBlue!70] ({\i*0.085+0.01},0) rectangle ({\i*0.085+0.07},\h);
+    \foreach \i/\h in {0/0.12,1/0.2,2/0.08,3/0.15,4/0.1,5/0.18,6/0.6,7/0.45,24/0.42,25/0.6,
+                       26/0.15,27/0.1}
+      \fill[sheetBlue!70] ({2.75+\i*0.085+0.01},0) rectangle ({2.75+\i*0.085+0.07},\h);
+    \node[font=\tiny, align=center, anchor=north] at (1.2,-0.04) {\textbf{busy}: CPU pegged\\$\to$ Time Profiler};
+    \node[font=\tiny, align=center, anchor=north] at (3.95,-0.04) {\textbf{blocked}: no samples\\$\to$ Thread State Trace};
+    \node[font=\tiny, text=sheetGrey, anchor=south west] at (0,1.0) {main-thread CPU during the same hang};
+  \end{scope}
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{The SwiftUI template (Instruments 26+)}
+\begin{itemize}
+  \item Contents: the next-generation \textbf{SwiftUI} instrument + \textbf{Time Profiler} +
+        \textbf{Hangs} + \textbf{Hitches}. Needs Xcode 26 and a device OS that records SwiftUI
+        traces (Instruments 27: iOS 17+ devices only); Command-I (Profile) builds
+        \textbf{Release}. The old \emph{View Body} / \emph{View Properties} instruments:
+        deprecated, still in the library.
+\end{itemize}
+{\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.15cm}>{\raggedright\arraybackslash}p{5.4cm}@{}}
+\toprule
+\textbf{lane} & \textbf{shows} \\
+\midrule
+Update Groups & when SwiftUI works at all — CPU busy while it is empty $\Rightarrow$ the cost is
+\emph{outside} SwiftUI \\
+Long View Body Updates & \texttt{body} runs: \textcolor{sheetOrange}{\textbf{orange > 500~µs}},
+\textcolor{sheetRed}{\textbf{red > 1000~µs}} \\
+Long Representable Updates & UIKit / AppKit views hosted in SwiftUI (docs: \emph{Long Platform
+View Updates}) \\
+Other Long Updates & other SwiftUI work: geometry, text layout \\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item Orange / red = how \emph{likely} an update is to cause a hitch or hang — start with red;
+        long ones just after launch (the first hierarchy) are normal. Expanded: View Body /
+        Representable / Other Updates subtracks \textbf{per module} (your app, an SDK, the
+        system); the rest grey.
+  \item \textbf{Detail pane}: summary by process $\to$ module $\to$ view type, with counts;
+        filter to \emph{Long View Body Updates} or \emph{All Updates}. 26: \emph{Show View
+        Hierarchy}. 27: \textbf{Summary of Updates} focus action in the View Hierarchy view;
+        \textbf{layout passes} + why a layout was \emph{not cached}.
+\end{itemize}
+
+\section{Two questions, two workflows}
+\begin{itemize}
+  \item \textbf{Too long?} Hover the view $\to$ arrow $\to$ \emph{Show Updates} $\to$ Control-click
+        one $\to$ \emph{Set Inspection Range and Zoom} $\to$ click the \textbf{Time Profiler}
+        track: the call tree (or Flame Graph) of that update only.
+        Too few samples in one update: repeat it, then \emph{Show Calls Made by
+        \texttt{MyView.body}} merges \emph{every} instance.
+  \item \textbf{Too often?} A long Update Group with \emph{no} long update = many short ones.
+        \emph{Set Inspection Range} on the group (start it earlier to catch the cause) $\to$
+        \emph{All Updates} counts $\to$ hover a view $\to$ \emph{Show Cause \& Effect Graph}.
+        A blue $\to$ grey $\to$ blue chain = your code causing an update your own code then
+        reacts to (e.g.\ \texttt{onGeometryChange} driving layout): act only past a threshold.
+  \item \textbf{Why a body runs} (AttributeGraph): view structs are rebuilt all the time;
+        \emph{attributes} keep identity and state. A state change opens a
+        \textbf{transaction}; at the next frame it marks that attribute \emph{outdated}, flags
+        every dependent (cheap), then recomputes the outdated ones. ``Why did \texttt{body}
+        run?'' = ``what marked it outdated?'' \texttt{Self.\_printChanges()} (debug only, best
+        effort) names \emph{what} changed, never \emph{who} changed it.
+  \item \textbf{Environment}: reading \texttt{@Environment} depends on \emph{all} of
+        \texttt{EnvironmentValues} — any change notifies every reader, each checks its value, so a
+        skipped body still costs. Keep geometry and timers out of it.
+\end{itemize}
+
+\columnbreak
+
+\section{A Cause \& Effect Graph}
+\begin{tikzpicture}[sheet]
+  \node[mine, text width=13mm, align=center] (g) at (0.7,1.6) {Gesture\\tap Favorite};
+  \node[mine, text width=17mm, align=center] (s) at (2.85,1.6) {\texttt{@Observable}\\\texttt{favorites} array};
+  \foreach \i/\y in {1/2.12,2/1.6,3/1.08} \node[bd] (b\i) at (6.6,\y) {\texttt{Row} body};
+  \node[lbl, text=sheetRed] at (6.6,0.72) {… ×40: every row};
+  \node[sys, text width=17mm, align=center] (e) at (0.95,0.2) {External Env.\\\texttt{colorScheme}};
+  \node[dim, text width=21mm, align=center] (d) at (6.45,0.2) {\texttt{Badge}: checked,\\body not run};
+  \draw[ed, sheetBlue] (g) -- (s);
+  \foreach \i in {1,2,3} \draw[ed, sheetOrange] (s.east) -- (b\i.west);
+  \node[lbl, text=sheetOrange, fill=white] at (4.55,2.06) {update};
+  \draw[ed, dashed] (e.east) -- node[lbl, above, fill=white] {reads env, its value unchanged} (d.west);
+  \node[note, anchor=north west, text width=7.8cm] at (-0.05,-0.28)
+    {Reads \textbf{left $\to$ right}; \textbf{blue} = your code or actions, \textbf{grey} =
+     system, \textbf{dimmed} = checked, body \emph{not} run; edges \emph{update}, \emph{Creation};
+     a selected state change shows the write's backtrace. Fix here: a per-row
+     \texttt{@Observable} model — the same tap reaches \textbf{one} row.};
+\end{tikzpicture}
+
+\section{Hang vs hitch — Apple's definitions}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.95cm}>{\raggedright\arraybackslash}p{3.15cm}>{\raggedright\arraybackslash}p{3.45cm}@{}}
+\toprule
+& \textbf{hang} & \textbf{hitch} \\
+\midrule
+noticed & main thread unresponsive \textasciitilde50--100~ms+ & one refresh interval: 8.3~ms
+(120~Hz), 16.7~ms (60~Hz) \\
+budget & \textless~100~ms in all, under half of it on main & main-thread work \textless~5~ms
+per frame is usually on time \\
+cause & main thread busy or blocked & app late: \emph{commit}; render server late:
+\emph{render} (rarely a hang) \\
+seen & run loop busy past the threshold, input or not (a \emph{potential} hang) & only while a
+frame is due (scroll, animation) \\
+field & \textbf{Hang Rate}: s/hour of hangs > 250~ms (median, p90) & \textbf{Hitches} (27):
+ms/s — $\leq$10 good, $\leq$25 warning, $\leq$50 critical \\
+\bottomrule
+\end{tabular}}
+
+\section{Three kinds of hang}
+{\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.95cm}>{\raggedright\arraybackslash}p{4.3cm}>{\raggedright\arraybackslash}p{2.3cm}@{}}
+\toprule
+\textbf{kind} & \textbf{typical cause} & \textbf{fix} \\
+\midrule
+busy & one call too long, or called too often: 70 bodies × \textasciitilde50~ms > 3~s & do less
+(lazy container, cache) or move off main \\
+async & every handler short, but work queued earlier on main runs first — a sync call inside
+\texttt{.task}, which inherits \texttt{MainActor} & \texttt{async} + \texttt{nonisolated}
+(SE-0461 on: \texttt{@concurrent}) \\
+blocked & waiting in a syscall (\texttt{mach\_msg2\_trap}), on a lock or semaphore, in a lazy
+\texttt{static let} init (\texttt{await} does not help) & never wait on main \\
+\bottomrule
+\end{tabular}}
+
+\section{Before release}
+\begin{itemize}
+  \item Settings $\to$ Developer $\to$ \textbf{Hang Detection} (development + TestFlight builds,
+        from 250~ms) $\to$ hang log + tailspin. \textbf{Animation Hitches}: redesigned in 26
+        (multiple displays, app update intervals, far less data); visionOS 27 in Xcode 27.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Fix hangs first — that removes many commit hitches too.}
+  \trap{One changed property per graph edge: after a fix, record again.}
+  \trap{Blocked $\neq$ unresponsive — an idle main thread is blocked; Hangs decides.}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rendering pipeline (commit / render
+hitches, frame budget) · SwiftUI performance \& identity · SwiftUI Environment \& Preferences ·
+Instruments \& performance · performance in production (hang rate, MetricKit) · debugging Swift
+Concurrency (blocked main actor) · logging, signposts \& power}
+
+\end{document}
