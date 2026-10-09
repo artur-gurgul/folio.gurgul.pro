@@ -1,0 +1,135 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Testable design — DI, seams &amp; legacy code — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/testing/testable-design-seams.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">262</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area current" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Testable design — DI, seams &amp; legacy code</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">testing · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A <strong>seam</strong> is “a place where you can alter behavior in your program without
+editing in that place”; every seam has an <strong>enabling point</strong>, “a place where you can make
+the decision to use one behavior or another” (Michael Feathers, <em>Working Effectively with
+Legacy Code</em>, 2004). In Swift the seam is a <strong>protocol or closure</strong> the type
+<em>receives</em>, and the enabling point is its <code>init</code>. Code that <em>reaches for</em>
+<code>.shared</code>, <code>Date()</code> or <code>UserDefaults.standard</code> has none.</p>
+<p class="sheet-tools"><a class="sheet-download" href="testable-design-seams.pdf" download>Download PDF</a> <a href="testable-design-seams.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/testing/testable-design-seams.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="testable-design-seams-fig1.svg" width="635" height="147" class="wide" alt="Testable design — DI, seams &amp; legacy code — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Seams — the rules</h2>
+<ul>
+<li>The source is <strong>the same in production and test</strong>; only the enabling point differs.</li>
+<li>An object <strong>created and used in the same method</strong> is no seam — nothing can choose  its type. Pass it in and the <strong>argument list</strong> becomes the enabling point.</li>
+<li>Object seams are “the best choice in object-oriented languages”; preprocessing and link  seams are “not as explicit”, their tests hard to maintain — keep them for pervasive  dependencies, and make test vs production obvious.</li>
+<li>Two reasons to break a dependency: <strong>sensing</strong> (see values the code computes but  hides) and <strong>separation</strong> (stand the code up in a harness at all).</li>
+<li>Fowler (2024): a seam also hosts <strong>probes</strong> and <strong>redirects flow</strong> to new  modules when displacing a legacy system.</li>
+<li>Apple (WWDC17): testable code gives <strong>control over inputs</strong>, <strong>visibility into
+ outputs</strong>, <strong>no hidden state</strong> — via protocols + parameters, side effects kept apart.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Reaches for <span class="math">→</span> receives <span class="math">→</span> the test passes</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>reaches for</strong></th><th><strong>receives</strong></th><th><strong>a test passes</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>X.shared</code></td><td>a protocol (<code>any XClient</code>)</td><td>stub / fake</td></tr>
+<tr><td><code>Date()</code>, <code>Date.now</code></td><td><code>now: () -&gt; Date</code></td><td><code>{ Date(timeIntervalSince1970: 0) }</code></td></tr>
+<tr><td><code>Task.sleep</code>, timers</td><td><code>any Clock&lt;Duration&gt;</code> (iOS 16)</td><td><code>TestClock</code>, <code>ImmediateClock</code> (swift-clocks); a clock’s <code>now</code> is an <code>Instant</code>, not a <code>Date</code></td></tr>
+<tr><td><code>UUID()</code></td><td><code>() -&gt; UUID</code></td><td>a counter</td></tr>
+<tr><td><code>.random(in:)</code>, <code>shuffled()</code></td><td><code>using: inout some</code> <code>RandomNumberGenerator</code></td><td>a seeded generator — Apple: “repeatable … for testing”</td></tr>
+<tr><td><code>UserDefaults</code><code>.standard</code></td><td>a <code>UserDefaults</code></td><td><code>UserDefaults(suiteName:)</code>, then <code>removePersistentDomain(forName:)</code></td></tr>
+<tr><td><code>FileManager</code> + Documents</td><td>a base-directory <code>URL</code></td><td><code>URL.temporaryDirectory</code> + a UUID folder</td></tr>
+<tr><td><code>NotificationCenter</code><code>.default</code></td><td>a <code>NotificationCenter</code></td><td><code>NotificationCenter()</code> — a private center</td></tr>
+<tr><td><code>UIApplication</code><code>.shared</code></td><td>a protocol of the members used</td><td>a spy recording <code>open(_:)</code></td></tr>
+<tr><td><code>Locale</code>, <code>TimeZone</code><code>.current</code></td><td>the value</td><td><code>Locale(identifier:)</code>, <code>TimeZone(secondsFromGMT: 0)</code></td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2><code>@testable import</code> and the test host</h2>
+<ul>
+<li>Tests reach <code>internal</code> only with <code>@testable import</code> <strong>and</strong> a module compiled  with testing enabled; never <code>fileprivate</code>/<code>private</code> — needing those means  “extract a type”, not “make it <code>public</code>”. They may subclass / override  non-<code>final</code> <code>public</code> and <code>internal</code> classes (SE-0117).</li>
+<li><strong>Enable Testability</strong> (<code>ENABLE_TESTABILITY</code>) passes <code>-enable-testing</code> and  <code>-rdynamic</code>, drops <code>-fvisibility=hidden</code> and strip — “tests running slower”, so  Debug only. A Release-built module: “Module … was not compiled for testing”.</li>
+<li><strong>Test Host</strong> set <span class="math">⇒</span> Xcode starts the app and loads the test bundle into  it; XCTest waits for <code>didFinishLaunching</code> — the composition root runs first. Apple:  skip non-essential launch work via a launch argument, or use a host-less target.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Swift 6 concurrency meets test hooks</h2>
+<ul>
+<li>SE-0412: every <strong>static</strong> or global stored property is global-actor isolated or an  immutable <code>Sendable</code> value (error in Swift 6 mode) — a <code>static var shared</code> test  hook needs <code>@MainActor</code> or <code>nonisolated(unsafe)</code>.</li>
+<li>Swift Testing runs tests <strong>in parallel</strong> in one process (task groups);  <code>.serialized</code> orders only its own suite — a swapped global still races other suites.</li>
+<li>Parallel-safe ambient seam: a <code>@TaskLocal</code> value + a <code>TestScoping</code> trait (Swift  6.1) wrapping each test in <code>$current.withValue(mock) { try await function() }</code>.</li>
+<li>New app projects in Xcode 26 turn on main-actor mode (SE-0466, Swift 6.2, per module):  app types become <code>@MainActor</code>, so tests <code>await</code> them or run <code>@MainActor</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><strong>Live-default leak</strong>: one forgotten argument and the test gets the real  <code>LiveFeedAPI</code> — network in a unit test. Pass every dependency in tests.</li>
+<li class="trap">A suite does not isolate <code>register(defaults:)</code>: the registration and argument domains  are shared by every <code>UserDefaults</code> instance.</li>
+<li class="trap">8 init parameters is an SRP smell, not a DI problem. DI <span class="math">≠</span> DIP: injecting a  concrete class is DI without inversion.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Legacy code</h2>
+<ul>
+<li>“Legacy code is simply <strong>code without tests</strong>” (WELC preface) — not old code.  <strong>Edit and Pray</strong> (plan, edit, then poke around — “pretty much the industry  standard”) vs <strong>Cover and Modify</strong> (tests as the safety net).</li>
+<li>Four reasons to change: feature · bug · design · resource usage. <strong>Refactoring</strong>  changes structure only, <strong>optimising</strong> only resource usage — both hold  functionality invariant. Before any change ask: what changes · how will we know it is  right · how will we know nothing broke?</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Dependency-breaking moves</h2>
+<p>WELC (examples in Java, C++, C, C#) catalogues <strong>24</strong> conservative edits in ch. 25; the Swift-relevant ones:</p>
+<p><table class="sheet-table">
+<tbody>
+<tr><td>Parameterize Constructor</td><td><code>init(api: any API = LiveAPI.shared)</code> — every existing caller compiles unchanged</td></tr>
+<tr><td>Parameterize Method</td><td>one method takes it: <code>isExpired(now: Date = .now)</code></td></tr>
+<tr><td>Extract Interface</td><td>a protocol of just what the SUT calls; the class conforms</td></tr>
+<tr><td>Extract Implementer</td><td>rename the class <code>LiveAPI</code>; the old name becomes the protocol</td></tr>
+<tr><td>Adapt Parameter</td><td>a parameter type you cannot fake <span class="math">→</span> your own narrow protocol + an adapter. Swift needs no wrapper: the framework class conforms in an extension (Apple, WWDC18)</td></tr>
+<tr><td>Subclass &amp; Override Method (+ Extract &amp; Override Call / Getter)</td><td>a test subclass overrides the I/O; needs a non-<code>final</code> class and the method in the class body — extension members cannot be overridden unless <code>@objc</code></td></tr>
+<tr><td>Introduce Static Setter</td><td>a singleton gains a setter for tests (see SE-0412, left)</td></tr>
+<tr><td>Break Out Method Object</td><td>monster method <span class="math">→</span> new type; its locals become fields</td></tr>
+<tr><td>Sprout Method / Class</td><td>(ch. 6) new code in a new, test-driven unit; old code only calls it</td></tr>
+<tr><td>Wrap Method / Class</td><td>rename the old method; a new one with its name runs new + old</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Characterization tests (golden master)</h2>
+<ul>
+<li>“Document your system’s <strong>actual</strong> behavior, not check for the behavior you wish  your system had” (Feathers) — a system in production “becomes its own specification”.  Keep a surprising result pinned until it is <em>confirmed</em> a bug.</li>
+<li>Recipe: code in a harness <span class="math">→</span> assert a value you know is wrong <span class="math">→</span> the  failure prints the actual one <span class="math">→</span> expect that <span class="math">→</span> repeat.</li>
+<li>Tools: <strong>swift-snapshot-testing</strong> records a missing reference and fails once;  <code>.dump</code> snapshots any value via <code>Mirror</code>; <code>assertInlineSnapshot</code> writes into  the test file. <strong>ApprovalTests.Swift</strong>: <code>.received</code> vs <code>.approved</code> files.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Example — Parameterize Constructor</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">final</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">FeedModel</span> {
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">let</span> api: <span class="hljs-keyword">any</span> <span class="hljs-type">FeedAPI</span>;  <span class="hljs-keyword">private</span> <span class="hljs-keyword">let</span> now: () -&gt; <span class="hljs-type">Date</span>
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">let</span> defaults: <span class="hljs-type">UserDefaults</span>
+  <span class="hljs-keyword">init</span>(<span class="hljs-params">api</span>: <span class="hljs-keyword">any</span> <span class="hljs-type">FeedAPI</span> <span class="hljs-operator">=</span> <span class="hljs-type">LiveFeedAPI</span>.shared,   <span class="hljs-comment">// old callers</span>
+       <span class="hljs-params">now</span>: <span class="hljs-keyword">@escaping</span> () -&gt; <span class="hljs-type">Date</span> <span class="hljs-operator">=</span> { <span class="hljs-type">Date</span>() },  <span class="hljs-comment">// unchanged</span>
+       <span class="hljs-params">defaults</span>: <span class="hljs-type">UserDefaults</span> <span class="hljs-operator">=</span> .standard) {
+    <span class="hljs-keyword">self</span>.api <span class="hljs-operator">=</span> api; <span class="hljs-keyword">self</span>.now <span class="hljs-operator">=</span> now; <span class="hljs-keyword">self</span>.defaults <span class="hljs-operator">=</span> defaults } }
+<span class="hljs-comment">// test</span>
+<span class="hljs-keyword">let</span> suite <span class="hljs-operator">=</span> <span class="hljs-string">&quot;test-<span class="hljs-subst">\(UUID())</span>&quot;</span>
+<span class="hljs-keyword">let</span> d <span class="hljs-operator">=</span> <span class="hljs-type">UserDefaults</span>(suiteName: suite)<span class="hljs-operator">!</span>
+<span class="hljs-keyword">defer</span> { d.removePersistentDomain(forName: suite) }
+<span class="hljs-keyword">let</span> sut <span class="hljs-operator">=</span> <span class="hljs-type">FeedModel</span>(api: <span class="hljs-type">StubFeedAPI</span>(posts: []),
+  now: { <span class="hljs-type">Date</span>(timeIntervalSince1970: <span class="hljs-number">0</span>) }, defaults: d)</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Designs that make seams cheap</h2>
+<ul>
+<li><strong>DI</strong> (name settled by Fowler and IoC authors, 2004): constructor (“type 3”, PicoContainer) · setter  (type 2, Spring) · interface injection (type 1, Avalon). A <strong>service locator</strong> is  <em>asked</em>: every user depends on it, and its needs show only as locator calls in the  body. Fowler: the choice matters less than separating configuration from use; Seemann  (2010): an anti-pattern.</li>
+<li><strong>Humble Object</strong> (Meszaros): move logic out of what is hard to test (view,  controller) until it holds the minimum of behaviour — MVVM, Passive View.</li>
+<li><strong>Functional core, imperative shell</strong> (Bernhardt, 2012): decisions are pure  functions on values; a thin shell does I/O. The core needs no doubles.</li>
+</ul>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> Dependency injection · Test doubles ·
+Testing fundamentals · Async &amp; network testing · XCTest &amp; Swift Testing · SOLID · Code smells
+<span class="math">→</span> refactorings · Time in Swift</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=testing" title="area">testing</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=pattern" title="kind">pattern</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=general" title="platform">general</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=testing" title="topic">testing</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=architecture" title="topic">architecture</a></li><li class="sheet-tag"><a href="/folios.html?tag=seam">seam</a></li><li class="sheet-tag"><a href="/folios.html?tag=enabling-point">enabling-point</a></li><li class="sheet-tag"><a href="/folios.html?tag=legacy-code">legacy-code</a></li><li class="sheet-tag"><a href="/folios.html?tag=characterization-test">characterization-test</a></li><li class="sheet-tag"><a href="/folios.html?tag=dependency-injection">dependency-injection</a></li><li class="sheet-tag"><a href="/folios.html?tag=constructor-injection">constructor-injection</a></li><li class="sheet-tag"><a href="/folios.html?tag=composition-root">composition-root</a></li><li class="sheet-tag"><a href="/folios.html?tag=service-locator">service-locator</a></li><li class="sheet-tag"><a href="/folios.html?tag=testable-import">testable-import</a></li><li class="sheet-tag"><a href="/folios.html?tag=test-host">test-host</a></li><li class="sheet-tag"><a href="/folios.html?tag=humble-object">humble-object</a></li><li class="sheet-tag"><a href="/folios.html?tag=functional-core-imperative-shell">functional-core-imperative-shell</a></li><li class="sheet-tag"><a href="/folios.html?tag=snapshot-testing">snapshot-testing</a></li><li class="sheet-tag"><a href="/folios.html?tag=swift-testing">swift-testing</a></li><li class="sheet-tag"><a href="/folios.html?tag=strict-concurrency">strict-concurrency</a></li><li class="sheet-tag"><a href="/folios.html?tag=task-local">task-local</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=testing%2Ftestable-design-seams.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/264">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

@@ -1,0 +1,302 @@
+% xctest-and-swift-testing.tex — the two Apple test frameworks side by side: the XCTestCase
+% lifecycle, XCTAssert → #expect / #require, traits, arguments, exit tests, attachments,
+% parallelism, XCTest-only performance tests, the leak test, and what Swift 6.0 → 6.4 added.
+% Sources (checked 2026-10-09):
+%   developer.apple.com/documentation/xctest/set-up-and-tear-down-state-in-your-tests (class setUp
+%     once; setUp() async throws → setUpWithError() → setUp(); test; teardown blocks LIFO; tearDown()
+%     → tearDownWithError() → tearDown() async throws; class tearDown; assertions allowed in instance
+%     setUp / tearDown, not in the class methods; blocks run even with continueAfterFailure = false;
+%     nothing runs after a crash; async variants on an arbitrary actor unless @MainActor)
+%   developer.apple.com/documentation/xctest/defining-test-cases-and-test-methods (instance method,
+%     no parameters, no return value, name begins with "test") · /xctest/xctestcase (async tests) ·
+%     /xctestcase/continueafterfailure (default true) · /xctestcase/executiontimeallowance (600 s,
+%     rounded up to a minute, timeouts must be enabled) · /xctexpectedfailure/options/isstrict
+%     (default true) · /xctattachment/lifetime (default deleteOnSuccess) · /xctmetric (7 metric
+%     classes) · /xctmeasureoptions/iterationcount (iterationCount + 1 runs, first ignored)
+%   developer.apple.com/library/archive …/testing_with_xcode chapters 01 + 04 (XCTest with Xcode 5;
+%     performance tests vs a baseline Xcode 6; UI tests + recording Xcode 7; baseline = average +
+%     max standard deviation, stored per device configuration; its reading list dates them: WWDC
+%     2013/409 Xcode 5, 2014/414 Xcode 6, 2015/406 Xcode 7)
+%   github.com/swiftlang/swift-book TSPL.docc/LanguageGuide/AutomaticReferenceCounting.md ("ARC
+%     automatically sets a weak reference to nil when the instance … is deallocated" — the leak test)
+%   developer.apple.com/videos/play/wwdc2018/403 (Xcode 10 parallel distributed testing: simulator
+%     clones, each test class on one runner) · wwdc2021/10296 (Xcode 13 test repetitions) ·
+%     wwdc2024/10179 (keep XCTest for XCUIApplication, XCTMetric,
+%     Objective-C; a separate suite instance per @Test; in-process parallelism, also on devices;
+%     don't mix assertion APIs) · wwdc2024/10195 (max two argument collections; zip; parallel and
+%     randomised order by default; .serialized inherited; XCTest = processes, one test each; @Tag)
+%   developer.apple.com Xcode release notes: 13 (async test methods; async setUp first, async
+%     tearDown last; three repetition modes) · 26 (Swift 6.2; exit tests; attachments in the test
+%     report; XCTIssue warning severity) · 26.4 (Swift 6.3; image attachments; Issue severity; interop
+%     off by default) · 27 (Swift 6.4; cross-framework failures shown as warnings, test-plan setting;
+%     swift test --maximum-repetitions / --repeat-until)
+%   swift.org/blog: announcing-swift-6 (2024-09-17; Swift Testing in the toolchain, all Swift
+%     platforms, swift test runs both) · swift-6.1-released (2025-03-31, Xcode 16.3) ·
+%     swift-6.2-released (2025-09-15; raw-identifier names) · swift-6.3-released (2026-03-24) ·
+%     swift-6.4-released (2026-09-15)
+%   github.com/swiftlang/swift-testing Sources/Testing/Testing.docc: MigratingFromXCTest (assertion
+%     map; init / deinit, deinit only on class or actor, never async or throws; struct or actor
+%     preferred; XCTest runs sync tests on the main actor, Swift Testing on an arbitrary task; interop
+%     modes + default table) · OrganizingTests (@Suite optional; zero-argument init; distinct instance
+%     per test; no @available on a suite; traits inherited) · DefiningTests · Parallelization
+%     (--no-parallel; .serialized) · ParameterizedTesting (product of two collections; zip; selective
+%     rerun needs CustomTestArgumentEncodable / RawRepresentable / Encodable / Identifiable) ·
+%     known-issues · exit-testing · testing-for-errors-in-swift-code · AddingTags ·
+%     developer.apple.com/documentation/testing confirmation(…) (checked when the closure returns)
+%   github.com/swiftlang/swift-evolution proposals/testing: ST-0004 (time limit in minutes, shortest
+%     wins; 6.0) · ST-0005 (ranged confirmations; 6.1) · ST-0006 (#expect(throws:) returns the
+%     error; 6.1) · ST-0007 (TestScoping; 6.1) · ST-0008 (exit tests; 6.2; not iOS) · ST-0009
+%     (attachments; 6.2) · ST-0011 (issue handling traits; 6.2) · ST-0012 (exit-test captures,
+%     Sendable + Codable, explicit list; 6.3) · ST-0013 (severity; 6.3) · ST-0014 (images; 6.3) ·
+%     ST-0016 (Test.cancel; 6.3) · ST-0021 (interop; 6.4) · ST-0022 (CustomTestReflectable; 6.4) ·
+%     ST-0023 (Transferable attachments; 6.4) · ST-0024 (per-case repetitions; 6.4) · ST-0025
+%     (the existing swift test --filter / --skip options; their tag: prefix is 6.5, unreleased —
+%     left out) · github.com/swiftlang/swift-package-manager Documentation (--filter / --skip
+%     regular expressions)
+% @labels: area=testing kind=api platform=apple topic=testing discussion=267
+% @tags: xctest, swift-testing, xctestcase, addteardownblock, expect-macro, require-macro, parameterized-tests, test-traits, exit-tests, test-attachments, confirmation, parallel-testing, xctmetric, retain-cycle
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,override,extension,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,in,do,static,
+    true,false,AnyObject,Void,String,Bool,Int,UInt,import},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  st/.style={box, font=\scriptsize, inner sep=1.2pt, minimum height=7mm, minimum width=11mm},
+  once/.style={st, draw=sheetBrown, fill=sheetBrown!10},
+  per/.style={st, draw=sheetBlue, fill=sheetBlue!8},
+  tst/.style={st, draw=sheetGreen, fill=sheetGreen!14, font=\scriptsize\bfseries},
+  tdn/.style={st, draw=sheetOrange, fill=sheetOrange!10},
+  l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, text=sheetBlue, anchor=west, inner sep=0pt},
+  tk/.style={circle, fill=#1, inner sep=0pt, minimum size=1.6mm},
+  dot/.style={circle, draw=sheetBlue, inner sep=0pt, minimum size=2mm},
+}
+
+\begin{document}
+
+\sheettitle{XCTest \& Swift Testing — lifecycle, macros, traits, what changed}{testing · folio}
+
+\oneliner{\textbf{XCTest}: subclass \ct{XCTestCase}, name methods \ct{test…}, assert with
+\ct{XCTAssert*}; a fresh instance per test method. \textbf{Swift Testing} (open source, in the
+Swift toolchain, all Swift platforms): \ct{@Test} functions, any type is a suite, two macros
+\ct{\#expect} / \ct{\#require}, traits and arguments — run \textbf{in parallel, in one process}
+by default. Both live in one target; UI automation, \ct{XCTMetric} performance tests and
+Objective-C stay in XCTest.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ===== XCTest row
+  \node[hd] at (-0.05,0.95) {XCTest — one class, every test method};
+  \node[once] (cs) at (0.6,0) {class\\\ct{setUp()}};
+  \node[per] (a1) at (2.05,0) {\ct{setUp()}\\async throws};
+  \node[per] (a2) at (3.4,0) {\ct{setUp}\\\ct{WithError()}};
+  \node[per] (a3) at (4.6,0) {\ct{setUp()}};
+  \node[tst] (t) at (5.8,0) {\ct{test…()}};
+  \node[tdn] (b) at (7.1,0) {teardown\\blocks, LIFO};
+  \node[tdn] (d1) at (8.45,0) {\ct{tearDown()}};
+  \node[tdn] (d2) at (9.75,0) {\ct{tearDown}\\\ct{WithError()}};
+  \node[tdn] (d3) at (11.15,0) {\ct{tearDown()}\\async throws};
+  \node[once] (ct) at (12.6,0) {class\\\ct{tearDown()}};
+  \foreach \a/\b in {cs/a1,a1/a2,a2/a3,a3/t,t/b,b/d1,d1/d2,d2/d3,d3/ct} \draw[flow] (\a) -- (\b);
+  \node[draw=sheetGrey, dashed, rounded corners=2pt, inner sep=1.3mm, fit=(a1)(d3)] (per) {};
+  \draw[flow, sheetBlue] (d3.north) -- ++(0,0.32) -| node[l, pos=0.25, above, text=sheetBlue]
+     {next test method — on a \textbf{new} \ct{XCTestCase} instance} (a1.north);
+  % ===== Swift Testing row
+  \node[hd] at (-0.05,-0.8) {Swift Testing — one suite, every \ct{@Test}};
+  \node[once] (s0) at (0.6,-1.5) {suite\\type};
+  \node[per] (si) at (3.4,-1.5) {\ct{init()}\\async throws};
+  \node[tst] (st) at (5.8,-1.5) {\ct{@Test func}};
+  \node[tdn] (sd) at (9.1,-1.5) {\ct{deinit} — class\\or actor only};
+  \draw[flow] (s0) -- (si); \draw[flow] (si) -- (st); \draw[flow] (st) -- (sd);
+  \node[draw=sheetGreen!60!black, dashed, rounded corners=2pt, inner sep=1.3mm, fit=(si)(sd)] (sc) {};
+  \node[l, anchor=north west, text=sheetGreen!45!black, align=left] at (sc.south west)
+     {a \ct{TestScoping} trait (6.1) wraps the whole box — async set-up \emph{and} tear-down;
+      \ct{deinit} can't be async or throw};
+  \node[l, anchor=west, align=left] at (10.55,-1.5) {a distinct suite instance\\per \ct{@Test};
+     struct, class or actor\\— struct preferred};
+  % ===== notes
+  \node[l, anchor=north west, align=left, text width=28mm] at (13.45,1.0)
+     {\textcolor{sheetBrown}{brown} = once per class · \textcolor{sheetBlue}{blue} set-up ·
+      \textcolor{sheetGreen!60!black}{green} the test · \textcolor{sheetOrange}{orange} tear-down.\\[1pt]
+      Assertions count in instance set-up/tear-down; class methods have no instance — none there.\\[1pt]
+      Tear-down runs after a failure, even with \ct{continueAfterFailure = false};
+      \textcolor{sheetRed}{a crash skips all of it}.};
+\end{tikzpicture}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \draw[thick, sheetBrown!60] (0,0) -- (5.55,0);
+  \draw[thick, sheetBlue!60] (5.85,0) -- (16.5,0);
+  \draw[sheetGrey] (5.6,-0.1) -- (5.7,0.1) (5.75,-0.1) -- (5.85,0.1);
+  \foreach \x/\y/\col/\w/\t in {
+     0.55/{2013\\Xcode 5}/sheetBrown/10.5mm/{XCTest},
+     1.65/{2014\\Xcode 6}/sheetBrown/10.5mm/{\ct{measure} vs a baseline},
+     2.75/{2015\\Xcode 7}/sheetBrown/10.5mm/{UI tests + recording},
+     3.85/{2018\\Xcode 10}/sheetBrown/10.5mm/{parallel on simulator clones},
+     4.95/{2021\\Xcode 13}/sheetBrown/10.5mm/{\ct{async} tests; repetition modes},
+     6.75/{Sep 2024\\Swift 6.0 · Xcode 16}/sheetBlue/18mm/{\textbf{Swift Testing}: \ct{@Test}, \ct{\#expect}, traits, arguments, tags},
+     8.7/{Mar 2025\\6.1 · Xcode 16.3}/sheetBlue/18mm/{\ct{TestScoping} traits; \ct{\#expect(throws:)} returns the error; ranged \ct{confirmation}},
+     10.65/{Sep 2025\\6.2 · Xcode 26}/sheetBlue/18mm/{exit tests; attachments; raw-identifier names; issue-handling traits},
+     12.6/{Mar 2026\\6.3 · Xcode 26.4}/sheetBlue/18mm/{\ct{severity: .warning}; \ct{Test.cancel}; image attachments; exit-test captures},
+     14.55/{Sep 2026\\6.4 · Xcode 27}/sheetBlue/21.5mm/{XCTest ↔ Swift Testing interop; \ct{CustomTestReflectable}; per-case repetitions}} {
+    \node[tk=\col] at (\x,0) {};
+    \node[l, anchor=south, text=\col, font=\tiny\bfseries] at (\x,0.08) {\y};
+    \node[l, anchor=north, text width=\w] at (\x,-0.08) {\t};
+  }
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{XCTest — the rules}
+\begin{itemize}
+  \item \textbf{Test method}: instance method of an \ct{XCTestCase} subclass, no parameters, no
+        return value, name starts with lowercase \ct{test}; may be \ct{throws} or \ct{async}.
+        Synchronous tests run on the \textbf{main actor}; \ct{async} set-up/tear-down and
+        blocks run on an arbitrary actor unless marked \ct{@MainActor}.
+  \item \textbf{Set-up}: \ct{setUpWithError()} when it can throw — a throw is recorded as a
+        failure, no \ct{try!}; \ct{setUp() async throws} for async work.
+        \ct{addTeardownBlock \{ \}} puts clean-up next to the code that needs it.
+  \item \ct{continueAfterFailure} (default \ct{true}); \ct{false} ends the method at the first
+        failure — the other tests still run. \ct{try XCTUnwrap(x)} fails and stops one test;
+        \ct{x!} on \ct{nil} crashes the process: no tear-down.
+  \item \textbf{Skip}: \ct{throw XCTSkip("…")} · \ct{try XCTSkipIf(c)} / \ct{…Unless(c)}.
+        \textbf{Known failure}: \ct{XCTExpectFailure("…")} — \ct{isStrict} defaults to
+        \ct{true}, so a failure that stops happening becomes an issue. Xcode 26: an
+        \ct{XCTIssue} of warning severity does not fail the test.
+  \item \ct{executionTimeAllowance}: default 600\,s, rounded \emph{up} to whole minutes, active
+        only when timeouts are on (test plan or \ct{-test-timeouts-enabled YES}).
+  \item \ct{XCTAttachment} + \ct{add(\_:)}: \ct{lifetime} defaults to \ct{.deleteOnSuccess} —
+        kept only for failures unless \ct{.keepAlways}.
+  \item \textbf{Parallel}: the simulator is cloned; each runner process takes \emph{whole
+        classes}, one test at a time — one giant class never parallelises.
+\end{itemize}
+
+\section{Performance tests — XCTest only}
+\ct{measure \{ \}} times the block; \ct{measure(metrics:options:)} records any of
+\ct{XCTClockMetric} (time) · \ct{XCTCPUMetric} · \ct{XCTMemoryMetric} (physical) ·
+\ct{XCTStorageMetric} (logical writes) · \ct{XCTOSSignpostMetric} (a signposted interval) ·
+\ct{XCTApplicationLaunchMetric} · \ct{XCTHitchMetric}. The block runs
+\ct{iterationCount}\,+\,1 times; the first is ignored (warm caches). A \textbf{baseline} =
+average + allowed standard deviation, set from the report and stored \textbf{per device
+configuration}.
+
+\section{The leak test — weak, scope, nil}
+\begin{lstlisting}[language=SwiftSheet]
+func test_viewModel_isReleased() {
+  weak var weakSUT: FeedViewModel?
+  do {
+    let sut = FeedViewModel(api: StubAPI())
+    weakSUT = sut                 // observe, don't retain
+    sut.start()                   // may build a cycle
+  }                               // last strong ref gone
+  XCTAssertNil(weakSUT)           // Swift Testing:
+}                                 // #expect(weakSUT == nil)
+func trackForLeaks(_ o: AnyObject, line: UInt = #line) {
+  addTeardownBlock { [weak o] in XCTAssertNil(o, line: line) }
+}                                 // after the test body
+\end{lstlisting}
+
+\section{Mixing the two (Swift 6.4, ST-0021)}
+\ct{SWIFT\_TESTING\_XCTEST\_INTEROP\_MODE}: \ct{none} · \ct{limited} (an \ct{XCTAssert}
+failing in a \ct{@Test} = warning) · \ct{complete} (= failure) · \ct{strict}
+(\ct{fatalError}). Toolchain < 6.4: none — the failure was silently lost; packages with
+tools-version ≥ 6.4 get complete, older ones limited; Xcode 27 sets it per test plan.
+
+\section{Traps}
+\begin{itemize}
+  \trap{\ct{trackForLeaks} on a SUT kept in a \ct{var sut} property always fails: teardown
+        blocks run \emph{before} \ct{tearDown()} nils it — build it in a local \ct{makeSUT()}.}
+  \trap{Shared statics, singletons, \ct{UserDefaults.standard} race once tests run in
+        parallel — inject them, or \ct{.serialized} as the last resort.}
+  \trap{\ct{.timeLimit} / \ct{executionTimeAllowance} catch hangs, not slowness — that is
+        \ct{measure}'s job.}
+\end{itemize}
+
+\columnbreak
+
+\section{XCTest → Swift Testing}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{50mm}@{}}
+\toprule
+\textbf{XCTest} & \textbf{Swift Testing}\\
+\midrule
+\ct{XCTAssertTrue(x)} & \ct{\#expect(x)}\\
+\ct{XCTAssertEqual(a, b)}, \ct{…Nil}, \ct{…Identical}, \ct{…GreaterThan} & \ct{\#expect(a == b)}, \ct{x == nil}, \ct{===}, \ct{>} — one macro; a failure shows every operand's value\\
+\ct{XCTAssertThrowsError} & \ct{let e = \#expect(throws: E.self) \{ try f() \}} — \ct{e: E?} (6.1); \ct{(any Error).self} for any\\
+\ct{XCTAssertNoThrow} & \ct{\#expect(throws: Never.self) \{ try f() \}}\\
+\ct{try XCTUnwrap(x)} & \ct{try \#require(x)} — throws \ct{ExpectationFailedError}, ends this test\\
+\ct{XCTFail("…")} & \ct{Issue.record("…")}; \ct{severity: .warning} (6.3)\\
+\ct{XCTSkipIf} & \ct{.enabled(if:)} · \ct{.disabled("why")}; mid-test \ct{try Test.cancel()} (6.3)\\
+\ct{XCTExpectFailure} & \ct{withKnownIssue \{ \}} — no issue ⇒ records one, unless \ct{isIntermittent: true}\\
+\ct{XCTestExpectation} & \ct{await confirmation(expectedCount: 1...) \{ c in \}} — counted when the closure \emph{returns}; it never waits\\
+\ct{setUp} / \ct{tearDown} & \ct{init()} / \ct{deinit}; shared async → \ct{TestScoping} trait\\
+\ct{executionTimeAllowance} & \ct{.timeLimit(.minutes(n))} — minutes only, shortest wins\\
+\ct{XCTAttachment} & \ct{Attachment.record(value, named:)} (6.2)\\
+\ct{measure}, \ct{XCUIApplication}, Objective-C & — stay in XCTest\\
+\bottomrule
+\end{tabular}}
+
+\section{Swift Testing — the rules}
+\begin{itemize}
+  \item \ct{@Test} on a function at file scope or in a type; \ct{async}, \ct{throws},
+        \ct{@MainActor} allowed. Name: \ct{@Test("…")} or a raw identifier
+        \ct{func \textasciigrave adds two numbers\textasciigrave()} (6.2).
+  \item A type holding tests \emph{is} a suite; \ct{@Suite} only adds a name or traits.
+        Zero-argument \ct{init} required; never \ct{@available} on a suite. Suite traits
+        (tags, \ct{.disabled}) are inherited.
+  \item \ct{\#expect} expands to code capturing the source text and each subexpression's
+        value; \ct{\#require} also throws. Mid-test failure → \ct{Issue.record}.
+  \item \textbf{Parallel, randomised, in-process} (tasks), on devices too. Tests no longer
+        default to the main actor. \ct{.serialized} — inherited by nested suites; on a
+        parameterized test its cases run one by one.
+  \item \textbf{Run}: \ct{swift test} runs both frameworks; \ct{--filter} / \ct{--skip} take a
+        regex; \ct{--no-parallel}. 6.4: \ct{--maximum-repetitions n --repeat-until pass|fail}
+        repeats only the matching cases — as Xcode 27's repetition mode now does.
+  \item \textbf{Traits}: \ct{.enabled(if:)} · \ct{.disabled} · \ct{.bug("url")} ·
+        \ct{.tags(.slow)} with \ct{extension Tag \{ @Tag static var slow: Self \}} (test
+        plans include/exclude by tag) · \ct{.timeLimit} · \ct{.serialized} ·
+        \ct{.compactMapIssues} / \ct{.filterIssues} (6.2) · a custom \ct{TestScoping} (6.1).
+  \item \textbf{Exit tests} (6.2): \ct{await \#expect(processExitsWith: .failure) \{ … \}} —
+        the closure is \ct{main()} of a child process of the same test binary;
+        \ct{.success} · \ct{.failure} · \ct{.exitCode(n)} · \ct{.signal(n)}; may observe
+        stdout/stderr. Captures (6.3): listed, \ct{Sendable} + \ct{Codable}. macOS, Linux,
+        FreeBSD, OpenBSD, Windows — \textbf{not iOS}.
+  \item \textbf{Attachments}: \ct{String}, bytes, \ct{Data}, \ct{Encodable} (6.2); \ct{CGImage},
+        \ct{UIImage}, \ct{NSImage}, \ct{CIImage} as \ct{.png}/\ct{.jpeg} (6.3); \ct{Transferable}
+        (6.4). Xcode: test report + \ct{.xcresult}; \ct{swift test --attachments-path}.
+\end{itemize}
+
+\section{Arguments — one test case each}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \ox/\zip/\ttl in {0/0/{\ct{arguments: [1,2,3], [a,b,c]}}, 3.05/1/{\ct{arguments: zip(…)}}} {
+    \node[l, anchor=west] at (\ox,1.35) {\ttl};
+    \foreach \i/\a in {0/1,1/2,2/3} \node[l] at (\ox+0.55+\i*0.4,1.05) {\a};
+    \foreach \j/\b in {0/a,1/b,2/c} \node[l] at (\ox+0.2,0.75-\j*0.3) {\b};
+    \foreach \i in {0,1,2} \foreach \j in {0,1,2} {
+      \pgfmathparse{(\zip==0 || \i==\j) ? 1 : 0}
+      \ifnum\pgfmathresult=1 \node[dot, fill=sheetBlue!45] at (\ox+0.55+\i*0.4,0.75-\j*0.3) {};
+      \else \node[dot, draw=sheetGrey!50] at (\ox+0.55+\i*0.4,0.75-\j*0.3) {}; \fi }
+  }
+  \node[l, anchor=west, text=sheetBlue] at (1.75,0.45) {9 cases};
+  \node[l, anchor=west, text=sheetBlue] at (4.8,0.45) {3 cases};
+\end{tikzpicture}\par
+Each element is its own case, run in parallel, shown and re-runnable alone (if the argument is
+\ct{CustomTestArgumentEncodable}, \ct{RawRepresentable}, \ct{Encodable} or \ct{Identifiable}).
+At most \textbf{two} collections — every combination; \ct{zip} pairs them.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Testing fundamentals · Test doubles ·
+Testable design · Testing ViewModels, Coordinators, UI \& snapshots · Async \& network testing ·
+Flaky tests, CI, coverage \& TDD · ARC, strong / weak / unowned · Instruments · Macros \& result
+builders · Sanitizers \& runtime checkers}
+
+\end{document}

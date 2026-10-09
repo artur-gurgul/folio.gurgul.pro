@@ -1,0 +1,269 @@
+% flaky-tests-ci-tdd.tex — flaky tests (causes, numbers, the response), the Xcode / Swift Testing
+% levers (order, parallel, repetition, known issues, limits), CI, coverage, TDD and BDD.
+% Sources (checked 2026-10-09):
+%   testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html (Micco: ~1.5 % of all runs
+%     flaky; almost 16 % of tests some flakiness; 84 % of pass → fail transitions involve a flaky
+%     test; re-run failing tests; flaky label = fail only after 3 in a row; auto-quarantine + bug)
+%   testing.googleblog.com/2017/04/where-do-our-flaky-tests-come-from.html (Listfield: 4.2 M tests;
+%     binary size r2 0.82, RAM r2 0.76; all 1.65 %, Java WebDriver 10.45 %, Python WebDriver
+%     18.72 %, internal integration tool 14.94 %, Android emulator 25.46 %; size explains most)
+%   mir.cs.illinois.edu/marinov/publications/LuoETAL14FlakyTestsAnalysis.pdf (Luo, Hariri, Eloussi,
+%     Marinov, FSE 2014: 201 commits, 51 Apache projects, 161 classified — Table 2 counts; F.2 78 %
+%     flaky when written; F.8 54 % async-wait fixed by waitFor; F.9 31 % locks, 25 % deterministic;
+%     F.10 74 % order fixed by cleaning state; F.12 24 % of fixes change the CUT, 94 % of those a bug)
+%   martinfowler.com/articles/nonDeterminism.html (2011: "a virulent infection"; isolation, async,
+%     remote services, time, resource leaks; quarantine cap e.g. 8 tests or a week; no bare
+%     sleeps; wrap the system clock; pool size 1)
+%   github.com/swiftlang/swift-evolution proposals/testing/0009-attachments.md (Swift 6.2) · /articles/continuousIntegration.html (revised 18 Jan 2024: practices,
+%     ten-minute build, second-stage suite) · /bliki/TestCoverage.html (2012: upper 80s or 90s,
+%     suspicious of 100 %, the two signs of enough testing)
+%   testing.googleblog.com/2020/08/code-coverage-best-practices.html (60 / 75 / 90 %; per-commit 99 %
+%     reasonable, 90 % lower threshold; executed is not tested; mutation testing is better)
+%   developer.apple.com/documentation/xcode/determining-how-much-code-your-tests-cover (line-based,
+%     test plan "Gather coverage for", linear slowdown, skipped tests excluded, known issues counted)
+%   keith.github.io/xcode-man-pages (Apple man pages): xcodebuild.1 (-test-iterations,
+%     -retry-tests-on-failure (3 if no count), -run-tests-until-failure,
+%     -test-repetition-relaunch-enabled, -parallel-testing-worker-count, -test-timeouts-enabled,
+%     -enableCodeCoverage, -enableThreadSanitizer, -resultBundlePath (exists = error),
+%     build-for-testing / test-without-building -xctestrun, -only-testing, -testPlan,
+%     -collect-test-diagnostics) · xccov.1 (view --report --json, diff, merge)
+%   clang.llvm.org/docs/SourceBasedCodeCoverage.html (function, line, region, branch, MC/DC)
+%   developer.apple.com/videos: wwdc2018/403 (default order by name; randomize; parallel by class
+%     on simulator clones, own containers, original = template) · wwdc2021/10296 (repetition modes,
+%     xcodebuild flags) · wwdc2024/10195 (Swift Testing: parallel in-process by default, random
+%     order, physical devices, .serialized, withKnownIssue)
+%   developer.apple.com/documentation/xctest: XCTestCase.executionTimeAllowance (600 s, rounded up
+%     to a minute, needs timeouts enabled) · XCTExpectedFailure.Options.isStrict (default true)
+%   github.com/swiftlang/swift-testing: Testing.docc/Parallelization.md · Running/Runner.swift
+%     (shuffled when parallel, source order otherwise) · Issues/KnownIssue.swift (isIntermittent)
+%     · Traits/TimeLimitTrait.swift (≥ 1 min, whole minutes, shortest wins) · Bug.swift ·
+%     ConditionTrait.swift
+%   developer.apple.com Xcode 26.4 release notes (unwaited expectations now cleared; known issue:
+%     continueAfterFailure = false + async failure skips retries, workaround relaunch) · Xcode 27
+%     release notes (Swift 6.4; swift test --repeat-until / --maximum-repetitions; repetition mode
+%     repeats single Swift Testing cases)
+%   swift.org/documentation/server/guides/llvm-sanitizers.html (swift test --sanitize=thread)
+%   developer.apple.com/documentation/swift/hasher (randomly seeded per execution)
+%   github.com/actions/runner-images README (macos-latest = macOS 26 arm64; xcode-27 preview; one
+%     Xcode major per image; patch versions replaced; weekly updates)
+%   developer.apple.com/xcode-cloud (25 compute hours a month included; 100 → 10 000 h tiers) ·
+%     /documentation/xcode/writing-custom-build-scripts (ci_scripts, the three scripts)
+%   github.com/muter-mutation-testing/muter README (score = killed / total; four operators)
+%   newsletter.kentbeck.com/p/canon-tdd (11 Dec 2023: five steps, the mistakes) · oreilly.com
+%     catalogue of Test-Driven Development: By Example (2002; ch. 28 Green Bar Patterns) ·
+%     blog.cleancoder.com/uncle-bob/2014/12/17/TheCyclesOfTDD.html (three laws, cycles) ·
+%     martinfowler.com/bliki/TestDrivenDevelopment.html (neglecting refactoring) ·
+%     /articles/mocksArentStubs.html (classical / mockist; Detroit / London; middle-out /
+%     outside-in) · /bliki/GivenWhenThen.html (North + Matts; AAA, four-phase) ·
+%     /articles/is-tdd-dead (9 May – 4 Jun 2014) · dannorth.net/blog/introducing-bdd (Better
+%     Software, March 2006; "should"; JBehave)
+% @labels: area=testing kind=process platform=general topic=testing,build discussion=262
+% @tags: flaky-test, quarantine, test-repetition, random-order, parallel-testing, xctestplan, xcodebuild, ci-cd, xcode-cloud, code-coverage, xccov, mutation-testing, tdd, canon-tdd, red-green-refactor, given-when-then, classicist-vs-mockist, tsan
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\tikzset{
+  hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  l/.style={font=\tiny, text=black!75, align=left, inner sep=1pt},
+  rl/.style={font=\scriptsize, anchor=east, inner sep=1pt},
+  fb/.style={box, font=\tiny, text width=25mm, inner sep=1.5pt, minimum height=4.6mm},
+  ph/.style={box, font=\tiny, text width=15.5mm, inner sep=1.5pt, minimum height=8mm},
+}
+
+\begin{document}
+
+\sheettitle{Flaky tests · CI · coverage · TDD}{testing · folio}
+
+\oneliner{A \textbf{flaky} test passes and fails on the \emph{same} code. The cause is
+nondeterminism — async waits, races, test order, network, time — so \textbf{remove the
+source}; a retry only measures it. Coverage says what \emph{ran}, not what was
+\emph{checked}. TDD = \textbf{test list → one failing test → pass → refactor}, minutes per loop.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ===== root causes (Luo et al. 2014, Table 2)
+  \node[hd] at (-0.1,0.55) {Why tests flake — 161 classified fixes, 51 Apache projects (FSE 2014)};
+  \foreach \i/\lab/\n/\fx in {
+    0/async wait/74/{await the event (\ct{await}, \ct{fulfillment(of:)}, \ct{confirmation}),\\never \ct{sleep()} — 54\,\% were fixed by waiting for it},
+    1/concurrency/32/{isolate shared state (actor, lock); run Thread Sanitizer\\fixes: 31\,\% added locks, 25\,\% made the code deterministic},
+    2/test order/19/{every test builds its own world: statics, singletons, defaults,\\files — 74\,\% were fixed by cleaning shared state},
+    3/resource leak/11/{release in tearDown; pool size 1 in tests exposes the leaker},
+    4/network/10/{stub at \ct{URLProtocol}; contract-test the stub, not the host},
+    5/time/5/{wrap the clock: inject a \ct{Clock} / \ct{now}, never \ct{Date()} in logic},
+    6/IO/4/{a fresh temporary directory per test},
+    7/randomness/4/{inject a seeded \ct{RandomNumberGenerator}},
+    8/floating point/3/{compare with a tolerance (\ct{accuracy:}), not \ct{==}},
+    9/unordered coll./1/{\ct{Set} / \ct{Dictionary} order changes per launch (seeded \ct{Hasher})}}
+  {
+    \node[rl] at (1.75,-0.44*\i) {\lab};
+    \fill[sheetRed!55] (1.8,-0.44*\i-0.12) rectangle ++(0.032*\n,0.24);
+    \node[l, anchor=west] at (1.8+0.032*\n,-0.44*\i) {\n};
+    \node[l, anchor=west, text=sheetGreen!45!black, execute at begin node={\setstretch{0.85}}] at (4.65,-0.44*\i) {\fx};
+  }
+  \node[l, anchor=west] at (1.75,-4.32) {top three = 77\,\% · 40 of the 201 fix commits could not be classified};
+  \draw[sheetGrey!50] (9.85,0.75) -- (9.85,-4.45);
+  % ===== the response
+  \node[hd] at (9.9,0.55) {A test went red};
+  \node[fb] (a) at (11.35,0.02) {red on CI};
+  \node[fb] (b) at (11.35,-0.82) {re-run on the same commit};
+  \node[fb, draw=sheetOrange, fill=sheetOrange!12] (c) at (11.35,-1.66) {\textbf{FLAKY}: passes and fails on one commit};
+  \node[fb] (d) at (11.35,-2.5) {quarantine: out of the gate, bug filed};
+  \node[fb] (e) at (11.35,-3.34) {reproduce: repeat until failure, random order, TSan};
+  \node[fb, draw=sheetGreen, fill=sheetGreen!10] (f) at (11.35,-4.18) {fix the source → back in the gate};
+  \foreach \p/\q in {a/b,b/c,c/d,d/e,e/f} \draw[flow] (\p) -- (\q);
+  \node[l, anchor=west, text width=36mm] at (12.75,-0.82) {red again → \textbf{real failure}: fix or revert now};
+  \node[l, anchor=west, text width=36mm] at (12.75,-1.66) {Google: $\sim$1.5\,\% of all runs flaky; 84\,\% of pass→fail flips involve a flaky test};
+  \node[l, anchor=west, text width=36mm] at (12.75,-2.5) {cap it, e.g. 8 tests or a week (Fowler). Google quarantines automatically; ``fail only after 3 in a row'' hides real bugs};
+  \node[l, anchor=west, text width=36mm] at (12.75,-3.34) {78\,\% were flaky from their first commit → stress a new test before merging};
+  \node[l, anchor=west, text width=36mm, text=sheetRed] at (12.75,-4.18) {24\,\% of fixes changed the code under test — 94\,\% of those fixed a real bug};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Flakiness grows with size}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \i/\lab/\v in {0/all tests/1.65, 1/Java WebDriver/10.45, 2/internal integration tool/14.94,
+                           3/Python WebDriver/18.72, 4/Android emulator/25.46}
+  {
+    \node[rl, font=\tiny] at (2.6,-0.3*\i) {\lab};
+    \fill[sheetOrange!65] (2.65,-0.3*\i-0.09) rectangle ++(0.17*\v,0.18);
+    \node[l, anchor=west] at (2.65+0.17*\v,-0.3*\i) {\v\,\%};
+  }
+  \node[l, anchor=north west, text width=26mm, font=\scriptsize\bfseries, text=sheetOrange!80!black] at (5.25,0.15) {\% of tests flaky, by tool};
+  \node[l, anchor=north west, text width=26mm] at (5.25,-0.17) {Google, 4.2\,M tests (2017)};
+\end{tikzpicture}\par
+Flaky share rises \emph{linearly} with test size — binary size r\textsuperscript{2} 0.82, RAM
+r\textsuperscript{2} 0.76; once size is accounted for, the tool adds little. Almost 16\,\% of
+Google's tests show some flakiness (2016). Google's TAP, as reported in 2014: 1.6\,M test
+failures a day, 73\,K of them (4.56\,\%) flaky; a failing test was re-run 10 times on the same
+version, and one pass labelled it flaky. 96\,\% of the flaky tests in the FSE study did not
+depend on OS or hardware — they reproduce on a laptop. Fowler: flaky tests are ``a virulent
+infection'' — once people shrug at red, healthy tests' failures get ignored too.
+
+\section{Xcode \& Swift Testing levers}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{37mm}>{\raggedright\arraybackslash}p{31mm}@{}}
+\toprule
+& \textbf{XCTest · Xcode · xcodebuild} & \textbf{Swift Testing · swift test}\\
+\midrule
+order & sorted by name; ``Randomize execution order'' (Xcode 10) = test plan Execution Order: random & shuffled when parallel; source order with \ct{--no-parallel}\\
+parallel & N runner \emph{processes}; on simulator \emph{clones}, handed out \textbf{by class}; each clone has its own app container, the original is only the template; \ct{-parallel-testing-worker-count N} & in-process task groups, on by default, physical devices too; \ct{.serialized} orders one suite — unrelated suites still run beside it\\
+repeat & Xcode 13: fixed iterations · until failure · retry on failure; \ct{-test-iterations N} + \ct{-run-tests-until-failure} / \ct{-retry-tests-on-failure} (no N = 3); \ct{-test-repetition-relaunch-enabled YES} = new process each time & Swift 6.4: \ct{--repeat-until pass|fail --maximum-repetitions N} re-runs only matching cases; Xcode 27 repeats single cases, not the plan\\
+known issue & \ct{XCTExpectFailure("…", strict: false)}; strict (default) fails once the failure stops & \ct{withKnownIssue(isIntermittent: true)\{…\}}; without it a missing failure is an issue · \ct{.disabled("…")} \ct{.bug(url)}\\
+limit & \ct{executionTimeAllowance}: 600\,s default, rounded up to a minute; only with \ct{-test-timeouts-enabled YES} & \ct{.timeLimit(.minutes(n))}: whole minutes, $\ge$1; the shortest limit wins\\
+races & \ct{-enableThreadSanitizer YES} & \ct{swift test --sanitize=thread}\\
+evidence & \ct{-collect-test-diagnostics} adds sysdiagnoses and log archives to the result & \ct{Attachment.record(…)} (Swift 6.2); images since Xcode 26.4\\
+\bottomrule
+\end{tabular}}
+
+\section{Coverage — what ran, not what was checked}
+\noindent\begin{tikzpicture}[sheet]
+  \shade[left color=sheetRed!25, right color=sheetGreen!35] (0,0) rectangle (7.6,0.16);
+  \foreach \x in {0,25,50,75,100} \node[l] at (0.076*\x,-0.14) {\x};
+  \foreach \x/\t in {60/acceptable,75/commendable,90/exemplary}
+    { \draw[thick, sheetBlue] (0.076*\x,0.16) -- (0.076*\x,0.34); \node[l, text=sheetBlue, align=center, anchor=south] at (0.076*\x,0.32) {\x\,\%\\\t}; }
+  \node[l, text=sheetBlue, anchor=east, align=right] at (4.0,0.5) {Google, whole project};
+  \draw[sheetBrown, line width=2pt] (0.076*85,-0.33) -- (0.076*97,-0.33);
+  \node[l, text=sheetBrown, anchor=east] at (6.4,-0.35) {Fowler: ``upper 80s or 90s'' when testing thoughtfully};
+  \node[l, text=sheetRed, anchor=east, align=right] at (7.6,-0.62) {$\sim$100\,\%: suspicious};
+  \node[l, anchor=west] at (0,-0.62) {Google, per commit: 99\,\% reasonable, 90\,\% a good lower threshold};
+\end{tikzpicture}
+\begin{itemize}
+  \item \textbf{Xcode is line-based}: execution count per line, never-run code in red. Turn on
+        in the test plan (``Gather coverage for'' chosen targets) or \ct{-enableCodeCoverage YES};
+        it slows tests linearly. Skipped tests don't count; known-issue / expected-failure tests
+        \emph{do}.
+  \item CI: \ct{xcrun xccov view --report --json R.xcresult} (\ct{--files-for-target},
+        \ct{--functions-for-file}) · \ct{xccov diff --json old.xcresult new.xcresult} ·
+        \ct{xccov merge}.
+  \item LLVM counts function, line, region, \textbf{branch} and \textbf{MC/DC}
+        (\ct{-fcoverage-mcdc}) — a line can be covered while one of its branches never ran.
+  \item Executed $\ne$ tested: assertion-free tests raise the number too. Enough = bugs rarely escape
+        \emph{and} nobody fears changing code. \textbf{Mutation testing} checks the asserts:
+        mutate the code, re-run; a surviving mutant = a missing assertion; score = killed /
+        total. Swift: Muter (swap relational operators, remove side effects, change \ct{\&\&}/\ct{||},
+        swap ternaries).
+\end{itemize}
+
+\columnbreak
+
+\section{CI — fast gate, slow second stage}
+\noindent\begin{tikzpicture}[sheet]
+  \node[fb, text width=8mm] (p) at (0.46,0) {push to mainline};
+  \node[fb, text width=25mm, draw=sheetGreen, fill=sheetGreen!8] (c) at (2.48,0) {\textbf{commit stage} $\le$10\,min: \ct{build-for-testing} once, unit tests sharded};
+  \node[fb, text width=22mm, draw=sheetOrange, fill=sheetOrange!10] (s) at (5.2,0) {\textbf{2nd stage}: UI tests, more devices · OS, sanitizers, nightly};
+  \node[fb, text width=10mm, draw=sheetGrey, fill=black!4] (r) at (7.2,0) {\ct{.xcresult}, coverage, logs};
+  \draw[flow] (p) -- (c); \draw[flow] (c) -- (s); \draw[flow] (s) -- (r);
+  \node[l, anchor=north west] at (0,-0.48) {shards: \ct{test-without-building -xctestrun} + \ct{-only-testing} / \ct{-skip-testing} per machine};
+\end{tikzpicture}
+\begin{itemize}
+  \item \textbf{CI} (Fowler, rev.\ 2024): everyone pushes to mainline daily · every push builds ·
+        self-testing build · fix a broken build \emph{immediately} · keep it fast (XP's
+        ten-minute build) · slower suites in a second stage.
+  \item \textbf{Pin the world}: \ct{-destination 'platform=iOS Simulator,name=…,OS=…'}, the Xcode
+        version, the test plan (\ct{-testPlan}, \ct{-only-test-configuration}). GitHub Actions
+        \ct{macos-latest} = macOS 26 arm64 (Oct 2026), \ct{xcode-27} in preview; one Xcode
+        major per image, patches replaced, images updated weekly.
+  \item \textbf{Xcode Cloud}: 25 compute hours a month with the developer membership (paid tiers
+        100 → 10\,000\,h). Executable \ct{ci\_scripts/} beside the project:
+        \ct{ci\_post\_clone.sh}, \ct{ci\_pre\_xcodebuild.sh}, \ct{ci\_post\_xcodebuild.sh}
+        (runs even when xcodebuild failed).
+\end{itemize}
+
+\section{TDD — Canon TDD (Beck, Dec 2023)}
+\noindent\begin{tikzpicture}[sheet]
+  \node[ph, draw=sheetGrey, fill=black!4] (L) at (0.84,0) {\textbf{1 TEST LIST}\\behaviours to cover — no design yet};
+  \node[ph, draw=sheetRed, fill=sheetRed!10] (R) at (2.86,0) {\textbf{2 RED}\\exactly one item → a runnable test};
+  \node[ph, draw=sheetGreen, fill=sheetGreen!12] (G) at (4.88,0) {\textbf{3 GREEN}\\make it \emph{and all earlier} tests pass};
+  \node[ph] (F) at (6.9,0) {\textbf{4 REFACTOR}\\optional — improve the design};
+  \draw[hot] (L) -- (R); \draw[hot] (R) -- (G); \draw[hot] (G) -- (F);
+  \draw[hot] (F.south) -- ++(0,-0.25) -| node[l, pos=0.25, below] {5 until the list is empty} (R.south);
+  \draw[flow, dashed] (G.north) -- ++(0,0.2) -| node[l, pos=0.25, above] {new cases found → onto the list} (L.north);
+\end{tikzpicture}
+\begin{itemize}
+  \item \textbf{Green-bar patterns} (\emph{TDD by Example}, 2002): \textbf{Fake It} (a constant
+        first) · \textbf{Triangulate} (generalise only from a second example) · \textbf{Obvious
+        Implementation} (just type it).
+  \item \textbf{Three laws} (R.\,C.\,Martin): no production code before a failing test · no more
+        test than enough to fail — not compiling counts · no more code than enough to pass.
+        Laws = seconds; red-green-refactor = minutes; ``as the tests get more specific, the code
+        gets more generic'' $\approx$ 10\,min.
+  \item \textbf{Canon mistakes}: assertion-free tests for coverage · all list items as tests
+        before one passes · deleting asserts or pasting computed values as expected ·
+        refactoring while going green · abstracting too soon (``duplication is a hint, not a
+        command''). Fowler: the commonest TDD failure is skipping the refactor.
+  \item \textbf{Classical} (``Detroit'') TDD: real objects, middle-out; \textbf{mockist}
+        (``London''): mocks, outside-in. \textbf{BDD} (Dan North, March 2006; JBehave):
+        ``should'' names, \textbf{Given / When / Then} (with Chris Matts) = Arrange / Act /
+        Assert. \textbf{``Is TDD dead?''} (DHH, Beck, Fowler, May–June 2014):
+        ``test-induced design damage'' vs self-testing code as the goal.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Retry-on-failure as the CI gate: the build goes green and the race ships. Repeat to
+        \emph{measure}, with a ticket.}
+  \trap{Xcode 26.4: \ct{continueAfterFailure = false} + a failing \ct{async} test skipped its
+        retries — turn on ``Relaunch Tests for Each Repetition''.}
+  \trap{Before Xcode 26.4 an expectation never waited on could fire inside a later, unrelated
+        test.}
+  \trap{\ct{-resultBundlePath} must not exist yet — xcodebuild exits with an error.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Red twice on one commit = a bug; red once = a flake = still a bug.} Repeat to measure,
+fix the source, cap the quarantine. Coverage finds gaps; mutants find missing asserts.
+\textbf{List → red → green → refactor.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Testing fundamentals · Test doubles ·
+Testable design — DI, seams \& legacy code · XCTest \& Swift Testing · Testing ViewModels,
+Coordinators, UI \& snapshots · Async \& network testing · Time in Swift · Sanitizers \& runtime
+checkers · Code signing \& iOS CI/CD · Code smells → refactorings}
+
+\end{document}

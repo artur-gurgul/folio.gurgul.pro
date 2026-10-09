@@ -1,0 +1,343 @@
+% testing-fundamentals.tex — the test pyramid and its rival shapes, test size vs scope, what makes a
+% unit test, FIRST, Test Desiderata, SUT / DOC and the phases of one test (AAA, Given-When-Then,
+% four-phase), testing behaviour rather than implementation, which Apple framework runs each layer.
+% Sources (checked 2026-10-09):
+%   martinfowler.com/bliki/TestPyramid.html (2012: Cohn, Succeeding with Agile 2009, drawn with Lisa
+%     Crispin 2003-4; Huggins ~2006; "many more low-level UnitTests than high level BroadStackTests";
+%     GUI tests brittle, expensive to write, slow; high-level failure = missing or wrong unit test,
+%     replicate a bug with a unit test before fixing it; ice-cream cone)
+%   martinfowler.com/articles/practical-test-pyramid.html (Vocke, 26 Feb 2018: Cohn's layers Unit /
+%     Service / UI; different granularity, fewer tests the higher you go; push tests down; observable
+%     behaviour, not internal structure; private methods; trivial code; contract tests)
+%   martinfowler.com/bliki/UnitTest.html (2014: low-level, written by the programmers, significantly
+%     faster; the team decides what a unit is; solitary / sociable coined by Jay Fields; mockist /
+%     classicist; Beck: commit suite <= 10 min) · /bliki/IntegrationTest.html (2018: narrow vs broad;
+%     call broad ones system / end-to-end) · /articles/2021-test-shapes.html (shapes differ in what
+%     "unit" means; Searls quote) · /bliki/GivenWhenThen.html (2013: North + Matts, BDD; = four-phase
+%     setup / exercise / verify / teardown, = Wake's AAA) · /articles/mocksArentStubs.html (four phases)
+%   dannorth.net/blog/introducing-bdd (Better Software, March 2006; template with Chris Matts, late 2004)
+%   xp123.com/3a-arrange-act-assert (Bill Wake, named 2001; most unit tests need no teardown)
+%   xunitpatterns.com glossary: SUT, DOC (Meszaros, xUnit Test Patterns, 2007) — read via search excerpts,
+%     the site refused TLS
+%   artima.com/weblogs/viewpost.jsp?thread=126923 (Feathers, Sep 2005: the five "not a unit test" rules;
+%     such tests are not bad, keep them apart so the fast suite stays fast)
+%   agileinaflash.blogspot.com/2009/02/first.html + agileotter.blogspot.com/2021/09 (FIRST: Ottinger and
+%     Schuchert at Object Mentor; Clean Code ch. 9; Isolated vs Independent; a second is too slow; T is
+%     only ever Timely)
+%   testdesiderata.com (Kent Beck: the 12 properties and their definitions; some support each other,
+%     some interfere) — the 2019 Medium date from sammancoaching.org (secondary; medium.com refused)
+%   testing.googleblog.com/2015/04/just-say-no-to-more-end-to-end-tests.html (Wacker: 70/20/10 "a good
+%     first guess"; judge a strategy by how it helps fix bugs, not only find them; ice cream cone)
+%   abseil.io/resources/swe-book/html/ch11.html (Software Engineering at Google, 2020: small = one process,
+%     often one thread, no sleep / I/O / blocking call; medium = one machine, localhost only; large =
+%     many machines, kept for config + legacy; size vs scope; ~80/15/5; ice cream cone, hourglass;
+%     Beyonce Rule; coverage; flakiness 1 % / 0.15 %) · ch12.html (public API, state not interactions,
+%     behaviours not methods, no logic, DAMP, unchanging tests and the four kinds of change, brittle)
+%   bazel.build/reference/test-encyclopedia (size -> timeout: 60 / 300 / 900 / 3600 s)
+%   alisterscott.github.io/TestingPyramids.html (ice-cream cone: GUI + manual on top; 2012 post per search)
+%     · kentcdodds.com/blog/the-testing-trophy-and-testing-classifications (trophy tweet 6 Feb 2018;
+%     static / unit / integration / E2E; "the more your tests resemble …") ·
+%     engineering.atspotify.com/2018/01/testing-of-microservices (honeycomb: integrated / integration /
+%     implementation detail; Rainsberger's integrated test)
+%   developer.apple.com/documentation: testing (Swift 6 + Xcode 16; parallel in-process) ·
+%     testing/migratingfromxctest (XCTest runs a suite sequentially by default) · testing/organizingtests
+%     (each @Test on a distinct suite instance) · testing/expectations (#expect continues, #require
+%     throws) · xctest (Swift Testing for new unit tests; XCTest for UI + performance; both in a target,
+%     never mixed in one test) · xcuiautomation (Xcode 16.3+; XCUIApplication = proxy) ·
+%     library/archive testing_with_xcode ch. 9 (UI test code runs as a separate process; accessibility)
+% @labels: area=testing kind=concept platform=general topic=testing discussion=265
+% @tags: test-pyramid, ice-cream-cone, testing-trophy, test-sizes, unit-test, integration-test, solitary-vs-sociable, classicist-vs-mockist, first-unit-tests, test-desiderata, arrange-act-assert, given-when-then, sut, depended-on-component, behaviour-vs-implementation, swift-testing, xctest, xcuitest
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={struct,final,class,func,var,let,init,import,return,self,try,throws,true,false},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]"}
+
+\tikzset{
+  lay/.style={draw=white, line width=0.8pt},
+  lbl/.style={font=\scriptsize, align=center, inner sep=0.5pt},
+  tny/.style={font=\tiny, align=center, inner sep=0.5pt},
+  tl/.style={font=\scriptsize, text=black!80, align=left, inner sep=0.5pt, anchor=west},
+  capt/.style={font=\tiny, align=center, inner sep=0.5pt, anchor=north, text=black!75},
+  ev/.style={font=\tiny, align=center, inner sep=0.5pt, text=black!80},
+  ds/.style={draw=sheetGrey!60, fill=sheetBlue!5, rounded corners=1pt, minimum width=19mm,
+             minimum height=7mm, text width=18mm, align=center, inner sep=0.5pt,
+             font={\tiny\hyphenpenalty=10000\exhyphenpenalty=10000}},
+}
+
+\begin{document}
+
+\sheettitle{Testing fundamentals — the pyramid, FIRST, AAA}{testing · folio}
+
+\oneliner{Catch each bug at the \textbf{lowest level} that can: many small, fast, deterministic
+tests and few broad ones (the \textbf{pyramid}). Test \textbf{behaviour through the public API},
+so a test fails only when behaviour changes. A good test is \textbf{FIRST} and reads
+\textbf{Arrange → Act → Assert}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ===== the pyramid
+  \fill[sheetGreen!45, lay] (0,0) -- (5.4,0) -- (4.185,1.35) -- (1.215,1.35) -- cycle;
+  \fill[sheetBlue!35, lay] (1.215,1.35) -- (4.185,1.35) -- (3.33,2.3) -- (2.07,2.3) -- cycle;
+  \fill[sheetRed!45, lay] (2.07,2.3) -- (3.33,2.3) -- (2.7,3.0) -- cycle;
+  \node[lbl] at (2.7,0.9) {\textbf{UNIT}};
+  \node[tny] at (2.7,0.45) {70\,\% (Google 2015) · 80\,\% (2020)};
+  \node[lbl] at (2.7,1.95) {\textbf{SERVICE}};
+  \node[tny] at (2.7,1.6) {20\,\% · 15\,\%};
+  \node[tny, font=\tiny\bfseries] at (2.7,2.62) {UI};
+  \node[tny] at (2.7,2.42) {10 · 5\,\%};
+  \node[capt, font=\scriptsize\bfseries, text=sheetGreen!50!black] at (2.7,-0.05) {test pyramid — Cohn's three layers};
+  \node[capt] at (2.7,-0.37) {shares: Google's suggested mix, not Cohn's};
+  % ===== the slope
+  \draw[<->, thick, sheetGrey] (5.65,0.05) -- (5.65,2.95);
+  \node[tl, text=sheetRed] at (5.8,2.85) {\textbf{up:} closer to real use, so more confidence};
+  \node[tl, text=sheetRed] at (5.8,2.57) {(Dodds); through a GUI: brittle, expensive};
+  \node[tl, text=sheetRed] at (5.8,2.29) {to write, slow (Fowler); root cause of a};
+  \node[tl, text=sheetRed] at (5.8,2.01) {failure is hard to find (Wacker)};
+  \node[tl] at (5.8,1.55) {\textbf{rule:} push each test as low as it can go;};
+  \node[tl] at (5.8,1.27) {a high failure with no low one = a missing};
+  \node[tl] at (5.8,0.99) {unit test — reproduce a bug in one first};
+  \node[tl, text=sheetGreen!50!black] at (5.8,0.53) {\textbf{down:} fast, reliable, and the failure};
+  \node[tl, text=sheetGreen!50!black] at (5.8,0.25) {is isolated to one place (Wacker)};
+  % ===== ice-cream cone
+  \begin{scope}[xshift=10.65cm]
+    \fill[sheetGreen!45, lay] (-0.2,0.7) -- (0.2,0.7) -- (0,0.2) -- cycle;
+    \fill[sheetBlue!35, lay] (-0.42,1.2) -- (0.42,1.2) -- (0.2,0.7) -- (-0.2,0.7) -- cycle;
+    \fill[sheetRed!45, lay] (-0.72,2.05) -- (0.72,2.05) -- (0.42,1.2) -- (-0.42,1.2) -- cycle;
+    \fill[sheetGrey!35] (0,2.4) ellipse (0.68 and 0.38);
+    \node[tny] at (0,2.42) {manual};
+    \node[tny] at (0,1.62) {GUI};
+    \node[tny] at (0,0.95) {integ.};
+    \node[capt] at (0,-0.05) {\textbf{\textcolor{sheetRed}{ice-cream cone}}\\anti-pattern:\\mostly GUI + manual};
+  \end{scope}
+  % ===== hourglass
+  \begin{scope}[xshift=12.3cm]
+    \fill[sheetGreen!45, lay] (-0.72,0.2) -- (0.72,0.2) -- (0.2,0.95) -- (-0.2,0.95) -- cycle;
+    \fill[sheetBlue!35, lay] (-0.2,0.95) rectangle (0.2,1.3);
+    \fill[sheetRed!45, lay] (-0.2,1.3) -- (0.2,1.3) -- (0.72,2.05) -- (-0.72,2.05) -- cycle;
+    \node[tny] at (0,1.78) {E2E};
+    \node[tny] at (0,1.12) {int.};
+    \node[tny] at (0,0.45) {unit};
+    \node[capt] at (0,-0.05) {\textbf{\textcolor{sheetRed}{hourglass}}\\anti-pattern:\\few integration};
+  \end{scope}
+  % ===== testing trophy
+  \begin{scope}[xshift=13.95cm]
+    \fill[sheetBrown!40, lay] (-0.62,0.2) rectangle (0.62,0.44);
+    \fill[sheetGreen!45, lay] (-0.24,0.44) rectangle (0.24,0.82);
+    \fill[sheetBlue!35, lay] (-0.32,0.82) -- (0.32,0.82) -- (0.72,1.9) -- (-0.72,1.9) -- cycle;
+    \fill[sheetRed!45, lay] (-0.5,1.9) rectangle (0.5,2.25);
+    \node[tny] at (0,0.32) {static};
+    \node[tny] at (0,0.63) {unit};
+    \node[tny] at (0,1.35) {integration};
+    \node[tny] at (0,2.07) {E2E};
+    \node[capt] at (0,-0.05) {\textbf{testing trophy}\\static-analysis base,\\integration largest};
+  \end{scope}
+  % ===== honeycomb
+  \begin{scope}[xshift=15.72cm]
+    \begin{scope}
+      \clip (-0.42,0.2) -- (0.42,0.2) -- (0.78,1.2) -- (0.42,2.2) -- (-0.42,2.2) -- (-0.78,1.2) -- cycle;
+      \fill[sheetBlue!35] (-0.8,0.2) rectangle (0.8,2.2);
+      \fill[sheetRed!45] (-0.8,1.86) rectangle (0.8,2.2);
+      \fill[sheetGreen!45] (-0.8,0.2) rectangle (0.8,0.54);
+    \end{scope}
+    \draw[white, line width=0.8pt] (-0.8,1.86) -- (0.8,1.86) (-0.8,0.54) -- (0.8,0.54);
+    \node[tny] at (0,2.03) {integrated};
+    \node[tny] at (0,1.2) {integration};
+    \node[tny] at (0,0.37) {impl. detail};
+    \node[capt] at (0,-0.05) {\textbf{honeycomb}\\per microservice:\\integration largest};
+  \end{scope}
+\end{tikzpicture}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \draw[->, thick, sheetGrey] (0.2,0) -- (16.5,0);
+  \foreach \i/\txt in {
+      0/{\textbf{2001} AAA\\Bill Wake},
+      2/{\textbf{2005} unit-test rules\\Feathers},
+      4/{\textbf{2007} SUT · DOC\\doubles — Meszaros},
+      6/{\textbf{2009} pyramid in print\\Cohn},
+      8/{\textbf{2014} solitary,\\sociable — Fields},
+      10/{\textbf{2018} trophy (Dodds)\\honeycomb (Spotify)},
+      12/{\textbf{2020} sizes · 80/15/5\\SWE at Google},
+      14/{\textbf{2024} Swift Testing\\Xcode 16}} {
+    \fill[sheetBlue] (0.9+\i*0.99,0) circle (1.3pt);
+    \node[ev, anchor=south] at (0.9+\i*0.99,0.08) {\txt};
+  }
+  \foreach \i/\txt in {
+      1/{\textbf{2004} pyramid drawn\\Cohn, with Crispin},
+      3/{\textbf{2006} Given-When-Then\\North, Matts (BDD)},
+      5/{\textbf{2008} F.I.R.S.T.\\Ottinger, Schuchert},
+      7/{\textbf{2012} ice-cream cone\\Alister Scott},
+      9/{\textbf{2015} 70 / 20 / 10\\Wacker, Google},
+      11/{\textbf{2019} Test Desiderata\\Kent Beck},
+      13/{\textbf{2021} shapes = words\\Fowler},
+      15/{\textbf{2025} XCUIAutomation\\Xcode 16.3}} {
+    \fill[sheetOrange] (0.9+\i*0.99,0) circle (1.3pt);
+    \node[ev, anchor=north] at (0.9+\i*0.99,-0.08) {\txt};
+  }
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Size is how it runs; scope is what it checks}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{22mm}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{19mm}@{}}
+\toprule
+ & \textbf{small} & \textbf{medium} & \textbf{large}\\
+\midrule
+runs in & one process — often one thread & one machine & many machines\\
+forbidden & sleep, I/O, disk, network, any blocking call & network beyond \ct{localhost} & nothing\\
+Bazel timeout & 60\,s & 300\,s & 900\,s · \emph{enormous} 3600\,s\\
+\midrule
+scope & narrow = \textbf{unit} & medium = \textbf{integration} & large = \textbf{end-to-end}\\
+Google mix & $\sim$80\,\% & $\sim$15\,\% & $\sim$5\,\%\\
+\bottomrule
+\end{tabular}}\par
+\textbf{Size} = how a test runs, what it may do, what it consumes; \textbf{scope} = how much code
+it validates. Interrelated but distinct: a narrow test that starts a database is \emph{medium}.
+Small tests are faster and more deterministic whatever their scope. Large tests are kept for
+whole-system checks — more about configuration than code — and legacy code that cannot take
+doubles.
+
+\section{What makes it a unit test}
+\begin{itemize}
+  \item \textbf{Common ground} (Fowler): low-level, a small part of the system; written by the
+        programmers with their everyday tools; \emph{significantly faster} than other tests.
+        What counts as a unit — a function, a class, a cluster — is the team's call.
+  \item \textbf{Not a unit test} (Feathers) if it talks to the database · talks across the network ·
+        touches the file system · cannot run at the same time as the other unit tests · needs
+        the environment prepared (config edits). Such tests are not bad — keep them in their
+        own suite so the fast one stays fast.
+  \item \textbf{Solitary} — collaborators replaced by test doubles; \textbf{sociable} —
+        real collaborators run too. Mockists write solitary tests, classicists sociable ones.
+  \item \textbf{Integration test}, narrow — only the code that talks to another service,
+        against a double of it; broad — live versions of every service (Fowler: call those
+        \emph{system} or \emph{end-to-end} tests). \textbf{Integrated test} (Rainsberger) —
+        passes or fails on the correctness of \emph{another} system; the honeycomb wants none.
+        \textbf{Contract test} — consumer and provider still keep the agreed interface.
+\end{itemize}
+
+\section{The shapes mostly argue about words}
+The trophy's and honeycomb's ``integration tests'' are largely what pyramid users call
+\emph{sociable unit tests} (Fowler, 2021). What matters instead (Justin Searls): tests with clear
+boundaries that run quickly and reliably and \emph{fail only for useful reasons}. Wacker's 70/20/10
+was ``a good first guess'' — the mix varies, the shape stays. Judge a strategy by how it helps
+developers \emph{fix and prevent} bugs, not only by the bugs it finds.
+
+\section{Numbers worth knowing}
+\begin{itemize}
+  \item \textbf{Flakiness}: as it nears 1\,\% tests lose value; Google's rate hovers $\sim$0.15\,\%.
+  \item \textbf{Commit suite} $\le$ 10 minutes (Beck, via Fowler).
+  \item \textbf{Coverage} only measures that a line ran, not what happened as a result.
+  \item \textbf{Beyoncé Rule}: ``If you liked it, then you shoulda put a test on it'' — test
+        everything you don't want to break.
+\end{itemize}
+
+\section{On Apple platforms}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{61mm}@{}}
+\toprule
+unit, integration & \textbf{Swift Testing} (Swift 6, Xcode 16+) — a suite runs in parallel,
+in-process, each \ct{@Test} on a distinct suite instance; \ct{\#expect} records and continues,
+\ct{\#require} throws and stops. \textbf{XCTest} runs a suite's tests sequentially by default\\
+UI, E2E & \textbf{XCTest + XCUIAutomation} (Xcode 16.3+): test code runs in a separate process and
+drives the app through \ct{XCUIApplication}, a proxy, using accessibility data\\
+performance & \textbf{XCTest} — Apple: Swift Testing for new unit tests, XCTest for UI and
+performance; one target may hold both, one test never mixes them\\
+\bottomrule
+\end{tabular}}\par
+UI testing is unavailable to apps built with the visionOS SDK; iPhone and iPad apps running on
+visionOS can still be UI-tested.
+
+\columnbreak
+
+\section{FIRST — Ottinger \& Schuchert}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{58mm}@{}}
+\toprule
+\textbf{\textcolor{sheetBlue}{F}ast} & run them all every minute or so without guilt; hesitating
+after a one-line change = too slow. A quarter-second test is ``painfully slow'', a second
+``impossibly slow''\\
+\textbf{\textcolor{sheetBlue}{I}solated} & no test relies on another, even indirectly; same result
+alone or in a suite, any order (\emph{Clean Code}: Independent)\\
+\textbf{\textcolor{sheetBlue}{R}epeatable} & re-runs without intervention: no assumed initial state, no
+residue left behind, no external service that may be absent\\
+\textbf{\textcolor{sheetBlue}{S}elf-validating} & pass or fail; nobody inspects output or state to decide\\
+\textbf{\textcolor{sheetBlue}{T}imely} & written \emph{with} the code, just before each small change —
+never in batches; T was never ``Thorough''\\
+\bottomrule
+\end{tabular}}
+
+\section{Test Desiderata — Beck's twelve}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \n/\d [count=\k from 0] in {
+      Isolated/{same result in any order},
+      Composable/{vary dimensions apart, combine results},
+      Deterministic/{nothing changed → same result},
+      Fast/{run quickly},
+      Writable/{cheap relative to the code},
+      Readable/{shows why the test exists},
+      Behavioral/{sensitive to behaviour change},
+      Structure-insensitive/{blind to structure change},
+      Automated/{no human intervention},
+      Specific/{cause of a failure obvious},
+      Predictive/{all pass → fit for production},
+      Inspiring/{passing inspires confidence}} {
+    \pgfmathtruncatemacro\c{mod(\k,4)}
+    \pgfmathtruncatemacro\r{\k/4}
+    \node[ds] (d\k) at (\c*1.98,-\r*0.76) {\textbf{\n}\\\d};
+  }
+  \draw[sheetOrange, thick, rounded corners=2pt] ($(d6.north west)+(-0.04,0.04)$) rectangle ($(d7.south east)+(0.04,-0.04)$);
+\end{tikzpicture}\par
+Some support each other (automated → faster), some interfere (more predictive → slower).
+The boxed pair is the rule below: coupled to behaviour, decoupled from structure.
+
+\section{One test — SUT, DOC, four phases}
+\textbf{SUT} — whatever thing the test exercises, seen from the test: a method, an object, a
+class, or the whole app. \textbf{DOC} (depended-on component) — what the SUT delegates to; the
+test must control and observe it, which is what test doubles are for.
+\begin{lstlisting}[language=SwiftSheet]
+@Test("10 % discount lowers the total")      // name = behaviour
+func discountLowersTotal() {
+  // Arrange · Given · setup: SUT, doubles for DOCs, input
+  let cart = Cart(prices: StubPrices(["tea": 100]))
+  cart.add("tea")
+  // Act · When · exercise: one call on the SUT
+  cart.apply(discount: .percent(10))
+  // Assert · Then · verify: the observable result
+  #expect(cart.total == 90)            // not cart.lineCache
+}                    // teardown: rarely needed in a unit test
+\end{lstlisting}
+North's template: \emph{Given} some initial context, \emph{When} an event occurs, \emph{Then}
+ensure some outcomes. Wake's \emph{Assert}: claims about the object, its collaborators, its
+parameters — global state only rarely.
+
+\section{Behaviour, not implementation}
+\begin{itemize}
+  \item Call the \textbf{public API}, the way users do. Wanting to test a private method hints
+        that the class does too much — split it (Vocke).
+  \item Test \textbf{state, not interactions}; one test per \emph{behaviour}, not per method;
+        the name states the action and the expected outcome.
+  \item The ideal test is \textbf{unchanging} — it changes only when requirements do. Of the
+        four kinds of change — pure refactoring, new feature, bug fix, behaviour change — only
+        the last should edit existing tests. \textbf{Brittle} = fails on an unrelated change
+        that added no bug. \textbf{Clear} = why it exists and why it failed are obvious to
+        whoever diagnoses the failure.
+  \item No logic (loops, conditions) in tests; \textbf{DAMP} over DRY — a little duplication
+        buys readability; a failure message shows expected, actual, inputs. Skip trivial code —
+        plain getters, setters, anything without conditional logic (Vocke).
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Test doubles · Testable design — DI,
+seams \& legacy code · XCTest \& Swift Testing · Testing ViewModels, Coordinators, UI \& snapshots
+· Async \& network testing · Flaky tests · CI · coverage · TDD · SOLID · Dependency injection ·
+Lint \& static analysis}
+
+\end{document}

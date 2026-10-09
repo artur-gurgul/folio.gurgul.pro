@@ -1,0 +1,301 @@
+% testing-viewmodels-ui-snapshot.tex — ViewModel and Coordinator unit tests, XCUITest /
+% XCUIAutomation UI tests, and snapshot tests with swift-snapshot-testing.
+% Sources (checked 2026-10-09):
+%   developer.apple.com/documentation/xcuiautomation (UI automation framework, Xcode 16.3+; WWDC25:
+%     included automatically with XCTest) · /xcuiapplication (init() = Target Application; launch()
+%     synchronous, terminates a running instance, failure halts the test; activate() launches if
+%     needed, never terminates, reuses the last launch()'s args/env; launchArguments changed after
+%     launch apply at the next launch; open(_:) by URL; resetAuthorizationStatus(for:) iOS 13.4;
+%     performAccessibilityAudit(for: = .all) iOS 17) · /xcuielement (exists; isHittable = a hit
+%     point can be computed; waitForExistence, waitForNonExistence, wait(for:toEqual:timeout:))
+%     · /xcuielementquery (matching(identifier:) matches identifier, title, label, value or
+%     placeholderValue; element fails unless exactly one match; firstMatch stops at the first)
+%     · /xcuivoiceoverservice (iOS 27; XCUIDevice.shared.voiceOverService; moveForward() returns
+%     speech) · /xcuielementquery/subscript(_:) (same five properties) ·
+%     /recording-ui-automation-for-testing (record button at the editor edge; alternative queries
+%     per line)
+%   developer.apple.com/documentation/xctest: xctestcase/continueafterfailure (default true) ·
+%     runsforeachtargetapplicationuiconfiguration (default false; appearance × orientation ×
+%     localization) · handling-ui-interruptions (monitors tried only when an interaction is
+%     blocked by unrelated UI; LIFO; return true = cleared; no monitor for expected alerts) ·
+%     xctattachment/lifetime (default deleteOnSuccess) · xctapplicationlaunchmetric (iOS 13) ·
+%     xcthitchmetric (iOS 26)
+%   developer.apple.com/documentation/xcode-release-notes: Xcode 16 (wait for any property;
+%     waitForNonExistence — 35419925) · Xcode 26 (new UI Test Recording — 135593667; Automation
+%     Explorer) · Xcode 27 (UI-test app-crash severity off / warning / failure (default) / fatal
+%     failure — 168107814; launch-test template — 168770106; XCUIVoiceOverService — 175858549)
+%   developer.apple.com/videos: wwdc2023/10175 (test report: video replay, Automation Explorer) ·
+%     wwdc2023/10035 (audit fails the test by itself; handler true = ignore; on-screen elements
+%     only) · wwdc2025/344 (identifiers are the best way to address elements; recording uses one
+%     if present; a test-plan configuration per language; video + screenshots kept for failing runs
+%     by default) · wwdc2026/267 (UI automation and performance APIs exist only in XCTest)
+%   developer.apple.com/documentation/testing/migratingfromxctest (XCTest runs synchronous tests
+%     on the main actor, Swift Testing on an arbitrary task → @MainActor) · /timelimittrait/duration
+%     (minutes are the smallest unit)
+%   developer.apple.com/documentation: swiftui/view/accessibilityidentifier(_:) ("for testing",
+%     not visible) · uikit/uiaccessibilityidentification (keeps tests off the label) ·
+%     swiftui/navigationpath (type-erased: count, isEmpty, append, removeLast, codable; Equatable)
+%     · combine/published (publishes in willSet) · observation/withobservationtracking (iOS 17) ·
+%     observation/observations (AsyncSequence, iOS 26; willSet of the first mutation → next
+%     suspension point)
+%   swift-evolution SE-0395 (Observation, Swift 5.9; onChange on the first change) · SE-0475
+%     (Observations, Swift 6.2; some values are not represented during iteration)
+%   developer.apple.com/library/archive: testing_with_xcode/09-ui_testing (test code runs as a
+%     separate process; built on Accessibility) · BPInternational/TestingYourInternationalApp
+%     (-AppleLanguages "(de)", -AppleLocale)
+%   github.com/pointfreeco/swift-snapshot-testing: README (assertSnapshot; __Snapshots__ beside the
+%     tests; first run records and fails; "exact same simulator"; device presets; @Suite(.snapshots
+%     (record:))) · Sources/SnapshotTesting/AssertSnapshot.swift (SNAPSHOT_TESTING_RECORD, default
+%     .missing; timeout 5; SNAPSHOT_ARTIFACTS else temp dir) · SnapshotTestingConfiguration.swift
+%     (.all / .failed / .missing / .never — never for CI) · Snapshotting/UIImage.swift (precision,
+%     perceptualPrecision, 98–99 % ≈ the eye, CILabDeltaE) · Snapshotting/SwiftUIView.swift
+%     (.device / .fixed / .sizeThatFits default; drawHierarchyInKeyWindow) · Common/View.swift
+%     (ViewImageConfig = safeArea + size + traits; newest iPhone preset iPhone13ProMax) ·
+%     InlineSnapshotTesting docc · releases 1.17.0 (Jul 2024: record modes, env var, Swift Testing)
+%     and 1.19.x (Swift Testing attachments)
+%   github.com/nalexn/ViewInspector README (traverses View structs with Swift reflection)
+% @labels: area=testing kind=pattern platform=ios topic=testing,ui,architecture discussion=266
+% @tags: viewmodel, coordinator, navigationpath, observable, published, spy, xcuitest, xcuiapplication, xcuiautomation, launch-arguments, page-object, accessibilityidentifier, waitforexistence, performaccessibilityaudit, snapshot-testing, swift-snapshot-testing, record-mode, swift-testing
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,override,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,in,
+    true,false,AnyObject,Void,String,Bool,Int,import,case,do,catch,Task},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.4mm},
+  proc/.style={draw=sheetGrey, dashed, rounded corners=3pt, inner sep=2mm},
+  runner/.style={sb, draw=sheetBlue, fill=sheetBlue!8},
+  app/.style={sb, draw=sheetGreen, fill=sheetGreen!12},
+  stub/.style={sb, draw=sheetOrange, fill=sheetOrange!10},
+  bad/.style={sb, draw=sheetRed, fill=sheetRed!8},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\scriptsize\bfseries, text=sheetGrey},
+  hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Testing ViewModels, Coordinators, UI \& snapshots}{testing · folio}
+
+\oneliner{Logic lives in a \textbf{ViewModel} and a \textbf{router} with injected dependencies,
+tested in-process in milliseconds; \textbf{snapshots} pin what a view looks like (one simulator,
+one reference file); \textbf{UI tests} drive the real app from \textbf{another process} through
+the accessibility tree — few, slow, addressed by \textbf{identifier}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ===== where each test runs
+  \node[hd] at (-0.1,2.05) {Where each test runs};
+  \node[runner, minimum width=17mm] (ut) at (0.95,1.25) {\ct{@Test} / XCTest};
+  \node[app, minimum width=17mm] (vm) at (0.95,0.45) {FeedViewModel};
+  \node[stub, minimum width=17mm] (sa) at (0.95,-0.35) {StubFeedAPI};
+  \draw[flow] (ut) -- node[lbl, fill=white]{\ct{@testable}} (vm);
+  \draw[flow] (vm) -- node[lbl, fill=white]{protocol} (sa);
+  \node[proc, fit=(ut)(vm)(sa)] (p1) {};
+  \node[lbl, anchor=north, align=center] at (p1.south) {unit + snapshot:\\ONE process, ms};
+  \node[runner, minimum width=17mm] (tc) at (3.55,1.25) {test code};
+  \node[runner, minimum width=17mm] (po) at (3.55,0.45) {LoginPage};
+  \node[runner, minimum width=17mm] (xa) at (3.55,-0.35) {XCUIApplication};
+  \draw[flow] (tc) -- (po); \draw[flow] (po) -- (xa);
+  \node[proc, fit=(tc)(po)(xa)] (p2) {};
+  \node[lbl, anchor=north] at (p2.south) {UI-test runner process};
+  \node[app, minimum width=18mm] (ax) at (7.7,1.25) {accessibility tree};
+  \node[app, minimum width=18mm] (av) at (7.7,0.45) {real app code};
+  \node[stub, minimum width=18mm] (as) at (7.7,-0.35) {stubbed services};
+  \draw[flow] (ax) -- (av); \draw[flow] (av) -- (as);
+  \node[proc, fit=(ax)(av)(as)] (p3) {};
+  \node[lbl, anchor=north] at (p3.south) {app process (separate)};
+  \draw[hot] (xa.east) -- (as.west);
+  \node[lbl, text=sheetOrange, fill=white] at (5.62,-0.35) {args / env,\\read at \ct{launch()}};
+  \draw[hot, <->] (tc.east) -- (ax.west);
+  \node[lbl, text=sheetOrange, fill=white] at (5.62,1.25) {XCUIAutomation:\\query · tap · wait};
+  \node[lbl, text=sheetBlue, align=center] at (5.62,0.45) {no shared\\memory};
+  \node[lbl, text=sheetRed, anchor=north west, align=left] at (2.45,-1.0)
+    {a UI test never reads a VM — only identifier, label, value,\\frame, isEnabled … of the app's accessibility tree};
+  \draw[sheetGrey!50] (9.15,2.25) -- (9.15,-1.75);
+  % ===== snapshot flow
+  \node[hd] at (9.25,2.05) {\ct{assertSnapshot(of:as:)}};
+  \node[runner, minimum width=22mm] (ren) at (10.6,1.3) {render value → PNG / text};
+  \node[sb, draw=sheetGrey, fill=white, minimum width=22mm] (ref) at (10.6,0.5) {reference in \ct{\_\_Snapshots\_\_}?};
+  \node[stub, text width=21mm] (rec) at (10.6,-0.55) {no → write it +\\\textbf{FAIL}: ``re-run''};
+  \node[sb, draw=sheetGrey, fill=white, text width=21mm] (cmp) at (13.75,0.5) {yes → compare:\\precision · perceptual};
+  \node[app, minimum width=13mm] (ok) at (13.0,-0.55) {match → pass};
+  \node[bad, text width=17mm] (ko) at (15.35,-0.55) {differ → \textbf{FAIL},\\new PNG to\\\ct{SNAPSHOT\_ARTIFACTS}};
+  \draw[flow] (ren) -- (ref); \draw[flow] (ref) -- (rec); \draw[flow] (ref) -- (cmp);
+  \draw[flow] (cmp) -- (ok); \draw[flow] (cmp) -- (ko);
+  \node[lbl, anchor=west, align=left] at (11.95,1.4) {file: \ct{\_\_Snapshots\_\_/<TestFile>/}\\\ct{<test>.<n or name>.png}, beside the test};
+  \node[lbl, text=sheetRed, anchor=north west, align=left] at (9.25,-1.12) {compare only on the \textbf{same simulator} (model + OS) that recorded it};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{ViewModel tests}
+\begin{itemize}\raggedright
+  \item A SwiftUI \ct{View} is a value; what it renders is not readable through public API (third-party
+        ViewInspector reflects on the \ct{View} structs). So: thin View, logic in a VM. Test =
+        \textbf{construct with doubles → call an input → assert state}.
+  \item State as an \textbf{\ct{Equatable} enum} (\ct{idle · loading · loaded · error}) and display
+        strings computed in the VM (\ct{priceText == "\$10.00"}); \ct{\#expect(a == b)} prints both
+        sides on failure. Inject what varies: API, clock, \ct{Date}, UUIDs, locale.
+  \item \textbf{Isolation:} XCTest runs synchronous test methods on the main actor; Swift Testing runs
+        every test on an arbitrary task → a \ct{@MainActor} VM needs a \ct{@MainActor} test or suite.
+  \item \textbf{Sequences.} \ct{ObservableObject}: \ct{vm.\$state.sink\{seen.append(\$0)\}} gets the current
+        value, then each new one — from \ct{willSet}, so \ct{vm.state} read inside the sink is still
+        the \emph{old} value. \ct{@Observable} (Swift 5.9, iOS 17) has no publisher:
+        \ct{withObservationTracking} calls \ct{onChange} once, on the first change — re-register per
+        change. \ct{Observations\{ vm.state \}} (Swift 6.2, iOS 26) is an \ct{AsyncSequence} of
+        \emph{transactions}: mutations up to the next suspension point coalesce, so values can be
+        skipped — not a recorder of every state.
+  \item To catch \ct{.loading}, \textbf{hold the double}: a stub that suspends until the test
+        releases it; assert mid-flight, then release.
+  \item Big state? \ct{assertSnapshot(of: vm.state, as: .dump)} keeps a reviewed text reference
+        instead of a page of hand-written expectations.
+\end{itemize}
+\begin{lstlisting}[language=SwiftSheet]
+@MainActor @Suite struct FeedViewModelTests {
+  @Test func offline_showsError() async {
+    let vm = FeedViewModel(api: StubFeedAPI(.failure(URLError(.notConnectedToInternet))))
+    await vm.load()
+    #expect(vm.state == .error("Offline")) }
+  @Test func loading_whileInFlight() async {
+    let api = GatedFeedAPI()             // suspends until release()
+    let vm = FeedViewModel(api: api)
+    let load = Task { await vm.load() }
+    await api.waitUntilCalled()
+    #expect(vm.state == .loading)
+    api.release(with: [.sample]); await load.value
+    #expect(vm.state == .loaded([.sample])) } }
+\end{lstlisting}
+
+\section{Coordinator / router tests}
+\begin{itemize}\raggedright
+  \item Test the \textbf{decision} (which route for which event), never a real \ct{push}: inject a
+        \ct{Router} protocol and let a spy record calls.
+  \item SwiftUI: an \ct{@Observable} router owns \ct{var path: [Route]} bound to
+        \ct{NavigationStack(path:)} → assert the array. \ct{NavigationPath} is type-erased —
+        only \ct{count}, \ct{isEmpty}, \ct{append}, \ct{removeLast}, \ct{codable}; elements can't be
+        read back (it is \ct{Equatable}: compare with a path you build).
+  \item Deep links are pure functions URL → \ct{[Route]}: table-test them with
+        \ct{@Test(arguments:)}, one case per URL.
+\end{itemize}
+\begin{lstlisting}[language=SwiftSheet]
+final class SpyRouter: Router {
+  private(set) var shown: [Route] = []
+  func show(_ r: Route) { shown.append(r) } }
+@Test func selectingItem_routesToDetail() {
+  let router = SpyRouter()
+  FeedCoordinator(router: router).didSelect(Item(id: 7))
+  #expect(router.shown == [.detail(id: 7)]) }   // the DECISION
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Querying by label: \ct{app.buttons["Log in"]} matches the label, passes in English, fails
+        in a German run. \ct{accessibilityIdentifier} is ``for testing'', never shown or localized.}
+  \trap{\ct{sleep(3)}: flaky when short, slow when long — wait for the element or property.}
+  \trap{A gated stub never released hangs the run — give the suite \ct{.timeLimit(.minutes(1))}
+        (minutes are the smallest unit).}
+  \trap{UI tests on the real backend: nondeterministic, slow, may mutate data — stub by launch env.}
+  \trap{CI on default \ct{.missing}: a lost reference is re-recorded, the run fails, the retry
+        passes → \ct{.never}. Never commit \ct{.all}. ``Just re-record'' approves a regression unseen.}
+  \trap{Reference from another simulator or OS → fails on CI: pin model, OS, locale, appearance,
+        text size; fix dates and IDs.}
+  \trap{An interruption monitor for an \emph{expected} alert never fires — tap the alert directly.}
+\end{itemize}
+
+\columnbreak
+
+\section{XCUITest toolkit (XCUIAutomation)}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{60mm}@{}}
+\toprule
+\textbf{need} & \textbf{API · fact}\\
+\midrule
+clean start & \ct{launch()}: synchronous; \textbf{terminates} a running instance; a launch failure halts the test\\
+resume & \ct{activate()}: launches if needed, never terminates; reuses the last \ct{launch()}'s args/env\\
+configure & \ct{launchArguments} / \ct{launchEnvironment} — changed after launch = next launch only; \ct{open(url)} launches by URL\\
+find & \ct{app.buttons["id"]} matches identifier \textbf{or} title, label, value, placeholder; \ct{.element} fails unless exactly 1 match, \ct{.firstMatch} stops at the first (faster)\\
+wait & \ct{waitForExistence(timeout:)}; Xcode 16: \ct{waitForNonExistence}, \ct{wait(for: \textbackslash.value, toEqual:, timeout:)} → \ct{Bool} · \ct{exists} ≠ \ct{isHittable} (a hit point can be computed)\\
+alerts & expected → tap it; \ct{addUIInterruptionMonitor} runs only when unrelated UI \emph{blocks} an interaction; LIFO; \ct{true} = cleared\\
+state & \ct{resetAuthorizationStatus(for:)} (iOS 13.4) · \ct{XCUIDevice.shared} \ct{.orientation .appearance .location}\\
+a11y & \ct{try app.performAccessibilityAudit()} (iOS 17): fails the test itself; handler \ct{true} = ignore; on-screen only · Xcode 27: \ct{voiceOverService.moveForward()} → speech\\
+matrix & \ct{runsForEachTargetApplicationUIConfiguration = true}: appearance × orientation × localization (Xcode 27 launch-test template)\\
+perf & \ct{XCTApplicationLaunchMetric} · \ct{XCTHitchMetric} (iOS 26)\\
+evidence & \ct{XCTAttachment(screenshot:)} default \ct{.deleteOnSuccess}; test plan keeps video + screenshots of \emph{failing} runs unless ``On, and keep all''\\
+\bottomrule
+\end{tabular}}\par
+\textbf{Xcode 26 recording}: the record button at the editor edge writes Swift, each line with
+alternative queries — prefer identifier over index. Report (Xcode 15+): video replay, Automation
+Explorer at the failure. \textbf{Xcode 27}: app-crash severity off / warning / \textbf{failure} /
+fatal per test plan. Swift Testing has \textbf{no} UI automation — UI tests stay XCTest.
+
+\begin{lstlisting}[language=SwiftSheet]
+override func setUpWithError() throws { continueAfterFailure = false }
+@MainActor func test_login_showsWelcome() throws {
+  let app = XCUIApplication()                 // the Target Application
+  app.launchArguments += ["-AppleLanguages", "(de)"]
+  app.launchEnvironment["STUB_SCENARIO"] = "loggedOut"
+  app.launch()                                // args/env read HERE
+  LoginPage(app: app).logIn(email: "a@b.co", password: "pw")
+  XCTAssertTrue(app.staticTexts["welcome.title"].waitForExistence(timeout: 5))
+  try app.performAccessibilityAudit() }
+// Page Object: one type per screen owns its identifiers + actions
+\end{lstlisting}
+
+\section{Snapshot tests (swift-snapshot-testing)}
+\begin{itemize}\raggedright
+  \item \ct{assertSnapshot(of:as:named:record:timeout:)} (timeout 5\,s). Strategies: \ct{.image}
+        (UIView, VC, SwiftUI), \ct{.recursiveDescription}, \ct{.dump}, \ct{.json}, \ct{.plist},
+        \ct{.raw} (\ct{URLRequest}); a text reference shows its diff readably in code review.
+  \item SwiftUI layout: \ct{.sizeThatFits} (default) · \ct{.fixed(width:height:)} ·
+        \ct{.device(config: .iPhone13)}; a config is size + safe area + traits only — newest iPhone
+        preset \ct{iPhone13ProMax}. \ct{traits:} for dark mode / text size;
+        \ct{drawHierarchyInKeyWindow: true} to render \ct{UIAppearance} and visual effects.
+  \item \ct{precision} = share of pixels that must match; \ct{perceptualPrecision} = how close each
+        pixel must be (\ct{CILabDeltaE}); 0.98–0.99 ≈ the human eye. Both default 1.
+  \item \ct{assertInlineSnapshot} writes a text snapshot into the test source, as a trailing closure.
+\end{itemize}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{10mm}>{\raggedright\arraybackslash}p{63mm}@{}}
+\toprule
+\textbf{record} & \textbf{behaviour} (since 1.17, Jul 2024)\\
+\midrule
+\ct{.missing} & default: record only absent references (and fail)\\
+\ct{.all} & rewrite every reference — every assertion fails\\
+\ct{.failed} & re-record only failing ones (keeps in-threshold passes untouched)\\
+\ct{.never} & a missing reference is a failure — \textbf{for CI}\\
+\bottomrule
+\end{tabular}}\par
+Set per call (\ct{record:}), per scope (\ct{withSnapshotTesting(record:)}), per suite
+(\ct{@Suite(.snapshots(record:))}) or per run (\ct{SNAPSHOT\_TESTING\_RECORD=never}).
+
+\section{Which test sees what}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{18mm}>{\raggedright\arraybackslash}p{23mm}@{}}
+\toprule
+\textbf{test} & \textbf{sees} & \textbf{breaks on} & \textbf{misses}\\
+\midrule
+VM unit & state, strings & logic change & layout, wiring\\
+router & routes & flow change & real transitions\\
+snapshot & pixels / text dump & any pixel, new OS & behaviour, taps\\
+UI (XCUITest) & a11y tree of the real app & copy, timing, data & internals; slow\\
+\bottomrule
+\end{tabular}}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Testing fundamentals · Test doubles ·
+Testable design · XCTest \& Swift Testing · Async \& network testing · Flaky tests, CI, coverage,
+TDD · MVC, MVP, MVVM, MVVM-C · Observation, Combine, cancellables · SwiftUI navigation · SwiftUI
+accessibility \& Dynamic Type}
+
+\end{document}

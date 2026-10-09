@@ -1,0 +1,295 @@
+% async-and-network-testing.tex — waiting for async work in XCTest and Swift Testing, stubbing
+% URLSession with a URLProtocol, the ways a request fails, injected clocks and schedulers, streams,
+% ordering, cancellation, and the parallel-test traps of a shared stub.
+% Sources (checked 2026-10-09):
+%   developer.apple.com/documentation/xctest: asynchronous-tests-and-expectations (async test runs on
+%     an arbitrary actor unless @MainActor) · xctestexpectation/isinverted (fails immediately if
+%     fulfilled) · /assertforoverfulfill (true from the XCTestCase convenience methods, false from
+%     the initializers) · xctestcase/fulfillment(of:timeout:enforceorder:) (async; may return before
+%     the timeout; default .infinity) · xctwaiter/result (5 cases) · xctestcase/
+%     executiontimeallowance (600 s, rounded up to a minute, needs test timeouts enabled) ·
+%     xctassertthrowserror (synchronous throwing autoclosure)
+%   developer.apple.com/documentation/xcode-release-notes/xcode-14_3-release-notes (wait(for:) unavailable
+%     in concurrent functions — deadlock; fulfillment(of:) added; timeout optional)
+%   developer.apple.com/documentation/testing: testing-asynchronous-code (confirmation; expectedCount
+%     N, range, 0) · migratingfromxctest (confirmations neither block nor suspend; confirm before
+%     confirmation() returns; withCheckedContinuation for completion handlers; parallel by default;
+%     XCTest runs sync tests on the main actor, Swift Testing on an arbitrary task) · parallelization
+%     (one process, task groups; .serialized does not order a test against unrelated tests)
+%   github.com/swiftlang/swift-evolution proposals/testing: ST-0004 (timeLimit in minutes only;
+%     shortest wins; per test case; Swift 6.0) · ST-0005 (ranged confirmations, 6.1) · ST-0006
+%     (#expect(throws:) returns the error, 6.1) · ST-0016 (Test.cancel; CancellationError in a
+%     cancelled test = cancellation, 6.3) · ST-0021 (XCTAssert counts inside Swift Testing;
+%     XCTestExpectation / XCTWaiter excluded, 6.4) · swift.org/blog/swift-6.4-released
+%   swift-evolution: SE-0374 (Clock.sleep(for:) usable on any Clock<Duration>, 5.9) · SE-0388
+%     (AsyncStream.makeStream, 5.9) · SE-0412 (globals / statics: global actor, immutable Sendable,
+%     or nonisolated(unsafe); 5.10) · SE-0472 (Task.immediate, 6.2) · SE-0493 (await in defer, 6.4)
+%     · SE-0504 (withTaskCancellationShield, 6.4, no back-deployment)
+%   developer.apple.com/documentation/swift: clock (Clock<Duration>, iOS 16) · task/sleep(for:…)
+%     (throws CancellationError) · decodingerror (4 cases) · checkedcontinuation
+%   github.com/swiftlang/swift stdlib/public/Concurrency/CheckedContinuation.swift (second resume =
+%     fatalError; never resumed = "leaked its continuation" logged)
+%   developer.apple.com/videos/play/wwdc2018/417 Testing Tips & Tricks (MockURLProtocol with a
+%     requestHandler closure; unit → integration → end-to-end network tests; inject a
+%     NotificationCenter; predicate expectations poll; mock the timer scheduler, never sleep)
+%   developer.apple.com/documentation/foundation: urlsessionconfiguration/protocolclasses (no custom
+%     protocols in background sessions) · /ephemeral (nothing on disk; data kept in RAM) ·
+%     urlprotocol (subclassing; no custom protocols on watchOS 2+) · urlprotocol/registerclass
+%     (consulted in reverse registration order) · urlsessiontask/cancel() (NSURLErrorCancelled) ·
+%     fetching-website-data-into-memory (transport error vs status 200...299)
+%   github.com/swiftlang/swift-corelibs-foundation Sources/Foundation/NSURLError.swift
+%     (NSURLErrorCancelled −999, NSURLErrorNotConnectedToInternet −1009)
+%   developer.apple.com/videos/play/wwdc2021/10095 (async data(for:) returns (Data, URLResponse);
+%     check the status code yourself)
+%   developer.apple.com/forums/thread/97310 (httpBody nil inside a URLProtocol; body in
+%     httpBodyStream) · oleb.net/2022/cancellation-forms (async URLSession throws URLError.cancelled)
+%   developer.apple.com/documentation/combine: immediatescheduler (ignores dates) · anycancellable
+%     (cancels on deinit) · publisher/values (iOS 15, Failure == Never)
+%   github.com/pointfreeco: swift-clocks README (TestClock advance / run, ImmediateClock,
+%     UnimplementedClock, any Clock<Duration>) · combine-schedulers README (TestScheduler via
+%     DispatchQueue.test; Combine's ImmediateScheduler has its own time types) ·
+%     swift-concurrency-extras README (withMainSerialExecutor; an unstructured Task loses the race
+%     to the next line "almost 100 % of the time"; tests only, global switch)
+%   developer.apple.com/videos/play/wwdc2019/412 (Device Conditions: network link, thermal state;
+%     tied to the Xcode connection; like the Network Link Conditioner)
+% @labels: area=testing kind=api platform=apple topic=testing,concurrency,networking discussion=261
+% @tags: xctestexpectation, fulfillment, confirmation, swift-testing, mockurlprotocol, urlprotocol, urlerror, decodingerror, continuation, testclock, swift-clocks, asyncstream, cancellation, parallel-testing, network-link-conditioner
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,import,extension,
+    if,else,return,guard,self,Self,nil,try,await,async,throws,private,some,override,static,
+    do,catch,true,false,Void,String,Bool,Int,Double,Data,nonisolated},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=2pt, minimum height=6mm},
+  tst/.style={sb, draw=sheetOrange, fill=sheetOrange!10},
+  mk/.style={sb, draw=sheetGreen!70!black, fill=sheetGreen!12, align=left},
+  lbl/.style={font=\scriptsize, text=black!80, inner sep=1pt, align=center},
+  tl/.style={font=\tiny, text=black!80, inner sep=1pt, align=left},
+}
+
+\begin{document}
+
+\sheettitle{Async \& network testing — expectations, confirmations, MockURLProtocol, clocks}{testing · folio}
+
+\oneliner{Wait for the \textbf{event}, never for \textbf{time}. \ct{async} code: an
+\ct{async throws} test that \ct{await}s. Callbacks: \ct{XCTestExpectation} +
+\ct{await fulfillment(of:)}, or Swift Testing's \ct{confirmation} (which does \emph{not} wait) or a
+continuation. Network: the \emph{real} \ct{URLSession} over a stub \ct{URLProtocol}. Time: inject
+a \ct{Clock} or scheduler and \emph{advance} it.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[tst, minimum width=13mm] (t) at (0.7,1.3) {\textbf{Test}};
+  \node[sb, minimum width=15mm] (sut) at (2.9,1.3) {SUT \ct{APIClient}\\\ct{data(for:)}};
+  \node[sb, minimum width=22mm] (ses) at (5.7,1.3) {\ct{URLSession} (\ct{.ephemeral})\\\ct{protocolClasses = [Mock…]}};
+  \node[mk, minimum width=34mm] (mp) at (9.6,1.3) {\textbf{MockURLProtocol}\\
+     \ct{class canInit(with:)} → \ct{true}\\
+     \ct{startLoading()} calls \ct{handler}};
+  \node[tst, minimum width=28mm, align=left] (h) at (14.3,1.3) {\ct{static var handler}\\
+     \ct{(URLRequest) throws ->}\\\ct{(HTTPURLResponse, Data)}};
+  \draw[flow] ([yshift=1.5mm]t.east) -- ([yshift=1.5mm]sut.west);
+  \draw[flow] ([yshift=1.5mm]sut.east) -- ([yshift=1.5mm]ses.west);
+  \draw[flow] ([yshift=1.5mm]ses.east) -- ([yshift=1.5mm]mp.west);
+  \draw[flow] ([yshift=1.5mm]mp.east) -- ([yshift=1.5mm]h.west);
+  \draw[hot] ([yshift=-1.5mm]h.west) -- ([yshift=-1.5mm]mp.east);
+  \draw[hot] ([yshift=-1.5mm]mp.west) -- ([yshift=-1.5mm]ses.east);
+  \draw[hot] ([yshift=-1.5mm]ses.west) -- ([yshift=-1.5mm]sut.west -| sut.east);
+  \draw[hot] ([yshift=-1.5mm]sut.west) -- ([yshift=-1.5mm]t.east);
+  \node[lbl, text=sheetOrange, align=left, anchor=north west] at (8.1,0.62)
+     {\ct{client?.urlProtocol(self, didReceive:cacheStoragePolicy:)}\\
+      \ct{client?.urlProtocol(self, didLoad:)} · \ct{urlProtocolDidFinishLoading}\\
+      or \ct{client?.urlProtocol(self, didFailWithError:)} — every path ends in one};
+  \node[lbl, text=sheetOrange, anchor=north] at (2.9,0.62) {real status check\\+ real decode};
+  \node[lbl, text=sheetOrange, anchor=north] at (0.7,0.62) {assert};
+  \draw[flow, draw=sheetOrange, dashed] (t.north) |- node[lbl, above, pos=0.75, text=sheetOrange]
+     {\textbf{Arrange:} the test sets \ct{MockURLProtocol.handler = \{ req in … \}} and records \ct{req} (URL, method, headers) to assert on after the \ct{await}} (14.3,2.3) -- (h.north);
+  \node[lbl, text=sheetRed, draw=sheetRed, dashed, rounded corners=2pt, inner sep=2pt, align=center, anchor=north] at (5.7,0.5)
+     {network: never reached\\no background sessions · no watchOS};
+  \draw[sheetRed, thick] ($(ses.south)+(-0.10,-0.06)$) -- ($(ses.south)+(0.10,-0.22)$);
+  \draw[sheetRed, thick] ($(ses.south)+(0.10,-0.06)$) -- ($(ses.south)+(-0.10,-0.22)$);
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Pick the wait}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{32mm}>{\raggedright\arraybackslash}p{33mm}@{}}
+\toprule
+\textbf{need} & \textbf{XCTest} & \textbf{Swift Testing}\\
+\midrule
+\ct{async} API & \ct{func test() async throws} — arbitrary actor; sync tests run on the main actor & \ct{@Test func f() async throws} — always an arbitrary task\\
+callback, N times & \ct{expectation(description:)}, \ct{expectedFulfillmentCount = N}, \ct{await fulfillment(of: [e], timeout: 2)} & \ct{await confirmation(expectedCount: N) \{ c in … c() \}} — all N \emph{before the closure returns}\\
+at least N & \ct{assertForOverFulfill = false} & \ct{expectedCount: N...} (6.1)\\
+must not happen & \ct{isInverted = true}: fails at once if fulfilled & \ct{expectedCount: 0}\\
+throws & \ct{XCTAssertThrowsError} takes a \emph{sync} autoclosure → \ct{do \{ try await … \} catch} & \ct{await \#expect(throws: E.self) \{ try await … \}} returns the error (6.1)\\
+hang guard & \ct{executionTimeAllowance}: 600\,s default, rounded \emph{up} to whole minutes, only with test timeouts on & \ct{.timeLimit(.minutes(n))}: minutes only; shortest wins; per argument case\\
+parallel & a class runs its tests one by one & all at once, \textbf{one process}; \ct{.serialized} orders one suite only\\
+\bottomrule
+\end{tabular}}
+
+\section{Expectations, precisely}
+\begin{itemize}
+  \item \ct{wait(for:timeout:)} is \textbf{unavailable in \ct{async} functions} since Xcode 14.3
+        (it can deadlock): \ct{await fulfillment(of:timeout:)}. Left out, the timeout is
+        \ct{.infinity} — only \ct{executionTimeAllowance} then ends a hang.
+  \item A wait returns the moment all are fulfilled: the timeout is a \emph{ceiling}.
+        \ct{XCTWaiter.Result}: \ct{completed} · \ct{timedOut} · \ct{incorrectOrder} ·
+        \ct{invertedFulfillment} · \ct{interrupted}.
+  \item Over-fulfilling fails only with \ct{assertForOverFulfill}: \ct{true} from the
+        \ct{XCTestCase} convenience methods, \ct{false} from \ct{XCTestExpectation(description:)}.
+  \item Predicate expectations \textbf{poll} — slow; prefer callback, KVO or notification ones
+        (inject a private \ct{NotificationCenter()}, hand it to the expectation).
+  \item Swift Testing has no wait: a confirmation neither blocks nor suspends. \ct{XCTestExpectation}
+        is unsupported in \ct{@Test} — even 6.4's interop (\ct{XCTAssert} now counts there)
+        excludes it. Bridge a callback:\newline
+        \ct{try await withCheckedThrowingContinuation \{ c in}\newline
+        \ct{\ \ api.fetch(42) \{ c.resume(with: \$0) \} \}}\newline
+        Resume \textbf{exactly once}: a second resume is a \ct{fatalError}; none leaves the test
+        suspended for ever and logs ``leaked its continuation''.
+\end{itemize}
+
+\section{What each wait costs}
+\noindent\begin{tikzpicture}[sheet]
+  \def\s{1.45}  % cm per second
+  \def\x{2.75}  % time zero
+  \foreach \y/\t in {0/{\ct{sleep(2)}; then assert}, -0.5/{\ct{await fulfillment(…,}\\\ct{timeout: 2)}},
+                     -1.0/{inverted, \ct{timeout: 2}}, -1.5/{\ct{TestClock}:\\\ct{advance(by: .seconds(5))}}}
+    \node[tl, anchor=east, align=right] at (\x-0.05,\y) {\t};
+  \fill[black!25] (\x,-0.12) rectangle (\x+2*\s,0.12);
+  \node[tl, anchor=west, text=sheetRed] at (\x+2*\s+0.05,0) {always 2\,s; red if\\the work takes 2.1\,s};
+  \fill[sheetGreen!60] (\x,-0.62) rectangle (\x+0.3*\s,-0.38);
+  \draw[sheetGrey, dashed] (\x+0.3*\s,-0.5) -- (\x+2*\s,-0.5);
+  \draw[sheetRed, thick] (\x+2*\s,-0.6) -- (\x+2*\s,-0.4);
+  \node[tl, anchor=west, text=sheetGreen!45!black] at (\x+2*\s+0.05,-0.5) {returns at 0.3\,s;\\fails only at 2\,s};
+  \fill[sheetOrange!60] (\x,-1.12) rectangle (\x+2*\s,-0.88);
+  \node[tl, anchor=west, text=sheetOrange] at (\x+2*\s+0.05,-1.0) {can pass only at\\the timeout: keep it short};
+  \fill[sheetBlue!70] (\x,-1.62) rectangle (\x+0.06,-1.38);
+  \node[tl, anchor=west, text=sheetBlue] at (\x+0.15,-1.5) {the SUT's 5\,s sleep ends in $\approx$0\,s of real time};
+  \draw[sheetGrey, dotted] (\x+0.3*\s,0.2) -- (\x+0.3*\s,-1.25);
+  \node[tl, anchor=south] at (\x+0.3*\s,0.2) {work done};
+  \draw[->, thin, sheetGrey] (\x,-1.8) -- (\x+2.4*\s,-1.8);
+  \foreach \i in {0,1,2} {\draw[sheetGrey] (\x+\i*\s,-1.75) -- (\x+\i*\s,-1.85);
+    \node[tl, anchor=north] at (\x+\i*\s,-1.85) {\i\,s};}
+  \node[tl, anchor=north west] at (\x+2.4*\s,-1.72) {real time};
+\end{tikzpicture}
+
+\section{Network tests in layers}
+\noindent\begin{tikzpicture}[sheet]
+  \fill[sheetBlue!14, draw=sheetBlue] (0,0) -- (3.0,0) -- (2.5,0.48) -- (0.5,0.48) -- cycle;
+  \fill[sheetGreen!18, draw=sheetGreen!70!black] (0.5,0.52) -- (2.5,0.52) -- (2.0,1.0) -- (1.0,1.0) -- cycle;
+  \fill[sheetOrange!18, draw=sheetOrange] (1.0,1.04) -- (2.0,1.04) -- (1.5,1.52) -- cycle;
+  \node[tl, align=center] at (1.5,0.24) {\textbf{unit}};
+  \node[tl, align=center] at (1.5,0.76) {\textbf{integration}};
+  \node[tl, align=center] at (1.5,1.22) {\textbf{E2E}};
+  \node[tl, anchor=west, text width=48mm] at (3.1,1.24) {UI tests against a \textbf{mock server} you control; a few against the real one to pin the contract};
+  \node[tl, anchor=west, text width=48mm] at (3.1,0.76) {real \ct{URLSession} + stub \ct{URLProtocol}: a couple of tests prove the pieces are wired together};
+  \node[tl, anchor=west, text width=48mm] at (3.1,0.24) {request building and response parsing as pure functions: fast, clear failures — the bulk};
+\end{tikzpicture}\par
+On a device: Xcode's \textbf{Device Conditions} (Xcode 11) set a network-link profile (latency,
+loss, slow DNS) or a thermal state — the Network Link Conditioner, driven by Xcode.
+
+\section{Traps}
+\begin{itemize}
+  \trap{\ct{static var handler} under Swift Testing: all suites run in parallel in one process,
+        and \ct{.serialized} does not order unrelated suites — two suites overwrite one stub.
+        Key handlers per test (own host or header → table) or nest every network suite in one
+        \ct{.serialized} parent. Swift 6 mode: \ct{nonisolated(unsafe)} or a lock.}
+  \trap{\ct{URLProtocol.registerClass} is global (consulted in reverse order) — set the
+        session's \ct{protocolClasses}. \ct{.ephemeral} still keeps caches, cookies in RAM.}
+\end{itemize}
+
+\columnbreak
+
+\section{The stub}
+\begin{lstlisting}[language=SwiftSheet]
+final class MockURLProtocol: URLProtocol {
+  nonisolated(unsafe) static var handler:
+    ((URLRequest) throws -> (HTTPURLResponse, Data))?
+  override class func canInit(with r: URLRequest) -> Bool { true }
+  override class func canonicalRequest(for r: URLRequest)
+    -> URLRequest { r }
+  override func startLoading() {
+    do { let (resp, data) = try Self.handler!(request)
+      client?.urlProtocol(self, didReceive: resp,
+                          cacheStoragePolicy: .notAllowed)
+      client?.urlProtocol(self, didLoad: data)
+      client?.urlProtocolDidFinishLoading(self)
+    } catch { client?.urlProtocol(self, didFailWithError: error) } }
+  override func stopLoading() {} }
+let config = URLSessionConfiguration.ephemeral
+config.protocolClasses = [MockURLProtocol.self]
+let sut = APIClient(session: URLSession(configuration: config))
+MockURLProtocol.handler = { req in (HTTPURLResponse(url: req.url!,
+  statusCode: 500, httpVersion: nil, headerFields: nil)!, Data()) }
+await #expect(throws: APIError.status(500)) {
+  try await sut.user(id: 42) }
+\end{lstlisting}
+
+\section{Four ways a request fails — stub each}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{31mm}>{\raggedright\arraybackslash}p{34mm}@{}}
+\toprule
+\textbf{path} & \textbf{the handler} & \textbf{what the client sees}\\
+\midrule
+transport & \ct{throw URLError(\allowbreak.notConnectedToInternet)} (−1009) & \ct{data(for:)} throws that \ct{URLError} → map to \ct{.offline}\\
+HTTP status & returns 404 / 500 & \textbf{no throw}: \ct{(Data, URLResponse)} comes back; \emph{you} cast and check \ct{200...299}\\
+decoding & 200 + malformed JSON & \ct{DecodingError}: \ct{keyNotFound} · \ct{typeMismatch} · \ct{valueNotFound} · \ct{dataCorrupted}\\
+cancelled & never finishes; the test cancels the \ct{Task} & \ct{URLError(.cancelled)} (−999), \emph{not} \ct{CancellationError}\\
+\bottomrule
+\end{tabular}}\par
+Assert the \textbf{request} too. Its body arrives as \ct{httpBodyStream}; \ct{httpBody} is often
+\ct{nil} inside the protocol.
+
+\section{Time, streams, Combine}
+\begin{itemize}
+  \item \textbf{Clock}: depend on \ct{any Clock<Duration>} (iOS 16); \ct{sleep(for:)} works on the
+        existential since Swift 5.9. Prod \ct{ContinuousClock()}; tests (swift-clocks)
+        \ct{TestClock}: \ct{await clock.advance(by: .seconds(5))}, \ct{await clock.run()} until
+        nothing sleeps; \ct{ImmediateClock} never suspends; \ct{UnimplementedClock} fails if used.
+        Dates: inject \ct{() -> Date}. Timers / GCD: a scheduler protocol whose mock fires at once.
+  \item \textbf{Combine}: Apple's \ct{ImmediateScheduler} ignores dates but has its own time
+        types, so it cannot replace \ct{DispatchQueue} without generics; combine-schedulers'
+        \ct{AnySchedulerOf<DispatchQueue>} + \ct{DispatchQueue.test} + \ct{advance(by:)} can.
+        Keep the \ct{AnyCancellable} (deinit cancels), or \ct{for await} over
+        \ct{publisher.values} (iOS 15, \ct{Failure == Never}).
+  \item \textbf{AsyncStream}: drive the SUT through \ct{AsyncStream.makeStream(of:)} (5.9) — the
+        test holds the continuation. Consume \emph{bounded}: \ct{s.prefix(3)} or \ct{finish()};
+        an unfinished stream never ends the \ct{for await}.
+\end{itemize}
+
+\section{Ordering \& cancellation}
+\begin{itemize}
+  \item \ct{Task \{ await vm.load() \}} then assert: the next line usually runs before the task
+        body. Await \ct{task.value}, call \ct{await vm.load()} directly, or use \ct{Task.immediate}
+        (6.2: synchronous up to its first suspension). \ct{withMainSerialExecutor}
+        (swift-concurrency-extras) serialises a test's tasks — tests only, flips a global.
+  \item \ct{CancellationError} is promised by \ct{Task.checkCancellation()} and \ct{Task.sleep}, not
+        by every API (URLSession: \ct{URLError}). Assert the outcome \emph{and} the side effect
+        that must not happen. Swift Testing: a \ct{CancellationError} in a cancelled test =
+        cancelled, not failed; \ct{Test.cancel()} (6.3).
+  \item Cleanup (6.4): \ct{defer \{ await … \}} runs to completion;
+        \ct{withTaskCancellationShield} hides cancellation from it (no back-deployment).
+\end{itemize}
+
+\section{Remember}
+\textbf{Await the event, never sleep. Stub bytes, not objects — the real status check and decoder
+run. Four failures: wire · status · decode · cancel. Time is a dependency: inject it, advance it.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} XCTest \& Swift Testing · Test doubles ·
+Testable design · Testing fundamentals · Flaky tests, CI, coverage \& TDD · Testing ViewModels,
+Coordinators, UI \& snapshots · URLSession \& networking · Time in Swift · AsyncSequence \&
+AsyncStream · Combine in depth · Swift 6 · strict concurrency \& data-race safety · Engineering
+for bad networks}
+
+\end{document}
