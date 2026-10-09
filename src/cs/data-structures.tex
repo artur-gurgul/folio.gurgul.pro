@@ -1,0 +1,330 @@
+% data-structures.tex — the core structures by MECHANISM: memory layout, the invariant each
+% keeps, what it costs, how runtimes grow and lay them out (Swift stdlib + swift-collections,
+% Java / Kotlin, Python, Go, Rust), and where layout beats big-O.
+% Sources (checked 2026-10-08):
+%   github.com/swiftlang/swift stdlib/public/core: ArrayShared.swift (_growArrayCapacity =
+%     capacity * 2 on append) · HashTable.swift (max load 3/4, power-of-two buckets, occupancy
+%     bitset, insert = next hole after the ideal bucket, delete relocates later chain entries into
+%     the hole; seed = the table's storage address, new per allocation and resize, kept for COW
+%     copies) · issues #45856 (hash-dependent iteration order made copies quadratic) and #47721
+%     (a 500k-node list overflows the stack in deinit)
+%   developer.apple.com/documentation/swift: Array (new storage "a multiple of the old storage's
+%     size"; class / @objc elements may be an NSArray; copy-on-write) · ContiguousArray
+%     · Dictionary (order "stable between mutations but is otherwise unpredictable",
+%     init(minimumCapacity:)) · Array.removeFirst() (O(n)) · MemoryLayout.stride · InlineArray
+%     (26.0; no separate allocation, eager copy, size = count × stride) · the Collections topic page
+%   developer.apple.com/videos WWDC25 308 (cache lines "64- or 128 byte"; a main-memory access 50×
+%     the fast path; Eytzinger layout 2× faster than branchless binary search, in-order now misses)
+%   github.com/apple/swift-collections README (1.7: Deque, Heap "min-max heap backed by an array",
+%     OrderedSet, BitSet, TreeSet / TreeDictionary = CHAMP; SortedSet / SortedDictionary only with
+%     the UnstableSortedCollections trait) · Deque.swift (circular buffer, discontiguous)
+%     · Heap.swift (Atkinson et al. 1986; even levels ≤ descendants, odd ≥; BFS order in one array;
+%     min / max O(1), insert / popMin / popMax O(log n)) · OrderedSet.swift (Array + hash table of
+%     bit-packed indices; middle insert / remove linear) · _Bitmap.swift (UInt32 → 32 children)
+%     · SortedSet.swift (_BTree) · swift-algorithms Guides/Partition.md (partitioningIndex: binary
+%     search, O(log n) on random access)
+%   github.com/openjdk/jdk java.base: ArrayList (preferred growth oldCapacity >> 1; policy "not
+%     specified" beyond amortized constant add; constant factor low vs LinkedList) · ArrayDeque
+%     (circular array; ×2 below 64, then +50 %; faster than Stack and LinkedList) · Deque (use it,
+%     not the legacy Stack) · PriorityQueue (lowest at queue[0], children 2n+1 / 2(n+1), O(log n)
+%     offer / poll, linear contains / remove(Object)) · TreeMap (red-black, guaranteed log n)
+%     · LinkedHashMap (doubly-linked list through the entries; access order suits LRU caches)
+%     · HashMap (binned) · ConcurrentSkipListMap (expected average log n, concurrent)
+%     · Collections.binarySearch (log n on random access)
+%   github.com/JetBrains/kotlin stdlib: Maps.kt (mutableMapOf() = LinkedHashMap, hashMapOf() =
+%     HashMap) · jvm TypeAliases.kt (ArrayList, HashMap = java.util) · MapsJVM.kt (sortedMapOf =
+%     TreeMap) · ArrayDeque.kt (resizable array) · Collections.kt (List.binarySearch)
+%   github.com/python/cpython: listobject.c (n + (n >> 3) + 6, multiple of 4: 0, 4, 8, 16, 24, 32,
+%     40, 52, 64, 76) · dictobject.c (index table + dense entries, DKIX_DUMMY, USABLE_FRACTION 2/3)
+%     · _collectionsmodule.c (deque = doubly-linked list of 64-slot blocks; one datum per link =
+%     200 % overhead + one malloc each) · docs.python.org: FAQ design (list = contiguous array of
+%     references; dict = resizable hash table) · heapq (heap[k] <= heap[2k+1], heapify linear,
+%     max-heap functions added 3.14) · stdtypes (dict insertion order guaranteed 3.7) · collections
+%     (deque O(1) either end) · tutorial (list front pops shift every element) · bisect (O(log n)
+%     search dominated by O(n) insertion)
+%   github.com/golang/go runtime/slice.go (2× below 256, then easing to 1.25×) · github.com/
+%     rust-lang/rust raw_vec (cap * 2) · github.com/facebook/folly docs/FBVector.md (2× never reuses
+%     earlier blocks; 1.5× can after 4 reallocations)
+%   algs4.cs.princeton.edu/33balanced (red-black height ≤ 2 lg N) · en.wikipedia.org: AVL tree
+%     (c ≈ 1.440; faster for lookup-intensive use), Red–black tree (h < 2 log2(n+1); ≤ 2 rotations
+%     per insert, ≤ 3 per delete), Disjoint-set (α(n) ≤ 4 in practice), Breadth-first search
+%     (O(V+E)), Dijkstra's algorithm (binary heap Θ((E+V) log V); decrease-key needs a position
+%     map), Adjacency list (bit matrix V²/8 bytes; neighbours O(V)), Skip list (probabilistic,
+%     express lanes) · norvig.com/21-days (L1 0.5 ns, main memory 100 ns) · redis.io sorted sets
+%     (skip list + hash table, O(log N) add) · sqlite.org/pgszchng2016 (default page 4096 B)
+% Swift collection complexity: swift/strings-and-collections. Hash tables in depth: cs/hashing-deep.
+% Compositions (LRU, ring buffer …): cs/designing-data-structures.
+% @labels: area=cs kind=concept platform=general topic=algorithms,data,performance discussion=280
+% @tags: big-o, dynamic-array, amortised-complexity, linked-list, hash-table, open-addressing, binary-heap, min-max-heap, red-black-tree, b-tree, skip-list, trie, adjacency-list, union-find, cache-line, swift-collections
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,unowned,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,mutating,
+    true,false,AnyObject,Void,String,Bool,Int,while,for,in,deinit},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\tikzset{
+  c/.style={cell, minimum width=4.6mm, minimum height=4.2mm, font=\ttfamily\tiny},
+  hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  l/.style={font=\tiny, text=black!75, align=center, inner sep=1pt},
+  nd/.style={circle, draw=sheetBlue, fill=sheetBlue!8, thick, inner sep=0pt,
+             minimum size=4.2mm, font=\ttfamily\tiny},
+}
+
+\begin{document}
+
+\sheettitle{Data structures — layout, invariant, cost}{cs · folio}
+
+\oneliner{Every structure is a \textbf{memory layout} plus an \textbf{invariant}
+that makes some operations cheap and others expensive. Pick by the operation
+that must be fast, then check the constants: a trip to main memory costs
+$\sim$50$\times$ an L1 hit, so \textbf{contiguous memory + cache lines} beat
+pointer chasing at equal big-O.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ===== dynamic array growth
+  \node[hd] at (-0.1,1.95) {Array: append past capacity};
+  \foreach \v [count=\i] in {a,b,c,d} \node[c, fill=sheetBlue!10] at (0.2+0.46*\i,1.3) {\v};
+  \node[l, anchor=west] at (2.3,1.3) {cap 4, full};
+  \foreach \v [count=\i] in {a,b,c,d} \node[c, fill=sheetBlue!10] at (0.2+0.46*\i,0.35) {\v};
+  \node[c, fill=sheetOrange!20] at (2.5,0.35) {e};
+  \foreach \i in {6,7,8} \node[c] at (0.2+0.46*\i,0.35) {};
+  \draw[hot] (1.35,1.07) -- node[l, right]{alloc 2$\times$ + copy $n$ = O(n) once} (1.35,0.58);
+  \node[l, align=left, anchor=west] at (0.2,-0.3) {$1{+}2{+}4{+}\dots{+}n < 2n$ copies over $n$ appends\\⇒ \textbf{amortised O(1)}; \ct{reserveCapacity} skips it};
+  \draw[sheetGrey!50] (3.95,2.15) -- (3.95,-0.75);
+  % ===== linked list scattered in memory
+  \node[hd] at (4.0,1.95) {Linked list: pointer chasing};
+  \node[c, minimum width=7mm, fill=sheetGreen!10] (n1) at (4.55,1.25) {3|$\bullet$};
+  \node[c, minimum width=7mm, fill=sheetGreen!10] (n2) at (6.9,0.75) {7|$\bullet$};
+  \node[c, minimum width=7mm, fill=sheetGreen!10] (n3) at (5.1,0.05) {9|/};
+  \node[l] at (4.55,1.6) {0x7f10};  \node[l] at (6.9,1.1) {0x2a80}; \node[l] at (5.1,-0.3) {0x9c40};
+  \draw[hot, sheetRed] (n1.east) to[bend left=10] (n2.north west);
+  \draw[hot, sheetRed] (n2.south west) to[bend left=10] (n3.east);
+  \node[l, text=sheetRed, align=left, anchor=west] at (5.6,-0.3) {each hop = likely\\cache miss ($\sim$100 ns)};
+  \node[l, align=left, anchor=west] at (4.0,-0.62) {O(1) splice \emph{only if you hold the node}};
+  \draw[sheetGrey!50] (7.85,2.15) -- (7.85,-0.75);
+  % ===== hash table, open addressing (Swift's scheme)
+  \node[hd] at (7.9,1.95) {Hash table: linear probing};
+  \foreach \i/\v/\f in {0/{}/white,1/{}/white,2/k1/sheetBlue!12,3/k2/sheetOrange!18,4/{}/white,5/k3/sheetBlue!12,6/{}/white,7/{}/white}
+    \node[c, fill=\f] (h\i) at (8.3+0.48*\i,1.15) {\v};
+  \foreach \i/\v/\f in {0/{}/white,1/{}/white,2/k2/sheetOrange!18,3/{}/white,4/{}/white,5/k3/sheetBlue!12,6/{}/white,7/{}/white}
+    \node[c, fill=\f] (g\i) at (8.3+0.48*\i,0.4) {\v};
+  \foreach \i in {0,...,7} \node[l] at (8.3+0.48*\i,0.1) {\i};
+  \draw[hot] (8.9,1.5) node[l, above]{h(k1)=2} -- (h2.north);
+  \draw[hot] (10.1,1.5) node[l, above]{h(k2)=2} to[out=-90,in=90] (h3.north);
+  \draw[->, thick, sheetGreen!60!black] (h3.south) -- (g2.north);
+  \node[l, anchor=west, text=sheetGreen!45!black] at (9.95,0.78) {delete k1: k2 shifts back};
+  \node[l, align=left, anchor=north west] at (7.9,-0.02) {collision → next free slot · Swift deletes by\\shifting, \textbf{no tombstones}; Python marks a\\dummy · grow at load 3/4 (Python 2/3)};
+  \draw[sheetGrey!50] (12.15,2.15) -- (12.15,-0.75);
+  % ===== binary heap: tree + array
+  \node[hd] at (12.2,1.95) {Min-heap = complete tree in array};
+  \node[nd] (r) at (13.6,1.45) {1};
+  \node[nd] (a) at (12.95,0.95) {3}; \node[nd] (b) at (14.25,0.95) {2};
+  \node[nd] (a1) at (12.6,0.45) {7}; \node[nd] (a2) at (13.3,0.45) {4};
+  \node[nd] (b1) at (13.9,0.45) {5};
+  \draw (r)--(a) (r)--(b) (a)--(a1) (a)--(a2) (b)--(b1);
+  \foreach \v [count=\i from 0] in {1,3,2,7,4,5} {\node[c, minimum width=4mm, fill=sheetBlue!10] (y\i) at (12.55+0.4*\i,-0.2) {\v}; \node[l] at (12.55+0.4*\i,-0.48) {\i};}
+  \draw[->, thin, sheetOrange] (y1.north) to[bend left=60] (y3.north);
+  \draw[->, thin, sheetOrange] (y1.north) to[bend left=60] (y4.north);
+  \node[l, align=left, anchor=west] at (14.75,0.9) {children of $i$:\\$2i{+}1$, $2i{+}2$\\parent: $(i{-}1)/2$,\\rounded down};
+  \node[l, align=left, anchor=west] at (14.9,0.12) {no pointers,\\no gaps};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{How each one works}
+\begin{itemize}
+  \item \textbf{Array} — one block, element $i$ at \ct{base + i·stride}
+        (\ct{MemoryLayout<T>.stride}) ⇒ O(1) index. Scans ride the prefetcher; a
+        cache line (64 or 128\,B) brings 8–16 \ct{Int}s per miss. Middle insert /
+        delete shifts O(n). \ct{[SomeStruct]} holds values inline; \ct{[SomeClass]},
+        a Python \ct{list}, a Java \ct{ArrayList<Integer>} hold \emph{references} —
+        contiguous pointers to scattered objects.
+  \item \textbf{Linked list} — one allocation per node; a textbook doubly linked
+        list pays two links per datum (200\,\% overhead) and one \ct{malloc} each —
+        why CPython's \ct{deque} links 64-slot blocks instead. Wins only for O(1)
+        splice at a \emph{held} node and stable addresses; finding it is O(n).
+  \item \textbf{Hash table} — \ct{hash(key) mod m} → bucket, load $\alpha = n/m$;
+        chaining (Java \ct{HashMap} bins) or open addressing (Swift, Python).
+  \item \textbf{BST} — left $<$ node $<$ right, O(h); sorted inserts give h = n.
+        \textbf{AVL}: subtree heights differ $\le$1, h $\le$ 1.44\,log$_2$\,n,
+        faster lookups. \textbf{Red-black}: no red–red, equal black height,
+        h $<$ 2\,log$_2$(n+1), $\le$2 rotations per insert, $\le$3 per delete (Java
+        \ct{TreeMap}). \textbf{B-tree}: one node = one disk page (SQLite: 4096\,B);
+        fan-out $f$ ⇒ height log$_f$\,n (100-way: 10\textsuperscript{6} keys in 3 levels).
+  \item \textbf{Skip list} — a sorted linked list plus random ``express lanes'':
+        expected O(log n) with no rebalancing; Java's \ct{ConcurrentSkipListMap}
+        lets threads insert and remove concurrently; Redis sorted sets = skip list +
+        hash table.
+  \item \textbf{Binary heap} — complete tree in an array, parent $\le$ children.
+        peek O(1); push = append + sift-up, pop = last to root + sift-down, O(log n);
+        \textbf{heapify O(n)}. Swift's \ct{Heap} is \textbf{min-max}: even levels
+        $\le$ descendants, odd levels $\ge$ ⇒ both \ct{min} and \ct{max} O(1).
+  \item \textbf{Trie} — node per prefix: O(L) per op whatever n is; answers prefix
+        queries a hash set can't. A \textbf{hash trie} (CHAMP: Swift
+        \ct{TreeDictionary}) walks 5 hash bits per level into 32-way nodes; copies
+        share every unchanged subtree.
+  \item \textbf{Graph} — adjacency list O(V+E) space, neighbours O(deg); matrix
+        V$\times$V (V\textsuperscript{2}/8 bytes as bits), ``edge u–v?'' O(1),
+        neighbours O(V). BFS / DFS O(V+E) on a list; Dijkstra with a binary heap
+        O((V+E) log V).
+  \item \textbf{Union-find} — parent array + path compression + union by rank ⇒
+        O($\alpha$(n)), $\alpha \le 4$ for any real n: components, Kruskal.
+\end{itemize}
+
+\section{Growth factors — code, not contract}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{22mm}>{\raggedright\arraybackslash}p{54mm}@{}}
+\toprule
+\textbf{container} & \textbf{new capacity when full (source code)}\\
+\midrule
+Swift \ct{Array}, Rust \ct{Vec} & $\times$2\\
+Java \ct{ArrayList} & $\times$1.5 (\ct{old + (old >> 1)})\\
+Java \ct{ArrayDeque} & $\times$2 below 64, then $\times$1.5\\
+Go slice & $\times$2 below 256, then easing to $\times$1.25\\
+Python \ct{list} & $n + n/8 + 6$, rounded to 4: 0, 4, 8, 16, 24, 32, 40, 52, 64, 76 …\\
+\bottomrule
+\end{tabular}}\par
+Apple's and Java's docs promise only amortised-constant append — the factor is
+an implementation detail. 2$\times$ can never reuse the blocks it freed (their
+sum is always smaller than the next request); 1.5$\times$ can after 4
+reallocations (folly's \ct{fbvector} rationale).
+
+\section{One graph, two layouts}
+\begin{tikzpicture}[sheet]
+  \node[nd] (A) at (0,1.1) {A}; \node[nd] (B) at (1.1,1.1) {B};
+  \node[nd] (C) at (0,0) {C};   \node[nd] (D) at (1.1,0) {D};
+  \draw[thick] (A)--(B) (A)--(C) (B)--(D) (C)--(D);
+  \node[l, text=sheetBrown] at (0.55,-0.45) {V=4, E=4};
+  % adjacency list
+  \node[hd, font=\bfseries\scriptsize] at (1.7,1.45) {list: V + 2E cells};
+  \foreach \k/\n [count=\i] in {A/{B C},B/{A D},C/{A D},D/{B C}} {
+    \node[c, fill=sheetBlue!12] (k\i) at (2.0,1.35-0.38*\i) {\k};
+    \node[c, anchor=west, minimum width=9mm, fill=sheetGreen!8] at (2.4,1.35-0.38*\i) {\n};
+    \draw[->, thin] (k\i.east) -- ++(0.17,0); }
+  % matrix
+  \node[hd, font=\bfseries\scriptsize] at (4.05,1.45) {matrix: V\textsuperscript{2} cells};
+  \foreach \r/\row [count=\i] in {A/{0,1,1,0},B/{1,0,0,1},C/{1,0,0,1},D/{0,1,1,0}} {
+    \node[l] at (4.2,1.35-0.38*\i) {\r};
+    \foreach \v [count=\j] in \row {
+      \ifnum\v=1 \node[c, minimum width=3.8mm, minimum height=3.8mm, fill=sheetOrange!20] at (4.2+0.38*\j,1.35-0.38*\i) {1};
+      \else \node[c, minimum width=3.8mm, minimum height=3.8mm] at (4.2+0.38*\j,1.35-0.38*\i) {0}; \fi } }
+  \node[l, align=left, anchor=west] at (6.2,0.7) {1M users,\\$\sim$200 friends:\\list $\approx$ 2$\times$10\textsuperscript{8}\\matrix 10\textsuperscript{12}\\bits = 125\,GB};
+\end{tikzpicture}
+
+\section{Example — freeing a long class list}
+\begin{lstlisting}[language=SwiftSheet]
+final class Node<T> {
+  var value: T; var next: Node?
+  init(_ v: T, next: Node? = nil) { value = v; self.next = next }
+  deinit {   // default: each deinit frees the next → recursion
+    var node = self               // walk instead, while the link is unique
+    while isKnownUniquelyReferenced(&node.next) {
+      (node, node.next) = (node.next!, nil) }
+  }
+}
+\end{lstlisting}
+The loop stops at \ct{nil} (\ct{false}) or at the first node another owner still holds
+— that node and its tail stay alive.
+
+\columnbreak
+
+\section{Big-O — average (worst)}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{8mm}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{20mm}@{}}
+\toprule
+\textbf{structure} & \textbf{access} & \textbf{search} & \textbf{insert / delete} & \textbf{note}\\
+\midrule
+array & 1 & n & n; end: 1\textsuperscript{am} & \\
+sorted array & 1 & log n & n & the shift dominates\\
+linked list & n & n & 1 at node & find the node: n\\
+stack/queue/deque & ends 1 & n & ends 1 & array queue front: n\\
+hash table & — & 1 (n) & 1\textsuperscript{am} (n) & hashing key = O(len)\\
+BST, plain & — & log n (n) & log n (n) & sorted input → n\\
+AVL / red-black & — & log n & log n & in-order = sorted\\
+skip list & — & log n\textsuperscript{exp} & log n\textsuperscript{exp} & randomised levels\\
+binary heap & min 1 & n & log n & build O(n)\\
+trie & — & L & L & L = key length\\
+adj. list / matrix & — & deg / 1 & 1 / 1 & space V+E / V\textsuperscript{2}\\
+\bottomrule
+\end{tabular}}\par
+{\scriptsize n = 10\textsuperscript{6}: log$_2$\,n $\approx$ 20 · n log n $\approx$ 2$\times$10\textsuperscript{7}
+· n\textsuperscript{2} = 10\textsuperscript{12} — at 10\textsuperscript{9} steps/s: 20\,ns · 20\,ms · 17\,min.}
+
+\section{Same roles, three runtimes}
+{\scriptsize\setlength{\tabcolsep}{1.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{25mm}>{\raggedright\arraybackslash}p{19mm}@{}}
+\toprule
+\textbf{role} & \textbf{Swift} & \textbf{Java / Kotlin (JVM)} & \textbf{Python}\\
+\midrule
+growable array & \ct{Array} & \ct{ArrayList} & \ct{list}\\
+hash map & \ct{Dictionary} & \ct{HashMap} = \ct{hashMapOf()} & \ct{dict}\\
+insertion order & \ct{OrderedDictionary}\textsuperscript{c} & \ct{LinkedHashMap} = Kotlin \ct{mutableMapOf()} & \ct{dict} (guaranteed since 3.7)\\
+sorted map & \ct{SortedDictionary}\textsuperscript{c} (B-tree, unstable trait) & \ct{TreeMap} (red-black) = \ct{sortedMapOf()} & \ct{list} + \ct{bisect}\\
+queue / stack & \ct{Deque}\textsuperscript{c} · \ct{Array} & \ct{ArrayDeque} (not legacy \ct{Stack}) & \ct{collections.deque}\\
+priority queue & \ct{Heap}\textsuperscript{c} (min-max) & \ct{PriorityQueue} (min) & \ct{heapq} (min; max 3.14)\\
+binary search & \ct{partitioningIndex}\textsuperscript{a} & \ct{Collections.binarySearch} & \ct{bisect}\\
+\bottomrule
+\end{tabular}}\par
+{\scriptsize \textsuperscript{c} swift-collections · \textsuperscript{a} swift-algorithms — the
+Swift stdlib itself has no deque, heap or sorted tree.}
+
+\section{Inside the Swift types}
+\begin{itemize}
+  \item \textbf{\ct{Set} / \ct{Dictionary}}: 2\textsuperscript{k} buckets, $\le$ 3/4 full, an
+        occupancy bitmap. Seed = the table's address: new on every allocation and resize
+        (kept for COW copies) — two equal sets need not iterate alike, even in one run.
+  \item \textbf{Three ways to keep insertion order}: \ct{OrderedSet} and Python's \ct{dict}
+        = dense array + a hash table of indices (middle insert / remove renumbers: O(n) in
+        \ct{OrderedSet}); Java's \ct{LinkedHashMap} threads a doubly linked list through
+        its entries (access order → an LRU cache).
+  \item \ct{Deque}: circular buffer (may wrap). A class-element \ct{Array} may be an
+        \ct{NSArray}, \ct{ContiguousArray} never. \ct{InlineArray} (26.0): no own allocation, copied eagerly.
+\end{itemize}
+
+\section{Layout beats big-O: binary search}
+\begin{tikzpicture}[sheet]
+  \node[l, anchor=east] at (-0.05,0.55) {sorted};
+  \node[l, anchor=east] at (-0.05,-0.15) {Eytzinger};
+  \foreach \i/\v/\f in {0/1/white,1/2/white,2/3/white,3/4/sheetOrange!25,4/5/sheetOrange!25,5/6/sheetOrange!25,6/7/white}
+    \node[c, fill=\f] (s\i) at (0.25+0.48*\i,0.55) {\v};
+  \foreach \i/\v/\f in {0/4/sheetGreen!25,1/2/white,2/6/sheetGreen!25,3/1/white,4/3/white,5/5/sheetGreen!25,6/7/white}
+    \node[c, fill=\f] (e\i) at (0.25+0.48*\i,-0.15) {\v};
+  \draw[->, thin, sheetOrange] (s3.north) to[bend left=50] (s5.north);
+  \draw[->, thin, sheetOrange] (s5.north) to[bend right=50] (s4.north);
+  \draw[->, thin, sheetGreen!50!black] (e0.south) to[bend right=40] (e2.south);
+  \draw[->, thin, sheetGreen!50!black] (e2.south) to[bend right=40] (e5.south);
+  \node[l, align=left, anchor=west] at (3.65,0.2) {find 5: probes \textcolor{sheetOrange}{4 → 6 → 5}\\sorted: far apart → a miss each\\Eytzinger = BFS order of the search\\tree (heap layout $2i{+}1$, $2i{+}2$): the top\\levels share a cache line. Apple: \textbf{2$\times$}\\over branchless search; in-order misses};
+\end{tikzpicture}
+
+\section{Traps}
+\begin{itemize}
+  \trap{A 500k-node class list overflows the stack in its default \ct{deinit} (indirect
+        enums: no source fix). A strong \ct{prev} is a retain cycle — \ct{weak}.}
+  \trap{``Linked lists insert faster'' — only at a held node; the O(n) walk and cache
+        misses lose to \ct{Array}'s memmove.}
+  \trap{Amortised $\neq$ worst case: one append can copy O(n) inside a 16\,ms frame or an
+        audio callback — \ct{reserveCapacity}, \ct{init(minimumCapacity:)}, a fixed ring.}
+  \trap{A heap is not sorted: \ct{contains} / \ct{remove(x)} are O(n), and Dijkstra's
+        decrease-key needs a vertex → position map beside it.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Layout decides speed, invariant decides big-O.} Contiguous by default;
+pointers only when you must splice.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Designing data structures ·
+Hashing · Strings \& collections · Value vs reference \& copy-on-write · ARC \&
+ownership · Ownership, exclusivity \& memory layout · SQLite internals}
+
+\end{document}

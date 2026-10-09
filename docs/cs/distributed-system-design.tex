@@ -1,0 +1,321 @@
+% distributed-system-design.tex — the toolkit for scaling a backend: load balancers (L4 / L7, two
+% random choices), cache patterns, invalidation and stampedes, leader–follower replication and its
+% lag, quorums (N, R, W), consensus (Raft) and fencing, sharding + hot keys, CAP / PACELC,
+% consistency models and what stays available in a partition, TrueTime, queues and logs (SQS,
+% Kafka), tail latency under fan-out, the latency numbers, availability nines, back-of-envelope sizing.
+% Not repeated (neighbours): the consistent-hash ring (cs/hashing-deep), Lamport / vector clocks /
+% HLC and CRDTs (architecture/sync-engines), the Idempotency-Key header + ETag (design/api-design),
+% schema changes (engineering/zero-downtime-db-migrations), the traffic switch
+% (engineering/blue-green-deployments), realtime fan-out (networking/websockets-realtime).
+% Sources (checked 2026-10-08):
+%   https://www.allthingsdistributed.com/2007/10/amazons_dynamo.html (Dynamo, SOSP 2007: R + W > N
+%     "quorum-like"; common (N,R,W) = (3,2,2); example SLA 300 ms for 99.9 % of requests at a peak
+%     of 500 req/s; sloppy quorum on the first N healthy nodes + hinted
+%     handoff; vector clocks; "always writeable", conflicts pushed to reads; "deleted items can
+%     resurface")
+%   https://www.allthingsdistributed.com/2008/12/eventually_consistent.html (eventual, read-your-
+%     writes, monotonic-read definitions; W+R > N overlap; N=2 W=1 R=1 async: no guarantee)
+%   https://jepsen.io/consistency/models/ linearizable, serializable, strict-serializable (implies
+%     serializability + linearizability; none can be totally or sticky available), causal +
+%     read-your-writes (sticky available: clients never change server), monotonic-reads (totally
+%     available)
+%   https://www.infoq.com/articles/cap-twelve-years-later-how-the-rules-have-changed/ (Brewer 2012:
+%     "2 of 3" always misleading; partitions rare; choice per operation; "a partition is a time
+%     bound on communication"; ATM stand-in mode, "k might be $200")
+%   https://dbmsmusings.blogspot.com/2010/04/problems-with-cap-and-yahoos-little.html (PACELC wording;
+%     Dynamo, Cassandra, SimpleDB PA/EL; fully ACID PC/EC; PNUTS PC/EL)
+%   github.com/ongardie/dissertation basicraft/consensus.tex + https://raft.github.io (at most one
+%     leader per term; committed once on a majority; 5 servers survive 2; randomized election
+%     timeouts e.g. 150–300 ms; broadcastTime 0.5–20 ms ≪ electionTimeout 10–500 ms ≪ MTBF months)
+%   Spanner, OSDI 2012 (static.googleusercontent.com/media/research.google.com/en//archive/
+%     spanner-osdi2012.pdf, pp. 5–8: TT.now() = [earliest, latest]; GPS + atomic-clock masters;
+%     epsilon sawtooth ~1–7 ms, mean 4 ms, 30 s poll; commit wait >= 2 x mean epsilon, overlapped
+%     with Paxos) · cloud.google.com/spanner/docs/true-time-external-consistency (external
+%     consistency is stronger than linearizability and than serializability)
+%   https://www.postgresql.org/docs/current/warm-standby.html (streaming replication async by default,
+%     delay typically under one second; crash can lose committed transactions; sync: loss only if both
+%     crash; remote_apply = visible on the standby; ANY 2 (s1, s2, s3) quorum) · /functions-admin.html
+%     (pg_last_wal_replay_lsn) · /transaction-iso.html (Read Committed default; Serializable = SSI;
+%     serialization failures SQLSTATE 40001)
+%   redis.io/docs/latest: /operate/oss_and_stack/management/replication/ (async by default; WAIT does
+%     not make a CP system) · /operate/oss_and_stack/reference/cluster-spec/ (16384 slots, CRC16 mod
+%     16384, multi-key commands only when all keys hash to one slot, hash tags {user1000}.following,
+%     resharding moves slots) · /develop/reference/eviction/ (noeviction errors, allkeys-lru)
+%     · github.com/redis/redis redis.conf (default maxmemory-policy noeviction; appendonly no)
+%   Facebook, "Scaling Memcache at Facebook", NSDI 2013 (usenix.org, pp. 386–388: delete, not update,
+%     because deletes are idempotent; leases against stale sets (reordered concurrent sets) and
+%     thundering herds; one token per key per 10 s; peak DB query rate 17K/s → 1.3K/s; L = λW)
+%   Vattani et al., "Optimal Probabilistic Cache Stampede Prevention", VLDB 2015 (10 req/s × 3 s
+%     recompute = 30 recomputes; locking; probabilistic early expiration, XFetch)
+%   docs.aws.amazon.com/whitepapers/latest/database-caching-strategies-using-redis/caching-patterns
+%     (cache-aside = lazy loading; write-through) · docs.oracle.com Coherence 14.1.1 "Caching Data
+%     Sources" (read-through, write-through, write-behind after a configured delay, refresh-ahead)
+%   docs.aws.amazon.com/elasticloadbalancing: network/introduction (layer 4, flow hash on protocol,
+%     IPs, ports, TCP sequence) · application/introduction (layer 7, rules route on content,
+%     healthy targets only)
+%   nginx.org/en/docs/http/ngx_http_upstream_module.html (random two, default least_conn) ·
+%     /ngx_http_proxy_module.html (proxy_next_upstream: POST, LOCK, PATCH not passed on once sent,
+%     1.9.13) · rfc-editor.org RFC 9110 §9.2.2 (PUT, DELETE and safe methods are idempotent)
+%   Dean & Barroso, "The Tail at Scale", CACM Feb 2013 (barroso.org PDF: 1-in-100 slow × 100 servers
+%     → 63 %; Table 1 p99 one leaf 10 ms, all leaves 140 ms; hedged requests after 10 ms: p99.9
+%     1,800 → 74 ms for 2 % more requests; Mitzenmacher: two choices exponentially better)
+%   docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide: standard-queues (at-least-once,
+%     best-effort order) · FIFO-queues-exactly-once-processing (5-minute dedup) · quotas-messages
+%     (FIFO 300 TPS per partition per action; retention 4 d default, 1 min–14 d; max message 1 MiB)
+%     · sqs-visibility-timeout (30 s default, 12 h max) · sqs-dead-letter-queues (maxReceiveCount,
+%     ApproximateAgeOfOldestMessage)
+%   github.com/apache/kafka trunk: docs/getting-started/introduction.md (same key → same partition,
+%     read in written order; not deleted after consumption) · docs/design/design.md (one consumer per
+%     partition per group; at-least-once by default; exactly-once with transactions +
+%     read_committed) · config/server.properties (log.retention.hours=168)
+%   docs.aws.amazon.com/amazondynamodb developerguide: bp-partition-key-design (3,000 read / 1,000
+%     write units per partition; read unit = item up to 4 KB, write unit = up to 1 KB) · bp-partition-key-sharding (random suffix, reads query all) ·
+%     V2globaltables_HowItWorks ("last writer wins" per item)
+%   cloud.google.com/spanner/docs/schema-design (monotonic first key part → hotspot) ·
+%     mongodb.com/docs/manual/core/hashed-sharding (ranged queries broadcast)
+%   microservices.io/patterns/data/transactional-outbox.html (relay may publish twice → idempotent
+%     consumers) · /saga.html (local transactions + compensations, no isolation)
+%   martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html (GC pause past the lease;
+%     fencing token incremented per acquisition, 33 vs 34)
+%   aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter (100 contending clients: calls
+%     cut by more than half with jitter)
+%   Dean, LADIS 2009 keynote (cs.cornell.edu/projects/ladis2009/talks/dean-keynote-ladis2009.pdf,
+%     slide "Numbers Everyone Should Know", read verbatim: L1 0.5 ns, mutex 25 ns, memory 100 ns,
+%     2 KB over 1 Gbps 20 µs, 1 MB from memory 250 µs, datacenter round trip 500 µs, seek 10 ms,
+%     1 MB from disk 20 ms, CA→Netherlands→CA 150 ms — no SSD row)
+%   hpbn.co/primer-on-latency-and-bandwidth (fibre ~200,000,000 m/s; RTT floors NY–London 56 ms,
+%     NY–Sydney 160 ms) · hpbn.co/mobile-networks (4G 30–100 ms end to end once connected)
+%   sre.google/sre-book/availability-table (per year / per month for 99.9 %–99.999 %)
+%   github.com/apache/hadoop hdfs-default.xml (dfs.replication = 3)
+% @labels: area=cs kind=architecture platform=backend topic=system-design discussion=282
+% @tags: load-balancer, cache-aside, cache-stampede, read-replicas, replication-lag, sharding, hot-key, quorum, raft, cap-theorem, pacelc, consistency-models, message-queue, tail-latency, back-of-envelope
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\tikzset{
+  s/.style={box, font=\tiny, minimum height=5.5mm, inner sep=1.5pt},
+  g/.style={s, draw=sheetGreen, fill=sheetGreen!10},
+  r/.style={s, draw=sheetRed, fill=sheetRed!7},
+  o/.style={s, draw=sheetOrange, fill=sheetOrange!10},
+  gr/.style={s, draw=sheetGrey, fill=black!5},
+  hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  l/.style={font=\tiny, text=black!75, align=center, inner sep=1pt},
+  db/.style={cylinder, shape border rotate=90, aspect=0.25, draw=sheetBlue, thick,
+             fill=sheetBlue!8, font=\tiny, minimum height=8mm, minimum width=11mm, align=center, inner sep=1pt},
+}
+
+\begin{document}
+
+\sheettitle{Distributed system design — the toolkit}{cs · folio}
+
+\oneliner{Servers \textbf{stateless} behind a \textbf{load balancer}; reads taken off the database by
+\textbf{caches} and \textbf{replicas}; writes split by \textbf{sharding}; slow work on \textbf{queues};
+truth settled by a \textbf{majority}. Each step trades scale for a named cost — staleness, lag, hot
+keys, duplicates.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet, yscale=0.86]
+  \node[hd] at (-0.1,2.45) {The canonical read-heavy architecture — and what each hop costs};
+  \node[s, minimum width=11mm] (cl) at (0.45,0.9) {client\\HTTP cache};
+  \node[gr, minimum width=11mm] (cdn) at (2.0,1.75) {CDN edge\\origin: object store};
+  \node[s, minimum width=12mm] (lb) at (2.0,0.25) {L7 load\\balancer (×2)};
+  \draw[hot] (cl) -- node[l, above left]{DNS} (cdn);
+  \draw[hot] (cl) -- node[l, below left]{TLS} (lb);
+  \foreach \y [count=\i] in {1.15,0.25,-0.65} \node[g, minimum width=12mm] (a\i) at (4.0,\y) {app server \i\\stateless};
+  \foreach \i in {1,2,3} \draw[flow] (lb.east) -- (a\i.west);
+  \node[o, minimum width=12mm] (rc) at (6.3,1.75) {Redis\\cache-aside};
+  \node[db] (ld) at (6.3,0.2) {leader\\writes};
+  \node[db, fill=sheetBlue!3] (f1) at (8.3,0.75) {follower\\reads};
+  \node[db, fill=sheetBlue!3] (f2) at (8.3,-0.45) {follower\\reads};
+  \draw[flow] (a1.east) -- (rc.west);
+  \draw[flow] (a2.east) -- node[l, above]{write} (ld.west);
+  \draw[flow, dashed] (a3.east) to[out=0,in=-150] node[l, below, pos=0.6]{read} (f2.south west);
+  \draw[hot, sheetRed] (ld.east) -- node[l, above, sloped]{async} (f1.west);
+  \draw[hot, sheetRed] (ld.east) -- (f2.west);
+  \node[l, text=sheetRed, align=left, anchor=west] at (8.95,1.6) {lag: typically\\$<$1 s if the\\replica keeps up\\(PostgreSQL)};
+  \node[s, minimum width=12mm, draw=sheetBrown, fill=sheetBrown!8] (q) at (4.0,-1.6) {queue\\(at-least-once)};
+  \draw[flow] (a3.south) -- (q.north);
+  \node[s, minimum width=11mm, draw=sheetBrown, fill=sheetBrown!8] (w) at (6.3,-1.6) {workers\\idempotent};
+  \draw[flow] (q) -- (w);
+  \node[gr, minimum width=11mm] (s3) at (8.3,-1.6) {object store\\S3 / blobs};
+  \draw[flow] (w) -- (s3);
+  % side panel: sharding + hot key
+  \draw[sheetGrey!50] (10.45,2.6) -- (10.45,-2.0);
+  \node[hd] at (10.5,2.1) {Sharding by key};
+  \node[s, minimum width=15mm] (rt) at (12.9,1.4) {router: shard = f(user\_id)};
+  \foreach \x/\n/\c [count=\i] in {11.2/{S0\\a–f}/sheetBlue, 12.3/{S1\\g–m}/sheetBlue, 13.4/{S2\\n–s}/sheetRed, 14.5/{S3\\t–z}/sheetBlue} {
+    \node[db, minimum width=9mm, draw=\c, fill=\c!8] (sh\i) at (\x,0.2) {\n};
+    \draw[flow] (rt.south) -- (sh\i.north); }
+  \node[l, text=sheetRed, align=left, anchor=west] at (10.5,-0.72) {\textbf{hot key}: one celebrity's\\writes all land on S2};
+  \node[l, align=left, anchor=west] at (13.0,-0.72) {fix: write sharding —\\key + random suffix 1…N;\\a read queries all N};
+  \node[l, align=left, anchor=west] at (10.5,-1.64) {range → hot spot on a monotonic first key (timestamps);\\hash → even, but a range query is usually broadcast;\\fixed slots (Redis Cluster: 16384) → reshard = move slots};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Load balancers}
+{\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{5mm}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{50mm}@{}}
+\toprule
+& \textbf{sees} & \textbf{does}\\
+\midrule
+\textbf{L4} & TCP / UDP flows & one target per connection (AWS NLB: hash of protocol, IPs, ports, TCP sequence); TLS passes through\\
+\textbf{L7} & HTTP host, path, headers, cookies & ends TLS; rules route each request by content; sticky cookie; retries\\
+\bottomrule
+\end{tabular}}\par
+Algorithms: round-robin (weighted), \textbf{least connections}, IP / consistent hash (affinity),
+\textbf{two random choices} (nginx \ct{random two least\_conn}: draw 2, take the one with fewer
+active connections; the shorter of two queues balances \emph{exponentially} better than one random
+pick). Only healthy targets get traffic. Retry on another server only if idempotent — \ct{PUT},
+\ct{DELETE}, safe methods (RFC 9110); by default nginx does not resend a \ct{POST} / \ct{PATCH}
+already sent. State in a server's memory breaks all of it → Redis / DB or a signed token.
+
+\section{Caching — patterns, stampedes}
+{\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{36mm}>{\raggedright\arraybackslash}p{23mm}@{}}
+\toprule
+\textbf{cache-aside} & app reads cache; miss → DB → fill; write DB, then \textbf{delete} key & ``lazy loading''\\
+read-through & the cache loads from the DB itself & simpler app code\\
+write-through & write cache + DB synchronously & fresh; slower writes\\
+\textbf{write-behind} & write cache; flushed to DB after a delay & fast; unflushed = cache only\\
+refresh-ahead & reload a hot entry \emph{before} it expires & no miss on expiry\\
+\bottomrule
+\end{tabular}}\par
+\textbf{Delete, don't update} on write: deletes are idempotent; concurrent sets can land out of
+order (a stale set). TTL bounds staleness. \textbf{Stampede}: recomputes ≈ request rate × recompute
+time (10/s × 3 s = 30). Fixes: one recompute per key (lock / single-flight) + serve stale;
+\textbf{leases} (memcache: one token per key per 10 s took peak DB load from 17K/s to 1.3K/s);
+probabilistic early refresh (XFetch). Miss rate 10\,\% → 1\,\% = \textbf{10$\times$} less DB load.
+Redis ships \ct{maxmemory-policy noeviction} (writes fail when full; a cache wants
+\ct{allkeys-lru}) and \ct{appendonly no}.
+
+\section{Replication, quorums, consensus}
+\begin{itemize}
+  \item \textbf{Leader–follower} (PostgreSQL): streaming replication is \textbf{async} by default —
+        lag typically $<$1 s; a primary crash can lose committed transactions. \textbf{Sync}: commit
+        waits for the standby's WAL flush, loss only if both crash; \ct{remote\_apply} waits until it
+        is visible there; \ct{ANY 2 (s1,s2,s3)} = quorum commit.
+  \item Lag breaks \textbf{read-your-writes}: read your own data from the leader, or wait until the
+        replica's \ct{pg\_last\_wal\_replay\_lsn()} passes the write's LSN. \textbf{Monotonic reads}:
+        pin a user to one replica. Redis replicates async; \ct{WAIT} does not make it CP.
+  \item \textbf{Multi-region}: DynamoDB global tables settle conflicts ``last writer wins'' per item.
+        A hot key meets a hard ceiling there: each partition serves at most 3,000 reads + 1,000
+        writes per second (units of 4 KB / 1 KB).
+  \item \textbf{Cross-shard} is the cost of sharding: Redis Cluster runs a multi-key command only
+        when every key hashes to one slot — hash tags force it (\ct{\{u1\}.following},
+        \ct{\{u1\}.followers}).
+  \item \textbf{Leaderless} (Dynamo, Cassandra): N replicas, write W, read R; \textbf{W + R > N} ⇒ the
+        sets overlap; Dynamo's usual (N,R,W) = (3,2,2); N=2, W=R=1 guarantees nothing.
+        \textbf{Sloppy quorum}: the first N \emph{healthy} nodes + hinted handoff → ``always
+        writeable'', conflicts reconciled on read — deleted items can resurface.
+  \item \textbf{Raft}: $\leq$1 leader per term; an entry commits once on a \textbf{majority}; 2f+1
+        servers survive f failures (5 → 2). Randomized election timeouts (e.g.\ 150–300 ms);
+        broadcast (0.5–20 ms) \pdfonly{$\ll$}\htmlonly{≪} election timeout (10–500 ms)
+        \pdfonly{$\ll$}\htmlonly{≪} MTBF (months).
+  \item \textbf{Fencing}: a lock holder paused by GC past its lease still writes — the storage
+        rejects token 33 once it has seen 34.
+\end{itemize}
+
+\section{Back-of-envelope}
+1 day $\approx$ 10\textsuperscript{5} s → 1M requests/day $\approx$ 12 QPS; in flight = rate $\times$
+latency (Little, $L = \lambda W$); storage $\times$ 3 replicas (HDFS default). Downtime:
+\textbf{99.9\,\%} = 8.76 h/yr (43.2 min/month) · 99.99\,\% = 52.6 min/yr · 99.999\,\% = 5.26 min/yr;
+serial dependencies multiply. Targets are percentiles: Dynamo's example SLA is 300 ms for 99.9\,\%
+of requests at a peak of 500 req/s. \textbf{Example}: 10M DAU $\times$ 20 =
+2$\times$10\textsuperscript{8}/day → $\sim$2,300 QPS, $\sim$7,000 at an assumed 3$\times$ peak,
+$\sim$460 in flight at 0.2 s; 10\,\% post a 500 KB photo/day → 500 GB/day → $\sim$180 TB/yr,
+$\times$3 $\approx$ 0.5 PB → object store + CDN.
+
+\columnbreak
+
+\section{CAP, PACELC, consistency}
+\textbf{CAP}: in a partition an operation refuses (\textbf{C}) or answers from what it has
+(\textbf{A}). ``2 of 3'' ``was always misleading'' (Brewer, 2012): partitions are rare, the
+choice is per operation, and ``a partition is a time bound on communication''. ATMs pick A:
+stand-in mode caps net withdrawal (``k might be \$200''). \textbf{PACELC} (Abadi, 2010): if P, A or
+C; \emph{else} \textbf{L}atency or \textbf{C}onsistency — Dynamo, Cassandra PA/EL · ACID PC/EC ·
+PNUTS PC/EL.
+{\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{46mm}>{\raggedright\arraybackslash}p{9mm}@{}}
+\toprule
+\textbf{model} & \textbf{guarantee} & \textbf{partition}\\
+\midrule
+strict serializable & serializable + linearizable (Spanner: stronger still) & \textcolor{sheetRed}{no}\\
+\textbf{linearizable} & one copy, real-time order: locks, unique names & \textcolor{sheetRed}{no}\\
+serializable & as if one at a time, in \emph{some} order & \textcolor{sheetRed}{no}\\
+causal & causally related ops in one order everywhere & \textcolor{sheetOrange}{sticky}\\
+\textbf{read-your-writes} & a process sees its own writes & \textcolor{sheetOrange}{sticky}\\
+monotonic reads & reads never go backwards & \textcolor{sheetGreen}{yes}\\
+\textbf{eventual} & if writes stop, reads return the last value & —\\
+\bottomrule
+\end{tabular}}\par
+Sticky = only while a client stays on one server (Jepsen). \textbf{TrueTime}: Spanner's
+\ct{TT.now()} is an interval [earliest, latest] from GPS + atomic-clock masters, $\epsilon$
+$\sim$1–7 ms (mean 4); \textbf{commit wait} until \ct{TT.after(s)} (\pdfonly{$\geq 2\bar{\epsilon}$}\htmlonly{≥ 2ε̄}, overlapped
+with Paxos) buys external consistency. PostgreSQL: Read Committed by default; Serializable is SSI
+and fails with \ct{40001} — retry the transaction.
+
+\section{Queues and logs}
+{\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{33mm}>{\raggedright\arraybackslash}p{32mm}@{}}
+\toprule
+& \textbf{SQS} & \textbf{Kafka}\\
+\midrule
+delivery & standard at-least-once; FIFO exactly-once processing (5-min dedup) & at-least-once by default; exactly-once Kafka → Kafka (transactions)\\
+order & standard best-effort; FIFO per message group, 300 TPS per partition & per partition (same key, same partition); 1 consumer per partition per group\\
+after read & hidden 30 s (≤12 h), redelivered unless deleted; kept 4 d (≤14 d) & kept for the retention (168 h shipped); consumer commits an offset\\
+\bottomrule
+\end{tabular}}\par
+SQS messages ≤1 MiB; dead-letter after \ct{maxReceiveCount}; alarm on
+\ct{ApproximateAgeOfOldestMessage}. \textbf{Outbox}: the event row commits with the data; a relay
+publishes it, maybe twice → dedupe by id. \textbf{Saga}: local transactions + compensations, no
+isolation.
+
+\section{Latency — the numbers and the tail}
+\noindent\begin{tikzpicture}[sheet]
+  \node[l, anchor=west, text=sheetGrey] at (0,0.22) {Dean, 2009, log scale};
+  \foreach \d/\t in {1/1 ns, 4/1 µs, 7/1 ms, 10/1 s} {
+    \draw[sheetGrey!40] ({3.05+\d*0.34},0.12) -- ({3.05+\d*0.34},-2.45);
+    \node[l, text=sheetGrey] at ({3.05+\d*0.34},0.22) {\t}; }
+  \foreach \lab/\len/\val/\c [count=\i] in {
+      L1 cache reference/0.70/0.5 ns/sheetBlue,
+      {mutex lock / unlock}/2.40/25 ns/sheetBlue,
+      main memory reference/3.00/100 ns/sheetBlue,
+      send 2 KB over 1 Gbps/5.30/20 µs/sheetOrange,
+      read 1 MB from memory/6.40/250 µs/sheetBlue,
+      round trip in a datacenter/6.70/0.5 ms/sheetOrange,
+      disk seek/8.00/10 ms/sheetBrown,
+      read 1 MB from disk/8.30/20 ms/sheetBrown,
+      packet CA → Netherlands → CA/9.18/150 ms/sheetOrange} {
+    \node[l, anchor=east] at (3.0,{-\i*0.26}) {\lab};
+    \fill[\c!75] (3.05,{-\i*0.26-0.08}) rectangle ({3.05+\len*0.34},{-\i*0.26+0.08});
+    \node[l, anchor=west] at ({3.1+\len*0.34},{-\i*0.26}) {\val}; }
+\end{tikzpicture}\par
+Keep the ratios. Fibre $\sim$200,000 km/s → $\sim$1 ms RTT per 100 km: NY–London
+$\geq$56 ms, NY–Sydney $\geq$160 ms; 4G 30–100 ms once connected. \textbf{Fan-out}: 1 in 100
+responses slow × 100 servers → \textbf{63\,\%} of requests slow ($1-0.99^{100}$); Google: p99 of one
+leaf 10 ms, of all leaves 140 ms. \textbf{Hedge} after 10 ms: p99.9 1,800 → 74 ms, +2\,\% requests.
+
+\section{Traps}
+\begin{itemize}
+  \trap{CAP as ``pick two''; averages instead of p99 — fan-out makes the rare case common.}
+  \trap{Reading a replica right after a write — the user's change vanishes.}
+  \trap{Updating the cache on write; a lock without a fencing token.}
+  \trap{Retrying a non-idempotent call without a key — charged twice.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Stateless → cache → replicate → shard → queue; a majority for truth.} For each: what goes
+stale, what breaks, which number made it necessary.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Hashing (the ring) · Sync engines (clocks,
+CRDTs) · API design (idempotency keys) · Zero-downtime database migrations · Blue/green deployments ·
+WebSockets \& realtime}
+
+\end{document}

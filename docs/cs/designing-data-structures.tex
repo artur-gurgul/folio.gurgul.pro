@@ -1,0 +1,304 @@
+% designing-data-structures.tex — composing structures so that the operations that must be cheap
+% are: LRU (hash map + doubly linked list), LFU (frequency lists), min-stack, two-stack queue,
+% rate limiters (log, counter, token bucket), trie autocomplete, two-heap median, top-k,
+% sliding-window max, ring buffer, TTL expiry, O(1) getRandom — invariant and cost of each.
+% The LRU listing keeps `prev` weak (a strong one is a retain cycle in Swift); the sliding log
+% uses a Deque (Array.removeFirst() is O(n)).
+% Building blocks: cs/data-structures.tex. Hash tables, the consistent-hash ring, Bloom filters:
+% cs/hashing-deep.tex.
+% Sources (checked 2026-10-08):
+%   developer.apple.com/documentation/foundation/nscache (thread-safe without your lock, evicts
+%     when memory is low, keys not copied, KeyType: AnyObject) · /nscache/countlimit and
+%     /totalcostlimit (default 0 = none, "not a strict limit", eviction order "not guaranteed")
+%     · /swift/array/removefirst() (O(n)) · /swift/set/randomelement() (O(1) only for a
+%     RandomAccessCollection, else O(n)) · /os/osallocatedunfairlock (iOS 16) ·
+%     /synchronization/mutex (iOS 18)
+%   github.com/swiftlang/swift stdlib/public/core/Set.swift (Set: Collection, no RandomAccess)
+%     · github.com/swiftlang/swift-book TSPL AutomaticReferenceCounting (weak breaks a strong
+%     reference cycle, set to nil) · Concurrency (calls from outside an actor are async)
+%   github.com/apple/swift-collections: README at tags 1.0.6 / 1.1.0 / 1.7.0 (Deque and
+%     OrderedDictionary since 1.0, Heap since 1.1, RigidDeque in 1.7) · Documentation/Deque.md
+%     (circular buffer, random access, prepend / popFirst, copy-on-write, no capacity property)
+%     · Deque+Extras.swift (popFirst O(1) with unique storage, else O(count); prepend amortised
+%     O(1)) · RigidDeque.swift (fixed-capacity ring, traps when full, never resizes itself)
+%     · Heap.swift (min-max heap after Atkinson et al. 1986; min / max O(1); insert, popMin,
+%     popMax O(log n); init O(n); removeAll(where:) O(n)) · OrderedDictionary.swift
+%     (removeValue(forKey:) O(count))
+%   docs.oracle.com/en/java/javase/21 LinkedHashMap (doubly linked list through the entries,
+%     access-order constructor, "well-suited to building LRU caches", get on an access-ordered
+%     map is a structural modification, removeEldestEntry run by put / putAll, not synchronized)
+%   developer.android.com/reference/android/util/LruCache (accessed value moves to the head, full
+%     cache evicts the tail, thread-safe, sizeOf, no null keys or values) ·
+%     github.com/aosp-mirror/platform_frameworks_base core/java/android/util/LruCache.java
+%     (new LinkedHashMap(0, 0.75f, true), synchronized)
+%   docs.python.org/3/library/collections.html (OrderedDict: move_to_end, popitem(last=False),
+%     suited to LRU caches) · github.com/python/cpython Objects/odictobject.c (the default C
+%     OrderedDict: dict + doubly linked list, keeps dict's O(1)) · Lib/collections/__init__.py
+%     (the pure-Python one: same big-O as dict)
+%   redis.io/docs/latest/develop/reference/eviction (approximated LRU: samples maxmemory-samples 5,
+%     candidate pool since 3.0, true LRU "costs more memory"; LFU since 4.0, Morris counter 0-255,
+%     saturates near one million hits, decays every minute) · /commands/expire (passive + active
+%     expiry) · /commands/incr (rate-limiter patterns, INCR without EXPIRE leaks the key, Lua fix)
+%     · /develop/using-commands/transactions (MULTI queues commands, scripts are transactional)
+%     · /develop/data-types/sorted-sets (unique members, skip list + hash table, sliding-window
+%     rate limiter) · /commands/zadd O(log N) · /commands/zremrangebyscore O(log N + M)
+%   blog.cloudflare.com/counting-things-a-lot-of-different-things (sliding-window counter
+%     rate = prev * (60 - 15) / 60 + 18 = 49.5; 0.003 % wrongly allowed or limited, 400 M requests)
+%   RFC 6585 sec. 4 (429, MAY carry Retry-After) · RFC 9110 sec. 10.2.3 (Retry-After = HTTP-date /
+%     delay-seconds) · RFC 2697 (token buckets start full, refilled CIR times a second up to CBS)
+%   github.com/torvalds/linux include/linux/kfifo.h (size a power of 2, free-running in / out,
+%     len = in - out, one reader + one writer need no extra locking)
+%   Constructions not taken from a citation (LFU frequency lists, sentinel nodes, min-stack,
+%     two-stack queue, two heaps, lazy deletion, top-k heap, count map + heap, monotonic deque,
+%     trie top-k, array + index map, ring indices, per-second bucket ring, the fixed window's 2x
+%     burst) were checked against their own invariants.
+% @labels: area=cs kind=pattern platform=general topic=algorithms,data discussion=281
+% @tags: lru-cache, lfu-cache, doubly-linked-list, min-stack, two-stack-queue, median-of-stream, two-heaps, ring-buffer, token-bucket, sliding-window-log, trie-autocomplete, consistent-hashing, swift-collections, nscache
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,unowned,init,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,mutating,
+    true,false,AnyObject,Void,String,Bool,Int,while,for,in,precondition},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+% design header: \dq{name}{winning structure}{complexity}
+\newcommand\dq[3]{\par\vspace{2pt}\noindent\colorbox{sheetBlue!12}{\makebox[\dimexpr\linewidth-2\fboxsep][l]{\bfseries\footnotesize\color{sheetBlue}#1\mdseries\color{black}~— #2\hfill\ttfamily #3}}\par\vspace{1pt}}
+\tikzset{
+  c/.style={cell, minimum width=5mm, minimum height=4.2mm, font=\ttfamily\tiny},
+  hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  l/.style={font=\tiny, text=black!75, align=center, inner sep=1pt},
+  dn/.style={box, font=\ttfamily\tiny, minimum width=9mm, minimum height=5mm, inner sep=1pt},
+  fn/.style={box, font=\ttfamily\tiny, minimum width=6mm, minimum height=4mm, inner sep=1pt},
+  hn/.style={circle, draw=#1, fill=#1!10, thick, inner sep=0pt, minimum size=4mm, font=\ttfamily\tiny},
+}
+
+\begin{document}
+
+\sheettitle{Designing data structures — compose for O(1)}{cs · folio}
+
+\oneliner{Name the operation that must be O(1), pick the structure whose
+\textbf{invariant} makes it cheap, and when no single structure does all of
+them, \textbf{compose two} that index the same nodes (hash map for
+\emph{find}, list for \emph{order}; heap for \emph{extreme}, array for
+\emph{random}). Then name the price: memory, amortised vs worst case, thread safety.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ===== LRU: map + DLL
+  \node[hd] at (-0.1,2.05) {LRU = hash map (find) + doubly linked list (order)};
+  \node[dn, fill=black!6, draw=sheetGrey] (H) at (0.5,0.75) {head};
+  \node[dn, fill=sheetGreen!12, draw=sheetGreen] (nC) at (1.95,0.75) {C:3};
+  \node[dn] (nA) at (3.4,0.75) {A:1};
+  \node[dn] (nD) at (4.85,0.75) {D:9};
+  \node[dn, fill=sheetRed!10, draw=sheetRed] (nB) at (6.3,0.75) {B:4};
+  \node[dn, fill=black!6, draw=sheetGrey] (T) at (7.75,0.75) {tail};
+  \foreach \a/\b in {H/nC,nC/nA,nA/nD,nD/nB,nB/T} {
+    \draw[->, thick, sheetBlue] ([yshift=1.2pt]\a.east) -- ([yshift=1.2pt]\b.west);
+    \draw[->, thin, dashed, sheetGrey] ([yshift=-1.2pt]\b.west) -- ([yshift=-1.2pt]\a.east); }
+  \node[l, text=sheetGreen!50!black] at (1.95,1.2) {most recent};
+  \node[l, text=sheetRed] at (6.3,1.2) {evict this};
+  \node[l, anchor=west] at (-0.1,-0.55) {\ct{[Key: Node]}};
+  \foreach \k/\t [count=\i] in {A/nA,B/nB,C/nC,D/nD} {
+    \node[c, fill=sheetBlue!12] (m\i) at (2.2+0.75*\i,-0.55) {\k};
+    \draw[->, thin, sheetGrey] (m\i.north) -- (\t.south); }
+  \node[l, anchor=west, align=left] at (2.75,1.6) {\textbf{get(D)}: map → node O(1) · unlink O(1) · push after head\\
+      unlink needs \emph{prev} — that is why it is \textbf{doubly} linked};
+  \node[l, anchor=west, align=left, text=sheetBlue] at (5.8,-0.45) {solid = \ct{next} (strong)\\dashed = \ct{prev} (\ct{weak})};
+  \draw[sheetGrey!50] (8.55,2.25) -- (8.55,-0.75);
+  % ===== median: two heaps
+  \node[hd] at (8.6,2.05) {Median: two heaps};
+  \node[hn=sheetBlue] (x1) at (9.5,1.4) {5};
+  \node[hn=sheetBlue] (x2) at (9.15,0.85) {2}; \node[hn=sheetBlue] (x3) at (9.85,0.85) {4};
+  \node[hn=sheetBlue] (x4) at (8.95,0.3) {1};
+  \draw (x1)--(x2) (x1)--(x3) (x2)--(x4);
+  \node[hn=sheetOrange] (y1) at (11.1,1.4) {7};
+  \node[hn=sheetOrange] (y2) at (10.75,0.85) {8}; \node[hn=sheetOrange] (y3) at (11.45,0.85) {9};
+  \draw (y1)--(y2) (y1)--(y3);
+  \node[l, text=sheetBlue] at (9.4,-0.1) {max-heap:\\lower half};
+  \node[l, text=sheetOrange] at (11.1,0.3) {min-heap:\\upper half};
+  \draw[<->, thick, sheetGreen!60!black] (x1) -- node[l, above]{tops} (y1);
+  \node[l, align=left, anchor=west] at (8.6,-0.55) {sizes differ $\le$1 · median = 5};
+  \draw[sheetGrey!50] (12.05,2.25) -- (12.05,-0.75);
+  % ===== ring buffer
+  \node[hd] at (12.1,2.05) {Ring buffer};
+  \foreach \i in {0,...,7} {
+    \pgfmathsetmacro\a{90-45*\i}
+    \pgfmathsetmacro\b{90-45*(\i+1)}
+    \ifnum\i<2 \def\f{white}\else\ifnum\i<6 \def\f{sheetBlue!15}\else\def\f{white}\fi\fi
+    \draw[fill=\f, draw=sheetGrey] (14.1,0.75) ++(\a:0.95) arc(\a:\b:0.95) -- ++(\b+180:0.5) arc(\b:\a:0.45) -- cycle;
+    \node[l] at ($(14.1,0.75)+({90-45*\i-22.5}:1.15)$) {\i}; }
+  \draw[->, thick, sheetGreen!60!black] (15.45,0.0) node[l, below]{head=2 (read)} -- ($(14.1,0.75)+(-22.5:0.8)$);
+  \draw[->, thick, sheetOrange] (12.55,1.65) node[l, above]{tail=6 (write)} -- ($(14.1,0.75)+(157.5:0.8)$);
+  \node[l, align=center] at (14.1,0.75) {count\\=4};
+  \node[l, align=left, anchor=west] at (12.1,-0.55) {\ct{i = (i+1) \% n}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\dq{LRU cache}{\ct{[K: Node]} + DLL}{get/put O(1)}
+Every access — \textbf{read or write} — moves the node to the front; a full
+put evicts the tail and deletes its key from the map (so a node stores its key).
+With sentinel head/tail nodes (as drawn) the \ct{nil} branches below disappear.
+\begin{lstlisting}[language=SwiftSheet]
+final class LRUCache<Key: Hashable, Value> {
+  private final class Node { let key: Key; var value: Value
+    var next: Node?; weak var prev: Node?        // weak: no cycle
+    init(_ k: Key, _ v: Value) { key = k; value = v } }
+  private var map: [Key: Node] = [:]; private let capacity: Int
+  private var head: Node?, tail: Node?            // head = newest
+  init(capacity: Int) { precondition(capacity > 0); self.capacity = capacity }
+  func get(_ k: Key) -> Value? {
+    guard let n = map[k] else { return nil }
+    unlink(n); pushFront(n); return n.value }     // a read counts
+  func put(_ k: Key, _ v: Value) {
+    if let n = map[k] { n.value = v; unlink(n); pushFront(n); return }
+    if map.count >= capacity, let old = tail { unlink(old); map[old.key] = nil }
+    let n = Node(k, v); map[k] = n; pushFront(n) }
+  private func unlink(_ n: Node) {
+    if let p = n.prev { p.next = n.next } else { head = n.next }
+    if let x = n.next { x.prev = n.prev } else { tail = n.prev }
+    n.prev = nil; n.next = nil }
+  private func pushFront(_ n: Node) {
+    n.next = head; if let h = head { h.prev = n } else { tail = n }; head = n }
+}
+\end{lstlisting}
+Thread-safe: \ct{OSAllocatedUnfairLock} (iOS 16) / \ct{Mutex} (iOS 18), or an
+\ct{actor} (outside calls become \ct{async}). A \textbf{read is a write}: no
+reader–writer lock with parallel \ct{get}s (Java: on an access-ordered map ``merely
+querying the map with get is a structural modification'').
+
+\section{Find + order, already composed}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{18mm}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{36mm}@{}}
+\toprule
+\textbf{type} & \textbf{finds} & \textbf{orders} & \textbf{as an LRU}\\ \midrule
+Java \ct{LinkedHashMap} & hash & DLL & \ct{(n, 0.75f, true)} = access order; \ct{removeEldestEntry} runs after each insert. Android \ct{LruCache} = this + \ct{synchronized}\\
+Python \ct{OrderedDict} & dict & DLL & \ct{move\_to\_end(k)}, \ct{popitem(last=False)}; keeps dict's big-O\\
+Redis \ct{allkeys-lru} & keyspace & \textbf{none} & samples 5 keys + a candidate pool: exact LRU ``costs more memory''\\
+Redis sorted set & hash & skip list & by score, O(log N): the sliding log below\\
+Swift \ct{OrderedDictionary} & hash index & \textbf{array} & \ct{removeValue(forKey:)} O(count): \textbf{not} O(1); nor key array + dict\\
+\bottomrule
+\end{tabular}}
+
+\dq{LFU cache}{key→node + freq→DLL + \ct{minFreq}}{O(1)}
+\begin{tikzpicture}[sheet]
+  \foreach \f/\y in {1/1.2,2/0.6,3/0.0} \node[l, anchor=east] at (0.75,\y) {\ct{lists[\f]}};
+  \node[fn] (e) at (1.15,1.2) {E}; \node[fn, fill=sheetRed!10, draw=sheetRed] (f) at (1.95,1.2) {F};
+  \node[fn, fill=sheetOrange!15, draw=sheetOrange] (a) at (1.15,0.6) {A};
+  \node[fn, dashed, fill=white, draw=sheetOrange] (a2) at (1.15,0.0) {A};
+  \node[fn] (c) at (1.95,0.0) {C}; \node[fn] (d) at (2.75,0.0) {D};
+  \draw[<->, thin, sheetBlue] (e) -- (f); \draw[<->, thin, sheetBlue] (a2) -- (c);
+  \draw[<->, thin, sheetBlue] (c) -- (d);
+  \draw[hot] (a.west) to[bend right=50] (a2.west);
+  \node[l, text=sheetRed, anchor=west, align=left] at (3.2,1.2) {full: evict \textbf{F} = tail of \ct{lists[minFreq]}\\(least recent among the least frequent)};
+  \node[l, text=sheetOrange, anchor=west, align=left] at (3.2,0.6) {\textbf{get(A)}: \ct{lists[2]} → front of \ct{lists[3]};\\\ct{lists[2]} empties, but \ct{minFreq} is 1: unchanged};
+  \node[l, anchor=west, align=left] at (3.2,0.0) {\ct{minFreq = 1}: every new key\\enters \ct{lists[1]}};
+\end{tikzpicture}\par
+Access: move the node from \ct{lists[f]} to the front of \ct{lists[f+1]}; if
+\ct{lists[f]} empties and \ct{f == minFreq}, \ct{minFreq += 1}; a \textbf{new} key
+resets \ct{minFreq = 1}. Plain LFU never forgets a once-hot key: Redis keeps a
+0–255 logarithmic (Morris) counter per key and decays it every minute.
+
+\dq{Min-stack}{a parallel stack of running minimums}{all O(1)}
+\ct{push(x)}: \ct{mins.append(min(x, mins.last ?? x))}; \ct{pop} pops both.
+The O(1)-extra-space variant stores \ct{2x - min} and can overflow.
+
+\dq{Queue from two stacks}{\ct{inbox} + \ct{outbox}}{amortised O(1)}
+Push to \ct{inbox}. Pop from \ct{outbox}; if empty, move \emph{all} of
+\ct{inbox} over (reverses order). Each element moves once ⇒ O(1) amortised,
+O(n) worst on the refill pop.
+
+\dq{Insert / delete / getRandom}{array + \ct{[value: index]}}{all O(1)}
+Delete = swap with last, pop, fix the moved index. Not a \ct{Set}: its
+\ct{randomElement()} is O(n) (not a \ct{RandomAccessCollection}).
+
+\columnbreak
+
+\dq{Rate limiter}{per key: log, counter or bucket}{O(1) / O(limit)}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{33mm}>{\raggedright\arraybackslash}p{26mm}@{}}
+\toprule
+\textbf{sliding log} & \ct{Deque} of timestamps; drop $\le$ now$-$W, allow if count $<$ limit & exact; O(limit) memory per key\\
+\textbf{sliding counter} & prev $\cdot$ (W $-$ elapsed)/W + cur: 42 $\cdot$ 45/60 + 18 = 49.5 of 50 & 2 ints; Cloudflare: 0.003\,\% wrong over 400 M requests\\
+\textbf{token bucket} & tokens = min(b, tokens + $\Delta$t $\cdot$ r), lazily on each call; take 1 & 2 numbers; starts \textbf{full} (RFC 2697): bursts $\le$ b\\
+fixed window & one counter per window & 2$\times$ limit across a boundary\\
+\bottomrule
+\end{tabular}}\par
+\textbf{Shared store}: fixed window = \ct{INCR ip:<sec>} + \ct{EXPIRE} in \ct{MULTI}
+or Lua (a crash between them leaks the key). Sliding log = sorted set:
+\ct{ZREMRANGEBYSCORE} · \ct{ZCARD} · \ct{ZADD}, O(log N + M), in \textbf{one Lua
+script} — \ct{MULTI} only queues, it cannot branch on the count. Reject:
+\textbf{429} + \ct{Retry-After} (seconds or a date).
+
+\dq{Autocomplete}{trie + top-k cached per node}{O(prefix)}
+Walk the prefix O(p); either DFS the subtree (slow for short prefixes) or
+store the \textbf{top-k completions at every node}, updated on insert — reads
+O(p), memory $\times$k. Node children: \ct{[Character: Node]} or a 26-array.
+
+\dq{Median of a stream}{max-heap (low) + min-heap (high)}{add log n · median 1}
+Push into \ct{low} if $\le$ its max, else \ct{high}; rebalance so
+\ct{low.count} is \ct{high.count} or +1. Median = \ct{low.max}, or the mean of both
+tops. swift-collections \ct{Heap} (1.1+) is a \textbf{min-max} heap: \ct{min}/\ct{max}
+O(1), \ct{insert}/\ct{popMin}/\ct{popMax} O(log n) — one type for both halves. A
+sliding-window median must also delete, and \ct{removeAll(where:)} is O(n): delete
+lazily (mark, discard when it surfaces).
+
+\dq{Ring buffer}{fixed array + head + count}{O(1), zero allocs}
+\ct{head == tail}: \emph{full or empty} — keep a \ct{count}, leave a slot free, or use
+\textbf{free-running} counters (Linux \ct{kfifo}: \ct{len = in - out}, slot
+\ct{in \& mask}, size $2^k$; one reader + one writer, no lock). Overwrite-oldest
+for ``last N'' logs, reject-when-full for producer–consumer. Hits in the last W
+seconds: a ring of W per-second buckets, each stamped with its second — reset a
+stale one before counting. Swift: \ct{Deque} grows; \ct{RigidDeque}
+(swift-collections 1.7) never resizes.
+
+\section{More shapes}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{22mm}>{\raggedright\arraybackslash}p{54mm}@{}}
+\toprule
+\textbf{must be fast} & \textbf{invariant that gives it}\\
+\midrule
+max of a sliding window & deque of indices, values decreasing: pop the back while $\le$ the new value, pop the front when it leaves; each index in and out once ⇒ amortised O(1)\\
+k largest of a stream & min-heap of size k, pop when count $>$ k: root = k-th largest; O(n log k) time, O(k) memory\\
+k most frequent & count map + that size-k heap keyed by count\\
+ordered iteration, ranges & balanced BST / skip list / sorted array\\
+``seen?'', tiny memory & Bloom filter (false positives only)\\
+key → server, few moves & consistent-hash ring + virtual nodes\\
+expiry (TTL) & check on read; in deadline order: min-heap. Redis: passive on access + active random sampling\\
+\bottomrule
+\end{tabular}}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Reordering only on \ct{put}; a singly linked list (unlink O(n)); strong
+        \ct{prev} (retain cycle).}
+  \trap{\ct{Array.removeFirst()}: O(n) per call. \ct{Deque.popFirst()}: O(1) only
+        while its storage is unshared — after a copy, O(count).}
+  \trap{Amortised is not bounded: a refill or resize on the audio/render thread —
+        pre-size, or \ct{RigidDeque} (traps when full).}
+  \trap{Sorted-set members are unique strings: two hits with the same timestamp
+        count once — add a request id.}
+  \trap{\ct{NSCache} is no LRU: limits ``not strict'', eviction order ``not
+        guaranteed''; keys are objects (\ct{NSString}).}
+\end{itemize}
+
+\section{Remember}
+\textbf{One structure finds, the other orders} — and both point at the same node.
+In an LRU a read is a write.
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Data structures · Hashing
+(ring, Bloom) · Distributed system design · Image loading pipeline (memory cache) ·
+Foundation — the essential types (NSCache) · Strings \& collections · ARC · Locks \&
+synchronisation}
+
+\end{document}

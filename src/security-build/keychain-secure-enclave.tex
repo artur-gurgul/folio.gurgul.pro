@@ -5,8 +5,10 @@
 %   developer.apple.com/documentation/security/ksecattraccessiblewhenunlocked (the default when none
 %     is set) · /ksecattraccessibleafterfirstunlock (background; migrates in encrypted backups) ·
 %     /ksecattraccessiblewhenpasscodesetthisdeviceonly (deleted when the passcode is disabled) ·
-%     /protecting-keys-with-the-secure-enclave (P-256 only; generated inside; privateKeyUsage;
+%     /protecting-keys-with-the-secure-enclave (says P-256 only; generated inside; privateKeyUsage;
 %     signing + ECDH) · /secaccesscontrolcreateflags/biometrycurrentset (invalidated on re-enrol)
+%   developer.apple.com/documentation/cryptokit/secureenclave (checked 2026-10-08): P256 since
+%     iOS 13; MLKEM768, MLKEM1024, MLDSA65, MLDSA87 since iOS 26 (all platforms 26.0)
 %   /foundation/fileprotectiontype/completeuntilfirstuserauthentication · /completeunlessopen
 %   Apple Platform Security, "Data Protection classes" (class key discarded 10 s after lock with
 %     Require Password = Immediately; Protected Until First User Authentication is the default
@@ -75,8 +77,10 @@ secure only when they \textbf{gate a key}, never when they return a \texttt{Bool
 
 \section{Secure Enclave \& biometrics}
 \begin{itemize}
-  \item SE keys are \textbf{EC P-256} (no RSA, no arbitrary blobs):
-        generated and used \emph{inside}; the app holds an opaque reference.
+  \item SE keys: \textbf{EC P-256} (signing + ECDH); since iOS~26 CryptoKit
+        adds \textbf{ML-KEM-768/1024} and \textbf{ML-DSA-65/87}. No RSA, no
+        arbitrary blobs: generated and used \emph{inside}; the app holds an
+        opaque reference.
         CryptoKit \texttt{SecureEnclave.P256.Signing.PrivateKey} — its
         \texttt{dataRepresentation} is a wrapped handle only \emph{this} SE
         can use (store it in the Keychain). No SE on the Simulator.

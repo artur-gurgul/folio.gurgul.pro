@@ -1,0 +1,239 @@
+% cross-language-ffi.tex — bridging languages through the C ABI: exporters and consumers, extern "C"
+% and name mangling, static vs dynamic libraries and what the linker does, cgo and Go c-archive /
+% c-shared, Rust extern "C", Swift @c, JNI, Python ctypes / cffi, Ruby FFI, WebAssembly, C types
+% that differ per platform, memory ownership and errors across the boundary.
+% Sources (checked 2026-10-08):
+%   pkg.go.dev/cmd/cgo (preamble = the comment right above import "C"; ${SRCDIR}; C.CString mallocs,
+%     the caller frees with C.free; C.GoString; //export -> _cgo_export.h; with //export the preamble
+%     is copied into two C files, so declarations only; C keeps no Go pointer after the call unless
+%     pinned with runtime.Pinner) · pkg.go.dev/cmd/go (c-archive / c-shared: the main package plus
+%     all it imports; only //export functions callable; exactly one main package)
+%   github.com/golang/go src/cmd/go/internal/work/action.go (c-archive / c-shared install a header
+%     beside the output, same name + .h) · src/runtime/asm_amd64.s (_rt0_amd64_lib: the runtime
+%     starts as a global constructor for c-archive, when the library loads for c-shared)
+%   itanium-cxx-abi.github.io/cxx-abi/abi.html (_Z <encoding>; source-name = length + identifier;
+%     P pointer; CV-qualifiers r V K; c char) · developer.apple.com archive dlsym(3) (the name is
+%     passed without the leading underscore)
+%   sourceware.org/binutils/docs/ld/Options.html (an archive is searched once, where it stands;
+%     libX.so before libX.a; -Bstatic; --start-group) · lld.llvm.org/ELF/warn_backrefs.html (LLD
+%     remembers archives already seen) · Xcode ld(1) man page (-lx: libx.dylib, then libx.a, per
+%     directory) · binutils ar (r, c, s) · gcc.gnu.org Darwin options (-dynamiclib)
+%   gitlab.com/x86-psABIs/x86-64-ABI (long 8 B in LP64) · developer.apple.com archive LowLevelABI
+%     x86-64 (macOS x86-64 = System V) · learn.microsoft.com/cpp/cpp/data-type-ranges (long 4 B)
+%     · github.com/ARM-software/abi-aa aapcs64 (char = unsigned byte) · developer.android.com/ndk/
+%     guides/abis (arm64-v8a follows Arm's ABI) · developer.apple.com/documentation/xcode/
+%     writing-arm64-code-for-apple-platforms (variadic arguments in stack slots)
+%   doc.rust-lang.org/nomicon/ffi.html (#[unsafe(no_mangle)] pub extern "C"; crate-type cdylib,
+%     staticlib; "C-unwind") · blog.rust-lang.org 2024-09-05 Rust 1.81.0 (abort on uncaught panics
+%     in extern "C") · edition guide 2024: unsafe-attributes, unsafe-extern · std::ffi::CString
+%     (into_raw -> from_raw, not free())
+%   swift.org/blog/swift-6.3-released (@c in Swift 6.3) · swift-evolution SE-0495 (implemented in
+%     6.3; formalises @_cdecl, which emits two symbols) · swift.org/documentation/cxx-interop/status
+%     (an uncaught C++ exception reaching Swift terminates) · clang.llvm.org/docs/Modules.html
+%     (link declaration -> -lname for a Unix-style linker)
+%   docs.oracle.com JNI spec design.html (Java_ + escaped class + _ + method; _ -> _1; overloads
+%     __ + descriptor; JNIEnv first, then the object or the class) · types.html (modified UTF-8: NUL
+%     in two bytes, supplementary characters as two three-byte units) · functions.html
+%     (GetStringUTFChars) · developer.android.com/ndk/guides/jni-tips (cannot share a JNIEnv between
+%     threads; AttachCurrentThread; local refs valid for the current native method; NewGlobalRef;
+%     RegisterNatives from JNI_OnLoad; loadLibrary("fubar") loads libfubar.so) · kotlinlang.org
+%     java-interop (external fun) · native-c-interop (cinterop, .def) · openjdk.org/jeps/454 (FFM
+%     API delivered in JDK 22; jextract)
+%   docs.python.org/3/library/ctypes.html (bytes -> char *, str -> wchar_t *; ints passed as C int,
+%     masked; default restype int; argtypes protect against wrong types; restype c_char_p returns
+%     bytes; CDLL releases the GIL, PyDLL keeps it; keep CFUNCTYPE objects referenced; Apple arm64
+%     variadic functions need argtypes) · cffi.readthedocs.io overview + cdef (ABI mode crashes on a
+%     misdeclared struct; API mode uses a C compiler, faster, recommended; cdef cannot #include)
+%     · github.com/ffi/ffi lib/ffi/library.rb (attach_function(name, func, args, returns = nil):
+%     the return type is the third positional argument)
+%   docs.python.org/3/extending/embedding.html · lua.org manual 5.4 (implemented as a library, host
+%     program) · webassembly.github.io/spec/core/syntax/types.html (numtype i32 i64 f32 f64)
+% @labels: area=cs kind=concept platform=general topic=language,build,memory discussion=278
+% @tags: ffi, c-abi, extern-c, name-mangling, calling-convention, static-library, shared-library, dlopen, cgo, go-buildmode, rust-ffi, jni, ctypes, cffi, ruby-ffi, cdecl, webassembly
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{GoSheet}{
+  morekeywords={package,import,func,defer,var,const,return,type,struct,if,else,for},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+\lstdefinestyle{ffi}{style=printup,
+  literate={==}{{\hbox{=}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2 {::}{{\hbox{:}\hbox{:}}}2}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.6mm},
+  ex/.style={sb, draw=sheetBrown, fill=sheetBrown!10, text width=31mm},
+  co/.style={sb, draw=sheetGreen!70!black, fill=sheetGreen!10, text width=33mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, anchor=west},
+  sym/.style={font=\ttfamily\scriptsize, anchor=west, inner sep=1pt},
+}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\sheettitle{Cross-language FFI — everything meets at the C ABI}{cs · folio}
+
+\oneliner{Languages call each other through the \textbf{C ABI}: an unmangled symbol, the
+platform's C calling convention, C types (scalars, pointers, plain structs). One side
+\textbf{exports} C-looking functions (\texttt{extern "C"}, Go \texttt{//export}, Swift
+\texttt{@c}); the other \textbf{links} them (\texttt{-l}, cgo, module map) or
+\textbf{\texttt{dlopen}s} them and declares the types (ctypes, Ruby FFI). Every allocation
+keeps \emph{one} owner.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── 1 the hub ──
+  \node[pt] at (-0.1,3.05) {\textcolor{sheetBlue}{1} exporters $\to$ C ABI $\to$ consumers};
+  \node[ex] (e1) at (1.55,2.35) {C++ \texttt{extern "C" \{ \ldots\ \}} · Rust\\\texttt{\#[unsafe(no\_mangle)] extern "C"}};
+  \node[ex] (e2) at (1.55,1.45) {Go \texttt{//export F} +\\\texttt{-buildmode=c-archive|c-shared}};
+  \node[ex] (e3) at (1.55,0.55) {Swift \texttt{@c} (6.3) · before it\\\texttt{@\_cdecl("f")}, 2 symbols};
+  \node[sb, draw=sheetBlue, very thick, fill=sheetBlue!12, text width=17mm, minimum height=20mm] (hub) at (5.0,1.45)
+    {\textbf{C ABI}\\[1pt]{\tiny symbol name\\calling conv.\\C types + sizes\\who frees}};
+  \node[co] (c1) at (8.45,2.35) {C/C++, cgo, Rust \texttt{unsafe extern}:\\header + \texttt{-lname} — \textbf{link time}};
+  \node[co] (c2) at (8.45,1.45) {Swift: module map / bridging header\\Kotlin/Native: \texttt{cinterop} \texttt{.def}};
+  \node[co] (c3) at (8.45,0.55) {JNI glue, ctypes/cffi, Ruby FFI:\\\texttt{dlopen} + declared types — \textbf{run time}};
+  \foreach \e in {e1,e2,e3} \draw[flow] (\e.east) -- (hub.west);
+  \foreach \c in {c1,c2,c3} \draw[hot] (hub.east) -- (\c.west);
+  \node[lbl, text=sheetRed, anchor=west] at (-0.1,-0.1) {does not cross: classes, exceptions/panics, generics, GC'd objects, Swift/Go/Java strings};
+  % ── 2 mangling ──
+  \draw[sheetGrey!40] (10.45,3.15) -- (10.45,-0.3);
+  \node[pt] at (10.5,3.05) {\textcolor{sheetBlue}{2} why \texttt{extern "C"}};
+  \node[sym] at (10.55,2.66) {void PrintHello(const char *u);};
+  \node[lbl, anchor=west] at (10.55,2.36) {compiled as C++ (Itanium ABI) the symbol is};
+  \node[sym, text=sheetRed] at (10.55,2.07) {\_Z10PrintHelloPKc};
+  \node[lbl, anchor=west, text=sheetBrown] at (10.55,1.78) {\texttt{\_Z} · \texttt{10}+name · \texttt{P K c} = ptr to const char};
+  \node[lbl, anchor=west] at (10.55,1.49) {— overloads need it; C, cgo, \texttt{dlsym} can't guess it.};
+  \node[lbl, anchor=west] at (10.55,1.2) {inside \texttt{extern "C"}: C linkage, plain name};
+  \node[sym, text=sheetGreen!50!black] at (10.55,0.91) {PrintHello \normalfont\tiny(Mach-O: \texttt{\_PrintHello}; \texttt{dlsym} without \texttt{\_})};
+  \node[lbl, anchor=west] at (10.55,0.6) {JNI's own scheme — the name \emph{is} the binding:};
+  \node[sym, text=sheetBlue] at (10.55,0.31) {Java\_com\_ex\_Lib\_hello};
+  \node[lbl, anchor=west, text=sheetBrown] at (10.55,0.02) {\texttt{Java\_} + class + \texttt{\_} + method · \texttt{\_}$\to$\texttt{\_1} · overload: \texttt{\_\_}+signature};
+  \node[lbl, anchor=west, text=sheetGrey] at (10.55,-0.25) {see it: \texttt{nm libexample.a} · demangle: \texttt{c++filt}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+
+\section{Pick a strategy}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}L{23mm}L{50mm}@{}}
+\toprule
+host · library & strategy (e.g.) \\ \midrule
+compiled · compiled & link a library via the C ABI (Go $\to$ C++, Rust $\leftrightarrow$ C) \\
+compiled · interpreted & embed the interpreter, run scripts (CPython C API, Lua) \\
+VM · compiled & FFI or a native extension (ctypes, cffi, JNI) \\
+interpreted · interpreted & 2 processes + IPC (pipes, sockets, gRPC) or one C lib \\
+any $\to$ Wasm & only \texttt{i32 i64 f32 f64} cross; a string = ptr + len \\
+\bottomrule
+\end{tabular}}
+
+\section{Libraries and the linker}
+\begin{itemize}\raggedright
+  \item \textbf{Static} \texttt{.a} = archive of \texttt{.o} (\texttt{ar rcs}); the linker copies in
+        only members that resolve an undefined symbol. GNU ld searches each archive
+        \textbf{once, where it stands} (\texttt{-lfoo} \emph{after} its users); LLD remembers
+        archives, so order does not bite there.
+  \item \textbf{Dynamic} \texttt{.so}/\texttt{.dylib}/\texttt{.dll} (\texttt{cc -shared -fPIC};
+        macOS \texttt{-dynamiclib}): the loader maps + binds it at launch;
+        \texttt{dlopen}+\texttt{dlsym} at run time = what ctypes/FFI do.
+  \item Both in one dir, \texttt{-lexample} takes the \texttt{.so}/\texttt{.dylib} (GNU ld, ld64):
+        ``static'' links, then fails to launch elsewhere — use \texttt{-Bstatic} or the
+        \texttt{.a} path. Module map \texttt{link "example"} = \texttt{-lexample}.
+\end{itemize}
+
+\section{Example — one header for C, C++ and cgo}
+\begin{lstlisting}[language=C, style=ffi]
+#ifdef __cplusplus
+extern "C" {        // C++ sees C linkage; C never sees this
+#endif
+void  PrintHello(const char *u);      // C types only
+char *MakeGreeting(const char *name); // malloc'd ...
+void  FreeGreeting(char *p);          // ... freed HERE
+#ifdef __cplusplus
+}
+#endif
+\end{lstlisting}
+\begin{lstlisting}[language=GoSheet, style=ffi]
+// #cgo LDFLAGS: -L${SRCDIR} -lexample
+// #include <stdlib.h>
+// #include "example.h"
+import "C"       // the comment right above is the preamble
+import "unsafe"
+func main() {
+    s := C.CString("Hi")             // malloc'd C copy
+    defer C.free(unsafe.Pointer(s))  // Go frees it
+    C.PrintHello(s) }
+\end{lstlisting}
+
+\section{Go as the library}
+\begin{lstlisting}[language=GoSheet, style=ffi]
+//export SayHello
+func SayHello(s *C.char) { fmt.Println(C.GoString(s)) }
+func main() {}  // package main required; never called
+// go build -buildmode=c-shared -o libhello.so  (c-archive: .a)
+\end{lstlisting}
+Only \texttt{//export}ed functions are callable; the Go runtime ships inside and starts as a
+global constructor (\texttt{c-archive}) or when the \texttt{.so} loads; \texttt{libhello.h} is
+written beside it. With \texttt{//export} the preamble may only \emph{declare} (it is copied
+into two C files).
+
+\columnbreak
+
+\section{Python and Ruby — load at run time}
+\begin{lstlisting}[language=Python, style=ffi]
+lib = CDLL("./libexample.so")         # dlopen
+lib.PrintHello.argtypes = [c_char_p]  # now type-checked
+lib.PrintHello(b"Hi")                 # bytes -> char*
+lib.MakeGreeting.restype = c_void_p   # default int truncates
+p = lib.MakeGreeting(b"Ann"); print(c_char_p(p).value) # copy
+lib.FreeGreeting(c_void_p(p))  # a bare int goes as C int
+\end{lstlisting}
+Ruby FFI: \texttt{attach\_function :PrintHello, [:string], :void} — return type required.
+\texttt{CDLL} \textbf{releases the GIL} (\texttt{PyDLL} keeps it). cffi \texttt{cdef()} takes
+declarations (no \texttt{\#include}); \emph{ABI mode} \texttt{dlopen}s, \emph{API mode} compiles
+an extension (faster).
+
+\section{JVM — JNI}
+\begin{itemize}\raggedright
+  \item Kotlin \texttt{external fun hello(s: String)} in \texttt{com.ex.Lib} +
+        \texttt{System.loadLibrary("example")} ($\to$ \texttt{libexample.so}) bind C glue written
+        against \texttt{jni.h}, named as in \textcolor{sheetBlue}{2}, args
+        \texttt{(JNIEnv*, jobject, jstring)} — or \texttt{RegisterNatives} in \texttt{JNI\_OnLoad}.
+  \item \texttt{JNIEnv*} is \textbf{per thread} (a thread C started: \texttt{AttachCurrentThread});
+        a \texttt{jobject} is a \textbf{local ref}, dead after the call (\texttt{NewGlobalRef});
+        strings come as \textbf{modified UTF-8}. No glue: FFM API (JDK 22) + \texttt{jextract}.
+\end{itemize}
+
+\section{Memory ownership and errors}
+\begin{itemize}\raggedright
+  \item \textbf{Whoever allocates, frees} — \texttt{FreeGreeting}, Go \texttt{C.free}, Rust
+        \texttt{CString\hbox{:}\hbox{:}from\_raw} (never C \texttt{free()}).
+  \item C keeps no Go pointer past the call unless pinned (\texttt{runtime.Pinner}); a ctypes
+        \texttt{CFUNCTYPE} must stay referenced while C may call it.
+  \item \textbf{Errors}: catch in the wrapper, return a code — a Rust panic out of
+        \texttt{extern "C"} aborts (1.81+), a C++ exception reaching Swift terminates.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{No \texttt{extern "C"} $\to$ \emph{undefined reference to \texttt{PrintHello}}; an
+        unguarded \texttt{extern "C"} in a header breaks C/cgo.}
+  \trap{ctypes: no \texttt{restype} truncates a 64-bit pointer to \texttt{int}; no
+        \texttt{argtypes}: a \texttt{str} goes as \texttt{wchar\_t*} (C prints ``H'');
+        \texttt{restype = c\_char\_p} returns a bytes copy — no pointer left to free.}
+  \trap{C types differ: \texttt{long} 4\,B on Windows x64, 8\,B on Linux/macOS; plain
+        \texttt{char} unsigned on Linux/Android arm64; Apple arm64 puts variadic args on the
+        stack (ctypes: set \texttt{argtypes}).}
+\end{itemize}
+
+\section{Remember}
+\textbf{Speak C at the border: plain names, C types, one owner.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Swift $\leftrightarrow$ C / C++ interop ·
+Objective-C interop · React Native native modules · Kotlin Multiplatform · Linking \& launch
+time · Unsafe pointers \& Unmanaged}
+
+\end{document}
