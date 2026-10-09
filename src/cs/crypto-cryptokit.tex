@@ -1,0 +1,286 @@
+% crypto-cryptokit.tex — applied cryptography with CryptoKit: AEAD (AES-GCM, ChaCha20-Poly1305) and
+% nonces, ECDH + HKDF, signatures, envelope encryption, HPKE, the post-quantum KEM and signature types
+% (iOS 26 · 27), the Secure Enclave key types, the limits and the traps.
+% Hashes / passwords / HMAC internals: cs/hashing-deep.tex. Keychain storage + biometry:
+% security-build/keychain-secure-enclave.tex. TLS key schedule: networking/tls-deep-dive.tex.
+% Sources (checked 2026-10-08):
+%   developer.apple.com/documentation/cryptokit (module, iOS 13; the type list) · /aes/gcm/nonce/init()
+%     (random 12-byte default) · /aes/gcm/sealedbox/combined (Data?, only with a 12-byte nonce; nonce,
+%     ciphertext, tag) · /chachapoly/sealedbox/combined (non-optional) · /aes/keywrap (RFC 3394, iOS 15)
+%     · /hkdf (iOS 14) · /sharedsecret (hkdf…, x963DerivedSymmetricKey) · /hpke, /hpke/sender, /hpke/recipient
+%     (iOS 17; seal / open are mutating, open in the order sealed; base / psk / auth inits),
+%     /hpke/ciphersuite (5 suites; XWingMLKEM768X25519_SHA256_AES_GCM_256 iOS 26) · /mlkem768, /mlkem1024,
+%     /mldsa65, /mldsa87, /xwingmlkem768x25519 (cites draft-connolly-cfrg-xwing-kem-06), /sha3_256,
+%     /sha2_256 (iOS 26) · /mlkem768/privatekey/decapsulate(_:) (returns SymmetricKey) · /kem/encapsulationresult
+%     · /kemonetimeprivatekey, /mlkem768/onetimeprivatekey, /aes/gcm/seal(inplace:…) (iOS 27; explicit nonce)
+%     · /secureenclave (P256, MLKEM768, MLKEM1024, MLDSA65, MLDSA87 — the ML ones iOS 26)
+%     · /secureenclave/p256/signing/privatekey/init(compactrepresentable:accesscontrol:authenticationcontext:)
+%     (default AfterFirstUnlockThisDeviceOnly, no flags) · /curve25519/signing/privatekey/signature(for:) and
+%     /p256/signing/privatekey/signature(for:) (randomized: a different signature every call; SHA-256)
+%     · /p256/signing/ecdsasignature (raw / DER) · /insecure · /storing-cryptokit-keys-in-the-keychain (SE
+%     exports an encrypted block only the same SE can restore; NIST keys ↔ SecKey via X9.63, others as
+%     generic passwords) · /enhancing-your-app-s-privacy-and-security-with-quantum-secure-workflows (store
+%     now, attack later; hybrid holds if either holds; one-time keys faster, consumed, not saveable, not in the
+%     SE; hybrid signature = ML-DSA ‖ EC, verify both) · /gameplaykit/gkrandomsource (not cryptographically
+%     robust) · /security/seckeyalgorithm (ECIES, RSA OAEP)
+%   github.com/apple/swift-crypto (the open-source CryptoKit API; Apple's CryptoKit is closed source):
+%     AES-GCM.swift (tag 16 B, default nonce 12 B, random nonce when omitted) · AES-GCM_boring.swift
+%     (128 / 192 / 256-bit keys) · ChaChaPoly.swift (256-bit key, 12 B nonce, 16 B tag)
+%     · MessageAuthenticationCode.swift, HMAC.swift, SafeCompare_boring.swift (MAC == and
+%     isValidAuthenticationCode compare in constant time)
+%   github.com/apple-oss-distributions/CommonCrypto CommonKeyDerivation.h (CCKeyDerivationPBKDF)
+%   rfc-editor.org RFC 5116 (AES-GCM 12-byte nonce, 16-byte tag, P_MAX 2^36−31; nonce reuse → XOR of
+%     plaintexts + the hash key → trivial forgeries; repeated nonce on decrypt is fine) · RFC 8439
+%     (ChaCha20-Poly1305: 256-bit key, 96-bit nonce, 128-bit tag, ~3× AES without AES hardware; reuse
+%     reveals the XOR) · RFC 5869 (HKDF: do not skip extract for DH input, salt default = zeros,
+%     L ≤ 255·HashLen, info binds context, not for passwords) · RFC 6979 (s = (h + x·r)/k; k fresh and
+%     uniform) · RFC 8032 (EdDSA deterministic, 32 B keys, 64 B signatures, ~128-bit) · RFC 7748 (X25519
+%     ~128-bit) · RFC 5480 (P-256 ↔ 128, P-384 ↔ 192, P-521 ↔ 256 bits, after SP 800-57) · RFC 4492 (128
+%     ↔ RSA-3072, 192 ↔ 7680, 256 ↔ 15360) · RFC 3394 (n+1 64-bit blocks) · RFC 9180 (HPKE: nonce =
+%     base_nonce XOR seq; no FS against recipient compromise; no reordering / loss tolerance, no replay
+%     protection) · RFC 9881 (ML-DSA-44/65/87 = levels 2/3/5; pk 1312/1952/2592 B, sig 2420/3309/4627 B)
+%     · RFC 7518 (ES256 = 64-octet R‖S) · RFC 7457 (padding-oracle attacks)
+%   ietf.org draft-connolly-cfrg-xwing-kem-06 (pk 1216 B = 1184 + 32, ct 1120 B = 1088 + 32, 32 B shared
+%     secret; aims at 128-bit, ML-KEM-768 for margin) · datatracker draft-ietf-tls-mlkem (ML-KEM-768
+%     1184 / 1088 B, ML-KEM-1024 1568 / 1568 B, 32 B secrets) · csrc.nist.gov FIPS 203, FIPS 204 (2024-08-13)
+%   libsodium-doc secret-key_cryptography/aead.md (per (key, nonce): AES256-GCM ~64 GB, ChaCha20-Poly1305-
+%     IETF 256 GB; random nonces 2^32 messages each, XChaCha20 no practical limit; 1 MB messages at 2^-32:
+%     AES-GCM ~2^32 encryptions, ChaCha 2^48)
+%   cloud.google.com/kms/docs/envelope-encryption (DEK made locally, new DEK per write, never shared
+%     across users; KEK central, never leaves KMS; Encrypt input ≤ 64 KiB)
+%   OWASP Cryptographic Storage (ECB; CBC needs Encrypt-then-MAC; KEK apart from DEK) + Password Storage
+%     (PBKDF2-HMAC-SHA256 600 000) cheat sheets
+%   Dropped as not confirmed: the PS3 attribution of ECDSA nonce reuse, "GB/s vs ~1000× slower",
+%     "AES hardware in every Apple chip".
+% @labels: area=cs kind=concept platform=apple topic=security discussion=279
+% @tags: cryptokit, aead, aes-gcm, chacha20-poly1305, nonce-reuse, ecdh, hkdf, ecdsa, ed25519, hpke, ml-kem, ml-dsa, post-quantum, envelope-encryption, secure-enclave, forward-secrecy
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,import,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,static,
+    true,false,AnyObject,Void,String,Bool,Int,Data},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\tikzset{
+  s/.style={box, font=\tiny, minimum height=5mm, inner sep=1.5pt},
+  g/.style={s, draw=sheetGreen, fill=sheetGreen!10},
+  r/.style={s, draw=sheetRed, fill=sheetRed!7},
+  o/.style={s, draw=sheetOrange, fill=sheetOrange!10},
+  hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  l/.style={font=\tiny, text=black!75, align=center, inner sep=1pt},
+  seg/.style={draw=sheetGrey, minimum height=4.5mm, font=\ttfamily\tiny, inner sep=1pt},
+}
+
+\begin{document}
+
+\sheettitle{Cryptography with CryptoKit — AEAD, ECDH, signatures, HPKE, ML-KEM}{cs · folio}
+
+\oneliner{\textbf{Symmetric} AEAD (AES-GCM, ChaCha20-Poly1305) encrypts \emph{and} authenticates
+bulk data under one key and a \textbf{nonce never repeated under that key}; \textbf{asymmetric}
+keys \emph{agree} on that key (ECDH → HKDF, or a KEM inside HPKE) and \emph{sign} (ECDSA, Ed25519,
+ML-DSA). CryptoKit ships vetted primitives with safe defaults — the job is choosing them, managing
+keys and nonces, and \textbf{never inventing} a primitive, mode or protocol.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ===== ECDH -> HKDF -> AES-GCM
+  \node[hd] at (-0.1,2.3) {Agree → derive → seal (the shape of TLS 1.3)};
+  \node[s, minimum width=19mm] (al) at (0.9,1.45) {\textbf{app}\\priv $a$ · pub $A$\\(ephemeral)};
+  \node[s, minimum width=19mm] (bo) at (6.6,1.45) {\textbf{server}\\priv $b$ · pub $B$\\(ephemeral)};
+  \draw[hot] ([yshift=4pt]al.east) -- node[l, above]{send $A$ (public, may be seen)} ([yshift=4pt]bo.west);
+  \draw[hot] ([yshift=-4pt]bo.west) -- node[l, below]{send $B$ — \textbf{verify it} (sig / pin) or MITM} ([yshift=-4pt]al.east);
+  \node[o, minimum width=30mm] (ss) at (3.75,0.35) {shared secret = ECDH($a$, $B$) = ECDH($b$, $A$)\\\emph{not} a key yet — not uniformly random};
+  \draw[flow] (al.south) |- (ss.west); \draw[flow] (bo.south) |- (ss.east);
+  \node[g, minimum width=30mm] (kd) at (3.75,-0.5) {HKDF-SHA256(secret, salt, info = ``chat v1'')\\→ 256-bit \ct{SymmetricKey}};
+  \draw[flow] (ss) -- (kd);
+  \node[l, anchor=west, align=left, text=sheetGreen!45!black] at (5.75,-0.05) {discard $a$, $b$ after:\\\textbf{forward secrecy}};
+  % sealed box layout
+  \node[seg, fill=sheetBlue!10, minimum width=12mm] (n) at (0.6,-1.35) {nonce 12 B};
+  \node[seg, fill=sheetOrange!12, minimum width=27mm, anchor=west] (ct) at (n.east) {ciphertext (= plaintext length)};
+  \node[seg, fill=sheetGreen!15, minimum width=12mm, anchor=west] (tg) at (ct.east) {tag 16 B};
+  \node[l, anchor=west] at (5.45,-1.35) {= \ct{box.combined}};
+  \draw[flow] (kd.south) -- node[l, right]{\ct{AES.GCM.seal}} (3.75,-1.1);
+  \node[l, anchor=west, align=left] at (-0.05,-1.8) {nonce: public, \textbf{unique per key} · AAD (headers, ids): authenticated, not encrypted, not in the box};
+  \draw[sheetGrey!50] (8.25,2.45) -- (8.25,-2.0);
+  % ===== envelope encryption
+  \node[hd] at (8.3,2.3) {Envelope encryption};
+  \node[s, minimum width=13mm] (pt) at (9.0,1.45) {data\\(any size)};
+  \node[o, minimum width=12mm] (dek) at (9.0,0.35) {\textbf{DEK}\\random 256-bit\\new per write};
+  \node[s, minimum width=15mm, fill=black!5, draw=sheetGrey] (ctx) at (11.6,1.45) {ciphertext};
+  \draw[hot] (pt) -- node[l, above]{AES-GCM} (ctx);
+  \draw[hot] (dek) -- node[l, left]{key} (10.35,1.45);
+  \node[r, minimum width=17mm] (kek) at (14.2,-0.8) {\textbf{KEK}: in a KMS /\\HSM — never\\leaves it};
+  \node[s, minimum width=15mm, fill=black!5, draw=sheetGrey] (wd) at (11.6,0.35) {wrapped DEK};
+  \draw[hot] (dek) -- node[l, above]{wrap} (wd);
+  \draw[hot, sheetRed] (kek.west) -| node[l, left, pos=0.7]{wraps} (wd.south);
+  \draw[decorate, decoration={brace, amplitude=3pt}, draw=sheetBrown] (12.5,1.65) -- (12.5,0.15) node[midway, right=3pt, l, text=sheetBrown, align=left]{stored\\together};
+  \node[l, anchor=west, align=left] at (13.3,1.35) {\textbf{why}: bulk data under a\\fast local key; the master\\key only ever touches\\32-byte DEKs};
+  \node[l, anchor=west, align=left] at (13.3,0.25) {\textbf{rotate} the KEK =\\re-wrap DEKs, not\\re-encrypt the data};
+  \node[l, anchor=west, align=left] at (8.4,-1.55) {\textbf{delete} = destroy its DEK · never one DEK across users ·\\Cloud KMS caps \ct{Encrypt} input at 64 KiB: built for KEKs ·\\iOS: \ct{AES.KeyWrap} (RFC 3394, +8 B) under a KEK from\\SE P-256 key agreement or SE ML-KEM (iOS 26)};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{AEAD} = confidentiality + integrity + authenticity; \ct{open} throws on any flipped
+        bit or wrong AAD. \textbf{AES-GCM}: 128/192/256-bit key. \textbf{ChaCha20-Poly1305}: 256-bit
+        key, $\sim$3$\times$ faster than AES on chips without AES hardware. Both: 12-byte nonce,
+        16-byte tag.
+  \item \textbf{Nonce reuse} under one key: $C_1 \oplus C_2 = P_1 \oplus P_2$, and GCM gives away
+        its \textbf{hash key} → trivial forgeries under that key (Poly1305: the one-time key
+        repeats). A repeated nonce on \emph{decrypt} is harmless.
+  \item \textbf{ECDH} output is not uniformly random: HKDF \textbf{extract} (salt; none = zeros),
+        then \textbf{expand} with \ct{info} — one purpose per key, $\le$255 × hash length.
+        Ephemeral pairs, discarded → forward secrecy.
+  \item \textbf{ECDSA} $s = (h + x r)/k$: the same $k$ twice gives $k = (h_1 - h_2)/(s_1 - s_2)$,
+        then the private key $x = (s k - h)/r$. RFC 6979 $k$ and EdDSA are deterministic —
+        \textbf{CryptoKit randomizes both}: new bytes every call for the same key + message.
+  \item \textbf{HPKE} (RFC 9180) = KEM → KDF → AEAD to a public key; nonce = base nonce XOR
+        sequence number, so \textbf{open in the order sealed}: no loss or reordering, no replay
+        protection, no forward secrecy if the recipient key leaks.
+\end{itemize}
+
+\section{AEAD limits per key}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{24mm}@{}}
+\toprule
+\textbf{construction} & \textbf{per (key, nonce)} & \textbf{random nonces}\\
+\midrule
+AES-256-GCM & $\sim$64 GB & 2\textsuperscript{32} messages\\
+ChaCha20-Poly1305 (IETF) & 256 GB & 2\textsuperscript{32} messages\\
+XChaCha20 (not in CryptoKit) & $\sim$2\textsuperscript{64} B & no practical limit\\
+\bottomrule
+\end{tabular}}\par
+1 MB messages, 2\textsuperscript{-32} attack chance: AES-GCM $\sim$2\textsuperscript{32} encryptions
+per key, ChaCha 2\textsuperscript{48}. Then rekey; chunk huge messages.
+
+\section{Security strength — equal rows}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{6mm}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{16mm}@{}}
+\toprule
+\textbf{bits} & \textbf{AES} & \textbf{elliptic curve} & \textbf{RSA} & \textbf{hash}\\
+\midrule
+128 & AES-128 & P-256, X25519, Ed25519 & 3072 & SHA-256\\
+192 & AES-192 & P-384 & 7680 & SHA-384\\
+256 & AES-256 & P-521 & 15360 & SHA-512\\
+\bottomrule
+\end{tabular}}\par
+ML-DSA-44 / 65 / 87 = NIST levels 2 / 3 / 5 (3 $\approx$ AES-192, 5 $\approx$ AES-256). No RSA in
+CryptoKit → \ct{SecKey}.
+
+\section{Example — the CryptoKit calls}
+\begin{lstlisting}[language=SwiftSheet]
+let mine = Curve25519.KeyAgreement.PrivateKey()        // ephemeral
+let key = try mine.sharedSecretFromKeyAgreement(with: theirPub)
+  .hkdfDerivedSymmetricKey(using: SHA256.self, salt: salt,
+     sharedInfo: Data("chat v1".utf8), outputByteCount: 32)
+let box = try AES.GCM.seal(msg, using: key, authenticating: hdr)
+let wire = box.combined!        // random 12 B nonce | ct | tag
+let plain = try AES.GCM.open(.init(combined: wire), using: key,
+                             authenticating: hdr)
+let signer = P256.Signing.PrivateKey()  // SecureEnclave.P256: same
+let sig = try signer.signature(for: msg)  // SHA-256, randomized
+let ok = signer.publicKey.isValidSignature(sig, for: msg)
+let jws = sig.rawRepresentation         // r|s 64 B; X.509: DER
+// HPKE, hybrid post-quantum (iOS 26)
+let suite = HPKE.Ciphersuite.XWingMLKEM768X25519_SHA256_AES_GCM_256
+let sk = try XWingMLKEM768X25519.PrivateKey()
+var tx = try HPKE.Sender(recipientKey: sk.publicKey,
+                         ciphersuite: suite, info: info)
+let c1 = try tx.seal(m1)       // send tx.encapsulatedKey once
+var rx = try HPKE.Recipient(privateKey: sk, ciphersuite: suite,
+                 info: info, encapsulatedKey: tx.encapsulatedKey)
+let p1 = try rx.open(c1)       // open in the order sealed
+\end{lstlisting}
+\textbf{Storing keys}: P-256/384/521 → \ct{SecKey} via \ct{x963Representation}; Curve25519 and
+\ct{SymmetricKey} bytes → a generic-password Keychain item.
+
+\columnbreak
+
+\section{CryptoKit by release}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{6mm}>{\raggedright\arraybackslash}p{69mm}@{}}
+\toprule
+\textbf{iOS} & \textbf{added}\\
+\midrule
+13 & \ct{SymmetricKey(size:)} · \ct{AES.GCM} · \ct{ChaChaPoly} · \ct{SHA256/384/512} · \ct{HMAC} ·
+     \ct{Curve25519}, \ct{P256/384/521} agreement + signing · \ct{SecureEnclave.P256} ·
+     \ct{Insecure.MD5 / .SHA1} (the namespace is the warning)\\
+14 & \ct{HKDF}: \ct{extract}, \ct{expand}, \ct{deriveKey}\\
+15 & \ct{AES.KeyWrap} (RFC 3394)\\
+17 & \ct{HPKE} (\ct{Sender}, \ct{Recipient}; 4 classical suites), \ct{KEM}\\
+26 & \ct{MLKEM768/1024}, \ct{MLDSA65/87}, \ct{XWingMLKEM768X25519} (+ HPKE suite), SHA-3; the
+     ML types also under \ct{SecureEnclave}\\
+27 & one-time ML-KEM / X-Wing private keys; \ct{seal/open(inPlace:)} on spans\\
+\bottomrule
+\end{tabular}}
+
+\section{Secure Enclave}
+Key types: \ct{P256} (signing, agreement), since iOS 26 also \ct{MLKEM768/1024} and
+\ct{MLDSA65/87} — nothing symmetric, no one-time keys. Born inside, never leaves:
+\ct{dataRepresentation} is an \emph{encrypted block} only the same SE can restore (store it in the
+Keychain). Default access control \ct{AfterFirstUnlockThisDeviceOnly}, no flags.
+
+\section{Post-quantum — why, and the cost}
+Ciphertext recorded today can fall to a future quantum computer, so \textbf{key agreement moves
+first}: FIPS 203 (ML-KEM), 204 (ML-DSA), August 2024. A \textbf{KEM} \ct{encapsulate}s to a public
+key → (secret, ciphertext); only the private key \ct{decapsulate}s, in CryptoKit straight to a
+\ct{SymmetricKey}. \textbf{Hybrid} = classical + PQ, safe while \emph{either} holds:
+\textbf{X-Wing} = ML-KEM-768 + X25519 (aims at 128-bit, 768 for margin); signatures: ML-DSA
+$\Vert$ ECDSA, verify both.
+
+\noindent\begin{tikzpicture}[sheet, x=0.0075mm]
+  \foreach \yy/\nm/\pk/\cx/\lab in {0/X25519/32/32/32 + 32,
+      -1/ML-KEM-768/1184/1088/1184 + 1088, -2/X-Wing/1216/1120/1216 + 1120,
+      -3/ML-KEM-1024/1568/1568/1568 + 1568, -4/Ed25519/32/64/32 + 64,
+      -5/ML-DSA-65/1952/3309/1952 + 3309, -6/ML-DSA-87/2592/4627/2592 + 4627} {
+    \node[l, anchor=east] at (0,\yy*0.32) {\nm};
+    \fill[sheetBlue!55] (40,\yy*0.32-0.1) rectangle ++(\pk,0.2);
+    \fill[sheetOrange!70] (40+\pk,\yy*0.32-0.1) rectangle ++(\cx,0.2);
+    \node[l, anchor=west] at (100+\pk+\cx,\yy*0.32) {\lab\ B};
+  }
+  \fill[sheetBlue!55] (4600,-0.08) rectangle ++(150,0.16);
+  \node[l, anchor=west] at (4800,0) {public key};
+  \fill[sheetOrange!70] (4600,-0.4) rectangle ++(150,0.16);
+  \node[l, anchor=west] at (4800,-0.32) {ciphertext / signature};
+\end{tikzpicture}
+
+One-time ML-KEM / X-Wing keys (iOS 27): faster, consumed by \ct{decapsulate}, never saved.
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{ECB} (equal blocks → equal ciphertext); \textbf{CBC} without a MAC → padding
+        oracles. Use AEAD.}
+  \trap{\textbf{Fixed or reset nonce} (a counter restarting after reinstall; two devices, one key).
+        \ct{seal(inPlace:)} has no random default.}
+  \trap{\textbf{Hard-coded keys} — \ct{strings} finds them. \textbf{Password as a key} → slow KDF
+        first: \ct{CCKeyDerivationPBKDF} (OWASP $\ge$600\,000 × HMAC-SHA256) or Argon2id.}
+  \trap{\textbf{Tag compared after conversion} to \ct{Data} / \ct{[UInt8]} / hex \ct{String} with
+        \ct{==} — early exit leaks timing. swift-crypto's MAC \ct{==} and
+        \ct{isValidAuthenticationCode} are constant-time.}
+  \trap{\textbf{Signature bytes as an ID} or test oracle — they differ every call; verify instead.
+        ES256 JWS = the 64-byte raw form, not DER.}
+  \trap{\textbf{One key, two jobs} → separate HKDF \ct{info}. \textbf{Unauthenticated ECDH} =
+        agreeing with the attacker.}
+  \trap{Key bytes from GameplayKit (``not cryptographically robust'') or a seeded test RNG.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Agree (ECDH or KEM) → derive (HKDF) → seal (AEAD, unique nonce) → sign what must be proven;
+hybrid PQ for secrets that must outlive a quantum computer.} Never roll your own.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Hashing · Keychain · Secure Enclave · biometrics
+· TLS 1.3 in depth · TLS 1.3 \& PKI · Passkeys · JWT attacks \& token hardening · App hardening \&
+privacy}
+
+\end{document}

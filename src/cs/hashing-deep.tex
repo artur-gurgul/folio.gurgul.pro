@@ -1,0 +1,298 @@
+% hashing-deep.tex — hashing as one subject across its uses: hash tables in real runtimes
+% (SipHash, seeds, HashDoS, probing, growth), the birthday bound, consistent hashing, SHA-2 vs
+% SHA-3 and length extension, HMAC, password hashing, Bloom filters.
+% Sources (checked 2026-10-08):
+%   developer.apple.com/documentation/swift/hasher (avalanche; usually randomly seeded; never
+%     persist; algorithm may change between stdlib versions) · /swift/hashable (essential
+%     components = what == uses) · swift-evolution SE-0206 (Hasher, Swift 4.2)
+%   github.com/swiftlang/swift stdlib/public/core: SipHash.swift (1 compression + 3 finalization
+%     rounds = SipHash-1-3) · Hasher.swift (128-bit execution seed) · HashTable.swift (max load 3/4;
+%     new seed per table on allocate / resize so copies don't go quadratic; delete relocates the
+%     chain — no tombstones) · runtime/EnvironmentVariables.def (SWIFT_DETERMINISTIC_HASHING)
+%   docs.python.org/3: reference/datamodel (str / bytes salted; dict insertion O(n^2) DoS; 3.3) ·
+%     using/cmdline (PYTHONHASHSEED) · whatsnew/3.11 (siphash13 default) · library/stdtypes (order
+%     guaranteed 3.7) · github.com/python/cpython Objects/dictobject.c (compact since 3.6; resize
+%     at 2/3; j = 5j + 1 + perturb; DKIX_DUMMY)
+%   ocert.org/advisories/ocert-2011-003.html (Klink, Waelde; POST parameters; 100 % CPU for hours;
+%     Java, PHP, Python, Ruby, V8 …; same as Crosby & Wallach 2003, Perl)
+%   github.com/openjdk/jdk HashMap.java (TREEIFY 8, UNTREEIFY 6, MIN_TREEIFY_CAPACITY 64, load
+%     0.75, capacity 16, doubles, h ^ h >>> 16, Poisson 0.5 → 8 per bin = 0.00000006, Comparable
+%     tie-break) · String.java (s[0]*31^(n-1) + …) · openjdk.org/jeps/180 (Java 8, O(n) → O(log n))
+%   doc.rust-lang.org/std/collections/struct.HashMap.html (SipHash 1-3; SwissTable port; seed per
+%     instance; faster hashers "will typically not protect against" HashDoS)
+%   go.dev/blog/swisstable (Go 1.24; groups of 8 + control word; h1 57 / h2 7 bits; ≤1024 entries
+%     per table) · github.com/golang/go internal/runtime/maps map.go (random seed per map; iteration
+%     randomised), group.go (load 7/8)
+%   github.com/veorq/SipHash README (2012, Aumasson + Bernstein, against hash flooding; 2-4 default,
+%     128-bit key, 64-bit tag; c ≥ 2, d ≥ 4 expected full PRF strength) · github.com/Cyan4973/xxHash
+%     README (non-cryptographic) · github.com/redis/redis src/dict.c (incremental rehash steps)
+%   csrc.nist.gov/projects/hash-functions (strength table: SHA-1 collision < 80; second preimage
+%     256 − L(M); collision = half the output) · nist.gov news 2022-12 (SHA-1 out by 31 Dec 2030)
+%     · rfc-editor.org RFC 6234 (512 / 1024-bit blocks, 64 / 80 rounds, digest = final state, SHA-224
+%     truncates) · keccak.team keccak_specs_summary + keccak_strengths (SHA3-256 r = 1088, c = 512,
+%     24 rounds; no length extension, MAC = prepend the key) · RFC 2104 (HMAC, 0x36 / 0x5C, long
+%     keys hashed) · RFC 7693 (BLAKE2 built-in keying) · github.com/BLAKE3-team/BLAKE3 README
+%     · RFC 6151 (MD5 collisions ≤ 10 s, 2007) · security.googleblog.com/2017/02 (SHAttered: 2^63
+%     SHA-1 computations, > 100 000× brute force)
+%   github.com/apple/swift-crypto Message Authentication Codes/*.swift, Util/SafeCompare (MAC ==
+%     and isValidAuthenticationCode compare in constant time)
+%   github.com/OWASP/CheatSheetSeries Password_Storage_Cheat_Sheet.md (read 2026-10-08: Argon2id
+%     19 MiB / t 2 / p 1 + 4 equivalents; scrypt 2^17, 8, 1; bcrypt legacy, ≥ 10, 72 B; PBKDF2-SHA256
+%     600 000, -SHA512 220 000, -SHA1 1 400 000 legacy; pepper; < 1 s; shucking; re-hash at login)
+%     · RFC 9106 (Argon2id first / second recommended options, 16-byte salt, v = 0x13) ·
+%     github.com/P-H-C/phc-winner-argon2 README (encoded string)
+%   en.wikipedia.org: Birthday problem (23 → 50.7 %) · Universally unique identifier (2.71e18;
+%     103 trillion → 1e-9) · Consistent hashing (Karger et al., STOC 1997; n/m keys move) ·
+%     Rendezvous hashing (Thaler, Ravishankar 1996) · Bloom filter (Bloom 1970; 9.6 bits; +4.8 bits
+%     per 10×; k = (m/n) ln 2; Akamai one-hit-wonders) — secondary, cross-checked by arithmetic
+%   rfc-editor.org RFC 9562 (UUIDv4: 122 random bits) · arxiv.org/abs/1406.2294 (jump hash)
+%     · cassandra.apache.org/doc/latest/cassandra/architecture/dynamo.html (vnodes; 256 tokens in 2.x;
+%     2 (RF − 1) neighbours per token) · github.com/apache/cassandra conf/cassandra.yaml (num_tokens 16)
+%     · github.com/google/leveldb doc/index.md (10 bits per key; ~100× fewer disk reads)
+% @labels: area=cs kind=concept platform=general topic=algorithms,data,security discussion=283
+% @tags: siphash, hashdos, hash-table, open-addressing, swiss-table, birthday-bound, consistent-hashing, virtual-nodes, rendezvous-hashing, bloom-filter, sha-256, sha-3, length-extension, hmac, argon2id, password-hashing
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\tikzset{
+  c/.style={cell, minimum width=3.4mm, minimum height=4mm, font=\ttfamily\tiny, inner sep=0pt},
+  hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  l/.style={font=\tiny, text=black!75, align=center, inner sep=1pt},
+  vn/.style={circle, fill=#1, draw=#1!70!black, inner sep=0pt, minimum size=3.2mm, font=\sffamily\tiny\bfseries, text=white},
+  ky/.style={rectangle, fill=black!65, inner sep=0pt, minimum size=1.6mm},
+  fx/.style={draw=sheetGrey, fill=sheetBlue!8, minimum width=5mm, minimum height=4mm, font=\tiny, inner sep=1pt},
+}
+
+\begin{document}
+
+\sheettitle{Hashing — tables, crypto, rings, passwords, Bloom}{cs · folio}
+
+\oneliner{A hash maps any input to a fixed-size value. \textbf{Table hashes} want
+speed, spread and a \textbf{secret seed} against flooding (SipHash); \textbf{cryptographic
+hashes} want preimage and collision resistance (SHA-256, SHA-3); \textbf{password hashes}
+want to be \textbf{slow and memory-hard} (Argon2id); a \textbf{MAC} needs a key (HMAC).
+Collisions always exist — the question is only what it costs to find one.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ===== consistent hashing ring
+  \node[hd] at (-0.1,2.1) {Consistent hashing + virtual nodes};
+  \def\R{1.05}
+  \draw[thick, sheetGrey] (1.5,0.6) circle (\R);
+  \foreach \a/\n/\col in {20/A1/sheetBlue,80/B1/sheetGreen,140/C1/sheetOrange,200/A2/sheetBlue,260/B2/sheetGreen,320/C2/sheetOrange}
+    \node[vn=\col] (\n) at ($(1.5,0.6)+(\a:\R)$) {\n};
+  \node[vn=sheetRed] (D) at ($(1.5,0.6)+(290:\R)$) {D};
+  \foreach \a/\k in {50/k1,110/k2,305/k3,230/k4} \node[ky] (\k) at ($(1.5,0.6)+(\a:\R)$) {};
+  \draw[->, thin, sheetBlue] ($(1.5,0.6)+(50:0.82)$) arc (50:24:0.82);
+  \draw[->, thin, sheetGreen] ($(1.5,0.6)+(110:0.82)$) arc (110:84:0.82);
+  \draw[->, thin, sheetBlue] ($(1.5,0.6)+(230:0.82)$) arc (230:204:0.82);
+  \draw[->, thick, sheetRed] ($(1.5,0.6)+(305:0.72)$) arc (305:294:0.72);
+  \draw[->, thin, dashed, sheetGrey] ($(1.5,0.6)+(305:1.28)$) arc (305:262:1.28);
+  \node[l] at ($(1.5,0.6)+(50:1.3)$) {k1}; \node[l] at ($(1.5,0.6)+(110:1.3)$) {k2};
+  \node[l] at ($(1.5,0.6)+(230:1.3)$) {k4}; \node[l] at ($(1.5,0.6)+(318:1.45)$) {k3};
+  \node[l, align=center] at (1.5,0.6) {hash space\\as a circle;\\key → next\\node clockwise};
+  \node[l, anchor=west, align=left] at (2.9,1.2) {each server =\\many points\\(vnodes)};
+  \node[l, anchor=west, align=left, text=sheetRed] at (2.85,-0.35) {add D: only k3\\moves (was B2)};
+  \draw[sheetGrey!50] (4.25,2.3) -- (4.25,-0.75);
+  % ===== Bloom filter
+  \node[hd] at (4.3,2.1) {Bloom filter: m bits, k hashes};
+  \foreach \i in {0,...,15} {
+    \pgfmathparse{(\i==2||\i==4||\i==7||\i==11||\i==13)?1:0}
+    \ifnum\pgfmathresult=1 \node[c, fill=sheetBlue!25] (b\i) at (4.55+0.36*\i,0.75) {1};
+    \else \node[c] (b\i) at (4.55+0.36*\i,0.75) {0}; \fi
+    \node[l] at (4.55+0.36*\i,0.45) {\i}; }
+  \node[l, text=sheetBlue] (cat) at (5.3,1.65) {add ``cat''};
+  \node[l, text=sheetBlue] (dog) at (8.0,1.65) {add ``dog''};
+  \foreach \t in {2,7,13} \draw[->, thin, sheetBlue] (cat) -- (b\t.north);
+  \foreach \t in {4,7,11} \draw[->, thin, sheetBlue!60] (dog) -- (b\t.north);
+  \node[l, text=sheetGreen!50!black, align=left, anchor=west] (cow) at (4.3,-0.25) {``cow'' → 2, 11, \textbf{14}: a 0\\⇒ \textbf{definitely not} present};
+  \node[l, text=sheetRed, align=left, anchor=west] (ant) at (7.0,-0.25) {``ant'' → 2, 4, 13: all 1\\⇒ ``maybe'' = \textbf{false positive}};
+  \draw[->, thin, sheetGreen!50!black] (cow.north east) -- (b14.south);
+  \draw[sheetGrey!50] (10.4,2.3) -- (10.4,-0.75);
+  % ===== password hashing pipeline
+  \node[hd] at (10.45,2.1) {Storing a password};
+  \node[box, font=\tiny, minimum width=13mm] (pw) at (11.2,1.35) {password};
+  \node[box, font=\tiny, minimum width=13mm, draw=sheetGreen, fill=sheetGreen!8] (salt) at (11.2,0.75) {salt: 16 random B\\per user, stored};
+  \node[box, font=\tiny, minimum width=13mm, draw=sheetRed, fill=sheetRed!6] (pep) at (11.2,0.05) {pepper: secret,\\vault / HSM, not DB};
+  \node[box, font=\tiny, draw=sheetOrange, fill=sheetOrange!12, minimum height=16mm, text width=16mm] (ar) at (13.4,0.75) {\textbf{Argon2id}\\m = 19 MiB\\t = 2, p = 1\\(OWASP minimum)\\tune: $<$1\,s};
+  \draw[flow] (pw.east) -- (ar.west |- pw.east);
+  \draw[flow] (salt.east) -- (ar.west |- salt.east);
+  \draw[flow, dashed] (pep.east) -- (ar.west |- pep.east);
+  \node[l, font=\ttfamily\tiny, anchor=west, align=left] at (14.5,1.2) {\$argon2id\$v=19\\\$m=19456,t=2,p=1\\\$<salt>\$<hash>};
+  \draw[flow] (ar.east) -- (14.55,0.75);
+  \node[l, anchor=west, align=left] at (14.5,0.35) {one string: algorithm,\\params, salt → re-hash\\at next login};
+  \node[l, anchor=west, align=left, text=sheetRed] at (10.45,-0.55) {attacker with the DB must pay the cost \emph{per guess, per user}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Hash tables in real runtimes}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{36mm}>{\raggedright\arraybackslash}p{6mm}>{\raggedright\arraybackslash}p{22mm}@{}}
+\toprule
+\textbf{table} & \textbf{layout} & \textbf{grow} & \textbf{hash · seed}\\
+\midrule
+Swift \ct{Set}, \ct{Dictionary} & open addressing, linear probing, occupancy bitmap; delete shifts the chain back — no tombstones & 3/4 & SipHash-1-3; 128-bit seed per process + per table\\
+CPython \ct{dict} & compact (3.6): sparse index → dense entries in insertion order (guaranteed 3.7); probe $j \leftarrow 5j{+}1{+}perturb$; delete leaves a \emph{dummy} & 2/3 & str / bytes: SipHash-1-3 (3.11); seeded since 3.3; \ct{PYTHONHASHSEED}\\
+Java \ct{HashMap} & chaining; 16 buckets, doubles; adding to a bin of $\ge$8 makes it a red-black tree (if $\ge$64 buckets, else resize); list again at $\le$6 & 0.75 & \ct{hashCode()} xor \ct{h>>>16}; unseeded: \ct{String} is $h \leftarrow 31h + c$ per char\\
+Rust \ct{HashMap} & port of Google's SwissTable & — & SipHash 1-3; seed per instance\\
+Go \ct{map} (1.24) & Swiss Table: groups of 8 slots + a control byte each (7 hash bits); $\le$1024 entries per table, each grows alone & 7/8 & random seed per map; iteration order randomised\\
+\bottomrule
+\end{tabular}}
+
+\section{Seeds against flooding}
+\begin{itemize}
+  \item \textbf{HashDoS} (oCERT-2011-003, Klink \& Wälde, Dec 2011): POST parameters chosen to
+        collide put every key in one bucket — dict insertion becomes O(n\textsuperscript{2}),
+        100\,\% CPU for hours. Java, PHP, Python, Ruby, V8 and more; the same class as Crosby \&
+        Wallach's 2003 attack on Perl.
+  \item \textbf{SipHash} (Aumasson \& Bernstein, 2012): a keyed PRF built against hash flooding.
+        SipHash-$c$-$d$ = $c$ rounds per 8-byte word, $d$ at the end; reference 2-4, 128-bit key,
+        64-bit result. $c \ge 2$, $d \ge 4$ is the conservative bound — Swift, Rust and CPython
+        run \textbf{1-3} for speed.
+  \item Non-cryptographic hashes (xxHash) are fast but not PRFs; Rust's docs: faster hashers
+        ``will typically not protect against attacks such as HashDoS''.
+  \item Java's \ct{String.hashCode} is a specified, unseeded formula; Java 8 fixed the table
+        instead (JEP 180): colliding bins become trees, worst case O(n) → O(log n), best with
+        \ct{Comparable} keys. With random hashes at load 0.75 a bin of 8 has odds
+        6$\times$10\textsuperscript{-8} — a tree bin means a bad \ct{hashCode} or an attack.
+  \item Cost of seeding: \ct{hashValue} and iteration order change per launch — Swift also
+        reseeds per table, so two equal \ct{Set}s may iterate differently.
+        \ct{SWIFT\_DETERMINISTIC\_HASHING=1} / \ct{PYTHONHASHSEED=0} pin it for tests.
+\end{itemize}
+
+\section{Birthday bound}
+$n$ items in $m$ values collide with $P \approx 1 - e^{-n^2/2m}$, 50\,\% at
+$n \approx 1.18\sqrt{m}$. 23 people → 50.7\,\%; 64-bit hash → $\sim$5$\times$10\textsuperscript{9}
+items; UUIDv4 (122 random bits) → 2.71$\times$10\textsuperscript{18} (1 in 10\textsuperscript{9}
+within 103 trillion). So an $n$-bit hash gives only $n/2$ bits of collision resistance.
+
+\section{Growth}
+Past the load limit: allocate (Java: double), re-insert all — O(n) once, O(1) amortised, a
+\emph{latency spike}. \textbf{Redis} keeps two tables and moves buckets a step per operation;
+\textbf{Go} caps a table at 1024 entries, so the worst insert copies 1024.
+
+\section{Consistent hashing}
+\begin{itemize}
+  \item \ct{hash(key) mod N}: change N and nearly every key moves. The ring (Karger et al.,
+        STOC 1997) moves only $\sim$keys/slots on average.
+  \item \textbf{Virtual nodes}: many tokens per server even out load; a dead node's load spreads
+        over many others; more tokens = bigger share (weight). Each token adds up to
+        2\,(RF$-$1) neighbours: Cassandra 2.x needed 256 random tokens, 3.x+ allocates them
+        deterministically — default \ct{num\_tokens: 16}.
+  \item \textbf{Rendezvous} / highest random weight (Thaler \& Ravishankar 1996): key → the node
+        with the largest $h(key, node)$; O(nodes) per lookup, no ring.
+  \item \textbf{Jump hash} (Lamping \& Veach 2014): $\sim$5 lines, no storage, more even than
+        the ring — but buckets must be numbered 0…$n{-}1$: shards, not web caches.
+\end{itemize}
+
+\section{Bloom filter}
+$p \approx (1-e^{-kn/m})^k$, best $k = (m/n)\ln 2$, so $m/n = 1.44\log_2(1/p)$:
+\textbf{1\,\% ≈ 9.6 bits per item, k = 7}; every +4.8 bits/item cuts $p$ 10$\times$. No false
+negatives, no delete (counting variant can). LevelDB at 10 bits/key: $\sim$100$\times$ fewer
+needless disk reads per \ct{Get}; Akamai keeps one-hit wonders out of its disk caches.
+
+\columnbreak
+
+\section{Cryptographic hashes}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{14mm}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{16mm}@{}}
+\toprule
+\textbf{function} & \textbf{block / state} & \textbf{collision} & \textbf{preimage} & \textbf{2nd preimage}\\
+\midrule
+SHA-1 & 512-bit block & $<$80 & 160 & 160 $-$ L(M)\\
+SHA-256 & 512, 64 rounds & 128 & 256 & 256 $-$ L(M)\\
+SHA-512 & 1024, 80 rounds & 256 & 512 & 512 $-$ L(M)\\
+SHA-512/256 & 1024, truncated & 128 & 256 & 256\\
+SHA3-256 & sponge, r 1088 + c 512 & 128 & 256 & 256\\
+\bottomrule
+\end{tabular}}\par
+Strength in bits (NIST). L(M) = log\textsubscript{2} of the message length in blocks: long
+messages ease second preimages on Merkle–Damgård (Kelsey–Schneier).
+
+\begin{tikzpicture}[sheet]
+  \node[hd, font=\bfseries\scriptsize] at (-0.1,2.2) {SHA-2: Merkle–Damgård};
+  \node[l] (iv) at (0.15,1.4) {IV};
+  \foreach \x/\m/\n in {0.95/$m_1$/f1, 1.85/$m_2$/f2, 2.75/pad/f3} {
+    \node[fx] (\n) at (\x,1.4) {$f$};
+    \node[l] (m\n) at (\x,1.85) {\m};
+    \draw[->, thin] (m\n) -- (\n); }
+  \draw[->, thin] (iv) -- (f1); \draw[->, thin] (f1) -- (f2); \draw[->, thin] (f2) -- (f3);
+  \node[l, text=sheetBlue, align=left, anchor=west] (dg) at (3.25,1.4) {digest = the whole\\state $H_0 \dots H_7$};
+  \node[fx, draw=sheetRed, fill=sheetRed!8] (f4) at (5.35,1.4) {$f$};
+  \node[l, text=sheetRed] (mm) at (5.35,1.85) {$m'$};
+  \draw[->, thin, sheetRed] (mm) -- (f4);
+  \draw[->, thin, sheetRed] (dg) -- (f4);
+  \node[l, text=sheetRed, align=left, anchor=west] at (5.7,1.4) {$H(k \Vert m \Vert pad \Vert m')$\\without knowing $k$};
+  \node[hd, font=\bfseries\scriptsize] at (-0.1,1.0) {SHA-3: sponge, Keccak-$f$[1600], 24 rounds};
+  \node[l, anchor=east] at (0.3,0.3) {r};
+  \node[l, anchor=east] at (0.3,-0.05) {c};
+  \foreach \x/\n in {1.3/p1, 2.6/p2, 3.9/p3}
+    \node[fx, minimum height=7.5mm, minimum width=6mm] (\n) at (\x,0.125) {$P$};
+  \foreach \a/\b in {0.35/1.0, 1.6/2.3, 2.9/3.6} {
+    \draw[thin] (\a,0.3) -- (\b,0.3); \draw[thin, sheetGrey] (\a,-0.05) -- (\b,-0.05); }
+  \foreach \x/\m in {0.65/$m_1$, 1.95/$m_2$} {
+    \node[l, draw=sheetGrey, circle, inner sep=0pt, minimum size=2.2mm, fill=white] at (\x,0.3) {$+$};
+    \node[l] at (\x,0.68) {\m};
+    \draw[->, thin] (\x,0.6) -- (\x,0.41); }
+  \draw[->, thin, sheetBlue] (4.2,0.3) -- (4.6,0.3) node[l, anchor=west, text=sheetBlue, align=left] {squeeze 256 bits\\from r only};
+  \node[l, anchor=west, align=left, text=sheetGreen!45!black] at (4.25,-0.25) {c = 512 bits never leave:\\nothing to extend};
+\end{tikzpicture}
+
+\textbf{Length extension}: SHA-256's digest \emph{is} its final chaining state, so from
+$H(k \Vert m)$ and the length anyone continues the chain. SHA-3 and BLAKE3 resist it. Broken:
+\textbf{MD5} collisions in $\le$10\,s on a Pentium 4 (2007) — never for signatures; \textbf{SHA-1} SHAttered
+(CWI + Google, Feb 2017): two different PDFs, one SHA-1, 2\textsuperscript{63} computations,
+$>$100\,000$\times$ faster than brute force. NIST: SHA-1 out by 31 Dec 2030.
+
+\section{MAC: HMAC vs a plain hash}
+A plain hash only catches \emph{accidents} — anyone can recompute it.
+\textbf{HMAC} (RFC 2104) $= H\big((K \oplus opad) \Vert H((K \oplus ipad) \Vert m)\big)$, ipad
+= \ct{0x36}, opad = \ct{0x5C} repeated to the block size (64 B for SHA-256); longer keys are
+hashed first, keys shorter than the output are discouraged. The nesting defeats length
+extension. SHA-3 (KMAC), BLAKE2 and BLAKE3 take the key directly. swift-crypto (the open
+CryptoKit API) compares MACs in constant time in both \ct{==} and
+\ct{isValidAuthenticationCode}.
+
+\section{Password hashing — slow on purpose}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{39mm}>{\raggedright\arraybackslash}p{20mm}@{}}
+\toprule
+\textbf{function} & \textbf{OWASP minimum (2026)} & \textbf{role}\\
+\midrule
+\textbf{Argon2id} & 19\,MiB, t=2, p=1 — or 46/1, 12/3, 9/4, 7/5 (MiB/t) & first choice; PHC winner 2015\\
+scrypt & N=2\textsuperscript{17} (128\,MiB), r=8, p=1 & no Argon2id\\
+bcrypt & cost $\ge$10; input $\le$\textbf{72 bytes} & legacy only\\
+PBKDF2 & HMAC-SHA256 600\,000 · -SHA512 220\,000 · -SHA1 1\,400\,000 (legacy) & FIPS-140\\
+\bottomrule
+\end{tabular}}\par
+RFC 9106 aims higher: Argon2id t=1, p=4, \textbf{2\,GiB}, or t=3, p=4, 64\,MiB where memory is
+short; 16-byte salt. Argon2id = Argon2i (side-channel safe) for half the first pass, Argon2d
+after. \textbf{Salt}: unique, stored — one hash cracked at a time, no rainbow tables, equal
+passwords differ. \textbf{Pepper}: one secret outside the DB — a DB-only leak (SQL injection, a
+backup) stays uncrackable; rotating it forces resets.
+
+\section{Traps}
+\begin{itemize}
+  \trap{Persisting \ct{hashValue} — use SHA-256 for a stable key.}
+  \trap{Fast hash for passwords (SHA-256, salted or not). bcrypt over a raw digest: a 0x00
+        byte truncates it, and leaked hashes can be ``shucked'' — base64(HMAC(pepper, pw)).}
+  \trap{$H(key \Vert msg)$ with SHA-2 as a MAC — length extension.}
+  \trap{``A 256-bit hash = 256-bit collision strength'' — it is 128.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Tables: fast + seeded. Integrity: SHA-256 / SHA-3. Authenticity: HMAC.
+Passwords: Argon2id + salt. Membership at scale: Bloom. Collision strength = half the bits.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Data structures · Designing data
+structures · Equatable, Hashable \& Comparable · Strings \& collections · Cryptography with
+CryptoKit · JWT attacks \& token hardening · Keychain \& Secure Enclave · Distributed system design}
+
+\end{document}

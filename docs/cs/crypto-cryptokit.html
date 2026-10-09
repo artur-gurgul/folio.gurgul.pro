@@ -1,0 +1,130 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Cryptography with CryptoKit — AEAD, ECDH, signatures, HPKE, ML-KEM — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/cs/crypto-cryptokit.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">255</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area current" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Cryptography with CryptoKit — AEAD, ECDH, signatures, HPKE, ML-KEM</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">cs · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> <strong>Symmetric</strong> AEAD (AES-GCM, ChaCha20-Poly1305) encrypts <em>and</em> authenticates
+bulk data under one key and a <strong>nonce never repeated under that key</strong>; <strong>asymmetric</strong>
+keys <em>agree</em> on that key (ECDH → HKDF, or a KEM inside HPKE) and <em>sign</em> (ECDSA, Ed25519,
+ML-DSA). CryptoKit ships vetted primitives with safe defaults — the job is choosing them, managing
+keys and nonces, and <strong>never inventing</strong> a primitive, mode or protocol.</p>
+<p class="sheet-tools"><a class="sheet-download" href="crypto-cryptokit.pdf" download>Download PDF</a> <a href="crypto-cryptokit.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/cs/crypto-cryptokit.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="crypto-cryptokit-fig1.svg" width="587" height="176" class="wide" alt="Cryptography with CryptoKit — AEAD, ECDH, signatures, HPKE, ML-KEM — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>How it works</h2>
+<ul>
+<li><strong>AEAD</strong> = confidentiality + integrity + authenticity; <code>open</code> throws on any flipped  bit or wrong AAD. <strong>AES-GCM</strong>: 128/192/256-bit key. <strong>ChaCha20-Poly1305</strong>: 256-bit  key, <span class="math">∼</span>3<span class="math">×</span> faster than AES on chips without AES hardware. Both: 12-byte nonce,  16-byte tag.</li>
+<li><strong>Nonce reuse</strong> under one key: <span class="math">C<sub>1</sub> ⊕C<sub>2</sub> = P<sub>1</sub> ⊕P<sub>2</sub></span>, and GCM gives away  its <strong>hash key</strong> → trivial forgeries under that key (Poly1305: the one-time key  repeats). A repeated nonce on <em>decrypt</em> is harmless.</li>
+<li><strong>ECDH</strong> output is not uniformly random: HKDF <strong>extract</strong> (salt; none = zeros),  then <strong>expand</strong> with <code>info</code> — one purpose per key, <span class="math">≤</span>255 × hash length.  Ephemeral pairs, discarded → forward secrecy.</li>
+<li><strong>ECDSA</strong> <span class="math">s = (h + x r)/k</span>: the same <span class="math">k</span> twice gives <span class="math">k = (h<sub>1</sub> - h<sub>2</sub>)/(s<sub>1</sub> - s<sub>2</sub>)</span>,  then the private key <span class="math">x = (s k - h)/r</span>. RFC 6979 <span class="math">k</span> and EdDSA are deterministic —  <strong>CryptoKit randomizes both</strong>: new bytes every call for the same key + message.</li>
+<li><strong>HPKE</strong> (RFC 9180) = KEM → KDF → AEAD to a public key; nonce = base nonce XOR  sequence number, so <strong>open in the order sealed</strong>: no loss or reordering, no replay  protection, no forward secrecy if the recipient key leaks.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>AEAD limits per key</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>construction</strong></th><th><strong>per (key, nonce)</strong></th><th><strong>random nonces</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>AES-256-GCM</td><td><span class="math">∼</span>64 GB</td><td>2<sup>32</sup> messages</td></tr>
+<tr><td>ChaCha20-Poly1305 (IETF)</td><td>256 GB</td><td>2<sup>32</sup> messages</td></tr>
+<tr><td>XChaCha20 (not in CryptoKit)</td><td><span class="math">∼</span>2<sup>64</sup> B</td><td>no practical limit</td></tr>
+</tbody>
+</table></p>
+<p>1 MB messages, 2<sup>-32</sup> attack chance: AES-GCM <span class="math">∼</span>2<sup>32</sup> encryptions per key, ChaCha 2<sup>48</sup>. Then rekey; chunk huge messages.</p>
+</section>
+<section class="sheet-section">
+<h2>Security strength — equal rows</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>bits</strong></th><th><strong>AES</strong></th><th><strong>elliptic curve</strong></th><th><strong>RSA</strong></th><th><strong>hash</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>128</td><td>AES-128</td><td>P-256, X25519, Ed25519</td><td>3072</td><td>SHA-256</td></tr>
+<tr><td>192</td><td>AES-192</td><td>P-384</td><td>7680</td><td>SHA-384</td></tr>
+<tr><td>256</td><td>AES-256</td><td>P-521</td><td>15360</td><td>SHA-512</td></tr>
+</tbody>
+</table></p>
+<p>ML-DSA-44 / 65 / 87 = NIST levels 2 / 3 / 5 (3 <span class="math">≈</span> AES-192, 5 <span class="math">≈</span> AES-256). No RSA in CryptoKit → <code>SecKey</code>.</p>
+</section>
+<section class="sheet-section">
+<h2>Example — the CryptoKit calls</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">let</span> mine <span class="hljs-operator">=</span> <span class="hljs-type">Curve25519</span>.<span class="hljs-type">KeyAgreement</span>.<span class="hljs-type">PrivateKey</span>()        <span class="hljs-comment">// ephemeral</span>
+<span class="hljs-keyword">let</span> key <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> mine.sharedSecretFromKeyAgreement(with: theirPub)
+  .hkdfDerivedSymmetricKey(using: <span class="hljs-type">SHA256</span>.<span class="hljs-keyword">self</span>, salt: salt,
+     sharedInfo: <span class="hljs-type">Data</span>(<span class="hljs-string">&quot;chat v1&quot;</span>.utf8), outputByteCount: <span class="hljs-number">32</span>)
+<span class="hljs-keyword">let</span> box <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> <span class="hljs-type">AES</span>.<span class="hljs-type">GCM</span>.seal(msg, using: key, authenticating: hdr)
+<span class="hljs-keyword">let</span> wire <span class="hljs-operator">=</span> box.combined<span class="hljs-operator">!</span>        <span class="hljs-comment">// random 12 B nonce | ct | tag</span>
+<span class="hljs-keyword">let</span> plain <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> <span class="hljs-type">AES</span>.<span class="hljs-type">GCM</span>.open(.<span class="hljs-keyword">init</span>(combined: wire), using: key,
+                             authenticating: hdr)
+<span class="hljs-keyword">let</span> signer <span class="hljs-operator">=</span> <span class="hljs-type">P256</span>.<span class="hljs-type">Signing</span>.<span class="hljs-type">PrivateKey</span>()  <span class="hljs-comment">// SecureEnclave.P256: same</span>
+<span class="hljs-keyword">let</span> sig <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> signer.signature(for: msg)  <span class="hljs-comment">// SHA-256, randomized</span>
+<span class="hljs-keyword">let</span> ok <span class="hljs-operator">=</span> signer.publicKey.isValidSignature(sig, for: msg)
+<span class="hljs-keyword">let</span> jws <span class="hljs-operator">=</span> sig.rawRepresentation         <span class="hljs-comment">// r|s 64 B; X.509: DER</span>
+<span class="hljs-comment">// HPKE, hybrid post-quantum (iOS 26)</span>
+<span class="hljs-keyword">let</span> suite <span class="hljs-operator">=</span> <span class="hljs-type">HPKE</span>.<span class="hljs-type">Ciphersuite</span>.<span class="hljs-type">XWingMLKEM768X25519_SHA256_AES_GCM_256</span>
+<span class="hljs-keyword">let</span> sk <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> <span class="hljs-type">XWingMLKEM768X25519</span>.<span class="hljs-type">PrivateKey</span>()
+<span class="hljs-keyword">var</span> tx <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> <span class="hljs-type">HPKE</span>.<span class="hljs-type">Sender</span>(recipientKey: sk.publicKey,
+                         ciphersuite: suite, info: info)
+<span class="hljs-keyword">let</span> c1 <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> tx.seal(m1)       <span class="hljs-comment">// send tx.encapsulatedKey once</span>
+<span class="hljs-keyword">var</span> rx <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> <span class="hljs-type">HPKE</span>.<span class="hljs-type">Recipient</span>(privateKey: sk, ciphersuite: suite,
+                 info: info, encapsulatedKey: tx.encapsulatedKey)
+<span class="hljs-keyword">let</span> p1 <span class="hljs-operator">=</span> <span class="hljs-keyword">try</span> rx.open(c1)       <span class="hljs-comment">// open in the order sealed</span></code></pre>
+<p><strong>Storing keys</strong>: P-256/384/521 → <code>SecKey</code> via <code>x963Representation</code>; Curve25519 and <code>SymmetricKey</code> bytes → a generic-password Keychain item.</p>
+</section>
+<section class="sheet-section">
+<h2>CryptoKit by release</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>iOS</strong></th><th><strong>added</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>13</td><td><code>SymmetricKey(size:)</code> · <code>AES.GCM</code> · <code>ChaChaPoly</code> · <code>SHA256/384/512</code> · <code>HMAC</code> ·
+ <code>Curve25519</code>, <code>P256/384/521</code> agreement + signing · <code>SecureEnclave.P256</code> ·
+ <code>Insecure.MD5 / .SHA1</code> (the namespace is the warning)</td></tr>
+<tr><td>14</td><td><code>HKDF</code>: <code>extract</code>, <code>expand</code>, <code>deriveKey</code></td></tr>
+<tr><td>15</td><td><code>AES.KeyWrap</code> (RFC 3394)</td></tr>
+<tr><td>17</td><td><code>HPKE</code> (<code>Sender</code>, <code>Recipient</code>; 4 classical suites), <code>KEM</code></td></tr>
+<tr><td>26</td><td><code>MLKEM768/1024</code>, <code>MLDSA65/87</code>, <code>XWingMLKEM768X25519</code> (+ HPKE suite), SHA-3; the
+ ML types also under <code>SecureEnclave</code></td></tr>
+<tr><td>27</td><td>one-time ML-KEM / X-Wing private keys; <code>seal/open(inPlace:)</code> on spans</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Secure Enclave</h2>
+<p>Key types: <code>P256</code> (signing, agreement), since iOS 26 also <code>MLKEM768/1024</code> and <code>MLDSA65/87</code> — nothing symmetric, no one-time keys. Born inside, never leaves: <code>dataRepresentation</code> is an <em>encrypted block</em> only the same SE can restore (store it in the Keychain). Default access control <code>AfterFirstUnlockThisDeviceOnly</code>, no flags.</p>
+</section>
+<section class="sheet-section">
+<h2>Post-quantum — why, and the cost</h2>
+<p>Ciphertext recorded today can fall to a future quantum computer, so <strong>key agreement moves
+first</strong>: FIPS 203 (ML-KEM), 204 (ML-DSA), August 2024. A <strong>KEM</strong> <code>encapsulate</code>s to a public key → (secret, ciphertext); only the private key <code>decapsulate</code>s, in CryptoKit straight to a <code>SymmetricKey</code>. <strong>Hybrid</strong> = classical + PQ, safe while <em>either</em> holds: <strong>X-Wing</strong> = ML-KEM-768 + X25519 (aims at 128-bit, 768 for margin); signatures: ML-DSA <span class="math">‖</span> ECDSA, verify both.</p>
+<figure class="sheet-figure"><img src="crypto-cryptokit-fig2.svg" width="304" height="86" alt="Cryptography with CryptoKit — AEAD, ECDH, signatures, HPKE, ML-KEM — figure 2" loading="lazy"></figure>
+<p>One-time ML-KEM / X-Wing keys (iOS 27): faster, consumed by <code>decapsulate</code>, never saved.</p>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><strong>ECB</strong> (equal blocks → equal ciphertext); <strong>CBC</strong> without a MAC → padding  oracles. Use AEAD.</li>
+<li class="trap"><strong>Fixed or reset nonce</strong> (a counter restarting after reinstall; two devices, one key).  <code>seal(inPlace:)</code> has no random default.</li>
+<li class="trap"><strong>Hard-coded keys</strong> — <code>strings</code> finds them. <strong>Password as a key</strong> → slow KDF  first: <code>CCKeyDerivationPBKDF</code> (OWASP <span class="math">≥</span>600 000 × HMAC-SHA256) or Argon2id.</li>
+<li class="trap"><strong>Tag compared after conversion</strong> to <code>Data</code> / <code>[UInt8]</code> / hex <code>String</code> with  <code>==</code> — early exit leaks timing. swift-crypto’s MAC <code>==</code> and  <code>isValidAuthenticationCode</code> are constant-time.</li>
+<li class="trap"><strong>Signature bytes as an ID</strong> or test oracle — they differ every call; verify instead.  ES256 JWS = the 64-byte raw form, not DER.</li>
+<li class="trap"><strong>One key, two jobs</strong> → separate HKDF <code>info</code>. <strong>Unauthenticated ECDH</strong> =  agreeing with the attacker.</li>
+<li class="trap">Key bytes from GameplayKit (“not cryptographically robust”) or a seeded test RNG.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><strong>Agree (ECDH or KEM) → derive (HKDF) → seal (AEAD, unique nonce) → sign what must be proven;
+hybrid PQ for secrets that must outlive a quantum computer.</strong> Never roll your own.</p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> Hashing · Keychain · Secure Enclave · biometrics
+· TLS 1.3 in depth · TLS 1.3 &amp; PKI · Passkeys · JWT attacks &amp; token hardening · App hardening &amp;
+privacy</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=cs" title="area">cs</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=apple" title="platform">apple</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=security" title="topic">security</a></li><li class="sheet-tag"><a href="/folios.html?tag=cryptokit">cryptokit</a></li><li class="sheet-tag"><a href="/folios.html?tag=aead">aead</a></li><li class="sheet-tag"><a href="/folios.html?tag=aes-gcm">aes-gcm</a></li><li class="sheet-tag"><a href="/folios.html?tag=chacha20-poly1305">chacha20-poly1305</a></li><li class="sheet-tag"><a href="/folios.html?tag=nonce-reuse">nonce-reuse</a></li><li class="sheet-tag"><a href="/folios.html?tag=ecdh">ecdh</a></li><li class="sheet-tag"><a href="/folios.html?tag=hkdf">hkdf</a></li><li class="sheet-tag"><a href="/folios.html?tag=ecdsa">ecdsa</a></li><li class="sheet-tag"><a href="/folios.html?tag=ed25519">ed25519</a></li><li class="sheet-tag"><a href="/folios.html?tag=hpke">hpke</a></li><li class="sheet-tag"><a href="/folios.html?tag=ml-kem">ml-kem</a></li><li class="sheet-tag"><a href="/folios.html?tag=ml-dsa">ml-dsa</a></li><li class="sheet-tag"><a href="/folios.html?tag=post-quantum">post-quantum</a></li><li class="sheet-tag"><a href="/folios.html?tag=envelope-encryption">envelope-encryption</a></li><li class="sheet-tag"><a href="/folios.html?tag=secure-enclave">secure-enclave</a></li><li class="sheet-tag"><a href="/folios.html?tag=forward-secrecy">forward-secrecy</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=cs%2Fcrypto-cryptokit.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/279">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>
