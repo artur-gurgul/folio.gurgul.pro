@@ -1,0 +1,147 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Test doubles — Dummy · Stub · Spy · Mock · Fake — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/testing/test-doubles.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">262</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area current" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Test doubles — Dummy · Stub · Spy · Mock · Fake</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">testing · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A <strong>test double</strong> (Gerard Meszaros, <em>xUnit Test Patterns</em>, 2007; Fowler:
+“think stunt double”) replaces a <strong>DOC</strong> (depended-on component) so the <strong>SUT</strong> can be tested
+alone. The five differ in what they do with the SUT’s <strong>indirect inputs</strong> (what the DOC
+returns or throws) and <strong>indirect outputs</strong> (the calls the SUT makes): a <strong>Stub</strong> feeds
+inputs, a <strong>Spy</strong> records outputs for the test to check, a <strong>Mock</strong> checks outputs
+itself, a <strong>Fake</strong> is a lighter working implementation, a <strong>Dummy</strong> is never called.</p>
+<p class="sheet-tools"><a class="sheet-download" href="test-doubles.pdf" download>Download PDF</a> <a href="test-doubles.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/testing/test-doubles.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="test-doubles-fig1.svg" width="574" height="151" class="wide" alt="Test doubles — Dummy · Stub · Spy · Mock · Fake — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Meszaros’ roles</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th><strong>purpose</strong></th><th><strong>indirect input</strong></th><th><strong>indirect output</strong></th><th><strong>test supplies</strong></th><th><strong>e.g.</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Dummy</strong></td><td>fill a parameter or attribute</td><td>never called</td><td>never called</td><td>nothing</td><td><code>nil</code>, “ignored”</td></tr>
+<tr><td><strong>Stub</strong></td><td>verify indirect <em>inputs</em></td><td><strong>injects</strong></td><td>ignores</td><td>inputs</td><td>canned reply, error</td></tr>
+<tr><td><strong>Spy</strong></td><td>verify indirect <em>outputs</em></td><td>optional</td><td><strong>captures</strong> for later</td><td>inputs (opt.)</td><td>call log</td></tr>
+<tr><td><strong>Mock</strong></td><td>verify indirect <em>outputs</em></td><td>optional</td><td><strong>verifies</strong> vs expectations</td><td>outputs + inputs (opt.)</td><td>expected calls</td></tr>
+<tr><td><strong>Fake</strong></td><td>run tests that can’t run, or faster</td><td>no</td><td>uses them</td><td>nothing</td><td>in-memory database</td></tr>
+</tbody>
+</table></p>
+<p>Fowler: only mocks <em>insist</em> on behaviour verification; the others can, and usually do, verify state.</p>
+</section>
+<section class="sheet-section">
+<h2>Variations</h2>
+<ul>
+<li><strong>Stub</strong>: <em>Responder</em> (valid inputs, happy path) · <em>Saboteur</em> (errors,  exceptions) · <em>Temporary Test Stub</em> (the DOC is not written yet) · <em>Entity
+ Chain Snipping</em> (one object replaces a network of them).</li>
+<li><strong>Spy</strong>: exposes its log through a <em>Retrieval Interface</em>. <strong>Mock</strong>: an  unexpected call or wrong argument fails the test <em>immediately</em>, so the test may need  no assertion; <em>strict</em> also fails on out-of-order calls, <em>lenient</em> (“nice”)  tolerates them.</li>
+<li><strong>Fake</strong>: Fake Database (not a database at all) · In-Memory Database (a real one, in  RAM) · Fake Web Service · Fake Service Layer.</li>
+<li><strong>Dummy</strong> should throw if called; a <em>Null Object</em> <em>is</em> called and does  nothing.</li>
+<li>Built by hand, <em>dynamically generated</em> at run time (jMock) or <em>statically
+ generated</em> as source compiled with the tests. <em>Hard-coded</em> (fixed when written) or  <em>configurable</em> (programmed by the test). <em>Self Shunt</em>: the test class itself is  the double.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>One protocol, five doubles (Swift Testing)</h2>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">protocol</span> <span class="hljs-title class_">Mailer</span> { <span class="hljs-keyword">func</span> <span class="hljs-title function_">send</span>(<span class="hljs-params">to</span>: <span class="hljs-type">String</span>) -&gt; <span class="hljs-type">Bool</span> }
+
+<span class="hljs-keyword">struct</span> <span class="hljs-title class_">DummyMailer</span>: <span class="hljs-title class_ inherited__">Mailer</span> {          <span class="hljs-comment">// never to be called</span>
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">send</span>(<span class="hljs-params">to</span>: <span class="hljs-type">String</span>) -&gt; <span class="hljs-type">Bool</span> {
+    <span class="hljs-type">Issue</span>.record(<span class="hljs-string">&quot;dummy called&quot;</span>); <span class="hljs-keyword">return</span> <span class="hljs-literal">false</span> } }
+<span class="hljs-keyword">struct</span> <span class="hljs-title class_">StubMailer</span>: <span class="hljs-title class_ inherited__">Mailer</span> {           <span class="hljs-comment">// control point</span>
+  <span class="hljs-keyword">var</span> result: <span class="hljs-type">Bool</span>
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">send</span>(<span class="hljs-params">to</span>: <span class="hljs-type">String</span>) -&gt; <span class="hljs-type">Bool</span> { result } }
+<span class="hljs-keyword">final</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">SpyMailer</span>: <span class="hljs-title class_ inherited__">Mailer</span> {       <span class="hljs-comment">// observation point</span>
+  <span class="hljs-keyword">private(set)</span> <span class="hljs-keyword">var</span> sent: [<span class="hljs-type">String</span>] <span class="hljs-operator">=</span> []
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">send</span>(<span class="hljs-params">to</span>: <span class="hljs-type">String</span>) -&gt; <span class="hljs-type">Bool</span> { sent.append(to); <span class="hljs-keyword">return</span> <span class="hljs-literal">true</span> } }
+<span class="hljs-keyword">final</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">MockMailer</span>: <span class="hljs-title class_ inherited__">Mailer</span> {      <span class="hljs-comment">// strict: order counts</span>
+  <span class="hljs-keyword">private</span> <span class="hljs-keyword">var</span> expected: [<span class="hljs-type">String</span>]
+  <span class="hljs-keyword">init</span>(<span class="hljs-params">expect</span>: [<span class="hljs-type">String</span>]) { expected <span class="hljs-operator">=</span> expect }
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">send</span>(<span class="hljs-params">to</span>: <span class="hljs-type">String</span>) -&gt; <span class="hljs-type">Bool</span> {
+    <span class="hljs-keyword">guard</span> expected.first <span class="hljs-operator">==</span> to <span class="hljs-keyword">else</span> {   <span class="hljs-comment">// fails AT the call</span>
+      <span class="hljs-type">Issue</span>.record(<span class="hljs-string">&quot;unexpected send(to: <span class="hljs-subst">\(to)</span>)&quot;</span>); <span class="hljs-keyword">return</span> <span class="hljs-literal">false</span> }
+    expected.removeFirst(); <span class="hljs-keyword">return</span> <span class="hljs-literal">true</span> }
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">verify</span>() { #expect(expected.isEmpty) } }  <span class="hljs-comment">// none missing</span>
+<span class="hljs-keyword">final</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">FakeMailer</span>: <span class="hljs-title class_ inherited__">Mailer</span> {      <span class="hljs-comment">// works, no SMTP</span>
+  <span class="hljs-keyword">private(set)</span> <span class="hljs-keyword">var</span> outbox: [<span class="hljs-type">String</span>] <span class="hljs-operator">=</span> []
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">send</span>(<span class="hljs-params">to</span>: <span class="hljs-type">String</span>) -&gt; <span class="hljs-type">Bool</span> {
+    <span class="hljs-keyword">guard</span> to.contains(<span class="hljs-string">&quot;@&quot;</span>) <span class="hljs-keyword">else</span> { <span class="hljs-keyword">return</span> <span class="hljs-literal">false</span> }
+    outbox.append(to); <span class="hljs-keyword">return</span> <span class="hljs-literal">true</span> } }</code></pre>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-meta">@Test</span> <span class="hljs-keyword">func</span> <span class="hljs-title function_">failedMailShowsError</span>() {     <span class="hljs-comment">// STATE</span>
+  <span class="hljs-keyword">let</span> sut <span class="hljs-operator">=</span> <span class="hljs-type">Signup</span>(mailer: <span class="hljs-type">StubMailer</span>(result: <span class="hljs-literal">false</span>))
+  sut.register(<span class="hljs-string">&quot;ada@x.io&quot;</span>)
+  #expect(sut.state <span class="hljs-operator">==</span> .emailFailed) }
+<span class="hljs-meta">@Test</span> <span class="hljs-keyword">func</span> <span class="hljs-title function_">sendsWelcomeOnce</span>() {         <span class="hljs-comment">// BEHAVIOUR</span>
+  <span class="hljs-keyword">let</span> spy <span class="hljs-operator">=</span> <span class="hljs-type">SpyMailer</span>()
+  <span class="hljs-type">Signup</span>(mailer: spy).register(<span class="hljs-string">&quot;ada@x.io&quot;</span>)
+  #expect(spy.sent <span class="hljs-operator">==</span> [<span class="hljs-string">&quot;ada@x.io&quot;</span>]) }</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Classical vs mockist (Fowler)</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th><strong>classical (“Detroit”)</strong></th><th><strong>mockist (“London”)</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>doubles</td><td>real objects; a double where awkward (the mail service)</td><td>a mock for every object with interesting behaviour</td></tr>
+<tr><td>verifies</td><td>state, mostly</td><td>behaviour — the calls</td></tr>
+<tr><td>a bug fails</td><td>its tests — and client tests can fail too</td><td>only tests whose SUT holds it</td></tr>
+<tr><td>coupled to</td><td>the final state</td><td>the implementation: changed calls to collaborators break tests</td></tr>
+<tr><td>drives</td><td>—</td><td>outside-in, need-driven; role interfaces</td></tr>
+</tbody>
+</table></p>
+<p>Fowler stays classical. Behaviour verification fits where state cannot show it — a cache hit vs miss. Google (<em>SE at Google</em> ch. 13): real implementation first, then a fake; interaction-test only <em>state-changing</em> calls (<code>sendEmail</code>, <code>saveRecord</code>); overuse gives <em>change-detector tests</em>.</p>
+</section>
+<section class="sheet-section">
+<h2>Rules — <em>Mock Roles, not Objects</em> (2004)</h2>
+<p>“Mock Objects is misnamed”: it is a way to discover <em>roles</em> (interfaces).</p>
+<ul>
+<li><strong>Only mock types you own</strong> — wrap runtime / library types in thin wrappers.</li>
+<li><strong>Specify as little as possible</strong> — over-specified tests are brittle; a stub is an  expectation that need not occur. Say explicitly what must <em>not</em> happen.</li>
+<li>No mocks for <em>boundary objects</em> (data, values, calculations): assert returns. No  behaviour in mocks; mock immediate neighbours only; too many mocks = object too large.</li>
+<li>An immediate failure (mock) beats a post-hoc one (spy): the trace is at the bad call.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Swift: doubles are generated, not conjured</h2>
+<p>OCMock: mock frameworks “depend heavily on access to the language runtime, and Swift only offers extremely limited access” — it mocks only <code>NSObject</code> subclasses, from Objective-C tests. So Swift tools emit source for the compiler (a codegen step, or an SE-0389 peer macro) — Meszaros’ <em>statically generated</em> doubles. 
+<table class="sheet-table">
+<thead>
+<tr><th><strong>tool</strong></th><th><strong>how</strong></th><th><strong>generates</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>Mockolo</td><td><code>/// @mockable</code>, CLI</td><td><code>FooMock</code>: <code>…CallCount</code> + <code>…Handler</code></td></tr>
+<tr><td>Cuckoo</td><td>build plugin</td><td><code>MockFoo</code>; <code>stub</code>/<code>verify</code>; unstubbed call = error</td></tr>
+<tr><td>Sourcery</td><td><code>AutoMockable</code></td><td><code>FooMock</code>: <code>…Called</code>, <code>…ReturnValue</code></td></tr>
+<tr><td>Mockable</td><td><code>@Mockable</code> macro</td><td><code>MockFoo</code>; <code>given</code>/<code>verify</code>; unstubbed = fatal</td></tr>
+<tr><td>Spyable</td><td><code>@Spyable</code> macro</td><td><code>FooSpy</code>: <code>…CallsCount</code>, <code>…Closure</code></td></tr>
+<tr><td>swift-dependencies</td><td><code>@DependencyClient</code></td><td>closures that fail the test until overridden</td></tr>
+</tbody>
+</table></p>
+<p><strong>Names lie.</strong> Mockito’s <code>mock()</code> “will remember all interactions” and is verified <em>after</em> — a Meszaros spy; Mockito’s and Cuckoo’s <em>spy</em> runs real code (a partial mock). <em>Strict</em> in OCMock: an unexpected call fails; in Meszaros every mock does that, and <em>strict</em> adds order.</p>
+</section>
+<section class="sheet-section">
+<h2>On Apple platforms</h2>
+<ul>
+<li>Fakes: SwiftData <code>isStoredInMemoryOnly: true</code> (iOS 17); Core Data store URL  <code>/dev/null</code> = SQLite in memory (WWDC18) — keep one on-disk test. A fake needs  <em>contract tests</em> against the real thing.</li>
+<li>A <code>Sendable</code> class is <code>final</code> with only immutable sendable properties: put a  spy’s log in a <code>Mutex</code> (Swift 6.0, iOS 18) or make it <code>@MainActor</code>.</li>
+<li>Swift Testing’s <code>confirmation(expectedCount:)</code> counts callbacks: <code>0</code> = must never  happen; ranges from Swift 6.1.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">Before Swift 6.4, <code>XCTFail</code> in a <code>@Test</code> (or <code>#expect</code> in an  <code>XCTestCase</code>) was silently ignored; 6.4’s <em>limited</em> interop still only  <em>warns</em> on the first, <em>complete</em> fails.</li>
+<li class="trap"><code>fatalError</code> in a dummy crashes the test process, not one test; exit tests (6.2)  don’t run on iOS.</li>
+<li class="trap">Stub returns exactly what you assert: you tested the stub.</li>
+</ul>
+<p><strong>Dummy <em>fills</em> · Stub <em>feeds</em> · Spy <em>notes</em> · Mock <em>judges</em> · Fake
+<em>works</em>.</strong></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> Testing fundamentals · Testable design —
+DI, seams &amp; legacy code · XCTest &amp; Swift Testing · Async &amp; network testing · Testing ViewModels,
+Coordinators, UI &amp; snapshots · Flaky tests · CI · coverage · TDD · Dependency injection · Macros
+&amp; result builders · Swift 6 · strict concurrency &amp; data-race safety</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=testing" title="area">testing</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=pattern" title="kind">pattern</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=general" title="platform">general</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=testing" title="topic">testing</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=patterns" title="topic">patterns</a></li><li class="sheet-tag"><a href="/folios.html?tag=test-double">test-double</a></li><li class="sheet-tag"><a href="/folios.html?tag=dummy">dummy</a></li><li class="sheet-tag"><a href="/folios.html?tag=stub">stub</a></li><li class="sheet-tag"><a href="/folios.html?tag=spy">spy</a></li><li class="sheet-tag"><a href="/folios.html?tag=mock">mock</a></li><li class="sheet-tag"><a href="/folios.html?tag=fake">fake</a></li><li class="sheet-tag"><a href="/folios.html?tag=state-verification">state-verification</a></li><li class="sheet-tag"><a href="/folios.html?tag=behaviour-verification">behaviour-verification</a></li><li class="sheet-tag"><a href="/folios.html?tag=classicist-vs-mockist">classicist-vs-mockist</a></li><li class="sheet-tag"><a href="/folios.html?tag=meszaros">meszaros</a></li><li class="sheet-tag"><a href="/folios.html?tag=depended-on-component">depended-on-component</a></li><li class="sheet-tag"><a href="/folios.html?tag=sut">sut</a></li><li class="sheet-tag"><a href="/folios.html?tag=swift-testing">swift-testing</a></li><li class="sheet-tag"><a href="/folios.html?tag=swift-macros">swift-macros</a></li><li class="sheet-tag"><a href="/folios.html?tag=swift-dependencies">swift-dependencies</a></li><li class="sheet-tag"><a href="/folios.html?tag=mutex">mutex</a></li><li class="sheet-tag"><a href="/folios.html?tag=mock-codegen">mock-codegen</a></li><li class="sheet-tag"><a href="/folios.html?tag=over-mocking">over-mocking</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=testing%2Ftest-doubles.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/263">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

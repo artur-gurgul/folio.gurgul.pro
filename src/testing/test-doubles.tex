@@ -1,0 +1,276 @@
+% test-doubles.tex — Meszaros' five doubles by indirect input / output, state vs behaviour
+% verification, classical vs mockist, the rules from "Mock Roles, not Objects", what Swift mock
+% generators and macros produce and what their names mean, fakes on Apple platforms, Sendable spies.
+% Sources (checked 2026-10-09):
+%   xunitpatterns.com: Mocks, Fakes, Stubs and Dummies (role table: purpose, behaviour, indirect
+%     inputs / outputs, values supplied by the test, examples) · Test Stub (control point; Responder,
+%     Saboteur, Temporary Test Stub, Entity Chain Snipping) · Test Spy (observation point; Retrieval
+%     Interface) · Mock Object (fails at the unexpected call, test needs no assertion; strict = order,
+%     lenient / "nice") · Fake Object (much lighter implementation; not a control point; Fake
+%     Database, In-Memory Database, Fake Web Service, Fake Service Layer) · Dummy Object (should
+%     throw if called; not a Null Object) · Using Test Doubles (hand-built, dynamically / statically
+%     generated; hard-coded vs configurable) · Hard-Coded Test Double (Self Shunt)
+%   martinfowler.com/articles/mocksArentStubs.html (2004, rev. 2007: only mocks insist on behaviour
+%     verification; classical vs mockist; "Detroit" / "London"; mail-service and cache examples;
+%     test isolation; coupling to implementation; outside-in) · martinfowler.com/bliki/TestDouble.html
+%     (2006; "think stunt double"; the five definitions)
+%   jmock.org/oopsla2004.pdf (Freeman, Pryce, Mackinnon, Walnes, "Mock Roles, not Objects": mock
+%     objects is misnamed — role discovery; only mock types you own; be explicit about what should
+%     not happen; specify as little as possible; no mocks for boundary objects; don't add behaviour;
+%     immediate neighbours; too many mocks; objects created inside; jMock stub = an expectation that
+%     need not occur; post-hoc vs immediate failure) · Endo-Testing (Mackinnon, Freeman, Craig, XP2000)
+%   abseil.io/resources/swe-book/html/ch13.html (Software Engineering at Google ch. 13: real
+%     implementation first, then a fake; fidelity; the owner writes the fake + contract tests; state
+%     over interaction testing; interaction-test only state-changing functions; change-detector tests)
+%   ocmock.org/swift (runtime access; NSObject subclasses only; tests in Objective-C) ·
+%     ocmock.org/reference (nice vs strict; partial mock = dynamic subclass) · site.mockito.org javadoc
+%     (a mock remembers all interactions; null / 0 / empty defaults; spy calls real methods; partial
+%     mocks once thought a smell) · github.com/mockito/mockito release v5.0.0 (inline mock maker)
+%   github.com: uber/mockolo (/// @mockable, SwiftSyntax, FooMock, CallCount + Handler, SPM plugin) ·
+%     Brightify/Cuckoo (MockFoo, build plugin, protocols + classes, no struct / final; unstubbed call
+%     = error; spy runs real code) · krzysztofzablocki.github.io/Sourcery/mocks.html (AutoMockable) ·
+%     Kolos65/Mockable (@Mockable peer macro, MOCKING flag, given / when / verify, fatal error when
+%     unstubbed unless relaxed) · Matejkob/swift-spyable (@Spyable, FooSpy) · pointfreeco/
+%     swift-dependencies DependenciesMacros (@DependencyClient: unimplemented endpoints fail the test)
+%   swift-evolution: SE-0389 (attached macros, Swift 5.9) · SE-0433 (Mutex, Swift 6.0) · testing/
+%     ST-0008 (exit tests, Swift 6.2, no iOS) · testing/ST-0021 (XCTest / Swift Testing failures
+%     silently ignored across frameworks; none / limited / complete / strict; Swift 6.4) ·
+%     swiftlang/swift-testing Confirmation.swift (expectedCount 0 = never; range form Swift 6.1)
+%   developer.apple.com: documentation/swift/sendable (Sendable class rules; @MainActor; @unchecked) ·
+%     synchronization/mutex (iOS 18, macOS 15) · swiftdata ModelConfiguration.isStoredInMemoryOnly
+%     (iOS 17) · videos wwdc2018/224 (Core Data store URL /dev/null runs in memory; keep one on-disk
+%     test) · wwdc2024/10179 (Swift Testing, Xcode 16) · wwdc2026/267 (Xcode 27 turns interop on)
+% @labels: area=testing kind=pattern platform=general topic=testing,patterns discussion=263
+% @tags: test-double, dummy, stub, spy, mock, fake, state-verification, behaviour-verification, classicist-vs-mockist, meszaros, depended-on-component, sut, swift-testing, swift-macros, swift-dependencies, mutex, mock-codegen, over-mocking
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,init,import,
+    if,else,return,guard,self,nil,try,await,async,throws,private,some,
+    true,false,Void,String,Bool,Int},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]"}
+
+\tikzset{
+  db/.style={box, font=\small\bfseries},
+  lbl/.style={font=\scriptsize, text=black!80, inner sep=1pt, align=center},
+  ann/.style={font=\scriptsize, text=black!80, inner sep=1pt, anchor=west, align=left},
+  yr/.style={font=\scriptsize\bfseries, text=sheetBlue, anchor=east, inner sep=1pt},
+  ev/.style={font=\scriptsize, text=black!85, anchor=west, inner sep=1pt, align=left},
+  hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Test doubles — Dummy · Stub · Spy · Mock · Fake}{testing · folio}
+
+\oneliner{A \textbf{test double} (Gerard Meszaros, \emph{xUnit Test Patterns}, 2007; Fowler:
+``think stunt double'') replaces a \textbf{DOC} (depended-on component) so the \textbf{SUT} can be tested
+alone. The five differ in what they do with the SUT's \textbf{indirect inputs} (what the DOC
+returns or throws) and \textbf{indirect outputs} (the calls the SUT makes): a \textbf{Stub} feeds
+inputs, a \textbf{Spy} records outputs for the test to check, a \textbf{Mock} checks outputs
+itself, a \textbf{Fake} is a lighter working implementation, a \textbf{Dummy} is never called.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ===== the four flows
+  \node[db, font=\small, minimum width=15mm, minimum height=19mm] (t) at (0.8,1.45) {\textbf{Test}\\[1pt]\scriptsize setup\\\scriptsize exercise\\\scriptsize verify};
+  \node[db, minimum width=16mm, minimum height=13mm, fill=sheetBlue!15] (s) at (4.3,1.45) {SUT};
+  \node[db, minimum width=22mm, minimum height=13mm, draw=sheetGrey, fill=black!4] (d) at (8.35,1.45) {test double\\[-1pt]{\scriptsize\mdseries in place of the DOC}};
+  \draw[flow] (1.55,1.8) -- node[lbl, above]{direct input} (3.5,1.8);
+  \draw[flow, draw=sheetBlue] (3.5,1.1) -- node[lbl, below]{direct output} (1.55,1.1);
+  \draw[hot] (7.25,1.8) -- node[lbl, above, text=sheetOrange]{indirect \textbf{input}} (5.1,1.8);
+  \draw[->, thick, sheetGreen!60!black] (5.1,1.1) -- node[lbl, below, text=sheetGreen!45!black]{indirect \textbf{output}} (7.25,1.1);
+  \node[lbl, text=sheetOrange] at (8.35,2.75) {\textbf{control point} $\rightarrow$ \textbf{Stub}};
+  \node[lbl, text=sheetOrange] at (8.35,2.42) {returns or throws what the test chose};
+  \node[lbl, text=sheetGreen!45!black] at (8.35,0.45) {\textbf{observation point} $\rightarrow$ \textbf{Spy}, \textbf{Mock}};
+  \node[lbl, text=sheetGreen!45!black] at (8.35,0.12) {= \textbf{BEHAVIOUR verification}};
+  \node[lbl, text=sheetBlue, align=center] at (2.55,0.45) {\textbf{STATE verification}};
+  \node[lbl, text=sheetBlue, align=center] at (2.55,0.12) {the test asserts result / state};
+  % ===== the two that are neither
+  \node[db, dashed, draw=sheetGrey, fill=white, minimum width=13mm, minimum height=5mm, font=\scriptsize\bfseries] (dum) at (0.65,-0.45) {Dummy};
+  \node[ann] at (1.4,-0.45) {fills a parameter;\\never called — fail if it is};
+  \node[db, draw=sheetBrown, fill=sheetBrown!8, minimum width=13mm, minimum height=5mm, font=\scriptsize\bfseries] (fk) at (4.6,-0.45) {Fake};
+  \node[ann] at (5.35,-0.45) {really works, lighter (in-memory DB); the test\\uses it as neither control nor observation point};
+  \draw[sheetGrey!50] (10.45,3.0) -- (10.45,-0.85);
+  % ===== timeline
+  \node[hd] at (10.55,2.8) {Where the words come from};
+  \draw[thick, sheetGrey] (11.3,2.45) -- (11.3,-0.75);
+  \foreach \y/\yy/\t in {
+      2.3/2000/{Endo-Testing (XP2000): \emph{mock objects}},
+      1.9/2004/{Mock Roles, not Objects + jMock (OOPSLA)},
+      1.5/2004/{Fowler, \emph{Mocks Aren't Stubs} (rev.\ 2007)},
+      1.1/2006/{Fowler's bliki adopts ``Test Double''},
+      0.7/2007/{Meszaros, \emph{xUnit Test Patterns}: the five},
+      0.3/2023/{Swift 5.9: attached macros (SE-0389)},
+      -0.1/2024/{Swift 6.0 \ct{Mutex} · Swift Testing (Xcode 16)},
+      -0.5/2026/{Swift 6.4 / Xcode 27: XCTest $\leftrightarrow$ Swift Testing\\[-1pt]interop (ST-0021)}} {
+    \fill[sheetBlue] (11.3,\y) circle (0.6mm);
+    \node[yr] at (11.2,\y) {\yy};
+    \node[ev] at (11.42,\y) {\t}; }
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Meszaros' roles}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{7.5mm}>{\raggedright\arraybackslash}p{15.5mm}>{\raggedright\arraybackslash}p{10mm}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{10.5mm}>{\raggedright\arraybackslash}p{12mm}@{}}
+\toprule
+& \textbf{purpose} & \textbf{indirect input} & \textbf{indirect output} & \textbf{test supplies} & \textbf{e.g.}\\
+\midrule
+\textbf{Dummy} & fill a parameter or attribute & never called & never called & nothing & \ct{nil}, ``ignored''\\
+\textbf{Stub} & verify indirect \emph{inputs} & \textbf{injects} & ignores & inputs & canned reply, error\\
+\textbf{Spy} & verify indirect \emph{outputs} & optional & \textbf{captures} for later & inputs (opt.) & call log\\
+\textbf{Mock} & verify indirect \emph{outputs} & optional & \textbf{verifies} vs expectations & outputs + inputs (opt.) & expected calls\\
+\textbf{Fake} & run tests that can't run, or faster & no & uses them & nothing & in-memory database\\
+\bottomrule
+\end{tabular}}\par
+Fowler: only mocks \emph{insist} on behaviour verification; the others can, and usually do,
+verify state.
+
+\section{Variations}
+\begin{itemize}
+  \item \textbf{Stub}: \emph{Responder} (valid inputs, happy path) · \emph{Saboteur} (errors,
+        exceptions) · \emph{Temporary Test Stub} (the DOC is not written yet) · \emph{Entity
+        Chain Snipping} (one object replaces a network of them).
+  \item \textbf{Spy}: exposes its log through a \emph{Retrieval Interface}. \textbf{Mock}: an
+        unexpected call or wrong argument fails the test \emph{immediately}, so the test may need
+        no assertion; \emph{strict} also fails on out-of-order calls, \emph{lenient} (``nice'')
+        tolerates them.
+  \item \textbf{Fake}: Fake Database (not a database at all) · In-Memory Database (a real one, in
+        RAM) · Fake Web Service · Fake Service Layer.
+  \item \textbf{Dummy} should throw if called; a \emph{Null Object} \emph{is} called and does
+        nothing.
+  \item Built by hand, \emph{dynamically generated} at run time (jMock) or \emph{statically
+        generated} as source compiled with the tests. \emph{Hard-coded} (fixed when written) or
+        \emph{configurable} (programmed by the test). \emph{Self Shunt}: the test class itself is
+        the double.
+\end{itemize}
+
+\section{One protocol, five doubles (Swift Testing)}
+\begin{lstlisting}[language=SwiftSheet]
+protocol Mailer { func send(to: String) -> Bool }
+
+struct DummyMailer: Mailer {          // never to be called
+  func send(to: String) -> Bool {
+    Issue.record("dummy called"); return false } }
+struct StubMailer: Mailer {           // control point
+  var result: Bool
+  func send(to: String) -> Bool { result } }
+final class SpyMailer: Mailer {       // observation point
+  private(set) var sent: [String] = []
+  func send(to: String) -> Bool { sent.append(to); return true } }
+final class MockMailer: Mailer {      // strict: order counts
+  private var expected: [String]
+  init(expect: [String]) { expected = expect }
+  func send(to: String) -> Bool {
+    guard expected.first == to else {   // fails AT the call
+      Issue.record("unexpected send(to: \(to))"); return false }
+    expected.removeFirst(); return true }
+  func verify() { #expect(expected.isEmpty) } }  // none missing
+final class FakeMailer: Mailer {      // works, no SMTP
+  private(set) var outbox: [String] = []
+  func send(to: String) -> Bool {
+    guard to.contains("@") else { return false }
+    outbox.append(to); return true } }
+\end{lstlisting}
+\begin{lstlisting}[language=SwiftSheet]
+@Test func failedMailShowsError() {     // STATE
+  let sut = Signup(mailer: StubMailer(result: false))
+  sut.register("ada@x.io")
+  #expect(sut.state == .emailFailed) }
+@Test func sendsWelcomeOnce() {         // BEHAVIOUR
+  let spy = SpyMailer()
+  Signup(mailer: spy).register("ada@x.io")
+  #expect(spy.sent == ["ada@x.io"]) }
+\end{lstlisting}
+
+\columnbreak
+
+\section{Classical vs mockist (Fowler)}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{32mm}>{\raggedright\arraybackslash}p{33mm}@{}}
+\toprule
+& \textbf{classical (``Detroit'')} & \textbf{mockist (``London'')}\\
+\midrule
+doubles & real objects; a double where awkward (the mail service) & a mock for every object with interesting behaviour\\
+verifies & state, mostly & behaviour — the calls\\
+a bug fails & its tests — and client tests can fail too & only tests whose SUT holds it\\
+coupled to & the final state & the implementation: changed calls to collaborators break tests\\
+drives & — & outside-in, need-driven; role interfaces\\
+\bottomrule
+\end{tabular}}\par
+Fowler stays classical. Behaviour verification fits where state cannot show it — a cache hit vs
+miss. Google (\emph{SE at Google} ch.\,13): real implementation first, then a fake; interaction-test
+only \emph{state-changing} calls (\ct{sendEmail}, \ct{saveRecord}); overuse gives
+\emph{change-detector tests}.
+
+\section{Rules — \emph{Mock Roles, not Objects} (2004)}
+``Mock Objects is misnamed'': it is a way to discover \emph{roles} (interfaces).
+\begin{itemize}
+  \item \textbf{Only mock types you own} — wrap runtime / library types in thin wrappers.
+  \item \textbf{Specify as little as possible} — over-specified tests are brittle; a stub is an
+        expectation that need not occur. Say explicitly what must \emph{not} happen.
+  \item No mocks for \emph{boundary objects} (data, values, calculations): assert returns. No
+        behaviour in mocks; mock immediate neighbours only; too many mocks = object too large.
+  \item An immediate failure (mock) beats a post-hoc one (spy): the trace is at the bad call.
+\end{itemize}
+
+\section{Swift: doubles are generated, not conjured}
+OCMock: mock frameworks ``depend heavily on access to the language runtime, and Swift only offers
+extremely limited access'' — it mocks only \ct{NSObject} subclasses, from Objective-C tests. So
+Swift tools emit source for the compiler (a codegen step, or an SE-0389 peer macro) — Meszaros'
+\emph{statically generated} doubles.
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{18mm}>{\raggedright\arraybackslash}p{21mm}>{\raggedright\arraybackslash}p{37mm}@{}}
+\toprule
+\textbf{tool} & \textbf{how} & \textbf{generates}\\
+\midrule
+Mockolo & \ct{/// @mockable}, CLI & \ct{FooMock}: \ct{…CallCount} + \ct{…Handler}\\
+Cuckoo & build plugin & \ct{MockFoo}; \ct{stub}/\ct{verify}; unstubbed call = error\\
+Sourcery & \ct{AutoMockable} & \ct{FooMock}: \ct{…Called}, \ct{…ReturnValue}\\
+Mockable & \ct{@Mockable} macro & \ct{MockFoo}; \ct{given}/\ct{verify}; unstubbed = fatal\\
+Spyable & \ct{@Spyable} macro & \ct{FooSpy}: \ct{…CallsCount}, \ct{…Closure}\\
+swift-dependencies & \ct{@DependencyClient} & closures that fail the test until overridden\\
+\bottomrule
+\end{tabular}}\par
+\textbf{Names lie.} Mockito's \ct{mock()} ``will remember all interactions'' and is verified
+\emph{after} — a Meszaros spy; Mockito's and Cuckoo's \emph{spy} runs real code (a partial mock).
+\emph{Strict} in OCMock: an unexpected call fails; in Meszaros every mock does that, and
+\emph{strict} adds order.
+
+\section{On Apple platforms}
+\begin{itemize}
+  \item Fakes: SwiftData \ct{isStoredInMemoryOnly: true} (iOS 17); Core Data store URL
+        \ct{/dev/null} = SQLite in memory (WWDC18) — keep one on-disk test. A fake needs
+        \emph{contract tests} against the real thing.
+  \item A \ct{Sendable} class is \ct{final} with only immutable sendable properties: put a
+        spy's log in a \ct{Mutex} (Swift 6.0, iOS 18) or make it \ct{@MainActor}.
+  \item Swift Testing's \ct{confirmation(expectedCount:)} counts callbacks: \ct{0} = must never
+        happen; ranges from Swift 6.1.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Before Swift 6.4, \ct{XCTFail} in a \ct{@Test} (or \ct{\#expect} in an
+        \ct{XCTestCase}) was silently ignored; 6.4's \emph{limited} interop still only
+        \emph{warns} on the first, \emph{complete} fails.}
+  \trap{\ct{fatalError} in a dummy crashes the test process, not one test; exit tests (6.2)
+        don't run on iOS.}
+  \trap{Stub returns exactly what you assert: you tested the stub.}
+\end{itemize}
+\textbf{Dummy \emph{fills} · Stub \emph{feeds} · Spy \emph{notes} · Mock \emph{judges} · Fake
+\emph{works}.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Testing fundamentals · Testable design —
+DI, seams \& legacy code · XCTest \& Swift Testing · Async \& network testing · Testing ViewModels,
+Coordinators, UI \& snapshots · Flaky tests · CI · coverage · TDD · Dependency injection · Macros
+\& result builders · Swift 6 · strict concurrency \& data-race safety}
+
+\end{document}

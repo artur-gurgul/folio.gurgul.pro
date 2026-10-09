@@ -1,0 +1,138 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Testing ViewModels, Coordinators, UI &amp; snapshots — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/testing/testing-viewmodels-ui-snapshot.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">262</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area current" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Testing ViewModels, Coordinators, UI &amp; snapshots</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">testing · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Logic lives in a <strong>ViewModel</strong> and a <strong>router</strong> with injected dependencies,
+tested in-process in milliseconds; <strong>snapshots</strong> pin what a view looks like (one simulator,
+one reference file); <strong>UI tests</strong> drive the real app from <strong>another process</strong> through
+the accessibility tree — few, slow, addressed by <strong>identifier</strong>.</p>
+<p class="sheet-tools"><a class="sheet-download" href="testing-viewmodels-ui-snapshot.pdf" download>Download PDF</a> <a href="testing-viewmodels-ui-snapshot.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/testing/testing-viewmodels-ui-snapshot.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="testing-viewmodels-ui-snapshot-fig1.svg" width="625" height="157" class="wide" alt="Testing ViewModels, Coordinators, UI &amp; snapshots — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>ViewModel tests</h2>
+<ul>
+<li>A SwiftUI <code>View</code> is a value; what it renders is not readable through public API (third-party  ViewInspector reflects on the <code>View</code> structs). So: thin View, logic in a VM. Test =  <strong>construct with doubles → call an input → assert state</strong>.</li>
+<li>State as an <strong><code>Equatable</code> enum</strong> (<code>idle · loading · loaded · error</code>) and display  strings computed in the VM (<code>priceText == &quot;$10.00&quot;</code>); <code>#expect(a == b)</code> prints both  sides on failure. Inject what varies: API, clock, <code>Date</code>, UUIDs, locale.</li>
+<li><strong>Isolation:</strong> XCTest runs synchronous test methods on the main actor; Swift Testing runs  every test on an arbitrary task → a <code>@MainActor</code> VM needs a <code>@MainActor</code> test or suite.</li>
+<li><strong>Sequences.</strong> <code>ObservableObject</code>: <code>vm.$state.sink{seen.append($0)}</code> gets the current  value, then each new one — from <code>willSet</code>, so <code>vm.state</code> read inside the sink is still  the <em>old</em> value. <code>@Observable</code> (Swift 5.9, iOS 17) has no publisher:  <code>withObservationTracking</code> calls <code>onChange</code> once, on the first change — re-register per  change. <code>Observations{ vm.state }</code> (Swift 6.2, iOS 26) is an <code>AsyncSequence</code> of  <em>transactions</em>: mutations up to the next suspension point coalesce, so values can be  skipped — not a recorder of every state.</li>
+<li>To catch <code>.loading</code>, <strong>hold the double</strong>: a stub that suspends until the test  releases it; assert mid-flight, then release.</li>
+<li>Big state? <code>assertSnapshot(of: vm.state, as: .dump)</code> keeps a reviewed text reference  instead of a page of hand-written expectations.</li>
+</ul>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-meta">@MainActor</span> <span class="hljs-meta">@Suite</span> <span class="hljs-keyword">struct</span> <span class="hljs-title class_">FeedViewModelTests</span> {
+  <span class="hljs-meta">@Test</span> <span class="hljs-keyword">func</span> <span class="hljs-title function_">offline_showsError</span>() <span class="hljs-keyword">async</span> {
+    <span class="hljs-keyword">let</span> vm <span class="hljs-operator">=</span> <span class="hljs-type">FeedViewModel</span>(api: <span class="hljs-type">StubFeedAPI</span>(.failure(<span class="hljs-type">URLError</span>(.notConnectedToInternet))))
+    <span class="hljs-keyword">await</span> vm.load()
+    #expect(vm.state <span class="hljs-operator">==</span> .error(<span class="hljs-string">&quot;Offline&quot;</span>)) }
+  <span class="hljs-meta">@Test</span> <span class="hljs-keyword">func</span> <span class="hljs-title function_">loading_whileInFlight</span>() <span class="hljs-keyword">async</span> {
+    <span class="hljs-keyword">let</span> api <span class="hljs-operator">=</span> <span class="hljs-type">GatedFeedAPI</span>()             <span class="hljs-comment">// suspends until release()</span>
+    <span class="hljs-keyword">let</span> vm <span class="hljs-operator">=</span> <span class="hljs-type">FeedViewModel</span>(api: api)
+    <span class="hljs-keyword">let</span> load <span class="hljs-operator">=</span> <span class="hljs-type">Task</span> { <span class="hljs-keyword">await</span> vm.load() }
+    <span class="hljs-keyword">await</span> api.waitUntilCalled()
+    #expect(vm.state <span class="hljs-operator">==</span> .loading)
+    api.release(with: [.sample]); <span class="hljs-keyword">await</span> load.value
+    #expect(vm.state <span class="hljs-operator">==</span> .loaded([.sample])) } }</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Coordinator / router tests</h2>
+<ul>
+<li>Test the <strong>decision</strong> (which route for which event), never a real <code>push</code>: inject a  <code>Router</code> protocol and let a spy record calls.</li>
+<li>SwiftUI: an <code>@Observable</code> router owns <code>var path: [Route]</code> bound to  <code>NavigationStack(path:)</code> → assert the array. <code>NavigationPath</code> is type-erased —  only <code>count</code>, <code>isEmpty</code>, <code>append</code>, <code>removeLast</code>, <code>codable</code>; elements can’t be  read back (it is <code>Equatable</code>: compare with a path you build).</li>
+<li>Deep links are pure functions URL → <code>[Route]</code>: table-test them with  <code>@Test(arguments:)</code>, one case per URL.</li>
+</ul>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">final</span> <span class="hljs-keyword">class</span> <span class="hljs-title class_">SpyRouter</span>: <span class="hljs-title class_ inherited__">Router</span> {
+  <span class="hljs-keyword">private(set)</span> <span class="hljs-keyword">var</span> shown: [<span class="hljs-type">Route</span>] <span class="hljs-operator">=</span> []
+  <span class="hljs-keyword">func</span> <span class="hljs-title function_">show</span>(<span class="hljs-keyword">_</span> <span class="hljs-params">r</span>: <span class="hljs-type">Route</span>) { shown.append(r) } }
+<span class="hljs-meta">@Test</span> <span class="hljs-keyword">func</span> <span class="hljs-title function_">selectingItem_routesToDetail</span>() {
+  <span class="hljs-keyword">let</span> router <span class="hljs-operator">=</span> <span class="hljs-type">SpyRouter</span>()
+  <span class="hljs-type">FeedCoordinator</span>(router: router).didSelect(<span class="hljs-type">Item</span>(id: <span class="hljs-number">7</span>))
+  #expect(router.shown <span class="hljs-operator">==</span> [.detail(id: <span class="hljs-number">7</span>)]) }   <span class="hljs-comment">// the DECISION</span></code></pre>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">Querying by label: <code>app.buttons[&quot;Log in&quot;]</code> matches the label, passes in English, fails  in a German run. <code>accessibilityIdentifier</code> is “for testing”, never shown or localized.</li>
+<li class="trap"><code>sleep(3)</code>: flaky when short, slow when long — wait for the element or property.</li>
+<li class="trap">A gated stub never released hangs the run — give the suite <code>.timeLimit(.minutes(1))</code>  (minutes are the smallest unit).</li>
+<li class="trap">UI tests on the real backend: nondeterministic, slow, may mutate data — stub by launch env.</li>
+<li class="trap">CI on default <code>.missing</code>: a lost reference is re-recorded, the run fails, the retry  passes → <code>.never</code>. Never commit <code>.all</code>. “Just re-record” approves a regression unseen.</li>
+<li class="trap">Reference from another simulator or OS → fails on CI: pin model, OS, locale, appearance,  text size; fix dates and IDs.</li>
+<li class="trap">An interruption monitor for an <em>expected</em> alert never fires — tap the alert directly.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>XCUITest toolkit (XCUIAutomation)</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>need</strong></th><th><strong>API · fact</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>clean start</td><td><code>launch()</code>: synchronous; <strong>terminates</strong> a running instance; a launch failure halts the test</td></tr>
+<tr><td>resume</td><td><code>activate()</code>: launches if needed, never terminates; reuses the last <code>launch()</code>’s args/env</td></tr>
+<tr><td>configure</td><td><code>launchArguments</code> / <code>launchEnvironment</code> — changed after launch = next launch only; <code>open(url)</code> launches by URL</td></tr>
+<tr><td>find</td><td><code>app.buttons[&quot;id&quot;]</code> matches identifier <strong>or</strong> title, label, value, placeholder; <code>.element</code> fails unless exactly 1 match, <code>.firstMatch</code> stops at the first (faster)</td></tr>
+<tr><td>wait</td><td><code>waitForExistence(timeout:)</code>; Xcode 16: <code>waitForNonExistence</code>, <code>wait(for: \.value, toEqual:, timeout:)</code> → <code>Bool</code> · <code>exists</code> ≠ <code>isHittable</code> (a hit point can be computed)</td></tr>
+<tr><td>alerts</td><td>expected → tap it; <code>addUIInterruptionMonitor</code> runs only when unrelated UI <em>blocks</em> an interaction; LIFO; <code>true</code> = cleared</td></tr>
+<tr><td>state</td><td><code>resetAuthorizationStatus(for:)</code> (iOS 13.4) · <code>XCUIDevice.shared</code> <code>.orientation .appearance .location</code></td></tr>
+<tr><td>a11y</td><td><code>try app.performAccessibilityAudit()</code> (iOS 17): fails the test itself; handler <code>true</code> = ignore; on-screen only · Xcode 27: <code>voiceOverService.moveForward()</code> → speech</td></tr>
+<tr><td>matrix</td><td><code>runsForEachTargetApplicationUIConfiguration = true</code>: appearance × orientation × localization (Xcode 27 launch-test template)</td></tr>
+<tr><td>perf</td><td><code>XCTApplicationLaunchMetric</code> · <code>XCTHitchMetric</code> (iOS 26)</td></tr>
+<tr><td>evidence</td><td><code>XCTAttachment(screenshot:)</code> default <code>.deleteOnSuccess</code>; test plan keeps video + screenshots of <em>failing</em> runs unless “On, and keep all”</td></tr>
+</tbody>
+</table></p>
+<p><strong>Xcode 26 recording</strong>: the record button at the editor edge writes Swift, each line with alternative queries — prefer identifier over index. Report (Xcode 15+): video replay, Automation Explorer at the failure. <strong>Xcode 27</strong>: app-crash severity off / warning / <strong>failure</strong> / fatal per test plan. Swift Testing has <strong>no</strong> UI automation — UI tests stay XCTest.</p>
+<pre class="sheet-code"><code class="hljs language-swift"><span class="hljs-keyword">override</span> <span class="hljs-keyword">func</span> <span class="hljs-title function_">setUpWithError</span>() <span class="hljs-keyword">throws</span> { continueAfterFailure <span class="hljs-operator">=</span> <span class="hljs-literal">false</span> }
+<span class="hljs-meta">@MainActor</span> <span class="hljs-keyword">func</span> <span class="hljs-title function_">test_login_showsWelcome</span>() <span class="hljs-keyword">throws</span> {
+  <span class="hljs-keyword">let</span> app <span class="hljs-operator">=</span> <span class="hljs-type">XCUIApplication</span>()                 <span class="hljs-comment">// the Target Application</span>
+  app.launchArguments <span class="hljs-operator">+=</span> [<span class="hljs-string">&quot;-AppleLanguages&quot;</span>, <span class="hljs-string">&quot;(de)&quot;</span>]
+  app.launchEnvironment[<span class="hljs-string">&quot;STUB_SCENARIO&quot;</span>] <span class="hljs-operator">=</span> <span class="hljs-string">&quot;loggedOut&quot;</span>
+  app.launch()                                <span class="hljs-comment">// args/env read HERE</span>
+  <span class="hljs-type">LoginPage</span>(app: app).logIn(email: <span class="hljs-string">&quot;a@b.co&quot;</span>, password: <span class="hljs-string">&quot;pw&quot;</span>)
+  <span class="hljs-type">XCTAssertTrue</span>(app.staticTexts[<span class="hljs-string">&quot;welcome.title&quot;</span>].waitForExistence(timeout: <span class="hljs-number">5</span>))
+  <span class="hljs-keyword">try</span> app.performAccessibilityAudit() }
+<span class="hljs-comment">// Page Object: one type per screen owns its identifiers + actions</span></code></pre>
+</section>
+<section class="sheet-section">
+<h2>Snapshot tests (swift-snapshot-testing)</h2>
+<ul>
+<li><code>assertSnapshot(of:as:named:record:timeout:)</code> (timeout 5 s). Strategies: <code>.image</code>  (UIView, VC, SwiftUI), <code>.recursiveDescription</code>, <code>.dump</code>, <code>.json</code>, <code>.plist</code>,  <code>.raw</code> (<code>URLRequest</code>); a text reference shows its diff readably in code review.</li>
+<li>SwiftUI layout: <code>.sizeThatFits</code> (default) · <code>.fixed(width:height:)</code> ·  <code>.device(config: .iPhone13)</code>; a config is size + safe area + traits only — newest iPhone  preset <code>iPhone13ProMax</code>. <code>traits:</code> for dark mode / text size;  <code>drawHierarchyInKeyWindow: true</code> to render <code>UIAppearance</code> and visual effects.</li>
+<li><code>precision</code> = share of pixels that must match; <code>perceptualPrecision</code> = how close each  pixel must be (<code>CILabDeltaE</code>); 0.98–0.99 ≈ the human eye. Both default 1.</li>
+<li><code>assertInlineSnapshot</code> writes a text snapshot into the test source, as a trailing closure.</li>
+</ul>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>record</strong></th><th><strong>behaviour</strong> (since 1.17, Jul 2024)</th></tr>
+</thead>
+<tbody>
+<tr><td><code>.missing</code></td><td>default: record only absent references (and fail)</td></tr>
+<tr><td><code>.all</code></td><td>rewrite every reference — every assertion fails</td></tr>
+<tr><td><code>.failed</code></td><td>re-record only failing ones (keeps in-threshold passes untouched)</td></tr>
+<tr><td><code>.never</code></td><td>a missing reference is a failure — <strong>for CI</strong></td></tr>
+</tbody>
+</table></p>
+<p>Set per call (<code>record:</code>), per scope (<code>withSnapshotTesting(record:)</code>), per suite (<code>@Suite(.snapshots(record:))</code>) or per run (<code>SNAPSHOT_TESTING_RECORD=never</code>).</p>
+</section>
+<section class="sheet-section">
+<h2>Which test sees what</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>test</strong></th><th><strong>sees</strong></th><th><strong>breaks on</strong></th><th><strong>misses</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>VM unit</td><td>state, strings</td><td>logic change</td><td>layout, wiring</td></tr>
+<tr><td>router</td><td>routes</td><td>flow change</td><td>real transitions</td></tr>
+<tr><td>snapshot</td><td>pixels / text dump</td><td>any pixel, new OS</td><td>behaviour, taps</td></tr>
+<tr><td>UI (XCUITest)</td><td>a11y tree of the real app</td><td>copy, timing, data</td><td>internals; slow</td></tr>
+</tbody>
+</table></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> Testing fundamentals · Test doubles ·
+Testable design · XCTest &amp; Swift Testing · Async &amp; network testing · Flaky tests, CI, coverage,
+TDD · MVC, MVP, MVVM, MVVM-C · Observation, Combine, cancellables · SwiftUI navigation · SwiftUI
+accessibility &amp; Dynamic Type</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=testing" title="area">testing</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=pattern" title="kind">pattern</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=ios" title="platform">ios</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=testing" title="topic">testing</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=ui" title="topic">ui</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=architecture" title="topic">architecture</a></li><li class="sheet-tag"><a href="/folios.html?tag=viewmodel">viewmodel</a></li><li class="sheet-tag"><a href="/folios.html?tag=coordinator">coordinator</a></li><li class="sheet-tag"><a href="/folios.html?tag=navigationpath">navigationpath</a></li><li class="sheet-tag"><a href="/folios.html?tag=observable">observable</a></li><li class="sheet-tag"><a href="/folios.html?tag=published">published</a></li><li class="sheet-tag"><a href="/folios.html?tag=spy">spy</a></li><li class="sheet-tag"><a href="/folios.html?tag=xcuitest">xcuitest</a></li><li class="sheet-tag"><a href="/folios.html?tag=xcuiapplication">xcuiapplication</a></li><li class="sheet-tag"><a href="/folios.html?tag=xcuiautomation">xcuiautomation</a></li><li class="sheet-tag"><a href="/folios.html?tag=launch-arguments">launch-arguments</a></li><li class="sheet-tag"><a href="/folios.html?tag=page-object">page-object</a></li><li class="sheet-tag"><a href="/folios.html?tag=accessibilityidentifier">accessibilityidentifier</a></li><li class="sheet-tag"><a href="/folios.html?tag=waitforexistence">waitforexistence</a></li><li class="sheet-tag"><a href="/folios.html?tag=performaccessibilityaudit">performaccessibilityaudit</a></li><li class="sheet-tag"><a href="/folios.html?tag=snapshot-testing">snapshot-testing</a></li><li class="sheet-tag"><a href="/folios.html?tag=swift-snapshot-testing">swift-snapshot-testing</a></li><li class="sheet-tag"><a href="/folios.html?tag=record-mode">record-mode</a></li><li class="sheet-tag"><a href="/folios.html?tag=swift-testing">swift-testing</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=testing%2Ftesting-viewmodels-ui-snapshot.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/266">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

@@ -1,0 +1,308 @@
+% testable-design-seams.tex — seams and enabling points (Feathers), the hidden dependencies a Swift
+% type reaches for and what to inject instead, @testable import and the test host, Swift 6
+% concurrency vs test hooks, legacy code: the change algorithm, dependency-breaking techniques,
+% characterization tests, and the designs that make seams cheap.
+% Sources (checked 2026-10-09):
+%   ptgmedia.pearsoncmg.com/images/0131177052/samplechapter/0131177052_ch04.pdf (Feathers, Working
+%     Effectively with Legacy Code, 2004, ch. 4 "The Seam Model": seam and enabling-point definitions;
+%     source the same in production and test; one seam type per build step: preprocessing, link,
+%     object; link enabling point "always outside the program text", make test vs production
+%     obvious; object created and used in the same method = no enabling point, a parameter makes
+%     the argument list one; object seams the best choice in OO, the others "not as explicit",
+%     tests on them hard to maintain, for pervasive dependencies)
+%   ptgmedia.pearsoncmg.com/images/0131177052/samplechapter/0131177052_ch01.pdf (four reasons to
+%     change; refactoring changes structure, optimisation resource usage, both hold functionality
+%     invariant; the three risk questions)
+%   WELC preface p. xvi ("legacy code is simply code without tests") and ch. 2 (the dilemma; the
+%     five-step change algorithm) — quoted via mike-bland.com 2023-08-23, goodreads, agileinaflash;
+%     ch. 3 sensing / separation via reading notes (gist jeremy-w, p. 23); ch. 6 Sprout / Wrap and
+%     ch. 25 technique names via reading notes + agent-rules-books — book itself not online
+%   archive.org/details/working-effectively-with-legacy-code + dl.acm.org/doi/book/10.5555/1050933
+%     (jacket: "a catalog of twenty-four dependency-breaking techniques"; examples Java, C++, C, C#)
+%   artima.com/weblogs/viewpost.jsp?thread=198296 (Savoia 2007, quoting Feathers' five steps for a
+%     characterization test) · michaelfeathers.silvrback.com/characterization-testing (2016-08-08:
+%     actual behaviour, not wished-for; keep the test while a "bug" is unconfirmed; a system in
+%     production "becomes its own specification")
+%   martinfowler.com/bliki/LegacySeam.html (2024-01-04: break dependencies, insert probes, redirect
+%     flow in legacy displacement; enabling point in test code) · /articles/injection.html
+%     (2004-01-23: constructor / setter / interface = type 3 / 2 / 1, PicoContainer / Spring /
+%     Avalon; the locator is asked explicitly; every user depends on the locator; "search the source
+%     code for calls to the locator"; choice "less important than ... separating service
+%     configuration from the use of services") · /bliki/HumbleObject.html (2020-04-29: named by
+%     Meszaros, xUnit Test Patterns; Feathers' humble dialog; MVVM / Passive View)
+%   blog.ploeh.dk 2010 (Seemann: Service Locator is an Anti-Pattern)
+%   destroyallsoftware.com/screencasts/catalog/functional-core-imperative-shell (Bernhardt, 2012-07-12)
+%   developer.apple.com/videos/play/wwdc2017/414 Engineering for Testability (control over inputs,
+%     visibility into outputs, no hidden state; protocols + parameterization; separate side effects;
+%     UIApplication.shared behind a protocol) — via search excerpts + github.com/pbendersky notes
+%   developer.apple.com/videos/play/wwdc2018/417 Testing Tips & Tricks (protocol of the members you
+%     use + extension conformance + init parameter, compiler-enforced; NotificationCenter instances;
+%     XCTest waits for didFinishLaunching, skip non-essential work via a launch argument)
+%   developer.apple.com/videos/play/wwdc2025/268 Embracing Swift concurrency (main-actor mode "enabled
+%     by default for new app projects created with Xcode 26")
+%   github.com/swiftlang/swift-book TSPL.docc/LanguageGuide/AccessControl.md (@testable + module
+%     compiled with testing enabled → any internal entity) · swift-evolution SE-0117 (@testable may
+%     subclass / override non-final internal and public) · SE-0412 (Swift 5.10; static stored
+%     properties too: global actor or immutable Sendable; nonisolated(unsafe)) · SE-0466 (Swift 6.2,
+%     -default-isolation, per module) · testing/0007 TestScoping (Swift 6.1; @TaskLocal example)
+%     · github.com/swiftlang/swift-testing Testing.docc/Parallelization.md (parallel by default, task
+%     groups; .serialized orders only its own suite)
+%   developer.apple.com/documentation: xcode/build-settings-reference (ENABLE_TESTABILITY: -enable-
+%     testing, -rdynamic, no -fvisibility=hidden, no strip, "tests running slower"; TEST_HOST;
+%     SWIFT_ACTIVE_COMPILATION_CONDITIONS; SWIFT_DEFAULT_ACTOR_ISOLATION) · forums/thread/751559 (DTS:
+%     Test Host set → Xcode starts that app and loads the bundle into it; two test targets) ·
+%     forums/thread/4834 ("Module was not compiled for testing") · foundation/userdefaults
+%     init(suiteName:) (argument and registration domains shared by every instance; not the app's
+%     bundle id) + removePersistentDomain(forName:) · swift/randomnumbergenerator (pass a generator;
+%     seedable = repeatable for testing) · swift/clock (Clock<Duration>, iOS 16, now: Instant) ·
+%     foundation/url/temporarydirectory (iOS 16) · foundation/notificationcenter (create new centers)
+%   Apple's "Using Swift with Cocoa and Objective-C" ("The Swift compiler does not include a
+%     preprocessor"), quoted in developer.apple.com/forums/thread/21340 · docs.swift.org reference,
+%     Conditional Compilation Block (every branch must be syntactically valid Swift)
+%   github.com/pointfreeco: swift-snapshot-testing README (missing reference: recorded, test fails;
+%     record modes; .dump via Mirror; inline snapshots) · swift-clocks (TestClock, ImmediateClock)
+%     · github.com/approvals/ApprovalTests.Swift (.received vs .approved, XCTest)
+% @labels: area=testing kind=pattern platform=general topic=testing,architecture discussion=264
+% @tags: seam, enabling-point, legacy-code, characterization-test, dependency-injection, constructor-injection, composition-root, service-locator, testable-import, test-host, humble-object, functional-core-imperative-shell, snapshot-testing, swift-testing, strict-concurrency, task-local
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,import,extension,
+    if,else,return,guard,self,Self,nil,try,await,async,throws,private,some,any,override,static,
+    where,defer,true,false,Void,String,Bool,Int,Date,UUID,UserDefaults,Duration,escaping},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  sb/.style={box, font=\tiny, inner sep=1.5pt, minimum height=4.2mm},
+  bad/.style={sb, draw=sheetRed, fill=sheetRed!7, font=\tiny\ttfamily},
+  good/.style={sb, draw=sheetBlue, fill=sheetBlue!8},
+  tst/.style={sb, draw=sheetOrange, fill=sheetOrange!10},
+  stg/.style={sb, draw=sheetGrey, fill=black!4, minimum width=13mm},
+  stp/.style={sb, draw=sheetGreen!70!black, fill=sheetGreen!10, minimum width=29mm, minimum height=6mm},
+  lbl/.style={font=\tiny, text=black!80, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\scriptsize, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Testable design — DI, seams \& legacy code}{testing · folio}
+
+\oneliner{A \textbf{seam} is ``a place where you can alter behavior in your program without
+editing in that place''; every seam has an \textbf{enabling point}, ``a place where you can make
+the decision to use one behavior or another'' (Michael Feathers, \emph{Working Effectively with
+Legacy Code}, 2004). In Swift the seam is a \textbf{protocol or closure} the type
+\emph{receives}, and the enabling point is its \ct{init}. Code that \emph{reaches for}
+\ct{.shared}, \ct{Date()} or \ct{UserDefaults.standard} has none.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \draw[sheetGrey!40] (3.62,3.75) -- (3.62,1.35);
+  \draw[sheetGrey!40] (8.55,3.75) -- (8.55,1.35);
+  \draw[sheetGrey!40] (0,1.25) -- (16.6,1.25);
+  % ── reaches ──
+  \node[pt] at (-0.05,3.62) {\textcolor{sheetRed}{REACHES} — no seam};
+  \node[sb, minimum width=9mm, minimum height=15mm] (vm0) at (0.5,2.56) {Feed-\\Model};
+  \node[bad, minimum width=22mm, minimum height=3.4mm, inner sep=1pt] (a) at (2.4,3.22) {API.shared};
+  \node[bad, minimum width=22mm, minimum height=3.4mm, inner sep=1pt] (d) at (2.4,2.78) {Date()};
+  \node[bad, minimum width=22mm, minimum height=3.4mm, inner sep=1pt] (u) at (2.4,2.34) {UserDefaults.standard};
+  \node[bad, minimum width=22mm, minimum height=3.4mm, inner sep=1pt] (s) at (2.4,1.90) {Log.send(\_:) static};
+  \foreach \n in {a,d,u,s} \draw[->, thick, sheetRed] (vm0.east) -- (\n.west);
+  \node[lbl, text=sheetRed] at (1.8,1.47) {not in the signature · nothing to swap};
+  % ── receives ──
+  \node[pt] at (3.7,3.62) {\textcolor{sheetBlue}{RECEIVES} — object seam};
+  \node[good, text width=29mm] (root) at (5.3,3.0) {\textbf{composition root} passes\\\ct{LiveAPI()}, \ct{\{Date()\}}, \ct{.standard}};
+  \node[tst, text width=29mm] (test) at (5.3,1.82) {\textbf{test} passes \ct{StubAPI()},\\a fixed date, its own suite};
+  \node[sb, minimum width=10mm, minimum height=13mm, fill=sheetGreen!10, draw=sheetGreen!70!black] (vm1) at (7.85,2.45) {Feed-\\Model};
+  \draw[->, thick, sheetBlue] (root.east) -- ([yshift=2.5mm]vm1.west);
+  \draw[->, thick, sheetOrange] (test.east) -- ([yshift=-2.5mm]vm1.west);
+  \node[lbl, anchor=north, text=sheetGreen!45!black] at (7.85,1.75) {enabling\\point: \ct{init}};
+  \node[lbl, text=black!70] at (5.3,2.42) {same source in app and test};
+  % ── seam types along the build ──
+  \node[pt] at (8.62,3.62) {Feathers' three seam types};
+  \node[stg] (src) at (9.35,3.12) {source text};
+  \node[stg] (cmp) at (11.25,3.12) {compile};
+  \node[stg] (lnk) at (13.3,3.12) {link};
+  \node[stg] (run) at (15.45,3.12) {run};
+  \draw[flow] (src) -- (cmp); \draw[flow] (cmp) -- (lnk); \draw[flow] (lnk) -- (run);
+  \node[lbl, anchor=north] at (11.25,2.82) {\textbf{preprocessing}\\\ct{\#if TESTING}\\[1pt]
+        \textcolor{sheetBlue}{EP: \ct{-D} flag (Active}\\\textcolor{sheetBlue}{Compilation Conditions)}};
+  \node[lbl, anchor=north] at (13.3,2.82) {\textbf{link}\\another library / module\\[1pt]
+        \textcolor{sheetBlue}{EP: build script —}\\\textcolor{sheetBlue}{outside the program text}};
+  \node[lbl, anchor=north] at (15.45,2.82) {\textcolor{sheetGreen!45!black}{\textbf{object} — first choice}\\protocol / subclass dispatch\\[1pt]
+        \textcolor{sheetBlue}{EP: argument list,}\\\textcolor{sheetBlue}{creation site}};
+  \node[lbl, anchor=west, align=left, text=black!70] at (8.62,2.3) {Swift has no\\preprocessor:\\\ct{\#if} is read\\by the compiler};
+  \node[lbl, anchor=west, text=black!70] at (8.62,1.47) {EP = enabling point · every step from program text to running code offers a seam};
+  % ── legacy code change algorithm ──
+  \node[pt] at (-0.05,1.0) {Legacy code change algorithm (Feathers)};
+  \node[lbl, anchor=west, text=sheetRed] at (5.6,1.0) {the dilemma: to change code safely you need tests; to add tests you often must change code $\Rightarrow$ keep step 3 small and conservative};
+  \node[stp] (s1) at (1.5,0.35) {\textbf{1} identify change points};
+  \node[stp] (s2) at (4.8,0.35) {\textbf{2} find test points};
+  \node[stp, draw=sheetOrange, fill=sheetOrange!10] (s3) at (8.1,0.35) {\textbf{3} break dependencies\\(make a seam)};
+  \node[stp] (s4) at (11.4,0.35) {\textbf{4} write tests\\(characterization)};
+  \node[stp] (s5) at (14.75,0.35) {\textbf{5} make changes \& refactor};
+  \draw[flow] (s1) -- (s2); \draw[flow] (s2) -- (s3); \draw[flow] (s3) -- (s4); \draw[flow] (s4) -- (s5);
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Seams — the rules}
+\begin{itemize}
+  \item The source is \textbf{the same in production and test}; only the enabling point differs.
+  \item An object \textbf{created and used in the same method} is no seam — nothing can choose
+        its type. Pass it in and the \textbf{argument list} becomes the enabling point.
+  \item Object seams are ``the best choice in object-oriented languages''; preprocessing and link
+        seams are ``not as explicit'', their tests hard to maintain — keep them for pervasive
+        dependencies, and make test vs production obvious.
+  \item Two reasons to break a dependency: \textbf{sensing} (see values the code computes but
+        hides) and \textbf{separation} (stand the code up in a harness at all).
+  \item Fowler (2024): a seam also hosts \textbf{probes} and \textbf{redirects flow} to new
+        modules when displacing a legacy system.
+  \item Apple (WWDC17): testable code gives \textbf{control over inputs}, \textbf{visibility into
+        outputs}, \textbf{no hidden state} — via protocols + parameters, side effects kept apart.
+\end{itemize}
+
+\section{Reaches for $\rightarrow$ receives $\rightarrow$ the test passes}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{20mm}L{22mm}L{35mm}@{}}
+\toprule
+\textbf{reaches for} & \textbf{receives} & \textbf{a test passes}\\
+\midrule
+\ct{X.shared} & a protocol (\ct{any XClient}) & stub / fake\\
+\ct{Date()}, \ct{Date.now} & \ct{now: () -> Date} & \ct{\{ Date(timeIntervalSince1970: 0) \}}\\
+\ct{Task.sleep}, timers & \ct{any Clock<Duration>} (iOS 16) & \ct{TestClock}, \ct{ImmediateClock} (swift-clocks); a clock's \ct{now} is an \ct{Instant}, not a \ct{Date}\\
+\ct{UUID()} & \ct{() -> UUID} & a counter\\
+\ct{.random(in:)}, \ct{shuffled()} & \ct{using: inout some} \ct{RandomNumberGenerator} & a seeded generator — Apple: ``repeatable \ldots{} for testing''\\
+\ct{UserDefaults}\allowbreak\ct{.standard} & a \ct{UserDefaults} & \ct{UserDefaults(suiteName:)}, then \ct{removePersistentDomain(forName:)}\\
+\ct{FileManager} + Documents & a base-directory \ct{URL} & \ct{URL.temporaryDirectory} + a UUID folder\\
+\ct{NotificationCenter}\allowbreak\ct{.default} & a \ct{NotificationCenter} & \ct{NotificationCenter()} — a private center\\
+\ct{UIApplication}\allowbreak\ct{.shared} & a protocol of the members used & a spy recording \ct{open(\_:)}\\
+\ct{Locale}, \ct{TimeZone}\allowbreak\ct{.current} & the value & \ct{Locale(identifier:)}, \ct{TimeZone(secondsFromGMT: 0)}\\
+\bottomrule
+\end{tabular}}
+
+\section{\texttt{@testable import} and the test host}
+\begin{itemize}
+  \item Tests reach \ct{internal} only with \ct{@testable import} \textbf{and} a module compiled
+        with testing enabled; never \ct{fileprivate}/\ct{private} — needing those means
+        ``extract a type'', not ``make it \ct{public}''. They may subclass / override
+        non-\ct{final} \ct{public} and \ct{internal} classes (SE-0117).
+  \item \textbf{Enable Testability} (\ct{ENABLE\_TESTABILITY}) passes \ct{-enable-testing} and
+        \ct{-rdynamic}, drops \ct{-fvisibility=hidden} and strip — ``tests running slower'', so
+        Debug only. A Release-built module: ``Module \ldots{} was not compiled for testing''.
+  \item \textbf{Test Host} set $\Rightarrow$ Xcode starts the app and loads the test bundle into
+        it; XCTest waits for \ct{didFinishLaunching} — the composition root runs first. Apple:
+        skip non-essential launch work via a launch argument, or use a host-less target.
+\end{itemize}
+
+\section{Swift 6 concurrency meets test hooks}
+\begin{itemize}
+  \item SE-0412: every \textbf{static} or global stored property is global-actor isolated or an
+        immutable \ct{Sendable} value (error in Swift 6 mode) — a \ct{static var shared} test
+        hook needs \ct{@MainActor} or \ct{nonisolated(unsafe)}.
+  \item Swift Testing runs tests \textbf{in parallel} in one process (task groups);
+        \ct{.serialized} orders only its own suite — a swapped global still races other suites.
+  \item Parallel-safe ambient seam: a \ct{@TaskLocal} value + a \ct{TestScoping} trait (Swift
+        6.1) wrapping each test in \ct{\$current.withValue(mock) \{ try await function() \}}.
+  \item New app projects in Xcode 26 turn on main-actor mode (SE-0466, Swift 6.2, per module):
+        app types become \ct{@MainActor}, so tests \ct{await} them or run \ct{@MainActor}.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\textbf{Live-default leak}: one forgotten argument and the test gets the real
+        \ct{LiveFeedAPI} — network in a unit test. Pass every dependency in tests.}
+  \trap{A suite does not isolate \ct{register(defaults:)}: the registration and argument domains
+        are shared by every \ct{UserDefaults} instance.}
+  \trap{8 init parameters is an SRP smell, not a DI problem. DI $\neq$ DIP: injecting a
+        concrete class is DI without inversion.}
+\end{itemize}
+
+\columnbreak
+
+\section{Legacy code}
+\begin{itemize}
+  \item ``Legacy code is simply \textbf{code without tests}'' (WELC preface) — not old code.
+        \textbf{Edit and Pray} (plan, edit, then poke around — ``pretty much the industry
+        standard'') vs \textbf{Cover and Modify} (tests as the safety net).
+  \item Four reasons to change: feature · bug · design · resource usage. \textbf{Refactoring}
+        changes structure only, \textbf{optimising} only resource usage — both hold
+        functionality invariant. Before any change ask: what changes · how will we know it is
+        right · how will we know nothing broke?
+\end{itemize}
+
+\section{Dependency-breaking moves}
+WELC (examples in Java, C++, C, C\#) catalogues \textbf{24} conservative edits in ch.\,25;
+the Swift-relevant ones:\par
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{22mm}L{56mm}@{}}
+\toprule
+Parameterize Constructor & \ct{init(api: any API = LiveAPI.shared)} — every existing caller compiles unchanged\\
+Parameterize Method & one method takes it: \ct{isExpired(now: Date = .now)}\\
+Extract Interface & a protocol of just what the SUT calls; the class conforms\\
+Extract Implementer & rename the class \ct{LiveAPI}; the old name becomes the protocol\\
+Adapt Parameter & a parameter type you cannot fake $\rightarrow$ your own narrow protocol + an adapter. Swift needs no wrapper: the framework class conforms in an extension (Apple, WWDC18)\\
+Subclass \& Override Method (+ Extract \& Override Call / Getter) & a test subclass overrides the I/O; needs a non-\ct{final} class and the method in the class body — extension members cannot be overridden unless \ct{@objc}\\
+Introduce Static Setter & a singleton gains a setter for tests (see SE-0412, left)\\
+Break Out Method Object & monster method $\rightarrow$ new type; its locals become fields\\
+Sprout Method / Class & (ch.\,6) new code in a new, test-driven unit; old code only calls it\\
+Wrap Method / Class & rename the old method; a new one with its name runs new + old\\
+\bottomrule
+\end{tabular}}
+
+\section{Characterization tests (golden master)}
+\begin{itemize}
+  \item ``Document your system's \textbf{actual} behavior, not check for the behavior you wish
+        your system had'' (Feathers) — a system in production ``becomes its own specification''.
+        Keep a surprising result pinned until it is \emph{confirmed} a bug.
+  \item Recipe: code in a harness $\rightarrow$ assert a value you know is wrong $\rightarrow$ the
+        failure prints the actual one $\rightarrow$ expect that $\rightarrow$ repeat.
+  \item Tools: \textbf{swift-snapshot-testing} records a missing reference and fails once;
+        \ct{.dump} snapshots any value via \ct{Mirror}; \ct{assertInlineSnapshot} writes into
+        the test file. \textbf{ApprovalTests.Swift}: \ct{.received} vs \ct{.approved} files.
+\end{itemize}
+
+\section{Example — Parameterize Constructor}
+\begin{lstlisting}[language=SwiftSheet]
+final class FeedModel {
+  private let api: any FeedAPI;  private let now: () -> Date
+  private let defaults: UserDefaults
+  init(api: any FeedAPI = LiveFeedAPI.shared,   // old callers
+       now: @escaping () -> Date = { Date() },  // unchanged
+       defaults: UserDefaults = .standard) {
+    self.api = api; self.now = now; self.defaults = defaults } }
+// test
+let suite = "test-\(UUID())"
+let d = UserDefaults(suiteName: suite)!
+defer { d.removePersistentDomain(forName: suite) }
+let sut = FeedModel(api: StubFeedAPI(posts: []),
+  now: { Date(timeIntervalSince1970: 0) }, defaults: d)
+\end{lstlisting}
+
+\section{Designs that make seams cheap}
+\begin{itemize}
+  \item \textbf{DI} (name settled by Fowler and IoC authors, 2004): constructor (``type 3'', PicoContainer) · setter
+        (type 2, Spring) · interface injection (type 1, Avalon). A \textbf{service locator} is
+        \emph{asked}: every user depends on it, and its needs show only as locator calls in the
+        body. Fowler: the choice matters less than separating configuration from use; Seemann
+        (2010): an anti-pattern.
+  \item \textbf{Humble Object} (Meszaros): move logic out of what is hard to test (view,
+        controller) until it holds the minimum of behaviour — MVVM, Passive View.
+  \item \textbf{Functional core, imperative shell} (Bernhardt, 2012): decisions are pure
+        functions on values; a thin shell does I/O. The core needs no doubles.
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Dependency injection · Test doubles ·
+Testing fundamentals · Async \& network testing · XCTest \& Swift Testing · SOLID · Code smells
+$\rightarrow$ refactorings · Time in Swift}
+
+\end{document}
