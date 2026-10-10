@@ -31,7 +31,7 @@
 }
 
 /* ── printing a folio = printing THE A4 folio ───────────────────────────
- * Without this, Ctrl+P printed the web page (sidebar, wide layout, several
+ * Without this, Ctrl+P printed the web page (side panel, wide layout, several
  * pages). The folio's one-page SVG (the PDF's page, vector) is loaded but
  * invisible on screen, and in print it is the only thing on the paper. */
 .folio-print {
@@ -52,8 +52,11 @@
 		display: none !important;
 	}
 
+	/* padding: the side panel's place, kept on screen (all.css) —
+	   `html.has-panel body` outranks this selector, hence !important */
 	body:has(.folio-print) {
 		margin: 0;
+		padding: 0 !important;
 		background: none;
 	}
 

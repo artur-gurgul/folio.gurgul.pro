@@ -83,6 +83,10 @@
 
 	--radius: 10px;
 	--sidebar-width: 300px;
+	/* the side panel's height on a phone, folded: at least its natural
+	   ~149 px (padding, name, tagline, the Filter line), so the place kept
+	   for it before it is built is exactly the place it then takes */
+	--sidebar-phone-height: 9.5rem;
 	/* Rajdhani is condensed: 18px sets ~8.4px per character, so 760px was
 	   ~90 characters a line. 680px is ~80, the top of the comfortable range. */
 	--content-width: 680px;
@@ -197,31 +201,51 @@ svg {
 
 /* ── layout ─────────────────────────────────────────────────────────────── */
 
-.container {
-	display: flex;
-	min-height: 100vh;
+/* A page's HTML is its <main> and nothing else; static/js/site.js adds the
+   side panel (<aside class="sidebar">) in front of it. With JavaScript off
+   there is no panel and <main> is centred alone. */
+
+.content {
+	max-width: calc(var(--content-width) + 6rem);
+	margin: 0 auto;
+	padding: 0 3rem 3rem;
 }
 
 .sidebar {
-	flex: 0 0 var(--sidebar-width);
-	position: sticky;
+	position: fixed;
 	top: 0;
-	height: 100vh;
+	bottom: 0;
+	left: 0;
+	width: var(--sidebar-width);
 	overflow-y: auto;
 	background: var(--sidebar-bg);
 	border-right: 1px solid var(--border);
 	padding: 2rem 1.5rem;
 }
 
-.scroll {
-	flex: 1 1 auto;
-	min-width: 0;
+/* the panel is fixed, so the page makes room for it once it is there
+   (site.js marks <html> with .has-panel) … */
+@media (min-width: 861px) {
+	html.has-panel body {
+		padding-left: var(--sidebar-width);
+	}
 }
 
-.content {
-	max-width: calc(var(--content-width) + 6rem);
-	margin: 0 auto;
-	padding: 0 3rem 3rem;
+/* … and with JavaScript on, from the FIRST paint, so the content does not
+   move when site.js adds the panel a moment later (a layout shift reads as a
+   jolt, and search engines measure it). `scripting` is a media feature: with
+   JavaScript off it does not match, nothing is kept, and <main> is centred
+   alone. Until the panel is there, its place shows the panel's own colours.
+   A browser that does not know `scripting` keeps nothing in advance: the
+   content then moves once, when the rule above takes over. */
+@media (scripting: enabled) and (min-width: 861px) {
+	body {
+		padding-left: var(--sidebar-width);
+		background: linear-gradient(to right,
+			var(--sidebar-bg) calc(var(--sidebar-width) - 1px),
+			var(--border) 0 var(--sidebar-width),
+			var(--bg) 0);
+	}
 }
 
 /* ── sidebar ────────────────────────────────────────────────────────────── */
@@ -627,14 +651,11 @@ svg g {
 		font-size: 17px;
 	}
 
-	.container {
-		flex-direction: column;
-	}
-
 	.sidebar {
 		position: static;
-		height: auto;
-		flex-basis: auto;
+		width: auto;
+		min-height: var(--sidebar-phone-height);
+		overflow-y: visible;
 		border-right: 0;
 		border-bottom: 1px solid var(--border);
 		padding: 1.4rem 1.25rem;
@@ -672,5 +693,20 @@ svg g {
 
 	.contents[open] .chevron {
 		transform: rotate(180deg);
+	}
+}
+
+/* On a phone the panel sits above the content, in the flow, so its place is
+   kept at the top until site.js has added it (it then marks <html> with
+   .has-panel): the panel, folded, is exactly --sidebar-phone-height. Opening
+   the fold afterwards pushes the content down — that is the reader's own
+   tap, not a shift. */
+@media (scripting: enabled) and (max-width: 860px) {
+	html:not(.has-panel) body {
+		padding-top: var(--sidebar-phone-height);
+		background:
+			linear-gradient(var(--border), var(--border)) 0 calc(var(--sidebar-phone-height) - 1px) / 100% 1px no-repeat,
+			linear-gradient(var(--sidebar-bg), var(--sidebar-bg)) 0 0 / 100% calc(var(--sidebar-phone-height) - 1px) no-repeat,
+			var(--bg);
 	}
 }

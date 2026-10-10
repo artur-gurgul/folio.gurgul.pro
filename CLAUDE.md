@@ -58,17 +58,18 @@ pull request that passes the checks and is approved by the maintainer. Run
 
 `docs/CNAME` is the custom domain — the build keeps it; never delete it.
 
-**How a page is built.** A page's HTML carries its own content only, inside
-`<noscript id="page">` (`layouts/frame.pug`): with JavaScript off that is the
-page, and it is what a crawler that runs no script reads. With JavaScript on, a
-few lines of inline script replace the `<noscript>` with that same content —
-nothing is in the document twice — beside the side panel's fixed part; then
-`static/js/site.js` fills the panel from `nav.json`, and on the list page
-`static/js/memos.js` adds tags and the filter from `memos/index.json` (and
-`memos/search.json` when someone searches). Content first, menus after. The
-build writes `nav.json`, `sitemap.xml` and `robots.txt` (`generate:` in
-`src/.sajt/config.yaml`) and fails without them. Do not put anything into a page
-that every page repeats — it belongs in a JSON file or a script.
+**How a page is built.** A page's HTML is its own content and nothing else, in
+plain `<main>` (`layouts/default.pug`, `layouts/memos.pug`): it reads well with
+JavaScript off, and it is what a crawler reads. Then the CSS and the scripts
+load. `static/js/site.js` adds the side panel in front of `<main>` and fills it
+from `nav.json`; on the list page `static/js/memos.js` adds tags and the filter
+from `memos/index.json` (and `memos/search.json` when someone searches).
+Content first, menus after. With JavaScript on, the CSS keeps the panel's place
+from the first paint (`@media (scripting: enabled)` in `all.css`), so the
+content does not move when the panel arrives. The build writes `nav.json`,
+`sitemap.xml` and `robots.txt` (`generate:` in `src/.sajt/config.yaml`) and
+fails without them. Do not put anything into a page that every page repeats —
+it belongs in a JSON file, a stylesheet or a script.
 
 ## Hard rules — content
 

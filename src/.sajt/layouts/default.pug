@@ -1,7 +1,11 @@
 //- A page: a folio (a .tex page) or an ordinary one (the front page).
 //-
-//- The HTML carries the page's own content only (frame.pug); the side panel is
-//- built by static/js/site.js from nav.json, after the content is on screen.
+//- The HTML is the page's own content and nothing else, in plain <main>: it
+//- reads well with JavaScript off, and it is what a crawler reads. The side
+//- panel is not in the HTML — static/js/site.js builds it, then fills it from
+//- nav.json (owner, 2026-10-10: "content, the folio, loads first … the most
+//- thin html we can do, must look nice without js, then it fetches css and js,
+//- and once js is loaded then it fetches json files").
 -
   const here = (context.sheets || []).find(s => s.url === page.finalPath)
   //- a folio gets the wide layout: its diagrams and tables are drawn for an A4
@@ -29,15 +33,13 @@ html(lang="en")
     //- loaded but invisible on screen, the only thing shown in print (sheet.css)
     if isFolio
       img.folio-print(src=page.finalPath.replace(/\.html$/, ".svg") alt="" aria-hidden="true")
-    include frame.pug
-    +frame
-      .content(class=isFolio ? "folio-page" : undefined)
-        h1.title= page.title
-        #post!= page.file.html
-        if isFolio
-          p.folio-actions
-            a(href=repo + "/issues/new?template=fact-correction.yml&folio=" + encodeURIComponent(srcFile)) Report a problem
-            span.sep  ·
-            a(href=discussUrl) Discuss this folio
-        .footer
-          include footer.pug
+    main.content(class=isFolio ? "folio-page" : undefined)
+      h1.title= page.title
+      #post!= page.file.html
+      if isFolio
+        p.folio-actions
+          a(href=repo + "/issues/new?template=fact-correction.yml&folio=" + encodeURIComponent(srcFile)) Report a problem
+          span.sep  ·
+          a(href=discussUrl) Discuss this folio
+      .footer
+        include footer.pug
