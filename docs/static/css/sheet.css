@@ -429,6 +429,9 @@ ul.posts a.on .count {
 
 .memos-area {
 	margin-top: 1.8rem;
+	/* reached by the site map's #area-<key>: a little room above the heading
+	   (the list page has no sticky title — its h1.title is empty, hence hidden) */
+	scroll-margin-top: 1.5rem;
 }
 
 .memos-area h2 {
@@ -492,4 +495,40 @@ ul.posts a.on .count {
 .memos-empty {
 	color: var(--muted);
 	font-style: italic;
+}
+
+/* ── the front page's site map ──────────────────────────────────────────
+ * With JavaScript off there is no menu (owner, 2026-10-10), so the front page
+ * lists the subject groups (default.pug, `sitemap: true`). With JavaScript on
+ * the side panel lists them, so the map is hidden (owner: "Hidden once the
+ * panel is built") — from the FIRST paint, not when the panel arrives, or it
+ * would show for a moment and the footer would then jump up. html.has-panel
+ * covers a browser that does not know `scripting`. */
+.site-map ul {
+	columns: 3 11rem;
+	column-gap: 2rem;
+	list-style: none;
+	margin: 0.4rem 0 0;
+	padding: 0;
+}
+
+.site-map li {
+	margin: 0 0 0.3rem;
+	break-inside: avoid;
+}
+
+.site-map .count {
+	margin-left: 0.4em;
+	color: var(--muted);
+	font-size: 0.85em;
+}
+
+@media (scripting: enabled) {
+	.site-map {
+		display: none;
+	}
+}
+
+html.has-panel .site-map {
+	display: none;
 }

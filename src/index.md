@@ -1,6 +1,7 @@
 ---
 layout: default
 hidden: true
+sitemap: true
 ---
 
 # folio

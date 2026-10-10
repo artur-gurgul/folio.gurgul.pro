@@ -24,6 +24,24 @@
   const thread = here && here.labels && here.labels.discussion && here.labels.discussion[0]
   const discussBody = "About the folio: https://folio.gurgul.pro" + page.finalPath + "\n\n"
   const discussUrl = thread ? repo + "/discussions/" + thread : repo + "/discussions/new?category=folio-comments&title=" + encodeURIComponent(page.title || srcFile) + "&body=" + encodeURIComponent(discussBody)
+  //- the site map (`sitemap: true`, the front page). With JavaScript off there
+  //- is no menu (owner, 2026-10-10: "when there is no javascript, then no menu
+  //- at all, just website map"), so the front page lists the subject groups,
+  //- each linking to its part of the folio list (memos.pug's #area-<key>).
+  //- Groups, not folios: the HTML stays small however many folios there are
+  //- ("html size matters"). Hidden whenever JavaScript is on (sheet.css).
+  const sitemap = !!page.file.data.sitemap
+  const list = (context.memos && context.memos.list) || "/folios.html"
+  const groups = []
+  if (sitemap) {
+    for (const s of context.sheets || []) {
+      let g = groups.find(x => x.key === s.area)
+      if (!g) { g = { key: s.area, count: 0 }; groups.push(g) }
+      g.count++
+    }
+    groups.sort((x, y) => x.key.localeCompare(y.key))
+  }
+  const total = (context.sheets || []).length
 doctype html
 html(lang="en")
   head
@@ -36,6 +54,16 @@ html(lang="en")
     main.content(class=isFolio ? "folio-page" : undefined)
       h1.title= page.title
       #post!= page.file.html
+      if sitemap
+        nav.site-map(aria-label="Site map")
+          h2 Site map
+          p
+            a(href=list) All #{total} folios
+          ul
+            each g in groups
+              li
+                a(href=list + "#area-" + g.key)= g.key
+                span.count= g.count
       if isFolio
         p.folio-actions
           a(href=repo + "/issues/new?template=fact-correction.yml&folio=" + encodeURIComponent(srcFile)) Report a problem
