@@ -37,8 +37,9 @@ html(lang="en")
           p.memos-status
             span.memos-count #{sheets.length} #{sheets.length === 1 ? "folio" : "folios"}
             span.memos-active
+          //- id: the front page's site map links to each area (#area-<key>)
           each a in areas
-            section.memos-area(data-area=a.key)
+            section.memos-area(id="area-" + a.key data-area=a.key)
               h2= a.key
               ul.memos-list
                 each s in a.sheets

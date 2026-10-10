@@ -66,7 +66,11 @@ from `nav.json`; on the list page `static/js/memos.js` adds tags and the filter
 from `memos/index.json` (and `memos/search.json` when someone searches).
 Content first, menus after. With JavaScript on, the CSS keeps the panel's place
 from the first paint (`@media (scripting: enabled)` in `all.css`), so the
-content does not move when the panel arrives. The build writes `nav.json`,
+content does not move when the panel arrives. With JavaScript off there is no
+menu at all: the front page alone carries a **site map** (`sitemap: true` in
+`src/index.md`) — the subject groups, each linking to its part of the list —
+hidden whenever JavaScript is on. Groups, not folios, so it stays small as the
+site grows. The build writes `nav.json`,
 `sitemap.xml` and `robots.txt` (`generate:` in `src/.sajt/config.yaml`) and
 fails without them. Do not put anything into a page that every page repeats —
 it belongs in a JSON file, a stylesheet or a script.
