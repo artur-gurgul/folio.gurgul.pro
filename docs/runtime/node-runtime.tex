@@ -1,0 +1,311 @@
+% node-runtime.tex — Node.js as a runtime: V8 + libuv + bindings, kernel readiness vs the libuv
+% thread pool, blocking the loop and how to see it, streams + backpressure, Buffer, EventEmitter,
+% worker_threads vs cluster vs child_process, crash and exit semantics, graceful shutdown, the
+% release lines in October 2026, built-in tooling by version (type stripping, node:test, the
+% permission model, --env-file, --watch, --run), npm ci and npm 12.
+% Sources (checked 2026-10-09):
+%   github.com/nodejs/Release README + schedule.json (20 EOL 2026-04-30; 22 Jod: LTS 2024-10-29,
+%     maintenance 2025-10-21, EOL 2027-04-30; 24 Krypton: start 2025-05-06, LTS 2025-10-28,
+%     maintenance 2026-10-20, EOL 2028-04-30; 25: EOL 2026-06-01; 26: start 2026-05-05, LTS
+%     2026-10-28, maintenance 2027-10-20, EOL 2029-04-30; 27: alpha 2026-10-28, start 2027-04-22,
+%     EOL 2030-04-30; odd lines never LTS) · nodejs.org/en/blog/announcements/evolving-the-nodejs-
+%     release-schedule (2026-03-10: from 27 one major a year, every line LTS, Alpha Oct–Mar with
+%     semver-major allowed, Current Apr–Oct, LTS 30 months, number = year of its Current)
+%   api.github.com/repos/nodejs/node/releases (v26.11.1 2026-10-07 · v24.21.0 2026-09-08 · v22.23.3
+%     2026-09-23) · nodejs.org/dist/index.json (26.11.1 bundles npm 11.20.0, libuv 1.52.1)
+%   docs.libuv.org/en/v1.x: threadpool (default 4; max 1024 since 1.30.0, was 128; global, shared
+%     across all event loops; 8 MB stacks since 1.45.0; fs + getaddrinfo / getnameinfo) · design
+%     (epoll / kqueue / event ports / IOCP; no platform file I/O primitives → pool)
+%   nodejs.org/api (docs v26.11.1): cli (UV_THREADPOOL_SIZE API list; --unhandled-rejections modes,
+%     throw default since 15.0.0; --permission stable 23.5.0 / 22.13.0; --allow-* added versions,
+%     --allow-net 25.0.0; entry points readable 24.2.0 / 22.17.0; --env-file 20.6.0, stable 24.10.0 /
+%     22.21.0, environment wins; --watch stable 22.0.0 / 20.13.0; --run 22.0.0, no pre / post
+%     scripts; --cpu-prof stable 22.4.0 / 20.16.0, writes *.cpuprofile) · typescript (22.6.0; default 23.6.0 / 22.18.0; stable 25.2.0 / 24.12.0;
+%     --experimental-transform-types removed 26.0.0; whitespace replacement, no type check; enum,
+%     runtime namespaces, parameter properties, import aliases, decorators fail; tsconfig ignored;
+%     `import type` needed; .tsx unsupported; nothing under node_modules) · permissions (seat belt,
+%     not against malicious code; symlinks followed; open fds bypass; Worker inherits flags;
+%     ERR_ACCESS_DENIED; process.permission.has) · test (stable 20.0.0; default globs; one child
+%     process per file; mock.timers; snapshots stable; coverage experimental; spec reporter default)
+%     · stream (highWaterMark a threshold; byte default 64 KiB since 22.0.0, 16 KiB on Windows; 16
+%     objects; write() false → 'drain'; pipe() leaves the destination open on error; pipeline
+%     destroys every stream) · buffer (Uint8Array subclass; allocUnsafe old data; pool used below
+%     poolSize >>> 1; poolSize 8192 → 65536 in 26.3.0 / 24.18.0; slice deprecated) · events (sync,
+%     registration order; 'error' with no listener throws; 10 listeners → MaxListenersExceededWarning,
+%     not a limit; errorMonitor; captureRejections; once / on) · worker_threads (own isolate, loop,
+%     Node instance, env copy; SharedArrayBuffer / transfer; process.exit ends the thread; no
+%     signals; stackSizeMb 4; use a pool) · cluster (fork; round-robin default except Windows;
+%     no routing logic) · child_process (exec = shell + buffer, maxBuffer 1024 * 1024; fork = own
+%     memory and V8; full pipe blocks the child) · dns (lookup = getaddrinfo on the pool, honours
+%     /etc/hosts; resolve* always query the network, no pool) · net (lookup default dns.lookup)
+%     · process (uncaughtException last resort; SIGTERM / SIGINT exit 128 + n unless listened;
+%     SIGKILL / SIGSTOP uncatchable; exitCode over exit(); memoryUsage arrayBuffers within external;
+%     exit codes 1 7 9 13 >128) · http (close() closes idle connections since 19.0.0;
+%     closeAllConnections 18.2.0; requestTimeout 300 s since 18.0.0; headersTimeout min of
+%     requestTimeout and 60 s) · perf_hooks (monitorEventLoopDelay in ns, resolution 10 ms;
+%     eventLoopUtilization) · globals (fetch stable 21.0.0; WebSocket stable 22.4.0) · sqlite
+%     (22.5.0; release candidate 25.7.0 / 24.15.0; synchronous; node: scheme only) · async_context
+%     (AsyncLocalStorage stable 16.4.0)
+%   nodejs.org/en/learn/asynchronous-work/dont-block-the-event-loop (pool APIs; 50 MB JSON:
+%     stringify 0.7 s, parse 1.3 s; /(.+)+$/ ReDoS; partition with setImmediate or offload)
+%     · nodejs.org/en/blog/release/v23.5.0 (flag renamed from --experimental-permission)
+%   docs.npmjs.com/cli/v11/commands/npm-ci (lockfile required; mismatch = error; removes
+%     node_modules; never writes package.json or the lock) · github.com/npm/cli/releases/tag/v12.0.0
+%     (2026-07-08: dependency lifecycle scripts blocked unless the root allowScripts policy allows
+%     them; allow-git / allow-remote default none; node ^22.22.2 || ^24.15.0 || >=26.0.0)
+%   github.com/denoland/deno README (V8, Rust, Tokio) · docs.deno.com/runtime/fundamentals/security
+%     (secure by default; --allow-*; -A = Node-like) · github.com/oven-sh/bun README (JavaScriptCore;
+%     drop-in replacement for Node.js; TS / JSX built in)
+%   Printed outputs run in Node v26.7.0 (macOS): getDefaultHighWaterMark(false) 65536,
+%     Buffer.from('€') <Buffer e2 82 ac>, Buffer.poolSize 65536 — all as printed.
+% @labels: area=runtime kind=concept platform=backend topic=concurrency,performance discussion=331
+% @tags: nodejs, libuv, thread-pool, uv-threadpool-size, event-loop, blocking-event-loop, streams, backpressure, buffer, eventemitter, worker-threads, cluster, child-process, graceful-shutdown, unhandled-rejection, permission-model, type-stripping, node-test, npm, lts
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={import,from,export,default,const,let,type,interface,extends,function,
+    return,async,await,if,else,switch,case,new,true,false,null,undefined,typeof,keyof,
+    as,satisfies,never,string,number,boolean,void,declare,namespace,readonly,for,of,enum},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\ush{\hbox{>}\hbox{>}\hbox{>}}
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.6mm},
+  os/.style={sb, draw=sheetGreen!70!black, fill=sheetGreen!10},
+  tp/.style={sb, draw=sheetOrange, fill=sheetOrange!10},
+  bc/.style={draw=sheetGrey, fill=sheetBlue!15, minimum width=3mm, minimum height=2.2mm, inner sep=0pt},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, anchor=west},
+  cur/.style={fill=sheetBlue!75},
+  act/.style={fill=sheetGreen!80!black},
+  mnt/.style={fill=sheetOrange!75},
+  alp/.style={fill=sheetGrey!40},
+}
+
+\begin{document}
+
+\sheettitle{Node.js runtime — libuv, streams, processes, releases}{runtime · folio}
+
+\oneliner{Node = \textbf{V8} (runs JS, GC) + \textbf{libuv} (event loop, the kernel's poller for
+sockets, a \textbf{4-thread pool} for files, \ct{dns.lookup}, crypto, zlib) + C++
+\textbf{bindings}. Your JS runs on \textbf{one thread} per isolate — block it and \emph{every}
+request waits.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \draw[sheetGrey!40] (9.55,3.05) -- (9.55,-0.5);
+  \node[pt] at (0,2.9) {\textcolor{sheetBlue}{1} where the work happens};
+  \node[sb, minimum width=38mm] (js) at (2.2,2.35) {your JS + \ct{node:*} modules (JS)};
+  \node[sb, minimum width=17mm] (v8) at (1.1,1.6) {\textbf{V8}\\run JS · GC};
+  \node[sb, minimum width=17mm] (bi) at (3.3,1.6) {C++ bindings\\(\ct{fs}, \ct{net}, \ct{crypto})};
+  \node[sb, minimum width=24mm, fill=sheetBlue!15] (lp) at (2.2,0.8) {\textbf{libuv event loop}\\the ONE JS thread};
+  \node[os, minimum width=44mm] (k) at (2.2,-0.15) {kernel poller: \textbf{epoll} · \textbf{kqueue} · IOCP\\sockets · pipes · signals — no threads};
+  \draw[flow] (js) -- (v8); \draw[flow] (js) -- (bi); \draw[flow] (bi) -- (lp);
+  \draw[flow, <->] (lp) -- node[lbl, right]{ready?} (k);
+  \node[tp, minimum width=33mm] (pool) at (7.3,1.65) {\textbf{thread pool} · \ct{UV\_THREADPOOL\_SIZE}=4};
+  \foreach \i/\x in {1/6.15,2/6.9,3/7.65,4/8.4} \node[tp, minimum width=6mm, font=\tiny] (w\i) at (\x,1.1) {T\i};
+  \node[lbl, text=sheetOrange!80!black] at (7.3,2.35) {all async \ct{fs} (not watchers) · \ct{dns.lookup} = getaddrinfo\\crypto pbkdf2 · scrypt · randomBytes · keygen · async zlib};
+  \draw[hot] (lp.east) -- (4.9,0.8) |- (pool.west);
+  \node[lbl, text=sheetOrange!80!black, anchor=west] at (4.95,1.25) {job};
+  \draw[flow, dashed] (w4.south) |- (lp.south east);
+  \node[lbl] at (6.6,0.42) {done $\to$ callback queued on the loop};
+  \node[lbl, text=sheetRed] at (7.3,-0.2) {job 5 waits for a free thread: four slow\\\ct{dns.lookup}s stall every unrelated \ct{fs} call};
+  % ── streams ──
+  \node[pt] at (9.65,2.9) {\textcolor{sheetBlue}{2} streams: backpressure};
+  \node[sb, minimum width=15mm] (r) at (10.6,2.05) {Readable\\file};
+  \node[sb, minimum width=15mm] (t) at (13.0,2.05) {Transform\\gzip};
+  \node[sb, minimum width=15mm] (w) at (15.4,2.05) {Writable\\socket};
+  \draw[flow] (r) -- (t); \draw[flow] (t) -- (w);
+  \foreach \k in {0,1,2,3} \node[bc] at (14.8+\k*0.32,1.4) {};
+  \foreach \k in {0,1,2} \node[bc] at (12.4+\k*0.32,1.4) {};
+  \draw[sheetRed, thick] (15.9,1.2) -- (15.9,1.6);
+  \node[lbl, text=sheetRed, anchor=west] at (15.95,1.4) {hwm};
+  \node[lbl] at (13.7,1.4) {buffers};
+  \draw[hot, sheetRed] (14.55,0.85) -- node[lbl, above, text=sheetRed]{\ct{write()} returns \ct{false} $\to$ pause upstream} (10.6,0.85) -- (r.south);
+  \draw[flow, sheetGreen!60!black] (15.4,0.42) -- node[lbl, below, text=sheetGreen!50!black]{\ct{'drain'} $\to$ resume} (10.9,0.42) -- ++(0,0.43);
+  \node[lbl, anchor=west, align=left] at (9.65,-0.22) {memory stays $\approx$ hwm per stage, whatever the file size;\\\ct{pipeline()} wires this \emph{and} destroys every stage on error};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Release lines — 9 October 2026}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \y/\x in {2024/0.8,2025/1.8,2026/2.8,2027/3.8,2028/4.8,2029/5.8,2030/6.8} {
+    \draw[sheetGrey!30] (\x,0.0) -- (\x,-1.62);
+    \node[lbl, anchor=south] at (\x,0.0) {\y}; }
+  % 20 Iron
+  \fill[act] (0.8,-0.30) rectangle (1.61,-0.12); \fill[mnt] (1.61,-0.30) rectangle (3.13,-0.12);
+  \node[lbl, anchor=east] at (0.78,-0.21) {\textbf{20} Iron};
+  \node[lbl, text=white] at (2.37,-0.21) {EOL 30 Apr 2026};
+  % 22 Jod
+  \fill[cur] (1.11,-0.60) rectangle (1.63,-0.42); \fill[act] (1.63,-0.60) rectangle (2.60,-0.42);
+  \fill[mnt] (2.60,-0.60) rectangle (4.13,-0.42);
+  \node[lbl, anchor=east] at (1.09,-0.51) {\textbf{22} Jod};
+  \node[lbl, anchor=west] at (4.15,-0.51) {EOL 30 Apr 2027 · now 22.23.3};
+  % 24 Krypton
+  \fill[cur] (2.14,-0.90) rectangle (2.62,-0.72); \fill[act] (2.62,-0.90) rectangle (3.60,-0.72);
+  \fill[mnt] (3.60,-0.90) rectangle (5.13,-0.72);
+  \node[lbl, anchor=east] at (2.12,-0.81) {\textbf{24} Krypton};
+  \node[lbl, anchor=west] at (5.15,-0.81) {EOL 30 Apr 2028 · 24.21.0};
+  % 26
+  \fill[cur] (3.14,-1.20) rectangle (3.62,-1.02); \fill[act] (3.62,-1.20) rectangle (4.60,-1.02);
+  \fill[mnt] (4.60,-1.20) rectangle (6.13,-1.02);
+  \node[lbl, anchor=east] at (3.12,-1.11) {\textbf{26}};
+  \node[lbl, anchor=west] at (6.15,-1.11) {EOL Apr 2029 · 26.11.1};
+  % 27 — new model
+  \fill[alp] (3.62,-1.50) rectangle (4.10,-1.32); \fill[cur] (4.10,-1.50) rectangle (4.60,-1.32);
+  \fill[act] (4.60,-1.50) rectangle (7.13,-1.32);
+  \node[lbl] at (3.86,-1.41) {\textbf{27}};
+  \node[lbl, text=white] at (5.86,-1.41) {one 30-month LTS $\to$ Apr 2030};
+  % today
+  \draw[sheetRed, thick, dashed] (3.57,0.02) -- (3.57,-1.62);
+  \node[lbl, text=sheetRed, anchor=north] at (3.57,-1.62) {today};
+  % legend
+  \foreach \s/\t/\x in {cur/Current/0.0,act/Active LTS/1.25,mnt/Maintenance/2.7,alp/Alpha (27+)/4.35} {
+    \fill[\s] (\x,-1.98) rectangle ++(0.22,0.14);
+    \node[lbl, anchor=west] at (\x+0.25,-1.91) {\t}; }
+\end{tikzpicture}\par
+Even lines: \textbf{6 months Current $\to$ 12 Active LTS $\to$ 18 Maintenance}; odd lines are
+never LTS (25 ended 1 Jun 2026). This month: \textbf{24 $\to$ Maintenance 20 Oct}, \textbf{26
+$\to$ LTS 28 Oct}, 27 Alpha starts. From \textbf{27} (announced 10 Mar 2026): one major a year —
+\textbf{Alpha} Oct–Mar (semver-major still allowed), \textbf{Current} Apr–Oct, then 30 months
+LTS; no odd/even split; the number is the year of its Current (27.0.0 in 2027).
+
+\section{Where the work runs}
+\begin{itemize}
+  \item \textbf{Kernel poller} (also event ports on SunOS): 10k idle connections cost memory,
+        not threads. \textbf{Pool} (list in 1): libuv has no portable async-file primitive;
+        crypto and zlib are CPU-heavy.
+  \item \ct{UV\_THREADPOOL\_SIZE}: default \textbf{4}, max \textbf{1024} (libuv 1.30; was 128),
+        read once when the pool starts. \textbf{One pool per process}, shared by every loop —
+        workers too. Threads get 8\,MB stacks (libuv 1.45).
+  \item \textbf{DNS}: \ct{dns.lookup()} = \ct{getaddrinfo} on the pool, honours
+        \ct{/etc/hosts} — and it is the default \ct{lookup} of every \ct{net}/\ct{http}
+        connect by host name; it keeps the resolver's address order (\ct{verbatim}) since 17.0.
+        \ct{dns.resolve*()} use c-ares: always the network, no pool, no \ct{/etc/hosts}.
+\end{itemize}
+
+\section{Blocking the loop}
+\begin{itemize}
+  \item Culprits: \ct{*Sync} calls (\ct{readFileSync}, \ct{pbkdf2Sync}, \ct{inflateSync},
+        \ct{execSync}), big JSON (Node's guide: 50\,MB takes 0.7\,s to stringify, 1.3\,s to
+        parse), ReDoS (\ct{/(.+)+\$/}), long loops. Symptom: p99 of \emph{all} routes, timers
+        late, health checks fail, one core at 100\,\%.
+  \item See it: \ct{perf\_hooks.monitorEventLoopDelay()} (histogram in \textbf{ns}, 10\,ms
+        resolution, call \ct{enable()}); \ct{performance.eventLoopUtilization()} = share of time
+        spent outside \ct{epoll\_wait}; \ct{--cpu-prof} (stable 22.4) writes a \ct{.cpuprofile}.
+  \item Fix: \textbf{partition} (chunks + \ct{setImmediate}), \textbf{offload} (worker, child),
+        stream instead of \ct{readFile}. Phase order, \ct{nextTick} vs promises:
+        \ct{js-event-loop}.
+\end{itemize}
+
+\section{Streams}
+\begin{itemize}
+  \item \ct{highWaterMark} is a \textbf{threshold, not a limit} (a Readable stops pulling).
+        Default \textbf{64\,KiB} since 22.0 (was 16\,KiB; still 16\,KiB on Windows),
+        \textbf{16 objects} in \ct{objectMode}.
+  \item \ct{.pipe()}: a source error does \emph{not} close the destination (a leak).
+        \ct{pipeline()} (\ct{node:stream/promises}) forwards the error and destroys every
+        stream. Readables are \ct{for await}-able.
+\end{itemize}
+
+\section{Buffer}
+\begin{itemize}
+  \item A \ct{Uint8Array} subclass; bytes live outside the V8 heap, counted in
+        \ct{memoryUsage().arrayBuffers} (part of \ct{external}). \ct{subarray} shares memory
+        (\ct{slice} deprecated, \ct{new Buffer()} too).
+  \item \ct{alloc} is zero-filled; \ct{allocUnsafe} may hold old bytes (secrets). It,
+        \ct{from(string)} and \ct{concat} carve from a shared pool below
+        \ct{poolSize~\ush{}~1}; \ct{poolSize} 8\,KiB $\to$ \textbf{64\,KiB} in 26.3 / 24.18.
+  \item Encodings: \ct{utf8 utf16le latin1 base64 base64url hex}. A UTF-8 character can split
+        across chunks: \ct{setEncoding('utf8')}, not \ct{chunk.toString()}.
+\end{itemize}
+
+\section{EventEmitter}
+\ct{emit()} calls listeners \textbf{synchronously}, in registration order. \ct{'error'} with no
+listener \textbf{throws} (process exits). $>$10 listeners on one event $\to$
+\ct{MaxListenersExceededWarning} — a leak hint, not a limit. \ct{errorMonitor} observes without
+handling; \ct{captureRejections} routes async-listener rejections to \ct{'error'};
+\ct{events.once()} $\to$ promise, \ct{events.on()} $\to$ async iterator.
+
+\columnbreak
+
+\section{Past one thread}
+{\scriptsize\renewcommand{\arraystretch}{1.05}\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright}p{13mm}>{\raggedright}p{36mm}>{\raggedright\arraybackslash}p{27mm}@{}}
+\toprule
+ & \textbf{isolation · sharing · talk} & \textbf{for · catch}\\
+\midrule
+\ct{worker\_}\allowbreak\ct{threads} & own isolate, loop, Node instance, env copy — one process; \ct{SharedArrayBuffer} + \ct{Atomics}; \ct{postMessage} clones or transfers & CPU-bound JS — keep a \textbf{pool}; \ct{process.exit()} ends the thread only; no signals\\
+\ct{cluster} & N processes via \ct{fork()}; primary accepts and \textbf{round-robins} (not on Windows) or hands workers the socket; IPC & all cores for one server; no shared memory: sessions go to a store\\
+\ct{child\_}\allowbreak\ct{process} & any program, own memory + V8: \ct{spawn} streams, \ct{exec} = shell + buffer (\ct{maxBuffer} 1\,MiB), \ct{execFile} no shell, \ct{fork} = Node + IPC & tools; \ct{exec} + user input = injection; an unread pipe blocks the child\\
+\bottomrule
+\end{tabular}}
+
+\section{Crashes and exit}
+\begin{itemize}
+  \item \textbf{Unhandled rejection} $\to$ \ct{'unhandledRejection'} if listened, else an
+        uncaught exception: default \ct{throw} since \textbf{15.0} (was a warning).
+  \item \ct{'uncaughtException'}: last resort — not safe to resume; clean up synchronously,
+        exit, let the supervisor restart.
+  \item Exit codes: \textbf{1} uncaught exception · 7 the handler threw · 9 bad option · 13
+        unsettled top-level \ct{await} · \textbf{128 + signal} (SIGINT 130, SIGTERM 143).
+        SIGTERM/SIGINT exit by default — \textbf{a listener removes that}: exit yourself or
+        wait for the supervisor's SIGKILL. SIGKILL, SIGSTOP cannot be caught.
+  \item \ct{process.exit()} may drop pending stdout writes — set \ct{process.exitCode}, let
+        the loop empty. \ct{'exit'} listeners: synchronous only.
+\end{itemize}
+
+\section{Graceful shutdown, and outputs}
+\begin{lstlisting}[language=TSSheet]
+process.once('SIGTERM', () => {     // now WE must exit
+  server.close(async (err) => {     // no new conns; idle ones
+    await db.end();                 // closed (19+); runs after
+    process.exitCode = err ? 1 : 0; // the last conn ends
+  });
+  setTimeout(() => process.exit(1), 10_000).unref();
+});
+stream.getDefaultHighWaterMark(false) // 65536 (Windows 16384)
+Buffer.from('€')   // <Buffer e2 82 ac>: 1 char, 3 bytes
+\end{lstlisting}
+
+\section{Built in — since when (docs v26.11)}
+{\scriptsize\renewcommand{\arraystretch}{1.05}\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright}p{12mm}>{\raggedright}p{14mm}>{\raggedright\arraybackslash}p{50mm}@{}}
+\toprule
+\textbf{feature} & \textbf{version} & \textbf{what to remember}\\
+\midrule
+\textbf{type stripping} & 22.6 flag; on 23.6 / 22.18; stable 25.2 / 24.12 & \ct{node app.ts}: types $\to$ whitespace, \textbf{no type check}, tsconfig ignored. \ct{enum}, runtime \ct{namespace}, parameter properties, \ct{import =} $\to$ \ct{ERR\_UNSUPPORTED\_}\allowbreak\ct{TYPESCRIPT\_SYNTAX} (transform flag gone in 26.0). \ct{import type}, \ct{.ts} specifiers; no \ct{.tsx}, no \ct{node\_modules}\\
+\textbf{\ct{node:test}} & stable 20.0 & \ct{node --test} runs \ct{*.test.*}, \ct{test-*}, \ct{test/**}, a child process per file; mocks incl.\ timers, snapshots; coverage experimental\\
+\textbf{permissions} & 23.5 / 22.13 & \ct{--permission} (was \ct{--experimental-}) denies fs, net, child, worker, addons, WASI, FFI, inspector $\to$ \ct{ERR\_ACCESS\_DENIED}; grant \ct{--allow-fs-read=<path>}, \ct{-fs-write}, \ct{-child-process}, \ct{-worker}, \ct{-net} (25.0). A seat belt: symlinks followed, open fds bypass. (Deno: deny by default)\\
+\textbf{CLI} & 20.6 · 22.0 & \ct{--env-file} (stable 24.10; the real environment wins) · \ct{--watch} (stable 22.0) · \ct{--run} (a \ct{package.json} script, no pre/post hooks)\\
+\textbf{globals} & 21.0 · 22.4 & \ct{fetch}, \ct{WebSocket} stable · \ct{AsyncLocalStorage} stable 16.4\\
+\ct{node:sqlite} & 22.5; RC 25.7 & a \textbf{synchronous} API\\
+\bottomrule
+\end{tabular}}
+
+\section{npm}
+\ct{npm ci}: lockfile required, a mismatch with \ct{package.json} is an error, wipes
+\ct{node\_modules}, writes nothing. \textbf{npm 12} (8 Jul 2026; Node 26.11 still ships 11.20):
+dependency install scripts \textbf{blocked} unless the root's \ct{allowScripts} allows them;
+git and tarball-URL deps off.
+
+\section{Remember}
+\emph{Kernel for sockets, pool for files and DNS, workers for CPU — \ct{async} never unblocks
+the one JS thread.}
+
+\end{multicols}
+
+{\footnotesize\color{sheetGrey}\raggedright\noindent\textit{Related:} \texttt{js-event-loop} ·
+\texttt{js-types-coercion-modules} (CJS $\leftrightarrow$ ESM, \texttt{require(esm)}) ·
+\texttt{js-async} · \texttt{js-engines-performance} · \texttt{ts-config-and-practice} ·
+\texttt{dependency-management} · \texttt{supply-chain-security} ·
+\texttt{linux-performance-observability}\par}
+
+\end{document}

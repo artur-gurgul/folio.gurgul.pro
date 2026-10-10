@@ -1,0 +1,132 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Linux filesystems &amp; storage — VFS, page cache, durability — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/linux/linux-filesystems-storage.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">310</span></a></li><li><a class="side-area" href="/folios.html?area=ai" data-area="ai">ai<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=ble" data-area="ble">ble<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=c" data-area="c">c<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cicd" data-area="cicd">cicd<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=crypto" data-area="crypto">crypto<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=dev-tools" data-area="dev-tools">dev-tools<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=iot" data-area="iot">iot<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=javascript" data-area="javascript">javascript<span class="count">5</span></a></li><li><a class="side-area current" href="/folios.html?area=linux" data-area="linux">linux<span class="count">8</span></a></li><li><a class="side-area" href="/folios.html?area=macos" data-area="macos">macos<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=recall" data-area="recall">recall<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=runtime" data-area="runtime">runtime<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li><li><a class="side-area" href="/folios.html?area=typescript" data-area="typescript">typescript<span class="count">3</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Linux filesystems &amp; storage — VFS, page cache, durability</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">linux · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A <strong>file descriptor</strong> indexes the process’s fd table <span class="math">→</span> an <strong>open file
+description</strong> (offset, status flags) <span class="math">→</span> an <strong>inode</strong> (metadata + block map, <em>no name</em>);
+<strong>dentries</strong> map names to inodes. <code>write()</code> only dirties the <strong>page cache</strong>; data is
+durable after <code>fsync()</code>, and a file is replaced atomically by <strong>write tmp, fsync, rename,
+fsync the directory</strong>.</p>
+<p class="sheet-tools"><a class="sheet-download" href="linux-filesystems-storage.pdf" download>Download PDF</a> <a href="linux-filesystems-storage.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/linux/linux-filesystems-storage.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="linux-filesystems-storage-fig1.svg" width="628" height="187" class="wide" alt="Linux filesystems &amp; storage — VFS, page cache, durability — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">VFS objects and descriptors</span></h3>
+<ul>
+<li><strong>superblock</strong> = a mounted fs · <strong>inode</strong> = one object (mode, owner, size,  nlink, times, block map) · <strong>dentry</strong> = name <span class="math">→</span> inode, cached in RAM (the  <strong>dcache</strong>), never saved · <strong>file</strong> = an open file description.</li>
+<li><code>dup</code> / <code>fork</code> copy descriptors that share one description: one offset, one set of  status flags (<code>O_APPEND</code>, <code>O_NONBLOCK</code>); <code>FD_CLOEXEC</code> is per descriptor.  Another <code>open()</code> gets its own offset.</li>
+<li><strong>Hard link</strong>: one more name for the inode, no “original”; same mount only  (<code>EXDEV</code>), never a directory (<code>EPERM</code>). <strong>Symlink</strong>: own inode holding a path;  crosses filesystems, may dangle, resolves from the link’s directory; <span class="math">&gt;</span>40 in one lookup  <span class="math">→</span> <code>ELOOP</code>. <code>unlink</code> drops a name; the inode lives on until nlink = 0 <em>and</em>  the last descriptor is closed.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Durability ladder — what survives power loss</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>call returned</strong></th><th><strong>durable</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>write()</code></td><td>nothing — copied into the page cache, no device I/O</td></tr>
+<tr><td><code>fdatasync(fd)</code></td><td>data + metadata needed to read it back (size), not mtime / atime</td></tr>
+<tr><td><code>fsync(fd)</code></td><td>data + all of the inode + a flush of the device’s write cache</td></tr>
+<tr><td><code>fsync(dirfd)</code></td><td>the directory: a new, renamed or removed <em>name</em></td></tr>
+<tr><td><code>O_DSYNC</code> · <code>O_SYNC</code></td><td>as fdatasync · fsync, after every <code>write</code>; <code>RWF_DSYNC</code> ·
+ <code>RWF_SYNC</code> (4.7) per call</td></tr>
+<tr><td><code>syncfs(fd)</code> · <code>sync()</code></td><td>one filesystem · all; on Linux both wait for the I/O</td></tr>
+</tbody>
+</table></p>
+<p>A flush reaches the device as <code>REQ_PREFLUSH</code> (empty the volatile cache first) + <code>REQ_FUA</code> (complete only once on stable media); stripped if there is no volatile cache.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Crash-safe replace</span></h3>
+<pre class="sheet-code"><code class="hljs language-plaintext">int fd = open(&quot;conf.tmp&quot;, O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0644);
+write_all(fd, buf, len);           /* page cache only         */
+if (fsync(fd) != 0) abort();       /* data + inode on disk    */
+close(fd);
+rename(&quot;conf.tmp&quot;, &quot;conf.json&quot;);   /* atomic replace          */
+int dir = open(&quot;.&quot;, O_RDONLY | O_DIRECTORY);
+fsync(dir); close(dir);            /* the new name is durable */</code></pre>
+<p><code>rename</code>: <code>conf.json</code> is never missing (both names may briefly exist); same mount only (<code>EXDEV</code>). <code>renameat2</code> (3.15): <code>RENAME_NOREPLACE</code>, <code>RENAME_EXCHANGE</code> (swap). <code>O_TMPFILE</code> (3.11): a file with no name until <code>linkat()</code> gives it one, when complete. ext4 <code>auto_da_alloc</code> (2.6.30) eases code that skips fsync — no guarantee.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Writeback errors — “fsyncgate” (PostgreSQL, 2018)</span></h3>
+<p>After a failed writeback the pages were marked <strong>clean</strong>: a retried <code>fsync</code> “succeeded” over lost data. <strong>4.13</strong>: the error reaches every fd that might have written it (tracked by <code>errseq_t</code>); <strong>4.16</strong>: an fd opened after the error still gets it if nobody has seen it — and only <strong>once</strong>. PostgreSQL now PANICs on fsync failure. <code>syncfs</code> reports errors since 5.8; 7.0 adds a generic <code>fserror</code> feed to fsnotify.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">I/O paths</span></h3>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><code>O_DIRECT</code></td><td>skips the cache; alignment from <code>STATX_DIOALIGN</code> (6.1); <em>not</em> O_SYNC’s
+ guarantee; don’t mix with buffered I/O or mmap on one file</td></tr>
+<tr><td><code>RWF_DONTCACHE</code></td><td>6.14: buffered, but the pages are dropped after the I/O</td></tr>
+<tr><td><code>RWF_ATOMIC</code></td><td>6.11 (ext4, XFS: 6.13): O_DIRECT, power-of-2 size, aligned, within
+ <code>STATX_WRITE_ATOMIC</code> <span class="math">⇒</span> never torn by power loss</td></tr>
+<tr><td>io_uring</td><td>5.1: submission + completion rings mmap-shared with the kernel; many ops per
+ <code>io_uring_enter</code>, none with SQPOLL; <code>kernel.io_uring_disabled</code> = 0 / 1 / 2</td></tr>
+<tr><td>reflink</td><td><code>FICLONE</code> (4.5, was Btrfs-only): share extents, CoW on write, same fs only;
+ <code>cp</code> tries it by default</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Mounts and fstab</span></h3>
+<p><code>relatime</code> (default, 2.6.30): atime written only if older than m/ctime or <span class="math">&gt;</span>1 day; <code>noatime</code> never; <code>lazytime</code> (4.0) keeps timestamps in memory until another inode change, fsync, eviction or 24 h. <code>defaults</code> = rw, suid, dev, exec, auto, nouser, async — add <code>nosuid,nodev,noexec</code> for untrusted media. fstab: spec (<code>UUID=</code>, <code>LABEL=</code>, <code>PARTUUID=</code>) · target · type · options · dump · fsck pass (root 1, others 2, 0 skip); <code>nofail</code> for optional disks. Weekly <code>fstrim</code> is enough; <code>-o discard</code> can cost speed.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Filesystems</span></h3>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><strong>ext4</strong></td><td>jbd2 journal, commit every 5 s. <code>data=ordered</code> (default): data on disk before
+ its metadata commits · <code>writeback</code>: stale data possible after a crash · <code>journal</code>: all
+ written twice, no delalloc, no O_DIRECT. Extents, delayed allocation; <strong>inode count fixed
+ at mkfs</strong>; 5 % kept for root; shrinks only unmounted; file <span class="math">≤</span> 16 TiB (4 KiB blocks).
+ Stable 2.6.28 (2008).</td></tr>
+<tr><td><strong>XFS</strong></td><td><strong>allocation groups</strong> allocate in parallel; reflink on by default; inodes on
+ demand. Grows mounted; shrinks only inside the last AG. RHEL default since 7. V4 format removal due
+ Sept 2030; 7.0: self-healing daemon; 7.2: zoned allocator out of experimental.</td></tr>
+<tr><td><strong>Btrfs</strong></td><td>CoW B-trees; checksums on data + metadata (crc32c; xxhash, sha256, blake2b: 5.5);
+ subvolumes, snapshots, send/receive, scrub; zstd (4.14), zlib, lzo. mkfs: data <code>single</code>,
+ metadata <code>DUP</code>. <strong>RAID56 “unstable”</strong> (write hole) — metadata on raid1 / raid1c3.
+ Merged 2.6.29; Fedora desktop default since 33.</td></tr>
+<tr><td>tmpfs</td><td>page cache + swap; default size half of RAM, not preallocated.</td></tr>
+<tr><td>bcachefs</td><td>merged 6.7 (2024), removed 6.18 (2025).</td></tr>
+<tr><td>ZFS</td><td>out of tree (CDDL) — its own folio.</td></tr>
+</tbody>
+</table></p>
+<p><strong>Journal</strong>: log the change, commit, then write it home — replay after a crash. <strong>CoW</strong>: new blocks, then flip a pointer — snapshots share blocks; in-place rewrites fragment, and defrag un-shares reflinked or snapshotted extents (space grows).</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Block layer, device mapper, LVM</span></h3>
+<ul>
+<li><strong>bio</strong> <span class="math">→</span> <strong>blk-mq</strong> (3.13): per-CPU staging queues <span class="math">→</span> hardware dispatch  queues; the single-lock queue (ceiling <span class="math">≈</span>800 000 IOPS) went in 5.0.  <code>/sys/block/&lt;dev&gt;/queue/scheduler</code>: <code>mq-deadline</code> on one hardware queue, <code>none</code>  on many (NVMe); <code>bfq</code>, <code>kyber</code>.</li>
+<li>dm targets: <code>crypt</code> · <code>integrity</code> (per-sector tags; + crypt = authenticated) ·  <code>verity</code> (read-only hash tree) · <code>thin</code> · <code>cache</code> · linear / striped ·  <code>pcache</code> (6.18) · <code>inlinecrypt</code> (7.2).</li>
+<li><strong>LVM</strong>: PV <span class="math">→</span> VG <span class="math">→</span> LV (linear, striped, raid, thin, cache, vdo);  <code>lvextend -r</code> grows the fs too. Thick snapshot: a fixed CoW area — extend it before it  fills. <strong>Thin pool</strong>: overprovisioned; full <span class="math">→</span> errors, or writes queued 60 s;  <code>fstrim</code> returns freed chunks.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">md RAID</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>level</strong></th><th><strong>usable</strong></th><th><strong>survives</strong></th><th><strong>notes</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>0</td><td><span class="math">n</span></td><td>0 disks</td><td>stripe: one loss = everything</td></tr>
+<tr><td>1</td><td>1 disk</td><td><span class="math">n-1</span></td><td>mirror</td></tr>
+<tr><td>5</td><td><span class="math">n-1</span></td><td>1</td><td>distributed parity; write hole <span class="math">→</span> journal (4.4) or PPL (4.12)</td></tr>
+<tr><td>6</td><td><span class="math">n-2</span></td><td>2</td><td>dual parity</td></tr>
+<tr><td>10</td><td><span class="math">n/2</span></td><td><span class="math">≥</span>1</td><td>2 copies; near / far / offset layouts</td></tr>
+</tbody>
+</table></p>
+<p>Write-intent <strong>bitmap</strong>: after a crash, resync only the marked regions. <code>echo check &gt; md/sync_action</code> scrubs (<code>repair</code> fixes); state in <code>/proc/mdstat</code>.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Encryption: whole device vs per directory</span></h3>
+<p><strong>LUKS2</strong> (default) on dm-crypt: a passphrase, stretched by <strong>Argon2</strong> (LUKS1: PBKDF2), opens a <strong>keyslot</strong> holding the one <strong>volume key</strong>; 32 keyslots (LUKS1: 8); <code>aes-xts-plain64</code>. Damaged header = undecryptable: <code>luksHeaderBackup</code>. <strong>fscrypt</strong> (ext4, F2FS, UBIFS, CephFS): per directory; contents, names, symlink targets — <em>not</em> sizes, times, permissions, xattrs; v2 policies (5.4).</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">df vs du, and “No space left”</span></h3>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><code>df</code> full, <code>du</code> small</td><td>deleted but still open (rotated log): <code>lsof +L1</code>; restart or
+ truncate <code>/proc/&lt;pid&gt;/fd/&lt;n&gt;</code></td></tr>
+<tr><td>files “vanish”</td><td>a mount over a non-empty directory hides them</td></tr>
+<tr><td>95 %, root still writes</td><td>ext4 keeps 5 % for root (<code>tune2fs -m</code>)</td></tr>
+<tr><td><code>ENOSPC</code>, space free</td><td><strong>inodes</strong> gone (<code>df -i</code>): fixed count on ext4</td></tr>
+<tr><td><code>ls -l</code> ≫ <code>du</code></td><td>sparse file: holes (<code>fallocate</code> <code>PUNCH_HOLE</code>, 2.6.38) take no blocks</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">fsync the file but not the directory: after a crash the new name can be missing.</li>
+<li class="trap">Retrying a failed <code>fsync</code> and trusting the “success”.</li>
+<li class="trap">Replace via tmp + rename = a <em>new inode</em>: hard links and <code>tail -f</code> keep the old.</li>
+<li class="trap">Parent and child after <code>fork</code> share an offset — interleaved writes to one log.</li>
+<li class="trap">RAID and snapshots are not backups: same disks, and <code>rm</code> is mirrored too.</li>
+</ul>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> <code>os-fundamentals</code> (mmap, page
+faults) · <code>linux-memory-oom</code> · <code>linux-performance-observability</code> (I/O latency) ·
+<code>namespaces-cgroups-containers</code> (overlayfs) · <code>linux-boot-process</code> · ZFS — pools,
+copy-on-write, checksums, snapshots · SQLite internals for app engineers (+ GRDB)</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=linux" title="area">linux</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=backend" title="platform">backend</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=data" title="topic">data</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=platform-apis" title="topic">platform-apis</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=debugging" title="topic">debugging</a></li><li class="sheet-tag"><a href="/folios.html?tag=vfs">vfs</a></li><li class="sheet-tag"><a href="/folios.html?tag=inode">inode</a></li><li class="sheet-tag"><a href="/folios.html?tag=dentry">dentry</a></li><li class="sheet-tag"><a href="/folios.html?tag=file-descriptor">file-descriptor</a></li><li class="sheet-tag"><a href="/folios.html?tag=hard-link">hard-link</a></li><li class="sheet-tag"><a href="/folios.html?tag=symlink">symlink</a></li><li class="sheet-tag"><a href="/folios.html?tag=page-cache">page-cache</a></li><li class="sheet-tag"><a href="/folios.html?tag=writeback">writeback</a></li><li class="sheet-tag"><a href="/folios.html?tag=fsync">fsync</a></li><li class="sheet-tag"><a href="/folios.html?tag=atomic-rename">atomic-rename</a></li><li class="sheet-tag"><a href="/folios.html?tag=io-uring">io-uring</a></li><li class="sheet-tag"><a href="/folios.html?tag=ext4">ext4</a></li><li class="sheet-tag"><a href="/folios.html?tag=xfs">xfs</a></li><li class="sheet-tag"><a href="/folios.html?tag=btrfs">btrfs</a></li><li class="sheet-tag"><a href="/folios.html?tag=copy-on-write">copy-on-write</a></li><li class="sheet-tag"><a href="/folios.html?tag=snapshots">snapshots</a></li><li class="sheet-tag"><a href="/folios.html?tag=checksums">checksums</a></li><li class="sheet-tag"><a href="/folios.html?tag=lvm">lvm</a></li><li class="sheet-tag"><a href="/folios.html?tag=raid">raid</a></li><li class="sheet-tag"><a href="/folios.html?tag=dm-crypt">dm-crypt</a></li><li class="sheet-tag"><a href="/folios.html?tag=luks">luks</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=linux%2Flinux-filesystems-storage.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/315">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

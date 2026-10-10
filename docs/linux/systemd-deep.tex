@@ -1,0 +1,379 @@
+% systemd-deep.tex — systemd as PID 1 and service manager: unit types and the load path, drop-ins,
+% the two dependency axes (requirement vs ordering), the service state machine, Type=, Restart= and
+% the start-rate limit, stopping and KillMode=, Exec prefixes, sd_notify, templates + specifiers,
+% socket and timer activation, the slice / scope / service cgroup tree, resource control and
+% delegation, the sandboxing directives, credentials, the user manager and linger, transient units,
+% sysext / confext, soft-reboot, journald + journalctl, systemd-analyze, and v247 → v262.
+% Pictures: one service on both axes · the service state machine · the Restart= matrix · the cgroup
+% tree · a release timeline.
+% Sources (checked 2026-10-09):
+%   man7.org (pages carrying v262 settings): systemd.unit(5) (unit types; load-path tables, system
+%     + user; drop-ins merged alphanumerically, dash-truncated foo-.service.d; masked = /dev/null or
+%     empty; Wants / Requires ("fails only with After="; stop / restart propagate "with or without
+%     After=") / Requisite / BindsTo 201 (+ After= "strictly has to be in active state") / PartOf 201
+%     / Upholds 249 / Conflicts; OnFailure, OnSuccess 249; ordering "independent of and orthogonal
+%     to"; stop = inverse; stop before start; Condition skips, Assert fails; StartLimit* "apply to
+%     all kinds of starts (including manual)" — wording read on manpages.debian.org testing;
+%     reset-failed flushes; specifiers %i %I %n %N %p %u %h %t %S %C %L %E %d)
+%   · systemd.service(5) (Type= values; simple default with ExecStart=, oneshot without; simple
+%     "will report success even if the service's binary cannot be invoked"; "recommended to use
+%     Type=exec for long-running services"; notify / notify-reload / dbus preferred for readiness;
+%     idle 5 s; one ExecStart= except oneshot; prefixes - : @ + ! |; ExecCondition 1-254 skip, 255
+%     fail; Restart= table; on-failure "the recommended choice for long-running services";
+%     RestartSec 100 ms; RestartSteps / RestartMaxDelaySec / RestartMode 254;
+%     RestartRandomizedDelaySec 262; RestartMode=direct skips failed, OnFailure / OnSuccess skipped;
+%     WatchdogSec → SIGABRT; NotifyAccess=main implied; default deps; SuccessExitStatus 0 + SIGHUP
+%     SIGINT SIGTERM SIGPIPE; FileDescriptorStoreMax 0)
+%   · systemd.exec(5) (DynamicUser 232: RemoveIPC, PrivateTmp=disconnected unless set, NoNewPrivileges,
+%     RestrictSUIDSGID, ProtectSystem=strict, ProtectHome=read-only; ProtectSystem yes / full /
+%     strict; ProtectHome; PrivateDevices; PrivateNetwork loopback only; SystemCallFilter, ~ deny,
+%     SystemCallErrorNumber; *Directory= roots; LoadCredential 247, read-only unswappable dir, only the
+%     unit's UID; environment "exposed to unprivileged clients via D-Bus"; $SERVICE_RESULT values;
+%     StandardOutput default journal)
+%   · systemd.kill(5) (KillMode control-group default, mixed, process / none discouraged; KillSignal
+%     SIGTERM → TimeoutStopSec → FinalKillSignal SIGKILL) · systemd-system.conf(5) (timeouts 90 s;
+%     StartLimit 10 s / 5; RestartSec 100 ms; DefaultTasksMax 15 %) · systemd.resource-control(5)
+%     (CPUWeight 1-10000, 100, idle; CPUQuota; period 100 ms; IOWeight; TasksMax; Slice= default
+%     system.slice; Delegate=, DelegateSubgroup=; IPAddressAllow / Deny system services only;
+%     user@1000.service Delegate=yes)
+%   · systemd.timer(5) (monotonic bases; AccuracySec 1min; RandomizedDelaySec; RandomizedOffsetSec
+%     258; Persistent only for OnCalendar, last trigger stored on disk, missed run fires when the
+%     timer is activated; active unit "not restarted")
+%     · systemd.time(7) (calendar syntax; daily / weekly normalised; / .. ~; time zones)
+%     · systemd.socket(5) (Accept= default no; Accept=no "preferable" for performance; template per
+%     connection; MaxConnections 64; TriggerLimit 2 s, 200 / 20) · sd_listen_fds(3)
+%     (SD_LISTEN_FDS_START 3; LISTEN_PID / FDS / FDNAMES) · sd_notify(3) (READY, RELOADING +
+%     MONOTONIC_USEC, STOPPING, STATUS, WATCHDOG, trigger, EXTEND_TIMEOUT_USEC, FDSTORE;
+%     NOTIFY_SOCKET) · systemd.syntax(7) (# and ; comments at line start; empty assignment resets)
+%   · systemd.special(7) (network.target "only very weakly defined"; network-online Wants + After;
+%     -.slice, system.slice, user.slice, machine.slice, init.scope) · user@.service(5)
+%     (user-UID.slice TasksMax=33%) · pam_systemd(8) (scope per session, user slice; user manager,
+%     slice and /run/user/UID end with the last session) · loginctl(1) (enable-linger)
+%   · systemctl(1) (edit → drop-in, reload "equivalent to daemon-reload"; --full; --runtime; enable
+%     makes [Install] symlinks, reloads, does not start; mask; revert undoes edit, set-property,
+%     mask; set-property persistent unless --runtime; soft-reboot 254; is-system-running states;
+%     daemon-reload re-runs generators; daemon-reexec serialises) · org.freedesktop.systemd1(5) (the
+%     eight ActiveState values) · systemd-run(1) (transient service / scope / timer; --scope forked by
+%     systemd-run) · systemd-analyze(1) (blame "might be misleading"; critical-chain @ / +; verify
+%     checks unknown directives, missing deps, missing executables — not cycles; security
+%     0.0-10.0, high = little sandboxing) · daemon(7) (socket activation: parallel start, on demand,
+%     "the socket stays bound and accessible during the restart") · systemd.special(7) user
+%     default.target
+%   · journald.conf(5) (Storage= values; "Defaults to persistent … determined at compilation time";
+%     10 % / 15 % capped at 4G; 10000 messages in 30 s per service) · journalctl(1) (matches: other
+%     fields AND, same field OR, "+" OR; -b offsets; -p ranges; -g PCRE; vacuum only archived files;
+%     systemd-journal / adm / wheel read all) · systemd-sysext(8) (/usr + /opt, confext /etc;
+%     extension-release ID + SYSEXT_LEVEL or VERSION_ID; 248) · systemd-soft-reboot.service(8) (/run
+%     stays; fd store handed on; kernel and sysctls not reset; /run/nextroot)
+%   systemd.io/CGROUP_DELEGATION (single writer; slices = inner nodes, services + scopes = leaves;
+%     a delegated service moves its own process into a sub-cgroup)
+%   api.github.com/repos/systemd/systemd/releases (published_at + notes): v247 2020-11-26 · v250
+%     2021-12-23 (encrypted credentials, systemd-creds) · v253 2023-02-15 (Type=notify-reload) · v254
+%     2023-07-28 (soft-reboot, confext, RestartSteps, RestartMode) · v256 2024-06-11 (run0 =
+%     systemd-run multi-call; refuses to boot on cgroup v1 by default) · v258 2025-09-17 (cgroup v1
+%     removed; /dev/initctl, telinit, runlevel removed; "|" prefix; RandomizedOffsetSec) · v259
+%     2025-12-17 (journal Storage= default persistent) · v260 2026-03-17 (SysV service scripts +
+%     rc-local removed) · v262 2026-09-22 (RestartRandomizedDelaySec)
+%   github.com/systemd/systemd/issues/39338 ("Job … deleted to break ordering cycle": the deleted
+%     job is often not the culprit)
+% Not repeated: boot chain, target order, rescue / emergency, UKI, systemd-analyze time
+% (linux-boot-process); Memory*= knobs, OOMPolicy=, systemd-oomd (linux-memory-oom); cgroup v2
+% files and the v1 sunset of the container stack (namespaces-cgroups-containers); capability sets,
+% no_new_privs, seccomp internals, run0 + polkit (linux-security-permissions).
+% @labels: area=linux kind=tooling platform=backend topic=platform-apis,tooling,debugging discussion=321
+% @tags: systemd, pid-1, unit-files, dependencies, ordering, service-type, restart-policy, drop-ins, socket-activation, timers, journald, cgroup-v2, slices, sandboxing, no-new-privs, seccomp, credentials, systemd-analyze
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+% unit-file listing — literate kills the mono font's ligatures
+\lstdefinelanguage{UnitSheet}{
+  sensitive=true, morecomment=[l]{\#},
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {>=}{{\hbox{>}\hbox{=}}}2 {<=}{{\hbox{<}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}          % "--" without the ligature
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\small\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  u/.style={box, font=\scriptsize\ttfamily, inner sep=2pt, minimum height=5mm},
+  st/.style={box, font=\scriptsize, inner sep=2pt, minimum height=5mm, minimum width=15mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  dep/.style={->, thick, draw=sheetBlue},
+  ord/.style={->, thick, dashed, draw=sheetOrange},
+  bad/.style={->, thick, draw=sheetRed},
+  cg/.style={draw=#1, fill=#1!8, rounded corners=1.5pt, font=\tiny\ttfamily, inner sep=1.2pt,
+             anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{systemd — units, dependencies, services, sandbox, journal}{linux · folio}
+
+\oneliner{systemd (PID~1) turns \textbf{unit files} into a \textbf{transaction of jobs} on two
+independent axes — \textbf{requirement} (\ct{Wants}, \ct{Requires}: \emph{what} starts) and
+\textbf{ordering} (\ct{After}, \ct{Before}: \emph{when}) — and gives each service its own
+\textbf{cgroup} to limit, log and kill \emph{all} its processes.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── dependency vs ordering graph ──
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (-0.1,3.15) {One service, two axes: requirement (\textcolor{sheetBlue}{solid}) $\neq$ ordering (\textcolor{sheetOrange}{dashed})};
+  \node[u, fill=sheetOrange!12, draw=sheetOrange] (app) at (3.9,1.45) {app.service};
+  \node[u] (tgt) at (3.9,2.6) {multi-user.target};
+  \node[u] (pg)  at (0.85,1.45) {postgresql.service};
+  \node[u] (rd)  at (0.85,0.4) {redis.service};
+  \node[u] (mnt) at (6.95,1.45) {srv-data.mount};
+  \node[u] (sock) at (6.95,0.4) {app.socket};
+  \node[u, fill=black!4, draw=sheetGrey] (log) at (3.9,0.4) {app-log.service};
+  \draw[dep] (tgt) -- node[lbl, right]{\ct{Wants} (\ct{enable})} (app);
+  \draw[dep] ([yshift=2pt]app.west) -- node[lbl, above]{\ct{Requires}} ([yshift=2pt]pg.east);
+  \draw[ord] ([yshift=-2pt]app.west) -- node[lbl, below, text=sheetOrange!80!black]{\ct{After}} ([yshift=-2pt]pg.east);
+  \draw[dep] (app.south west) -- node[lbl, above, sloped, pos=0.62]{\ct{Wants}} (rd.north east);
+  \draw[dep] ([yshift=2pt]app.east) -- node[lbl, above]{\ct{BindsTo}} ([yshift=2pt]mnt.west);
+  \draw[ord] ([yshift=-2pt]app.east) -- node[lbl, below, text=sheetOrange!80!black]{\ct{After}} ([yshift=-2pt]mnt.west);
+  \draw[dep, draw=sheetGreen!60!black] (sock.north west) -- node[lbl, above, sloped, pos=0.38]{activates} (app.south east);
+  \draw[dep, draw=sheetGrey] (log) -- node[lbl, right, pos=0.45]{\ct{PartOf}} (app);
+  \node[lbl, anchor=north west, align=left, text=sheetRed] at (-0.1,2.9) {redis: \ct{Wants}, no \ct{After} $\to$ starts in\\\textbf{parallel}; its failure is ignored};
+  \node[lbl, anchor=north east, align=right, text=sheetGreen!40!black] at (7.85,2.9) {pg start fails $\to$ app's job \textbf{fails}\\mount goes away $\to$ app \textbf{stops}};
+  \node[lbl, anchor=north, text=sheetGrey] at (3.9,0.08) {stop / restart app $\to$ app-log follows};
+  \draw[sheetGrey!50] (8.05,3.25) -- (8.05,-0.15);
+  % ── service state machine ──
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (8.2,3.15) {Service states (``Active:'' in \ct{systemctl status})};
+  \node[st, fill=black!5, draw=sheetGrey] (in) at (9.05,2.45) {inactive};
+  \node[st, text width=21mm] (act) at (11.6,2.45) {\textbf{activating}\\{\tiny ExecCondition, \dots Pre, ExecStart}};
+  \node[st, fill=sheetGreen!12, draw=sheetGreen!60!black, text width=15mm] (on) at (14.95,2.45) {\textbf{active}\\{\tiny running · exited}};
+  \node[st, text width=17mm] (deact) at (14.95,1.15) {deactivating\\{\tiny ExecStop, SIGTERM $\to$ inactive}};
+  \node[st, fill=sheetRed!10, draw=sheetRed, text width=15mm] (fail) at (11.6,1.15) {\textbf{failed}\\{\tiny \ct{OnFailure=} runs}};
+  \node[st, fill=sheetOrange!10, draw=sheetOrange, text width=15mm] (ar) at (9.05,1.15) {activating\\{\tiny (auto-restart)}};
+  \draw[flow] (in) -- node[lbl, above]{start} (act);
+  \draw[flow] (act) -- node[lbl, above]{\ct{Type=}: ready} (on);
+  \draw[flow] (on) -- node[lbl, right]{stop} (deact);
+  \draw[flow] ([xshift=2mm]on.north west) to[out=110, in=70, looseness=1.1] node[lbl, above]{reload: \ct{reloading}} ([xshift=-2mm]on.north east);
+  \draw[bad] (act) -- node[lbl, right, text=sheetRed]{fail} (fail);
+  \draw[bad] (on.south west) -- node[lbl, below, sloped, text=sheetRed, pos=0.4]{crash} (fail.east);
+  \draw[hot] (fail) -- node[lbl, above]{\ct{Restart=}} node[lbl, below]{matches} (ar);
+  \draw[hot] (ar.north east) -- node[lbl, above, sloped]{\ct{RestartSec}} (act.south west);
+  \node[lbl, anchor=north west, align=left, text=black!80] at (8.2,0.6) {\textbf{fail} = exit $\neq$ 0, unclean signal, timeout, watchdog; \ct{Restart=no} (default): stays \textbf{failed}.\\
+    $>$\ct{StartLimitBurst} (5) starts in \ct{StartLimitIntervalSec} (10\,s), manual ones too $\to$\\
+    \textcolor{sheetRed}{\ct{start-limit-hit}}: no more restarts until \ct{reset-failed}. \ct{RestartMode=direct} (254):\\
+    skips \textbf{failed}, so \ct{OnFailure=} does not run and dependants never see it.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\footnotesize\setstretch{1.0}\setlength{\parskip}{1.5pt plus 1pt}
+
+\hd{Units, and where they come from}
+\ct{.service} · \ct{.socket} · \ct{.timer} (both start the same-named service) · \ct{.path} (inotify)
+· \ct{.target} (sync point) · \ct{.mount} named after its path (\ct{/srv/data} $\to$
+\ct{srv-data.mount}) · \ct{.automount} · \ct{.swap} · \ct{.device} · \ct{.slice} (cgroup inner node)
+· \ct{.scope} (processes systemd did not fork). First match wins: \ct{/etc/systemd/system.control}
+(\ct{set-property}) $\to$ \ct{/run/systemd/transient} (\ct{systemd-run}) $\to$
+\textbf{\ct{/etc/systemd/system}} (admin) $\to$ \ct{/run/systemd/system} $\to$ \ct{/usr/local/lib/…}
+$\to$ \textbf{\ct{/usr/lib/systemd/system}} (package: never edit); \textbf{generators} (\ct{fstab}
+$\to$ \ct{.mount}) fill \ct{/run/systemd/generator*} at boot and on every \ct{daemon-reload}.
+\textbf{Drop-ins} \ct{app.service.d/*.conf} merge alphanumerically after the unit;
+\ct{foo-bar.service} also reads \ct{foo-.service.d/}. Linked to \ct{/dev/null}: \textbf{masked},
+never activated, not even as a dependency. \ct{\#} or \ct{;} comments only at the \emph{start} of a
+line (\ct{KEY=v \#x} keeps ``\ct{\#x}''); an empty assignment resets a list.
+
+\hd{Requirement directives — in \ct{[Unit]} of X}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}>{\ttfamily}L{12mm}L{66mm}@{}}
+\toprule
+Wants= & start them too; their failure is ignored — ``the recommended way'' \\
+Requires= & + their failed start fails X \emph{only if} X is \ct{After=} them; their explicit stop / restart stops / restarts X \\
+Requisite= & must already be active, else X fails at once \\
+BindsTo= & + X stops when they stop for \emph{any} reason; with \ct{After=}, X is active only while they are \\
+PartOf= & their stop / restart propagates to X — one way, nothing else \\
+Upholds= & (249) while X is up, restart them whenever found inactive or failed \\
+Conflicts= & starting one stops the other \\
+OnFailure= & started when X enters \textbf{failed} · \ct{OnSuccess=} (249) \\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item \textbf{Ordering is orthogonal}: no \ct{After=}/\ct{Before=} $\Rightarrow$ \emph{parallel};
+        stops run in inverse order, before starts. Services get \ct{Requires}+\ct{After}
+        \ct{sysinit.target}, \ct{After} \ct{basic.target}, \ct{Conflicts}+\ct{Before}
+        \ct{shutdown.target} unless \ct{DefaultDependencies=no}.
+  \item \ct{network.target} is ``only very weakly defined'': \ct{Wants=} +
+        \ct{After=network-online.target}. A \textbf{cycle} is broken by deleting a job, often an
+        innocent one's. \ct{Condition*=} false skips; \ct{Assert*=} fails.
+\end{itemize}
+
+\hd{\ct{Type=} — when has the start finished?}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}>{\ttfamily}L{12mm}L{66mm}@{}}
+\toprule
+simple & \ct{fork()} returned — default; reports success even if binary or \ct{User=} is missing \\
+exec & \ct{execve()} succeeded — the man page's pick for long-running services \\
+forking & the parent exited (legacy daemons; set \ct{PIDFile=}) \\
+oneshot & the process \emph{exited}; default without \ct{ExecStart=}; may have several \\
+dbus & \ct{BusName=} acquired \\
+notify & \ct{READY=1} arrived; \ct{notify-reload} (253): reload = SIGHUP $\to$ \ct{RELOADING=1}, \ct{READY=1} \\
+idle & after the other jobs, $\le$5\,s — console output only \\
+\bottomrule
+\end{tabular}}\par
+Clients need the service's own IPC up? \ct{notify}, \ct{notify-reload} or \ct{dbus}.
+
+\hd{\ct{Restart=} — which exits restart}
+\noindent\begin{tikzpicture}[sheet, x=1cm, y=1cm]
+  \foreach \c [count=\i from 0] in {no, always, on-success, on-failure, on-abnormal, on-abort, on-watchdog}
+    \node[font=\tiny\ttfamily, rotate=24, anchor=south west, inner sep=0.5pt] at (2.05+0.64*\i,0.02) {\c};
+  \foreach \r [count=\j from 0] in {clean exit code or signal, unclean exit code, unclean signal, timeout, watchdog} {
+    \node[font=\tiny, anchor=east, inner sep=1pt] at (2.0,-0.16-0.22*\j) {\r};
+    \draw[sheetGrey!40] (2.0,-0.05-0.22*\j) -- (6.5,-0.05-0.22*\j); }
+  \draw[sheetGrey!40] (2.0,-1.15) -- (6.5,-1.15);
+  \fill[sheetGreen!60!black, opacity=0.12] (2.0+0.64*3,-1.15) rectangle (2.64+0.64*3,-0.05);
+  \foreach \i/\j in {1/0,2/0, 1/1,3/1, 1/2,3/2,4/2,5/2, 1/3,3/3,4/3, 1/4,3/4,4/4,6/4}
+    \fill[sheetBlue] (2.32+0.64*\i,-0.16-0.22*\j) circle (0.06);
+  \node[font=\tiny, anchor=north west, align=left, text=sheetGreen!40!black, inner sep=0pt] at (6.62,-0.12) {\ct{on-failure}: ``the\\recommended\\choice for long-\\running services''};
+\end{tikzpicture}\par
+\textbf{Clean} = exit 0, or SIGHUP, SIGINT, SIGTERM, SIGPIPE (not for oneshot). Never after
+\ct{systemctl stop}.
+\ct{RestartSec=} 100\,ms; \ct{RestartSteps=} + \ct{RestartMaxDelaySec=} (254) back off
+exponentially; \ct{RestartRandomizedDelaySec=} (262) adds jitter.
+
+\hd{Timeouts, stopping, \ct{Exec*=} lines}
+\ct{TimeoutStartSec} / \ct{TimeoutStopSec} 90\,s (oneshot: no start timeout;
+\ct{EXTEND\_TIMEOUT\_USEC=} buys time). \ct{WatchdogSec=}: no \ct{WATCHDOG=1} in time $\to$
+\textbf{SIGABRT}. Stop: \ct{ExecStop=} $\to$ SIGTERM $\to$ \ct{TimeoutStopSec} $\to$ SIGKILL.
+\ct{KillMode=}\textbf{\ct{control-group}} (default) signals every process in the cgroup — a
+\ct{nohup cmd \&} child dies too · \ct{mixed}: TERM main, KILL the rest · \ct{process}, \ct{none}:
+discouraged, processes escape. \ct{ExecStopPost=} runs even after a crash, given
+\ct{\$SERVICE\_RESULT} (\ct{exit-code}, \ct{signal}, \ct{timeout}, \ct{oom-kill} …).
+No shell: prefixes \ct{-} failure ignored · \ct{@} sets \ct{argv[0]} · \ct{:} no \ct{\$VAR}
+expansion · \ct{+} full privileges · \ct{!} lifts only \ct{User=}/\ct{Group=} · \ct{|} (258) via the
+shell. \ct{ExecCondition=}: 1–254 skips, 255 fails.
+
+\hd{systemctl, systemd-analyze}
+\ct{enable} = the \ct{[Install]} symlinks (\ct{WantedBy=} $\to$ a \ct{.wants/} link) + reload, does
+\emph{not} start (\ct{\dd now} does) · \ct{edit} writes \ct{app.service.d/override.conf} and reloads
+(\ct{\dd full}: a copy); a new command there needs an empty \ct{ExecStart=} first — two get the unit
+refused · \ct{revert} undoes \ct{edit}, \ct{set-property}, \ct{mask} · \ct{cat} ·
+\ct{show -p NRestarts,Result} · \ct{daemon-reload} re-runs generators, rebuilds the tree.
+\ct{systemd-analyze blame} (own start time, ``might be misleading'': waiting counts) ·
+\ct{critical-chain} (\ct{@} active at, \ct{+} took) · \ct{verify} (unknown directives, missing
+binaries) · \ct{security} · \ct{calendar}.
+
+\columnbreak
+
+\hd{sd\_notify, templates, sockets}
+\begin{itemize}
+  \item To \ct{\$NOTIFY\_SOCKET}: \ct{READY=1} · \ct{RELOADING=1} · \ct{STOPPING=1} · \ct{STATUS=} ·
+        \ct{WATCHDOG=1} · \ct{FDSTORE=1}: fds kept across restarts (\ct{FileDescriptorStoreMax=}, 0).
+  \item \ct{app@.service} + \ct{start app@8080} $\Rightarrow$ \ct{\%i}=\ct{8080}. \ct{\%n} name ·
+        \ct{\%p} prefix · \ct{\%H} host · \ct{\%t} \ct{/run} · \ct{\%S} \ct{/var/lib} · \ct{\%d}
+        credentials. \textbf{\ct{\%u}, \ct{\%h} = the manager's user}: \ct{root} in a system unit,
+        not \ct{User=}.
+  \item Sockets: fds from \textbf{3} with \ct{LISTEN\_PID}, \ct{LISTEN\_FDS}, \ct{LISTEN\_FDNAMES};
+        bound before the service runs: start on demand, in parallel, restart without refusing
+        clients. \ct{Accept=no} (default): one service gets the listener — ``preferable'' for
+        performance; \ct{yes}: an \ct{app@.service} per connection (max 64). $>$20 triggers in
+        2\,s fail the socket.
+\end{itemize}
+
+\hd{Timers instead of cron}
+\ct{OnCalendar=} \ct{DayOfWeek Y-M-D h:m:s}; \ct{daily} = \ct{*-*-* 00:00:00}, \ct{weekly} =
+\ct{Mon *-*-* 00:00:00}; \ct{/} repeats, \ct{..} ranges, \ct{\textasciitilde} from month end, zone
+suffix. Monotonic: \ct{OnBootSec}, \ct{OnUnitActiveSec} \dots\ \ct{AccuracySec=} 1\,min ·
+\ct{RandomizedDelaySec=} · \ct{RandomizedOffsetSec=} (258, stable) · \ct{Persistent=true}: a missed
+calendar run fires on next activation · still running when it elapses $\Rightarrow$ \textbf{no
+second run}.
+
+\hd{The cgroup tree, resources, delegation}
+\noindent\begin{tikzpicture}[sheet, x=1cm, y=1cm]
+  \node[cg=sheetGrey] (r) at (0,0) {-.slice};
+  \node[cg=sheetGrey] (i) at (0.3,-0.27) {init.scope \textrm{PID 1}};
+  \node[cg=sheetBlue] (s) at (0.3,-0.54) {system.slice};
+  \node[cg=sheetOrange] (a) at (0.6,-0.81) {app.service};
+  \node[cg=sheetBlue] (sa) at (0.6,-1.08) {system-app.slice};
+  \node[cg=sheetOrange] (a8) at (0.9,-1.35) {app@8080.service};
+  \node[cg=sheetBlue] (us) at (3.75,0) {user.slice};
+  \node[cg=sheetBlue] (u1) at (4.05,-0.27) {user-1000.slice \textrm{TasksMax 33\%}};
+  \node[cg=sheetGreen!60!black] (se) at (4.35,-0.54) {session-3.scope \textrm{ssh}};
+  \node[cg=sheetOrange] (um) at (4.35,-0.81) {user@1000.service \textrm{Delegate}};
+  \node[cg=sheetBlue] (m) at (3.75,-1.35) {machine.slice \textrm{VMs, containers}};
+  \foreach \p/\c in {r/i, r/s, s/a, s/sa, sa/a8, us/u1, u1/se, u1/um}
+    \draw[sheetGrey] ([xshift=1.2mm]\p.south west) |- (\c.west);
+  \draw[sheetGrey] (r.east) -- (us.west);
+  \draw[sheetGrey] (3.5,0) |- (m.west);
+  \node[lbl, anchor=west, align=left] at (2.35,-0.95) {\textcolor{sheetBlue}{slices}: inner\\nodes, no\\processes};
+\end{tikzpicture}\par
+Services and scopes are the leaves. \ct{CPUWeight=} 1–10\,000 (100, or \ct{idle}): a share under
+contention · \ct{CPUQuota=150\%} = 1.5 CPUs · \ct{IOWeight=} · \ct{TasksMax=} (15\,\% of the pid
+limit). \ct{systemctl set-property app CPUWeight=200}: live and
+persistent (\ct{\dd runtime}: until reboot); \ct{systemd-cgtop}. \textbf{\ct{Delegate=yes}}:
+systemd keeps out of the subtree (one writer per cgroup); the service moves itself into a sub-cgroup.
+
+\hd{Sandboxing — directive by directive}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}>{\ttfamily}L{19mm}L{59mm}@{}}
+\toprule
+ProtectSystem= & \ct{yes}: \ct{/usr}, boot loader dirs read-only · \ct{full}: + \ct{/etc} · \ct{strict}: all but \ct{/dev /proc /sys} \\
+ProtectHome= & \ct{/home /root /run/user} empty · \ct{read-only} · \ct{tmpfs} \\
+PrivateTmp= & own \ct{/tmp} + \ct{/var/tmp}; \ct{disconnected}: a fresh tmpfs \\
+PrivateDevices= & pseudo devices only (null, zero, random, tty) \\
+PrivateNetwork= & own netns, loopback only \\
+NoNewPriv\-ileges= & \ct{execve} ignores setuid, file caps \\
+SystemCall\-Filter= & \ct{@system-service} allow-list (\ct{\textasciitilde} = deny); else SIGSYS kill \\
+DynamicUser= & (232) UID only while running; implies \ct{ProtectSystem=strict}, \ct{ProtectHome=read-only}, \ct{PrivateTmp}, \ct{NoNewPrivileges}, \ct{RestrictSUIDSGID}, \ct{RemoveIPC} \\
+State\-Directory= & \ct{/var/lib/app}: created, owned, writable under \ct{strict}; \ct{Cache-}, \ct{Logs-} \dots \\
+\bottomrule
+\end{tabular}}\par
+Also \ct{CapabilityBoundingSet=} · \ct{RestrictNamespaces=} · \ct{SystemCallArchitectures=native}. \textbf{\ct{systemd-analyze security app}}: exposure
+0.0–10.0, high = little sandboxing. \textbf{Secrets}: \ct{Environment=} is ``exposed to unprivileged
+clients via D-Bus''; \ct{LoadCredential=db:path} (247) $\to$ \ct{\$CREDENTIALS\_DIRECTORY/db}:
+read-only, unswappable, only the unit's UID; \ct{LoadCredentialEncrypted=} (250): sealed to TPM2
+and/or a host key.
+
+\hd{User manager, transient units, images}
+\begin{itemize}
+  \item \ct{user@1000.service} = \ct{systemctl \dd user} (\ct{\textasciitilde/.config/systemd/user},
+        \ct{WantedBy=default.target}); it ends with the \textbf{last session} unless
+        \ct{loginctl enable-linger}: then it starts at boot and survives logout.
+  \item \ct{systemd-run -p MemoryMax=1G \dd wait cmd}: a transient service; \ct{\dd scope}: run in the
+        foreground by \ct{systemd-run} itself. \ct{run0} is the same binary (256).
+  \item \ct{systemd-sysext} (248): read-only overlay of \ct{/usr} + \ct{/opt} from images whose
+        \ct{extension-release} matches \ct{os-release}; \ct{systemd-confext} (254): \ct{/etc}.
+        \ct{soft-reboot} (254): userspace only — kernel, \ct{/run}, sysctls stay.
+\end{itemize}
+
+\hd{journald + journalctl}
+Every service's stdout / stderr, as fields (\ct{MESSAGE}, \ct{PRIORITY}, \ct{\_PID},
+\ct{\_SYSTEMD\_UNIT}). \ct{Storage=} \ct{volatile} (\ct{/run/log/journal}) · \ct{persistent}
+(\ct{/var/log/journal}) · \ct{auto} (persistent if that exists) · \ct{none}; default
+\textbf{\ct{persistent}} since 259, a build option. Disk: 10\,\% used, 15\,\% kept free, each
+$\le$4\,G; 10\,000 messages / 30\,s per service. \ct{journalctl -u app -b -1 -p err \dd since -1h
+-g 'time.?out' -o json} · \ct{-f} · \ct{-k} · \ct{\_PID=42} · \ct{\dd vacuum-size=1G} (archived
+files only).
+
+\hd{Releases}
+\noindent\begin{tikzpicture}[sheet, x=1cm, y=1cm, ev/.style={font=\tiny, align=center, inner sep=0.5pt}]
+  \draw[thick, sheetGrey] (0,0) -- (7.9,0);
+  \foreach \x/\v/\d/\t/\p in {
+      0.55/247/2020-11/{credentials}/n,
+      1.3/250/2021-12/{encrypted\\credentials}/s,
+      2.1/254/2023-07/{soft-reboot,\\confext}/n,
+      2.95/256/2024-06/{run0; refuses\\cgroup v1}/s,
+      3.95/258/2025-09/{cgroup v1, telinit,\\runlevel removed}/n,
+      4.95/259/2025-12/{journal\\persistent}/s,
+      6.0/260/2026-03/{SysV scripts,\\rc-local removed}/n,
+      7.3/262/2026-09/{latest}/s} {
+    \fill[sheetOrange] (\x,0) circle (0.6mm);
+    \if\p n \node[ev, anchor=south] at (\x,0.07) {\textbf{\v} · \d\\\t};
+    \else \node[ev, anchor=north] at (\x,-0.07) {\textbf{\v} · \d\\\t}; \fi }
+\end{tikzpicture}
+
+\end{multicols}
+
+\noindent{\raggedright\footnotesize\color{sheetGrey}\textit{Related:} \texttt{linux-boot-process}
+(targets, PID~1, rescue) · \texttt{linux-memory-oom} (\ct{Memory*=}, systemd-oomd) ·
+\texttt{namespaces-cgroups-containers} (cgroup v2) · \texttt{linux-security-permissions} (caps,
+seccomp, run0) · \texttt{linux-performance-observability} · \texttt{os-fundamentals} ·
+\texttt{xnu-launchd-xpc}\par}
+
+\end{document}

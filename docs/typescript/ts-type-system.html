@@ -1,0 +1,138 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>TypeScript type system — how the checker reasons — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/typescript/ts-type-system.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">310</span></a></li><li><a class="side-area" href="/folios.html?area=ai" data-area="ai">ai<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=ble" data-area="ble">ble<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=c" data-area="c">c<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cicd" data-area="cicd">cicd<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=crypto" data-area="crypto">crypto<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=dev-tools" data-area="dev-tools">dev-tools<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=iot" data-area="iot">iot<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=javascript" data-area="javascript">javascript<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=linux" data-area="linux">linux<span class="count">8</span></a></li><li><a class="side-area" href="/folios.html?area=macos" data-area="macos">macos<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=recall" data-area="recall">recall<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=runtime" data-area="runtime">runtime<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li><li><a class="side-area current" href="/folios.html?area=typescript" data-area="typescript">typescript<span class="count">3</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">TypeScript type system — how the checker reasons</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">typescript · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A type is a <strong>set of values</strong>; assignability is <strong>subset</strong>, judged by
+<strong>shape</strong>, not by name. A union must be <strong>narrowed</strong> along control flow before use.
+Types are <strong>erased</strong>; enums, namespaces with code and parameter properties are TypeScript
+syntax that emits JavaScript. Soundness is traded away on purpose in known places: <code>any</code>, <code>as</code>, method
+parameters, <code>readonly</code> aliasing.</p>
+<p class="sheet-tools"><a class="sheet-download" href="ts-type-system.pdf" download>Download PDF</a> <a href="ts-type-system.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/typescript/ts-type-system.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="ts-type-system-fig1.svg" width="608" height="150" class="wide" alt="TypeScript type system — how the checker reasons — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Assignability is structural</h2>
+<ul>
+<li><code>x</code> is compatible with <code>y</code> if <code>y</code> has at least the members of <code>x</code>; names  never matter. Classes compare instance members only; a <code>private</code>/<code>protected</code>  member must come from the <em>same</em> declaration — the nominal escape.</li>
+<li><strong>Excess properties</strong>: only a <em>fresh</em> literal put straight into a typed slot —  <span class="c-sheetred"><em>Object literal may only specify known properties, and ’y’ does not exist in type
+ ’P’.</em></span> (2353). Via a variable, <code>as</code> or an index signature it passes.</li>
+<li><strong>Weak type</strong> (all optional, 2.4): even via a variable one property must match —  <span class="c-sheetred"><em>Type ’{ payload: string; … }’ has no properties in common with type
+ ’Options’.</em></span> (2559)</li>
+<li><code>object</code> (2.2) = non-primitives; “<code>object</code> is not <code>Object</code>”.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Top, bottom, special</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>type</strong></th><th><strong>takes <span class="math">→</span> to</strong></th><th><strong>what to remember</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>unknown</code></td><td>all <span class="math">→</span> <code>unknown</code>, <code>any</code></td><td>no member, call or arithmetic until narrowed
+(<code>=0pt=</code>, <code>!0pt=0pt=</code> allowed); <code>T | unknown</code> = <code>unknown</code>, <code>T &amp; unknown</code> = <code>T</code>;
+<code>keyof unknown</code> = <code>never</code>; truthy <span class="math">→</span> <code>{}</code> (4.8)</td></tr>
+<tr><td><code>any</code></td><td>all <span class="math">→</span> all but <code>never</code></td><td>checking off; members of <code>any</code> are <code>any</code>, so it
+spreads</td></tr>
+<tr><td><code>never</code></td><td>none <span class="math">→</span> all</td><td>empty set: <code>T | never</code> = <code>T</code>; what is left when every case
+is handled; <code>(): never</code> = cannot return (throws, loops)</td></tr>
+<tr><td><code>void</code></td><td><code>undefined</code></td><td><span class="math">≠</span> <code>undefined</code>: a <code>() =0pt&gt; void</code> slot takes
+<code>() =0pt&gt; number</code> (result ignored); a function <em>declared</em> <code>: void</code> may not return a value</td></tr>
+<tr><td><code>{}</code></td><td>all but nullish</td><td><code>5</code> and <code>&quot;&quot;</code> too — not “an empty object”</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Literals, widening, <code>as const</code></h2>
+<p><code>const s = &#39;a&#39;</code> is <code>&#39;a&#39;</code>, <code>let s = &#39;a&#39;</code> is <code>string</code>; properties widen too: <code>const req = { method: &#39;GET&#39; }</code> gives <code>method: string</code>, so passing it to a <code>&#39;GET&#39; | &#39;POST&#39;</code> parameter fails — <span class="c-sheetred"><em>Argument of type ’string’ is not assignable to
+parameter of type ’&quot;GET&quot; | &quot;POST&quot;’.</em></span> <code>as const</code>: no widening, <code>readonly</code> properties and tuples (<code>[10, 20] as const</code>: <code>readonly [10, 20]</code>); literals only; a referenced array inside stays mutable.</p>
+</section>
+<section class="sheet-section">
+<h2>annotation · <code>satisfies</code> · <code>as</code></h2>
+<pre class="sheet-code"><code class="hljs language-typescript"><span class="hljs-keyword">const</span> <span class="hljs-attr">r1</span>: <span class="hljs-title class_">Record</span>&lt;<span class="hljs-built_in">string</span>, <span class="hljs-built_in">string</span>&gt; = { <span class="hljs-attr">home</span>: <span class="hljs-string">&#x27;/&#x27;</span> };
+r1.<span class="hljs-property">hmoe</span>;   <span class="hljs-comment">// compiles: the annotation IS the type</span>
+<span class="hljs-keyword">const</span> r2 = { <span class="hljs-attr">home</span>: <span class="hljs-string">&#x27;/&#x27;</span> } <span class="hljs-keyword">satisfies</span> <span class="hljs-title class_">Record</span>&lt;<span class="hljs-built_in">string</span>, <span class="hljs-built_in">string</span>&gt;;
+r2.<span class="hljs-property">hmoe</span>;   <span class="hljs-comment">// error: inferred { home: string } is kept</span>
+<span class="hljs-keyword">const</span> r3 = {} <span class="hljs-keyword">as</span> <span class="hljs-title class_">Record</span>&lt;<span class="hljs-string">&#x27;home&#x27;</span>, <span class="hljs-built_in">string</span>&gt;;  <span class="hljs-comment">// compiles: a lie</span>
+<span class="hljs-keyword">const</span> n = <span class="hljs-string">&#x27;hi&#x27;</span> <span class="hljs-keyword">as</span> <span class="hljs-built_in">number</span>;     <span class="hljs-comment">// 2352 &quot;... may be a mistake&quot;</span>
+<span class="hljs-keyword">const</span> m = <span class="hljs-string">&#x27;hi&#x27;</span> <span class="hljs-keyword">as</span> <span class="hljs-built_in">unknown</span> <span class="hljs-keyword">as</span> <span class="hljs-built_in">number</span>;      <span class="hljs-comment">// forces anything</span></code></pre>
+<p><code>as</code>: only to a more or less specific type. <code>x!</code>: non-null, unchecked.</p>
+</section>
+<section class="sheet-section">
+<h2>Functions · readonly · optional</h2>
+<ul>
+<li>Fewer parameters fit (<code>forEach(x =0pt&gt; …)</code>); returns are covariant; optional  <span class="math">↔</span> required interchangeable; a rest = endless optionals.</li>
+<li>Parameters compare <strong>bivariantly</strong> (unsound) unless <code>strictFunctionTypes</code>: then  contravariantly — but <strong>method syntax</strong> <code>m(x: T): void</code> stays bivariant “to  ensure … <code>Array&lt;T&gt;</code> … relate covariantly”. Strict callback:  <code>onX: (e: E) =0pt&gt; void</code>.</li>
+<li>5.8 checks each branch of a returned <code>c ? a : b</code>: in <code>(s: string): URL</code>,  <code>c ? anyMap.get(s) : s</code> gives <span class="c-sheetred"><em>Type ’string’ is not assignable to type ’URL’.</em></span></li>
+<li><code>readonly</code> is ignored by assignability: <code>{ readonly x }</code> goes into <code>{ x }</code>  and is written through the alias. Arrays differ: <span class="c-sheetred"><em>The type ’readonly string[]’ is
+ ’readonly’ and cannot be assigned to the mutable type ’string[]’.</em></span> (4104).</li>
+<li><code>a?: T</code> may be <em>absent</em>, <code>a: T | undefined</code> must be <em>present</em>;  <code>exactOptionalPropertyTypes</code> bans writing <code>a: undefined</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Merging · interface vs type</h2>
+<p><code>interface</code>s of one name merge: a shared property must keep its type (2717), methods become overloads, the later block’s first; a <code>type</code> cannot reopen (<span class="c-sheetred"><em>Duplicate identifier</em></span>). A namespace merges into a class, function or enum, a class never into a class or variable; <code>declare module &#39;./x&#39;</code> only patches existing names. Only <code>type</code> names unions and tuples; <code>extends</code> reports a clashing property, <code>&amp;</code> silently makes it <code>never</code>.</p>
+</section>
+<section class="sheet-section">
+<h2>Narrowing — control-flow analysis</h2>
+<ul>
+<li><code>typeof</code>: <code>&quot;string&quot; &quot;number&quot; &quot;bigint&quot; &quot;boolean&quot; &quot;symbol&quot; &quot;undefined&quot; &quot;object&quot;
+ &quot;function&quot;</code> — <code>typeof null</code> is <code>&quot;object&quot;</code>. Truthiness drops <code>0 NaN &quot;&quot; 0n null
+ undefined</code>: <code>if (count)</code> loses <code>0</code>. <code>== null</code> matches <code>undefined</code> too.</li>
+<li><code>&quot;k&quot; in x</code> keeps members with <code>k</code> (optional <code>k</code>: both branches); a key no member  lists gives <code>x &amp; Record&lt;&quot;k&quot;, unknown&gt;</code> (4.9). <code>instanceof</code>: prototype chain.</li>
+<li>An assignment narrows within the declared type: <code>let x = c ? 10 : &#39;hi&#39;; x = true</code> —  <span class="c-sheetred"><em>Type ’boolean’ is not assignable to type ’string | number’.</em></span></li>
+<li>Also tracked: a test kept in a <code>const</code> (4.4); <code>const { kind, payload } = a</code>  (4.6); <code>switch (true)</code> (5.3); a closure made after the <em>last</em> assignment (5.4;  none if a closure assigns); <code>obj[key]</code> with both unchanged (5.5). A test truthy by  its very form is an error (5.6): <span class="c-sheetred"><em>This kind of expression is always truthy.</em></span> —  <code>if (/re/)</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Discriminated unions · guards</h2>
+<pre class="sheet-code"><code class="hljs language-typescript"><span class="hljs-keyword">type</span> <span class="hljs-title class_">Shape</span> =
+  | { <span class="hljs-attr">kind</span>: <span class="hljs-string">&#x27;circle&#x27;</span>; <span class="hljs-attr">r</span>: <span class="hljs-built_in">number</span> }
+  | { <span class="hljs-attr">kind</span>: <span class="hljs-string">&#x27;rect&#x27;</span>; <span class="hljs-attr">w</span>: <span class="hljs-built_in">number</span>; <span class="hljs-attr">h</span>: <span class="hljs-built_in">number</span> };
+<span class="hljs-keyword">function</span> <span class="hljs-title function_">area</span>(<span class="hljs-params"><span class="hljs-attr">s</span>: <span class="hljs-title class_">Shape</span></span>): <span class="hljs-built_in">number</span> {
+  <span class="hljs-keyword">switch</span> (s.<span class="hljs-property">kind</span>) {               <span class="hljs-comment">// the literal tag narrows s</span>
+    <span class="hljs-keyword">case</span> <span class="hljs-string">&#x27;circle&#x27;</span>: <span class="hljs-keyword">return</span> <span class="hljs-title class_">Math</span>.<span class="hljs-property">PI</span> * s.<span class="hljs-property">r</span> ** <span class="hljs-number">2</span>;
+    <span class="hljs-keyword">case</span> <span class="hljs-string">&#x27;rect&#x27;</span>:   <span class="hljs-keyword">return</span> s.<span class="hljs-property">w</span> * s.<span class="hljs-property">h</span>;
+    <span class="hljs-attr">default</span>: <span class="hljs-keyword">const</span> <span class="hljs-attr">gone</span>: <span class="hljs-built_in">never</span> = s; <span class="hljs-keyword">return</span> gone;
+  }                               <span class="hljs-comment">// a 3rd kind: error above</span>
+}
+<span class="hljs-keyword">const</span> ns = [<span class="hljs-number">1</span>, <span class="hljs-literal">undefined</span>, <span class="hljs-number">2</span>].<span class="hljs-title function_">filter</span>(<span class="hljs-function"><span class="hljs-params">x</span> =&gt;</span> x !== <span class="hljs-literal">undefined</span>);
+          <span class="hljs-comment">// number[]: the predicate x is number is inferred</span></code></pre>
+<ul>
+<li>Tag = a property every member has, typed by literals. A new kind fails  <code>gone: never</code> (<span class="c-sheetred"><em>Type ’{ kind: &quot;tri&quot;; … }’ is not assignable to type
+ ’never’.</em></span>), <code>s satisfies never</code> (1360), or — with no <code>default</code> under a declared  return type — <span class="c-sheetred"><em>Function lacks ending return statement and return type does not
+ include ’undefined’.</em></span> (2366).</li>
+<li>A predicate body is <strong>trusted, not checked</strong>: <code>…: x is string =0pt&gt; true</code>  compiles. Inferred only with no return annotation, one <code>return</code>, an unmutated  parameter, true <span class="math">⇒</span> <code>T</code> and false <span class="math">⇒</span> not <code>T</code>: so not for  <code>x =0pt&gt; !!x</code> on <code>number | undefined</code> (<code>0</code>).</li>
+<li><code>asserts c</code> / <code>asserts v is T</code> narrow <em>after</em> the call (the function throws  otherwise). The callee needs an explicitly typed name: <code>const check = (c: unknown):
+ asserts c =0pt&gt; …;</code> <code>check(v)</code> — <span class="c-sheetred"><em>Assertions require every name in the call
+ target to be declared with an explicit type annotation.</em></span> (2775)</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Enums as types</h2>
+<ul>
+<li><strong>Numeric</strong>: any <code>number</code> value fits, an out-of-range literal does not (5.0:  <code>1</code> into <code>enum E { A = 0, B = 2 }</code> errors); two enums never mix.</li>
+<li><strong>String</strong>: nominal — <code>const d: Dir = &#39;UP&#39;</code> gives <span class="c-sheetred"><em>Type ’&quot;UP&quot;’ is not
+ assignable to type ’Dir’.</em></span></li>
+<li>An enum is a union of its members; each member is a type that narrows  (<code>type Primary = Color.Red | Color.Blue</code>). Emit, <code>const enum</code>, erasability and the  <code>as const</code> alternative: <code>ts-config-and-practice</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Index signatures · tuples</h2>
+<ul>
+<li>Keys: <code>string</code>, <code>number</code>, <code>symbol</code>, template patterns  (<code>[k: `data-${string}`]: unknown</code>, 4.4), unions of  them. Under <code>[k: string]: number</code>, <code>name: string</code> is an error; a <code>number</code>  index must fit the <code>string</code> one.</li>
+<li><code>[number, number, number?]</code> has <code>length: 2 | 3</code>; a rest goes anywhere  (<code>[...boolean[], string]</code>); <code>readonly [string, number]</code> refuses  <code>pair[0] = …</code> — <span class="c-sheetred"><em>Cannot assign to ’0’ because it is a read-only property.</em></span></li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Timeline</h2>
+<figure class="sheet-figure"><img src="ts-type-system-fig2.svg" width="297" height="72" alt="TypeScript type system — how the checker reasons — figure 2" loading="lazy"></figure>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> <code>ts-generics-advanced</code> (variance, conditional and mapped types) ·
+<code>ts-config-and-practice</code> (<code>strict</code>, brands, parsing at the edge) ·
+<code>js-types-coercion-modules</code> · Typed contracts across iOS, Android, web &amp; backend ·
+RN testing + TypeScript · Kotlin type system &amp; generics — variance, reified, nullability</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=typescript" title="area">typescript</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=web" title="platform">web</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=language" title="topic">language</a></li><li class="sheet-tag"><a href="/folios.html?tag=typescript">typescript</a></li><li class="sheet-tag"><a href="/folios.html?tag=type-system">type-system</a></li><li class="sheet-tag"><a href="/folios.html?tag=structural-typing">structural-typing</a></li><li class="sheet-tag"><a href="/folios.html?tag=narrowing">narrowing</a></li><li class="sheet-tag"><a href="/folios.html?tag=discriminated-unions">discriminated-unions</a></li><li class="sheet-tag"><a href="/folios.html?tag=exhaustiveness">exhaustiveness</a></li><li class="sheet-tag"><a href="/folios.html?tag=type-guards">type-guards</a></li><li class="sheet-tag"><a href="/folios.html?tag=unknown-vs-any">unknown-vs-any</a></li><li class="sheet-tag"><a href="/folios.html?tag=never">never</a></li><li class="sheet-tag"><a href="/folios.html?tag=satisfies">satisfies</a></li><li class="sheet-tag"><a href="/folios.html?tag=as-const">as-const</a></li><li class="sheet-tag"><a href="/folios.html?tag=excess-property-check">excess-property-check</a></li><li class="sheet-tag"><a href="/folios.html?tag=interface-vs-type">interface-vs-type</a></li><li class="sheet-tag"><a href="/folios.html?tag=enums">enums</a></li><li class="sheet-tag"><a href="/folios.html?tag=declaration-merging">declaration-merging</a></li><li class="sheet-tag"><a href="/folios.html?tag=erasable-syntax">erasable-syntax</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=typescript%2Fts-type-system.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/334">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

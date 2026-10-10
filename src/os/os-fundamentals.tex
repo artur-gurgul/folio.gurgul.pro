@@ -1,0 +1,367 @@
+% os-fundamentals.tex — the operating-system overview: process vs thread (what each owns; Linux
+% threads are clone()d tasks), the process state machine (ps codes, zombies, orphans), fork / exec /
+% vfork / posix_spawn and what crosses each, scheduling (Linux policies, EEVDF, real-time, Darwin
+% QoS) and context switches, virtual memory (page-table walk, granules, TLB tags, huge pages, PTI),
+% page faults, mmap, system calls (privilege levels, per-architecture registers, errno, vDSO, ABI
+% stability), signals (numbers, defaults, delivery rules, handler safety), fds and futexes.
+% Pictures: a 48-bit virtual address walked through 4 page-table levels beside the TLB; the
+% page-fault decision; the process state machine.
+% Sources (checked 2026-10-09):
+%   man7.org pthreads(7) (process-wide vs per-thread attributes; NPTL 1:1, clone + futex, one PID
+%     per thread group, glibc 2.3.2 + Linux 2.6; soft RLIMIT_STACK = default thread stack) ·
+%     clone(2) (CLONE_THREAD needs CLONE_SIGHAND needs CLONE_VM; getpid = TGID, gettid) ·
+%     github.com/torvalds/linux include/uapi/linux/resource.h (_STK_LIM 8 MiB)
+%   man7.org ps(1) (state codes D I R S T t X Z) · wait(2) (zombie keeps PID, status, rusage; a
+%     full table blocks new processes; adopted by init or the nearest subreaper; SIG_IGN /
+%     SA_NOCLDWAIT) · PR_SET_CHILD_SUBREAPER(2const) (Linux 3.4) · _exit(2) (no atexit, no stdio flush)
+%   man7.org fork(2) (CoW: cost = page tables + task structure; not inherited: memory locks,
+%     pending signals, timers, fcntl record locks, AIO; one thread; async-signal-safe only until
+%     execve; same open file descriptions) · execve(2) (keeps PID, fds without close-on-exec, mask,
+%     pending, cwd, rlimits; resets caught dispositions, mappings, memory locks, timers, other
+%     threads) · vfork(2) (parent suspended; memory incl. stack shared; removed in POSIX.1-2008) ·
+%     posix_spawn(3) (for MMU-less systems; glibc 2.24+ clone CLONE_VM | CLONE_VFORK)
+%   microsoft.com/en-us/research/wp-content/uploads/2019/04/fork-hotos19.pdf (Baumann, Appavoo,
+%     Krieger, Roscoe, HotOS 2019: not thread-safe, inefficient, insecure, does not compose; 1304
+%     Ubuntu packages call fork vs 41 posix_spawn) · Ritchie, "The Evolution of the Unix
+%     Time-sharing System" 1979 (cscie28.dce.harvard.edu mirror: born 1969; fork/exec split already
+%     in the Berkeley time-sharing system; PDP-7 fork = 27 lines of assembly)
+%   developer.apple.com/forums/thread/747499 (Apple DTS: iOS apps are not allowed to spawn child
+%     processes; fork-without-exec not safe on any Apple platform; use posix_spawn / NSTask)
+%   developer.apple.com/library/archive Threading Programming Guide, "Creating Threads" (512 KB
+%     secondary, 8 MB macOS main, 1 MB iOS main; pages created only when needed)
+%   man7.org sched(7) (FIFO / RR 1-99; FIFO runs until it blocks, yields or is preempted; BATCH =
+%     assumed CPU-intensive; IDLE below nice 19; nice -20..19, factor 1.25 per step; DEADLINE 3.14,
+%     runtime <= deadline <= period, preempts all other policies; rt_runtime 950000 of 1000000 us;
+%     CFS from 2.6.23; autogroup 2.6.38, make -j) · sched_rr_get_interval(2) (100 ms) ·
+%     docs.kernel.org/scheduler/sched-eevdf (1995 paper; 6.6; lag, eligibility, virtual deadline;
+%     sched_setattr slice) · semanticscholar.org (Stoica, Abdel-Wahab, Old Dominion TR-95-22)
+%   kernelnewbies.org Linux_2_6_0 (2003-12-18) · 2_6_23 (2007-10-09, CFS) · 3.14 (2014-03-30,
+%     SCHED_DEADLINE) · 4.15 (2018-01-28, PTI vs Meltdown) · 6.6 (2023-10-29, EEVDF replaces CFS)
+%     · 6.12 (2024-11-17, sched_ext, PREEMPT_RT)
+%   man7.org getrusage(2) (ru_minflt: no I/O, ru_majflt: I/O, ru_nvcsw, ru_nivcsw)
+%   developer.apple.com/documentation/apple-silicon: tuning-your-code-s-performance-for-apple-silicon
+%     (QoS classes; background more likely on lower-performance cores; pthread_set_qos_class_self_np
+%     instead of pthread_setschedparam / setpriority; no spin-waits) · addressing-architectural-
+%     differences-in-your-macos-code (page size differs from Intel: read vm_page_size)
+%   docs.kernel.org/mm/page_tables (PGD P4D PUD PMD PTE, folding, PMD 2 MB / PUD 1 GB, pfn in the
+%     high bits; TLB + page-walk caches, else the MMU walks; faults: lazy allocation, CoW,
+%     SIGSEGV) · github.com/torvalds/linux arch/x86/include/asm/pgtable_types.h (_PAGE_BIT_PRESENT
+%     0, RW 1, USER 2, ACCESSED 5, DIRTY 6, GLOBAL 8, NX 63) · arch/x86/x86_64/mm (user ~128 TB 4-level, ~64 PB 5-level) ·
+%     arch/x86/x86_64/5level-paging (256 TiB / 64 TiB vs 128 PiB / 4 PiB; above 47 bits only with
+%     a hint; JITs use high pointer bits) · arch/x86/pti (two page-table copies; CR3 write ~100
+%     cycles; PCID skips the full flush) · arch/arm64/memory (4 KB: 39- or 48-bit, 3 or 4 levels;
+%     64 KB 42-bit, 2 levels; TTBR0 user, TTBR1 kernel, VA bit 55) · arch/arm64/hugetlbpage
+%     (contiguous-PTE / PMD / contiguous-PMD / PUD sizes per granule) · arch/x86/entry_64 (syscall,
+%     interrupts, exceptions) · arch/x86/x86_64/fsgs (MSRs only at CPL 0)
+%   felixcloutier.com/x86/syscall (Intel SDM extract: handler at privilege level 0; RCX = RIP,
+%     R11 = RFLAGS) · Arm "Learn the architecture" 102412 AArch64 Exception Model (EL0 apps, EL1
+%     OS, EL2 hypervisor, EL3 firmware; SVC / HVC / SMC, HVC + SMC not from EL0) · 101811 AArch64
+%     memory management (ASID 8 or 16 bits in TTBR0_EL1; kernel global, user non-global)
+%   developer.apple.com/videos/play/wwdc2018/416 (iOS pages typically 16 KB) ·
+%     developer.android.com/guide/practices/page-sizes (16 KB pages from Android 15; Google Play
+%     blocks updates without 16 KB support from 2027-02-01, apps targeting API 35+)
+%   man7.org syscall(2) (x86-64 syscall, eax, rdi rsi rdx r10 r8 r9; arm64 svc #0, w8, x0-x5; riscv
+%     ecall, a7, a0-a5) · intro(2) (negative errno; the wrapper sets errno, returns -1) · vdso(7)
+%     (x86-64 clock_gettime, gettimeofday, time, getcpu; AT_SYSINFO_EHDR) ·
+%     docs.kernel.org/process/stable-api-nonsense (the kernel-to-userspace interface is stable) ·
+%     github.com/apple-oss-distributions/xnu libsyscall/custom/SYS.h (arm64: number in x16,
+%     svc #SWI_SYSCALL = 0x80, carry set = error) · developer.apple.com/library/archive/qa/qa1118
+%     (static binaries unsupported: no guarantee at the system-call interface)
+%   man7.org signal(7) (numbers on x86/ARM, Term Ign Core Stop Cont; KILL + STOP; disposition per
+%     process, mask per thread; process- vs thread-directed; standard signals do not queue,
+%     real-time do; SA_RESTART / EINTR; fork + execve rules) · sigaction(2) (SEGV_MAPERR,
+%     SEGV_ACCERR, BUS_ADRALN) · signal-safety(7) (write, _exit yes; printf, malloc no; save
+%     errno) · signalfd(2) (2.6.22) · termios(3) (VINTR Ctrl-C -> SIGINT, VSUSP Ctrl-Z -> SIGTSTP)
+%     · bash(1) (128 + n) · pubs.opengroup.org kill utility, POSIX.1-2024 (XSI numbers 0 1 2 3 6
+%     9 14 15, others undefined; SIGTERM when none given) · developer.apple.com/library/archive
+%     signal(3) (macOS: BUS 10, STOP 17, TSTP 18, CONT 19, CHLD 20, USR1 30)
+%   man7.org mmap(2) (SHARED, PRIVATE = CoW, ANONYMOUS = zeroed; fd may be closed; SIGSEGV on a
+%     write to read-only, SIGBUS past EOF; MAP_POPULATE; MAP_FIXED_NOREPLACE 4.17; page-aligned
+%     offset) · mallopt(3) (M_MMAP_THRESHOLD 128 KiB, dynamic up to 4 Mi x sizeof(long))
+%   man7.org open(2) (lowest free fd; O_CLOEXEC 2.6.23 closes the fork/exec race; EMFILE vs
+%     ENFILE) · futex(2) (32-bit word; the syscall only to block; 2.6.0; Franke, Russell,
+%     Kirkwood, OLS 2002)
+%   dcs.gla.ac.uk/~wpc/grcs/kilburn.pdf (Kilburn, Edwards, Lanigan, Sumner, "One-Level Storage
+%     System": 16 000-word core + 96 000-word drum seen as one level; IRE Trans. EC-11, 1962)
+% Not repeated here: VSZ/RSS/PSS, reclaim, overcommit, OOM, THP knobs (linux-memory-oom); open
+% file descriptions, page cache (linux-filesystems-storage); clone's namespace flags
+% (namespaces-cgroups-containers); Mach ports, launchd, the compressor and jetsam (xnu-launchd-xpc);
+% Mach exception types in crash reports (Crashes & symbolication); which lock to use and priority
+% inversion (Locks & synchronisation primitives).
+% @labels: area=os kind=concept platform=general topic=memory,concurrency,performance discussion=327
+% @tags: process, thread, scheduling, eevdf, context-switch, virtual-memory, page-table, tlb, page-fault, huge-pages, copy-on-write, fork, posix-spawn, system-call, vdso, signals, mmap, file-descriptor, futex
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  fld/.style={draw=sheetGrey, minimum height=5mm, font=\ttfamily\tiny, inner sep=0pt, anchor=west},
+  tbl/.style={draw=sheetBlue, fill=sheetBlue!5, minimum width=9mm, minimum height=13mm, inner sep=0pt},
+  ent/.style={draw=sheetOrange, fill=sheetOrange!25, minimum width=9mm, minimum height=2mm, inner sep=0pt},
+  q/.style={box, font=\tiny, inner sep=1.5pt, align=center},
+  yes/.style={->, thick, draw=sheetGreen!70!black},
+  bad/.style={->, thick, draw=sheetRed},
+  st/.style={box, font=\tiny, inner sep=1.5pt, minimum height=6mm, text width=#1, align=center},
+  st/.default=16mm,
+  chip/.style={rounded corners=1pt, draw=#1, fill=#1!8, font=\tiny, text width=14.4mm,
+               align=center, inner sep=1pt, minimum height=4.4mm},
+}
+
+\begin{document}
+
+\sheettitle{OS fundamentals — processes, threads, virtual memory, syscalls}{os · folio}
+
+\oneliner{A \textbf{process} = an address space + resources (fds, credentials, signal
+dispositions) with $\geq$1 \textbf{thread} (registers + stack, the unit the scheduler runs). The
+kernel shares CPUs by \textbf{scheduling}, maps each process's \textbf{virtual} pages to physical
+frames through \textbf{page tables} (cached in the \textbf{TLB}), fills them lazily on \textbf{page
+faults}, and is entered only by a \textbf{system call}, an exception or an interrupt.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── virtual address fields (4 KB pages, 48-bit VA) ──
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (-0.05,3.5) {Translation: 48-bit virtual address, 4~KB pages = 4 levels $\times$ 9 bits + 12-bit offset (x86-64; arm64 4~KB granule)};
+  \node[fld, minimum width=12mm, fill=sheetBlue!15] (a0) at (0.9,2.8) {PGD: 9 bit};
+  \node[fld, minimum width=12mm, fill=sheetBlue!15] (a1) at (a0.east) {PUD: 9 bit};
+  \node[fld, minimum width=12mm, fill=sheetBlue!15] (a2) at (a1.east) {PMD: 9 bit};
+  \node[fld, minimum width=12mm, fill=sheetBlue!15] (a3) at (a2.east) {PTE: 9 bit};
+  \node[fld, minimum width=16mm, fill=sheetGreen!15] (off) at (a3.east) {offset: 12 bit};
+  \node[lbl, anchor=east] at (0.85,2.8) {VA};
+  \foreach \n/\r in {a0/47–39, a1/38–30, a2/29–21, a3/20–12, off/11–0}
+    \node[lbl, anchor=south, text=sheetGrey] at (\n.north) {bits \r};
+  % tables
+  \foreach \i/\x/\nm in {0/1.5/PGD,1/2.7/PUD,2/3.9/PMD,3/5.1/PT} {
+    \node[tbl, minimum height=11mm] (t\i) at (\x,1.2) {};
+    \node[ent] (e\i) at (\x,1.08+0.12*\i) {};
+    \node[lbl] at (\x,0.5) {\nm};
+  }
+  \draw[flow] (a0.south) -- (e0.north); \draw[flow] (a1.south) -- (e1.north);
+  \draw[flow] (a2.south) -- (e2.north); \draw[flow] (a3.south) -- (e3.north);
+  \draw[hot] (e0.east) -- (t1.west |- e0.east); \draw[hot] (e1.east) -- (t2.west |- e1.east);
+  \draw[hot] (e2.east) -- (t3.west |- e2.east);
+  \node[q, fill=black!5, draw=sheetGrey] (root) at (0.3,1.2) {CR3\\TTBR0};
+  \draw[hot] (root.east) -- (t0.west);
+  \node[lbl, anchor=north, text=sheetGrey] at (0.3,0.8) {per process,\\switched};
+  % PTE + frame
+  \node[q, draw=sheetOrange, fill=sheetOrange!10, text width=22mm] (pte) at (7.1,1.3) {\textbf{PTE}: frame no. + bits\\(x86): present 0 · RW 1\\user 2 · accessed 5\\dirty 6 · global 8 · NX 63};
+  \draw[hot] (e3.east) -- (pte.west |- e3.east);
+  \node[q, draw=sheetGreen!70!black, fill=sheetGreen!10, minimum height=11mm, text width=13mm] (pf) at (9.15,1.3) {physical\\frame\\(4 KB)};
+  \draw[hot] (pte.east) -- (pf.west);
+  \draw[flow, draw=sheetGreen!60!black] (off.south) |- node[lbl, pos=0.25, right]{+ offset} ($(pf.north)+(0,0.05)$);
+  % TLB
+  \node[q, draw=sheetRed, fill=sheetRed!6, text width=27mm] (tlb) at (9.15,2.8) {\textbf{TLB}: page $\to$ frame, tagged\\PCID (x86) / ASID (arm64)};
+  \draw[bad, dashed] (off.east) -- (tlb.west);
+  \node[lbl, text=sheetRed, align=left, anchor=north west] at (7.45,2.45) {miss $\to$ hardware walk:\\up to 4 dependent reads};
+  \node[lbl, anchor=north west, align=left] at (-0.05,0.3) {each table = 512 entries $\times$ 8~B = one 4~KB page · a PMD entry can map 2~MB, a PUD entry 1~GB directly\\user half: x86-64 \ct{0}…\ct{0x7fff\,ffff\,efff} ($\approx$128~TB) · arm64: TTBR0 = user, TTBR1 = kernel, VA bit 55 picks};
+  \draw[sheetGrey!50] (10.75,3.45) -- (10.75,-0.15);
+  % ── page fault tree ──
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (10.85,3.5) {Page fault — the kernel decides, then retries};
+  \node[q, text width=24mm] (acc) at (12.45,3.0) {load / store / fetch:\\PTE present + allows it?};
+  \node[q, fill=sheetGreen!10, draw=sheetGreen!70!black] (ok) at (15.55,3.0) {access};
+  \draw[yes] (acc) -- node[lbl, above]{yes (no kernel)} (ok);
+  \node[q, text width=24mm] (map) at (12.45,2.25) {address inside a\\mapping (VMA)?};
+  \draw[bad] (acc) -- node[lbl, right]{no: fault} (map);
+  \node[q, fill=sheetRed!10, draw=sheetRed, text width=17mm] (seg) at (15.55,2.25) {\ct{SIGSEGV}\\\ct{SEGV\_MAPERR}};
+  \draw[bad] (map) -- node[lbl, above]{no} (seg);
+  \node[q, text width=24mm] (prm) at (12.45,1.5) {mapping permits it?\\(VMA R / W / X)};
+  \draw[yes] (map) -- node[lbl, right]{yes} (prm);
+  \node[q, fill=sheetRed!10, draw=sheetRed, text width=17mm] (acr) at (15.55,1.5) {\ct{SIGSEGV}\\\ct{SEGV\_ACCERR}};
+  \draw[bad] (prm) -- node[lbl, above]{no} (acr);
+  \node[lbl, anchor=north west, align=left] at (10.85,1.1) {\textbf{yes} $\to$ fix the PTE, re-run the instruction:\\
+    \textbf{minor} (no I/O, \ct{ru\_minflt}): first touch $\to$ zeroed page ·\\
+    \quad write to a CoW page $\to$ private copy · page in cache\\
+    \textbf{major} (I/O, \ct{ru\_majflt}): read file or swap page\\
+    file page past EOF $\to$ \ct{SIGBUS}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\footnotesize\setstretch{1.0}\setlength{\parskip}{2pt plus 1pt}
+
+\hd{Process vs thread — what each owns (POSIX)}
+{\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{44mm}>{\raggedright\arraybackslash}p{33mm}@{}}
+\toprule
+\textbf{process-wide (all threads share)} & \textbf{per thread} \\ \midrule
+address space: code, heap, mappings & stack, registers, PC, SP \\
+PID, parent, process group, session, tty & thread ID \\
+user / group IDs, open fds, \ct{fcntl} locks & \ct{errno} \\
+signal \emph{dispositions}, umask, cwd, root & signal \emph{mask}, alt.\ stack \\
+timers, nice, rlimits, CPU-time totals & RT policy, priority; Linux: affinity, capabilities \\
+\bottomrule
+\end{tabular}}\par
+Linux makes both with \ct{clone()}; a thread shares VM, handlers, thread group (\ct{CLONE\_THREAD}
+$\Rightarrow$ \ct{\_SIGHAND} $\Rightarrow$ \ct{\_VM}); \ct{getpid()} = group id, \ct{gettid()} = own.
+NPTL is \textbf{1:1}. Stacks: Linux = soft \ct{RLIMIT\_STACK} (kernel default 8~MiB); Darwin
+512~KB, main 8~MB macOS / 1~MB iOS — touched pages only.
+
+\hd{Process lifecycle — \ct{ps} state codes}
+\noindent\begin{tikzpicture}[sheet]
+  \node[lbl] (new) at (0.2,1.0) {\ct{fork()}\\\ct{clone()}};
+  \node[st=12mm, draw=sheetGreen!60!black, fill=sheetGreen!10] (R) at (1.65,1.0) {\textbf{R} runnable\\↔ on a CPU};
+  \node[st=17mm] (S) at (4.15,1.72) {\textbf{S} sleeping\\(a signal wakes it)};
+  \node[st=17mm] (D) at (4.15,1.0) {\textbf{D} uninterruptible\\(usually I/O)};
+  \node[st=17mm] (T) at (4.15,0.28) {\textbf{T} stopped\\(\textbf{t}: by a tracer)};
+  \node[st=16mm, draw=sheetRed, fill=sheetRed!8] (Z) at (6.7,1.0) {\textbf{Z} zombie: PID,\\exit status, rusage};
+  \draw[flow] (new) -- (R);
+  \draw[<->, thick, draw=sheetGrey] (R.east |- S.west) -- node[lbl, above]{wait / wake} (S.west);
+  \draw[<->, thick, draw=sheetGrey] (R.east) -- node[lbl, above]{I/O} (D.west);
+  \draw[<->, thick, draw=sheetGrey] (R.east |- T.west) -- node[lbl, below]{\ct{SIGSTOP}\\\ct{SIGCONT}} (T.west);
+  \draw[flow, draw=sheetRed] (R.north) -- (1.65,2.25) -- node[lbl, above, pos=0.62]{\ct{exit()}, \ct{\_exit()} or a fatal signal} (6.7,2.25) -- (Z.north);
+  \draw[flow] (Z.south) -- (6.7,0.4) node[lbl, below, align=center]{parent's \ct{wait()}\\reaps it};
+\end{tikzpicture}\par
+A \textbf{zombie} holds a process-table slot until the parent waits (a full table blocks new
+processes). \textbf{Orphans} go to init or the nearest \textbf{subreaper}
+(\ct{PR\_SET\_CHILD\_SUBREAPER}, 3.4). \ct{SIGCHLD} = \ct{SIG\_IGN} or \ct{SA\_NOCLDWAIT}: no zombies.
+
+\hd{fork, exec, spawn — what crosses}
+{\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{37mm}>{\raggedright\arraybackslash}p{27mm}@{}}
+\toprule
+ & \textbf{\ct{fork()} child} & \textbf{after \ct{execve()}} \\ \midrule
+memory & CoW — only page tables copied & new image, mappings gone \\
+threads & the caller only & others destroyed \\
+PID & new & \textbf{same}: no new process \\
+fds & same open file descriptions & kept unless close-on-exec \\
+signals & handlers, mask copied; none pending & caught $\to$ default, rest kept \\
+dropped & mlocks, timers, \ct{fcntl} locks, AIO & mlocks, timers \\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item \textbf{Threaded parent}: one thread, every mutex as it was — async-signal-safe calls only
+        until \ct{execve()}. A failed exec ends in \ct{\_exit()}: no \ct{atexit}, no stdio flush.
+  \item \ct{vfork()}: parent suspended, child borrows its memory and stack until exec or
+        \ct{\_exit}; dropped in POSIX.1-2008. \ct{posix\_spawn()} = fork + exec in one call (made
+        for MMU-less systems); glibc $\geq$2.24: \ct{clone(CLONE\_VM|CLONE\_VFORK)}.
+  \item The split came from the Berkeley time-sharing system; the PDP-7 \ct{fork} was 27 lines of
+        assembly (Ritchie 1979). ``A \ct{fork()} in the road'' (HotOS 2019): unsafe with threads,
+        inefficient, insecure; 1304 Ubuntu packages call \ct{fork}, 41 \ct{posix\_spawn}.
+  \item \textbf{Apple}: iOS apps may not spawn processes at all; fork without exec is ``not safe on
+        any Apple platform'' — use \ct{posix\_spawn} (Apple DTS).
+\end{itemize}
+
+\hd{Scheduling — Linux policies}
+{\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\ttfamily}p{12mm}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{50mm}@{}}
+\toprule
+\normalfont\textbf{\ct{SCHED\_}} & \textbf{priority} & \textbf{rule} \\ \midrule
+OTHER & nice \pdfonly{\textminus}\htmlonly{−}20…19 & fair share, weight $\times$1.25 per nice step: EEVDF \\
+BATCH & nice & always treated as CPU-bound (IDLE: below nice 19) \\
+FIFO & 1–99 & runs until it blocks, yields or a higher one wakes \\
+RR & 1–99 & FIFO + a 100~ms quantum \\
+DEADLINE & — & runtime $\le$ deadline $\le$ period (3.14); beats all others \\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item It schedules \textbf{threads}. RT + deadline get 950~ms of each 1~s, 5\,\% stays for the
+        rest. Autogroup (2.6.38): a group per session — \ct{make -j} cannot starve the desktop.
+  \item \textbf{EEVDF} (6.6, Oct 2023; replaced CFS of 2.6.23; Stoica \& Abdel-Wahab 1995): lag =
+        fair share $-$ CPU received; lag $\geq$0 = eligible; the earliest \emph{virtual deadline}
+        runs; \ct{sched\_setattr()} requests a slice. 6.12 (Nov 2024): \textbf{sched\_ext}
+        (schedulers in BPF) and \textbf{PREEMPT\_RT} merged.
+  \item \textbf{Context switch}: save registers, switch kernel stack, pick the next; across
+        processes also reload CR3 / TTBR0 — PCID / ASID keep the TLB entries; caches refill.
+        \textbf{Voluntary} (blocked, \ct{ru\_nvcsw}) vs \textbf{involuntary} (preempted, \ct{ru\_nivcsw}).
+  \item \textbf{Darwin}: QoS — user-interactive, user-initiated, utility, background — via
+        \ct{pthread\_set\_qos\_class\_self\_np}, not \ct{pthread\_setschedparam}; background runs
+        more likely on efficiency cores; never spin-wait.
+\end{itemize}
+
+\hd{Virtual memory}
+Per process, one flat address space; the MMU translates every access. Buys isolation, per-page
+R/W/X, shared frames (libraries, CoW), lazy allocation, files as memory. Atlas, 1962: core +
+drum (16\,000 + 96\,000 words) seen as one store.\par
+\textbf{Granules} (offset · bits per level · arm64 huge pages, PMD bold): 4~KB: 12 · 9 · 64~KB,
+\textbf{2~MB}, 32~MB, 1~GB; 16~KB: 14 · 11 · 2~MB, \textbf{32~MB}, 1~GB; 64~KB: 16 · 13 · 2~MB,
+\textbf{512~MB}, 16~GB. Levels = (VA $-$ offset bits) / bits per level. \textbf{x86-64 5-level} (P4D):
+57-bit, 128~PiB virtual / 4~PiB physical (4-level: 256~TiB / 64~TiB); user space gets addresses
+above 47 bits only by passing a hint — JITs keep tags in high pointer bits.
+\begin{itemize}
+  \item \textbf{Not 4~KB everywhere}: iOS 16~KB; Apple silicon $\neq$ Intel — read \ct{vm\_page\_size}.
+        Android 15+ allows 16~KB; Play blocks updates without it from 1 Feb 2027 (API 35+).
+  \item \textbf{TLB tags}: ASID (arm64, 8 or 16 bits, in TTBR0\_EL1; kernel entries global) / PCID
+        (x86). \textbf{PTI} (4.15, Jan 2018, against Meltdown): user page tables map almost no
+        kernel; every entry and exit rewrites CR3 ($\approx$100 cycles), PCID spares the flush.
+\end{itemize}
+
+\hd{\ct{mmap} — files and zeroed memory into the address space}
+{\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{34mm}>{\raggedright\arraybackslash}p{25mm}@{}}
+\toprule
+\textbf{\ct{MAP\_}} & \textbf{writes go to} & \textbf{use} \\ \midrule
+\ct{PRIVATE}, file & a private CoW copy, never the file & a file read as memory \\
+\ct{SHARED}, file & the file; every mapper sees them & zero-copy I/O, IPC \\
+\ct{PRIVATE|ANON} & own pages, zero-filled & \ct{malloc} $\geq$128~KiB (glibc) \\
+\ct{SHARED|ANON} & pages shared with \ct{fork()} children & parent ↔ child memory \\
+\bottomrule
+\end{tabular}}\par
+The fd may be closed after \ct{mmap}; offsets are page-aligned. A page past EOF (file truncated)
+$\to$ \ct{SIGBUS}. \ct{MAP\_POPULATE} prefaults; \ct{MAP\_FIXED\_NOREPLACE} (4.17) will not
+replace a mapping. Mmapped \ct{malloc} blocks go back to the system on \ct{free}; the threshold
+rises to freed sizes ($\leq$32~MiB, 64-bit).
+
+\hd{System calls — the only door in}
+User code (x86-64 CPL 3, arm64 EL0) enters the kernel (CPL 0, EL1) by a syscall, an exception (page
+fault) or an interrupt. arm64: \ct{SVC} $\to$ EL1, \ct{HVC} $\to$ EL2 hypervisor, \ct{SMC} $\to$ EL3
+firmware — the last two not from EL0.\par
+{\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\ttfamily}p{11mm}>{\ttfamily}p{5mm}>{\ttfamily}p{25mm}>{\raggedright\arraybackslash}p{14mm}@{}}
+\toprule
+\textbf{ABI} & \normalfont\textbf{instr.} & \normalfont\textbf{nr} & \normalfont\textbf{arguments} & \textbf{error} \\ \midrule
+Linux x86-64 & syscall & eax & rdi rsi rdx r10 r8 r9 & rax = \pdfonly{\textminus}\htmlonly{−} errno \\
+Linux arm64 & svc \#0 & w8 & x0–x5 & x0 = \pdfonly{\textminus}\htmlonly{−} errno \\
+Linux RISC-V & ecall & a7 & a0–a5 & a0 = \pdfonly{\textminus}\htmlonly{−} errno \\
+Darwin arm64 & svc \#0x80 & x16 & \normalfont — & carry flag set \\
+\bottomrule
+\end{tabular}}\par
+libc turns $-$errno into $-1$ + \ct{errno} (per thread). Linux keeps the syscall interface
+stable; Apple guarantees only its dynamic libraries — static binaries unsupported. \textbf{vDSO}
+(\ct{AT\_SYSINFO\_EHDR}), x86-64: \ct{clock\_gettime}, \ct{gettimeofday}, \ct{time}, \ct{getcpu}
+without entering the kernel.
+
+\hd{Signals}
+{\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\ttfamily}p{11mm}>{\raggedleft\arraybackslash}p{3.5mm}>{\raggedleft\arraybackslash}p{4mm}>{\raggedright\arraybackslash}p{6mm}>{\raggedright\arraybackslash}p{47mm}@{}}
+\toprule
+ & \textbf{Lx} & \textbf{mac} & \textbf{def.} & \textbf{raised by} \\ \midrule
+SIGINT & 2 & 2 & Term & Ctrl-C (Ctrl-Z: \ct{SIGTSTP}, stops) \\
+SIGBUS & 7 & 10 & Core & mapped page past EOF, bad alignment \\
+SIGKILL & 9 & 9 & Term & \textbf{cannot be caught, blocked or ignored} \\
+SIGSEGV & 11 & 11 & Core & unmapped address / wrong permission \\
+SIGPIPE & 13 & 13 & Term & write to a pipe with no reader \\
+SIGTERM & 15 & 15 & Term & \ct{kill}'s default: please exit \\
+SIGCHLD & 17 & 20 & Ign & a child exited or stopped \\
+SIGSTOP & 19 & 17 & Stop & uncatchable like KILL; \ct{SIGCONT} (18 / 19) resumes \\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item POSIX \ct{kill -n} defines only 1 2 3 6 9 14 15; 10 is \ct{SIGUSR1} on Linux, \ct{SIGBUS}
+        on macOS — use names. A shell reports 128 + n after signal n.
+  \trap{\ct{kill -9} first: no handler, no \ct{atexit}, no buffered output flushed — send
+        \ct{SIGTERM}, then wait.}
+  \item \textbf{Disposition per process, mask per thread}: \ct{kill()} reaches any one thread not
+        blocking it, a fault the thread that caused it. Standard signals \textbf{do not queue};
+        real-time ones do, in order. Interrupted call: \ct{SA\_RESTART} restarts it, else \ct{EINTR}.
+  \item Handlers: \textbf{async-signal-safe} calls only (\ct{write}, \ct{\_exit}; not \ct{printf},
+        \ct{malloc}), save \ct{errno} — or block them and read a \ct{signalfd} (2.6.22).
+\end{itemize}
+
+\hd{File descriptors · futex}
+\textbf{fd} = lowest free index in the process's table $\to$ open file description (offset,
+flags) $\to$ file, socket, pipe. \ct{O\_CLOEXEC} (2.6.23) is atomic — a later \ct{fcntl} races a
+concurrent fork + exec. \ct{EMFILE} per process, \ct{ENFILE} system-wide. \textbf{futex}: a 32-bit
+word; an uncontended lock is one user-space atomic, \ct{futex()} only sleeps or wakes (2.6.0;
+Franke, Russell \& Kirkwood, OLS 2002).
+
+\end{multicols}
+
+\noindent{\raggedright\footnotesize\color{sheetGrey}\textit{Related:} \texttt{linux-memory-oom} ·
+\texttt{linux-filesystems-storage} · \texttt{linux-performance-observability} ·
+\texttt{namespaces-cgroups-containers} · \texttt{xnu-launchd-xpc} · \texttt{mach-o-and-dyld} ·
+\texttt{ios-sandbox-security-model} · \texttt{c-volatile-atomics-isr} · Locks \& synchronisation
+primitives · Crashes \& symbolication\par}
+
+\end{document}

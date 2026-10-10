@@ -1,0 +1,389 @@
+% recall-drill-named-facts.tex — the exact names, numbers and lists of iOS / Swift app development:
+% layout priorities, stack-view enums, URLError codes, DecodingError cases, callback and state orders,
+% responder chain vs hit-testing, memory rules, SwiftUI wrappers, test doubles, GoF intents, SOLID.
+% Sources (checked 2026-10-09):
+%   UIKit SDK header NSLayoutConstraint.h (iOS 13 SDK, mirrored at github.com/xybp888/iOS-SDKs:
+%     required 1000, defaultHigh 750, defaultLow 250, fittingSizeLevel 50; Catalyst 510 / 500 / 490;
+%     priority may not change from / to required once added — exception)
+%   developer.apple.com/library/archive …/AutolayoutPG: AnatomyofaConstraint (priority 1 … 1000; cluster at
+%     250 / 500 / 750 / 1000, one or two points off to prevent ties; hugging 250, compression 750, easier
+%     to stretch than shrink) · ConflictingLayouts (breaks constraints until valid; symbolic breakpoint
+%     UIViewAlertForUnsatisfiableConstraints; failure point at 999; no required hugging / compression)
+%   developer.apple.com/documentation/uikit: uistackview (axis default horizontal; distribution + alignment
+%     cases, default fill; spacing 0, minimum for equalSpacing / equalCentering, negative overlaps;
+%     spacingUseSystem iOS 11) · uiview/translatesautoresizingmaskintoconstraints (true in code, false from
+%     IB; leave alone on arrangedSubviews, cells, a VC's view) · uitableview/rowheight + estimatedrowheight
+%     (default automaticDimension; IB cells; estimate must not be 0; heightForRowAt runs for every row,
+%     1000 or more rows) · uiuserinterfacesizeclass · uiviewcontroller/loadview() (never call, no super) ·
+%     viewisappearing(_:) (iOS 13; after added to hierarchy and laid out by superview; traits + geometry
+%     valid; layout callbacks may run many times) · uiapplication/state · uiscene/activationstate ·
+%     uiscenedelegate · managing-your-app-s-life-cycle (unattached, background, suspended, disconnect) ·
+%     using-responders-and-the-responder-chain-to-handle-events (next responders; app delegate only if a
+%     UIResponder; gesture recognizers first; nil-target actions) · uiview/hittest(_:with:) (hidden,
+%     interaction disabled, alpha < 0.01 ignored; outside bounds never hit, even unclipped)
+%   developer.apple.com/videos/play/wwdc2023/10055 (viewIsAppearing back-deploys to iOS 13)
+%   developer.apple.com/documentation/technotes/tn3187 (scene opt-in via UIApplicationSceneManifest; log
+%     from iOS 18.4; delegate method map) · ios-ipados-release-notes/ios-ipados-27-release-notes (UIKit
+%     deprecations: apps built with the latest SDK must adopt the scene-based life cycle or fail to launch)
+%   developer.apple.com/documentation/foundation: jsondecoder keyDecodingStrategy / convertFromSnakeCase
+%     (rules; base_uri -> baseUri; use CodingKeys for acronyms) · dateDecodingStrategy (default
+%     deferredToDate; the six cases) · urlsession (tasks start suspended, resume(); delegateQueue: all
+%     delegate calls and completion handlers, nil -> session-created serial queue; delegate held strongly
+%     until invalidated; shared session limits; data(from:) iOS 15) · urlsessionconfiguration (default /
+%     ephemeral / background; request timeout 60 s reset by data; resource 7 days; 6 connections per host,
+%     HTTP/1.1 only) · urlsessiontaskdelegate didCompleteWithError (only client-side errors) ·
+%     urlsession/authchallengedisposition (4 cases) · urlerror/code · notificationcenter addObserver
+%     (selector form: no removal needed from iOS 9; block form must be removed)
+%   Foundation SDK header NSURLError.h (same mirror: -999, -1000 … -1022, -1200, -1202 values)
+%   github.com/swiftlang/swift-foundation FoundationEssentials/Date.swift (Codable = seconds since the 2001
+%     reference date; 978307200 s after 1970)
+%   developer.apple.com/documentation/swift: decodingerror (4 cases; Context: codingPath, debugDescription,
+%     underlyingError) · encodingerror (invalidValue) · isknownuniquelyreferenced(_:) (strong refs only;
+%     not thread-safe) · choosing-between-structures-and-classes · iteratorprotocol/next() ·
+%     sequence/makeiterator()
+%   github.com/swiftlang/swift-book TSPL.docc: AutomaticReferenceCounting (weak: optional var, set to nil,
+%     no observers, shorter lifetime; unowned: same or longer lifetime, runtime error, unowned(unsafe)) ·
+%     Expressions (capture list initialised when the closure is created; prints "0 10"; reference semantics)
+%     · ClassesAndStructures (arrays, dictionaries, strings share storage until modified) · Properties
+%     (stored type properties initialised once even across threads; lazy has no such guarantee) · Methods
+%     (no mutating call on a let struct) · Protocols (weak delegates, class-only = AnyObject)
+%   github.com/swiftlang/swift-evolution: SE-0244 (opaque result types, Swift 5.1) · SE-0390 (deinit on
+%     noncopyable structs / enums, Swift 5.9; the Book still says "only class types") · SE-0327 (actor
+%     deinitializers) · proposals/testing/ST-0008 (exit tests, Swift 6.2; iOS not
+%     supported)
+%   developer.apple.com/documentation/swiftui: state, binding, stateobject (iOS 14; created only once in the
+%     container's lifetime), observedobject (no default value; not for @Observable), environmentobject,
+%     bindable (17), migrating-from-the-observable-object-protocol-to-the-observable-macro (State,
+%     Environment, Bindable; body-read tracking; ObservationIgnored) · observation/observable() (iOS 17) ·
+%     scenephase · combine/anycancellable (cancel() on deinit) · foundation/undomanager registerUndo
+%   developer.apple.com/documentation/xcode: gathering-information-about-memory-use (Debug Memory Graph,
+%     Malloc Stack, Allocations + Mark Generation, simulator never warns) · understanding-hangs-in-your-app
+%     (< 100 ms rarely noticeable; tools report > 250 ms) · sigkill (termination codes)
+%   keith.github.io/xcode-man-pages/leaks.1.html (Xcode's leaks(1): unreferenced malloc buffers, root cycles)
+%   developer.apple.com/design/human-interface-guidelines/accessibility (iOS controls 44x44 pt, min 28x28)
+%   developer.apple.com/documentation/xctest/set-up-and-tear-down-state-in-your-tests (exact order; crash =
+%     no teardown) · /testing (Swift 6, Xcode 16) · testing/expectations (#expect continues, #require throws
+%     ExpectationFailedError; optional unwrap overload) · testing/trait · github.com/swiftlang/swift-testing
+%     MigratingFromXCTest.md (parallel by default; XCTest sequential)
+%   martinfowler.com/bliki/TestPyramid.html (Cohn, Succeeding with Agile, 2009; ice-cream cone) ·
+%     /articles/practical-test-pyramid.html (Unit / Service / UI) · /articles/mocksArentStubs.html
+%     (Meszaros' five doubles, quoted definitions) · /articles/injection.html (Jan 2004; name settled;
+%     constructor / setter / interface injection)
+%   testing.googleblog.com/2015/04/just-say-no-to-more-end-to-end-tests.html (70/20/10 "as a good first guess")
+%   people.csail.mit.edu/addy/pattern (Gamma, Helm, Johnson, Vlissides, Design Patterns, 1994 — the book's
+%     text: intents of Adapter, Decorator (explosion of subclasses), Facade, Proxy (remote, virtual,
+%     protection, smart reference), Factory Method, Abstract Factory (Kit), Builder (Director), Singleton,
+%     Strategy (clients must be aware), State (who defines transitions), Template Method (Hollywood
+%     principle, [Swe85]), Mediator (many-to-many -> one-to-many), Command, Observer)
+%   en.wikipedia.org/wiki/Design_Patterns (1994; the 23 by category — secondary, matches the book's chapters)
+%   butunclebob.com/ArticleS.UncleBob.PrinciplesOfOod (R. C. Martin's one-line SRP / OCP / LSP / ISP / DIP)
+%   khanlou.com/2015/01/the-coordinator (Coordinator; Application Controller)
+% @labels: area=recall kind=reference platform=ios topic=ui,networking,memory,patterns,testing discussion=328
+% @tags: uilayoutpriority, content-hugging, compression-resistance, uistackview, self-sizing-cells, urlerror, decodingerror, keydecodingstrategy, urlsession, viewisappearing, scene-delegate, responder-chain, hit-testing, capture-list, copy-on-write, stateobject, observable, test-pyramid, test-doubles, xctest, swift-testing, gof, proxy, solid
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+% compact section heading: the subject's blocks are short, a full \section costs a line each
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\small\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\setlength{\aboverulesep}{0.25ex}
+\setlength{\belowrulesep}{0.25ex}
+\tikzset{
+  hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west, inner sep=0pt},
+  l/.style={font=\tiny, text=black!75, align=center, inner sep=1pt},
+  tk/.style={thin, sheetGrey},
+  vc/.style={draw=sheetBlue, fill=sheetBlue!7, rounded corners=1pt, font=\tiny, align=center,
+             inner sep=0.8pt, minimum height=6mm, text width=17.4mm},
+  st/.style={draw=sheetGreen!60!black, fill=sheetGreen!10, rounded corners=1pt, font=\ttfamily\tiny,
+             inner sep=1.5pt, minimum height=4mm},
+  ar/.style={->, thin, sheetGrey},
+}
+
+\begin{document}
+
+\sheettitle{Named facts — the numbers, names and lists of iOS development}{recall · folio}
+
+\oneliner{the exact values, case lists and call orders that UIKit, Foundation, SwiftUI and the
+test frameworks fix by definition, and the names that patterns and principles were given by
+their authors — each checked against Apple's documentation, the Swift Book or the originator.
+The why behind each lives in the linked folios.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ===== A: layout priorities
+  \node[hd] at (0,3.6) {UILayoutPriority (Float, 1 … 1000)};
+  \draw[thick, sheetGrey] (0.1,1.55) -- (5.2,1.55);
+  \foreach \v in {50,250,490,500,510,750,999,1000} \draw[tk] ({0.1+5.1*\v/1000},1.47) -- ({0.1+5.1*\v/1000},1.63);
+  \node[l, anchor=south west, text=black] (p50) at (0,2.62) {\ct{.fittingSizeLevel} \textbf{50}};
+  \node[l, anchor=south, text=black] (p750) at (3.925,2.62) {\ct{.defaultHigh} \textbf{750}};
+  \node[l, anchor=south east, text=black] (p1000) at (5.25,3.08) {\ct{.required} \textbf{1000}};
+  \node[l, anchor=south] (p500) at (2.65,2.17) {Catalyst scene \textbf{510 · 500 · 490}};
+  \node[l, anchor=south, text=black] (p250) at (1.375,1.72) {\ct{.defaultLow} \textbf{250}};
+  \draw[tk, densely dotted] (0.355,2.62) -- (0.355,1.63);
+  \draw[tk, densely dotted] (3.925,2.62) -- (3.925,1.63);
+  \draw[tk, densely dotted] (5.2,3.08) -- (5.2,1.63);
+  \draw[tk, densely dotted] (2.65,2.17) -- (2.65,1.63);
+  \foreach \v/\t in {0/0,500/500,1000/1000} \node[l, anchor=north, text=sheetGrey] at ({0.1+5.1*\v/1000},1.45) {\t};
+  \node[l, anchor=north, text=sheetGreen!45!black] at (1.375,1.18) {content \textbf{hugging} default:\\resists growing};
+  \node[l, anchor=north, text=sheetOrange!85!black] at (3.925,1.18) {\textbf{compression} default:\\resists shrinking};
+  \node[l, anchor=north east, text=sheetRed] at (5.25,1.18) {\textbf{999}:\\failure\\point};
+  \node[l, anchor=north west, align=left] at (0,0.42) {$<$\,1000 = optional; lower gives way first ·
+    cluster at 250 / 500 /\\750 / 1000, nudge 1--2 to break ties · 250 $<$ 750: stretches first};
+  \draw[sheetGrey!50] (5.45,3.75) -- (5.45,-0.1);
+  % ===== B: view controller appearance order
+  \node[hd] at (5.6,3.6) {UIViewController — appearance};
+  \node[vc] (lv) at (6.5,2.85) {\ct{loadView}\\never call; no \ct{super}};
+  \node[vc] (dl) at (8.35,2.85) {\ct{viewDidLoad}\\once per loaded view};
+  \node[vc] (wa) at (10.2,2.85) {\ct{viewWillAppear}\\traits, geometry stale};
+  \node[vc, draw=sheetGreen!60!black, fill=sheetGreen!10] (ia) at (10.2,1.85) {\ct{viewIsAppearing}\\in hierarchy, sized};
+  \node[vc, draw=sheetOrange, fill=sheetOrange!10] (ly) at (8.35,1.85) {\ct{viewWill/DidLayout}\\\ct{Subviews} 0 … n×};
+  \node[vc] (da) at (6.5,1.85) {\ct{viewDidAppear}};
+  \node[vc] (wd) at (6.5,0.85) {\ct{viewWillDisappear}};
+  \node[vc] (dd) at (8.35,0.85) {\ct{viewDidDisappear}};
+  \draw[ar] (lv) -- (dl); \draw[ar] (dl) -- (wa); \draw[ar] (wa) -- (ia);
+  \draw[ar] (ia) -- (ly); \draw[ar] (ly) -- (da); \draw[ar] (da) -- (wd); \draw[ar] (wd) -- (dd);
+  \node[l, anchor=west, align=left] at (9.3,0.85) {shown again:\\from \ct{viewWillAppear}};
+  \node[l, anchor=north west, align=left, text=sheetGreen!45!black] at (5.6,0.42)
+    {\ct{viewIsAppearing}: traits + geometry valid; once per\\appearance; WWDC23, back-deploys to iOS 13};
+  \draw[sheetGrey!50] (11.2,3.75) -- (11.2,-0.1);
+  % ===== C: scene activation states
+  \node[hd] at (11.3,3.6) {UIScene.ActivationState};
+  \node[st] (un) at (12.2,2.95) {unattached};
+  \node[st] (fi) at (12.2,1.65) {foregroundInactive};
+  \node[st] (fa) at (15.65,1.65) {foregroundActive};
+  \node[st] (bg) at (12.2,0.55) {background};
+  \node[st, draw=sheetGrey, fill=white, dashed, font=\tiny] (su) at (15.45,0.55) {suspended (no case)};
+  \draw[ar] (un) -- (fi);
+  \node[l, anchor=west, align=left] at (12.3,2.32) {\ct{scene(\_:willConnectTo:options:)}\\a system-requested scene usually goes to background};
+  \draw[ar] ([yshift=1.2pt]fi.east) -- ([yshift=1.2pt]fa.west);
+  \draw[ar] ([yshift=-1.2pt]fa.west) -- ([yshift=-1.2pt]fi.east);
+  \node[l, anchor=south, font=\ttfamily\tiny] at (13.95,1.9) {sceneDidBecomeActive →};
+  \node[l, anchor=north, font=\ttfamily\tiny] at (13.95,1.4) {← sceneWillResignActive};
+  \draw[ar] ([xshift=-6pt]fi.south) -- ([xshift=-6pt]bg.north);
+  \draw[ar] ([xshift=6pt]bg.north) -- ([xshift=6pt]fi.south);
+  \node[l, anchor=west, align=left, font=\ttfamily\tiny] at (12.5,0.97) {$\downarrow$ sceneDidEnterBackground\\$\uparrow$ sceneWillEnterForeground};
+  \draw[ar] (bg) -- node[l, below] {no callback} (su);
+  \draw[ar] (su.east) -- (16.55,0.55) |- (un.east);
+  \node[l, anchor=south] at (14.75,2.98) {\ct{sceneDidDisconnect(\_:)}\\from background or suspended};
+  \node[l, anchor=north west, align=left, text=sheetRed] at (11.3,0.2)
+    {built with the iOS 27 SDK: no scene life cycle = no launch};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+\setlength{\parskip}{1.5pt plus 0.5pt}
+
+\hd{Auto Layout}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{17mm}L{61mm}@{}}
+\toprule
+\textbf{name} & \textbf{value / rule}\\
+\midrule
+installed priority & changing it to or from \ct{.required} after the constraint is added throws\\
+autoresizing mask & \ct{translatesAutoresizingMaskIntoConstraints}: \ct{true} for a view made in code, \ct{false} from Interface Builder; leave it alone on \ct{arrangedSubviews}, cells, a VC's \ct{view}\\
+conflict & engine breaks constraints until the layout is valid, logs; breakpoint \ct{UIViewAlertForUnsatisfiable}\allowbreak\ct{Constraints}; never required hugging / compression\\
+self-sizing rows & \ct{rowHeight} \emph{and} \ct{estimatedRowHeight} default to \ct{.automaticDimension}; an IB cell needs \ct{rowHeight = .automaticDimension} in code; estimate $\ne$ 0; \ct{heightForRowAt} overrides and runs for every row (Apple: hurts at 1000+)\\
+size class & \ct{UIUserInterfaceSizeClass}: \ct{.compact} · \ct{.regular} · \ct{.unspecified}, per axis; set by device, window, multitasking\\
+\bottomrule
+\end{tabular}}
+
+\medskip
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{17mm}L{12mm}L{48mm}@{}}
+\toprule
+\textbf{UIStackView} & \textbf{default} & \textbf{cases}\\
+\midrule
+\ct{axis} & \ct{.horizontal} & \ct{.horizontal} · \ct{.vertical}\\
+\ct{distribution} (along axis) & \ct{.fill} & \ct{.fill} · \ct{.fillEqually} · \ct{.fillProportionally} · \ct{.equalSpacing} · \ct{.equalCentering}\\
+\ct{alignment} (across) & \ct{.fill} & \ct{.fill} · \ct{.leading} (= \ct{.top}) · \ct{.firstBaseline} · \ct{.center} · \ct{.trailing} (= \ct{.bottom}) · \ct{.lastBaseline}\\
+\ct{spacing} & \ct{0} & a minimum for the two \ct{equal…} kinds; negative overlaps; \ct{spacingUseSystem} (iOS 11)\\
+\bottomrule
+\end{tabular}}
+
+\hd{Networking \& Codable}
+\begin{tikzpicture}[sheet]
+  \node[box, font=\scriptsize, text width=22mm, draw=sheetRed, fill=sheetRed!6] (t) at (0,0) {\textbf{transport}\\\ct{URLError} — thrown /\\\ct{error} non-nil};
+  \node[box, font=\scriptsize, text width=22mm, draw=sheetOrange, fill=sheetOrange!8] (h) at (2.7,0) {\textbf{HTTP status}\\\textbf{not} an error: check\\\ct{statusCode} in \ct{200..<300}};
+  \node[box, font=\scriptsize, text width=22mm, draw=sheetBlue] (d) at (5.4,0) {\textbf{body}\\\ct{DecodingError}\\4 cases};
+  \draw[flow] (t) -- (h); \draw[flow] (h) -- (d);
+\end{tikzpicture}\par
+{\scriptsize URLSession reports only client-side errors; a 404 arrives as a response
+(\ct{as? HTTPURLResponse}).}
+
+\smallskip
+{\scriptsize\setlength{\tabcolsep}{1.6pt}
+\begin{tabular}{@{}r@{\ }L{30mm}r@{\ }L{34mm}@{}}
+\toprule
+\multicolumn{4}{@{}l}{\textbf{\ct{URLError.Code}} (\ct{NSURLErrorDomain})}\\
+\midrule
+\ct{-999} & \ct{cancelled} & \ct{-1009} & \ct{notConnectedToInternet}\\
+\ct{-1000} & \ct{badURL} & \ct{-1011} & \ct{badServerResponse}\\
+\ct{-1001} & \ct{timedOut} & \ct{-1020} & \ct{dataNotAllowed} (cellular refused)\\
+\ct{-1003} & \ct{cannotFindHost} & \ct{-1022} & \ct{appTransportSecurityRequires}\allowbreak\ct{SecureConnection}\\
+\ct{-1004} & \ct{cannotConnectToHost} & \ct{-1200} & \ct{secureConnectionFailed}\\
+\ct{-1005} & \ct{networkConnectionLost} & \ct{-1202} & \ct{serverCertificateUntrusted}\\
+\bottomrule
+\end{tabular}}
+
+\smallskip
+{\scriptsize
+\textbf{\ct{DecodingError}}: \ct{.typeMismatch(type, ctx)} · \ct{.valueNotFound(type, ctx)} (null for
+a non-optional) · \ct{.keyNotFound(key, ctx)} · \ct{.dataCorrupted(ctx)}; \ct{Context} =
+\ct{codingPath}, \ct{debugDescription}, \ct{underlyingError}. \ct{EncodingError}: only
+\ct{.invalidValue}.\par
+\textbf{Keys}: \ct{CodingKeys} enum (per key) or \ct{keyDecodingStrategy}: \ct{.useDefaultKeys}
+(default) · \ct{.convertFromSnakeCase} — capitalise after each \ct{\_}, drop inner \ct{\_}, keep
+leading / trailing ones: \ct{base\_uri} → \ct{baseUri}, never \ct{baseURI} · \ct{.custom}.\par
+\textbf{Dates}: default \ct{.deferredToDate} = \ct{Date}'s own Codable: a \ct{Double}, seconds since
+\textbf{1 Jan 2001} (978\,307\,200\,s after 1970) — Unix time needs \ct{.secondsSince1970};
+also \ct{.millisecondsSince1970} · \ct{.iso8601} · \ct{.formatted} · \ct{.custom}.\par}
+
+\smallskip
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{15mm}L{63mm}@{}}
+\toprule
+\textbf{URLSession} & \\
+\midrule
+start & every task is created suspended → \ct{resume()}\\
+callback queue & delegate calls + completion handlers on \ct{delegateQueue}; \ct{nil} → a serial queue the session creates, not main\\
+async & \ct{data(from:)} (iOS 15) → \ct{(Data, URLResponse)}\\
+configs & \ct{.default} (disk cache, keychain) · \ct{.ephemeral} (RAM only) · \ct{.background(withIdentifier:)} (system process; force-quit cancels)\\
+numbers & request timeout \textbf{60\,s}, reset by each arriving byte · resource \textbf{7 days} · \textbf{6} connections per host, HTTP/1.1 only\\
+ownership & delegate held \textbf{strongly} until \ct{invalidate…} — else a leak; \ct{.shared}: no delegate, no custom config, no background\\
+challenge & \ct{urlSession(\_:didReceive:}\allowbreak\ct{completionHandler:)} → \ct{.useCredential} · \ct{.performDefaultHandling} · \ct{.cancelAuthentication}\allowbreak\ct{Challenge} · \ct{.rejectProtectionSpace}\\
+\bottomrule
+\end{tabular}}
+
+\hd{Lifecycle enums \& kill codes}
+{\scriptsize
+\ct{UIApplication.State} and SwiftUI \ct{ScenePhase}: \ct{.active} · \ct{.inactive} ·
+\ct{.background}. Scenes opt in via \ct{UIApplicationSceneManifest} (iOS 13); UIKit logs a message
+without it from iOS 18.4. TN3187: \ct{applicationDidBecomeActive} → \ct{sceneDidBecomeActive}, likewise
+\ct{WillResignActive}, \ct{DidEnterBackground}, \ct{WillEnterForeground}. \textbf{Hang}: most Apple
+tools report a main run loop busy $>$ \textbf{250\,ms}; $<$ 100\,ms is rarely noticed. \ct{0x8badf00d} watchdog
+· \ct{0xdead10cc} file / SQLite lock held while suspending · \ct{0xc00010ff} thermal ·
+\ct{0xbaadca11} VoIP push without a CallKit report.\par}
+
+\hd{SOLID — R. C. Martin's own one-liners}
+{\scriptsize
+\textbf{S} A class should have one, and only one, reason to change. · \textbf{O} You should be able
+to extend a classes behavior, without modifying it. · \textbf{L} Derived classes must be
+substitutable for their base classes. · \textbf{I} Make fine grained interfaces that are client
+specific. · \textbf{D} Depend on abstractions, not on concretions.\par}
+
+\columnbreak
+
+\hd{Touches: down to find, up to handle}
+\begin{tikzpicture}[sheet]
+  \foreach \n/\x/\t in {a/0/view, b/1.0/superview, c/2.05/VC root, d/3.0/VC, e/3.9/window, f/4.95/UIApplication, g/6.2/app delegate}
+    \node[st, font=\tiny, draw=sheetBlue, fill=sheetBlue!7] (\n) at (\x,0) {\t};
+  \foreach \p/\q in {a/b,b/c,c/d,d/e,e/f,f/g} \draw[ar] (\p) -- (\q);
+  \node[l, anchor=south west] at (-0.4,0.2) {\textbf{responder chain →} (unhandled event moves up)};
+  \node[l, anchor=north west, align=left] at (-0.4,-0.2) {\textbf{hit-testing ←} from the window down, frontmost subview first,
+    to the deepest view holding the point};
+\end{tikzpicture}\par
+{\scriptsize A presented VC's next responder is the presenting VC; the app delegate joins only if it
+is a \ct{UIResponder}. \ct{hitTest(\_:with:)} skips \ct{isHidden}, \ct{isUserInteractionEnabled = false},
+\ct{alpha < 0.01}; a point outside a view's bounds never hits its subviews, even with
+\ct{clipsToBounds = false}; transparent pixels still hit. Gesture recognizers get touches before the
+view; a \ct{nil}-target action searches the chain.\par}
+
+\hd{Memory \& value semantics}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{12mm}L{32mm}L{33mm}@{}}
+\toprule
+ & \ct{weak} & \ct{unowned}\\
+\midrule
+form & always \ct{var}, Optional & non-optional or Optional\\
+target dies & ARC sets \ct{nil} (no observers fire) & access = runtime error; \ct{unowned(unsafe)} is unchecked\\
+use when & the other lives \textbf{shorter} & the other lives as long or \textbf{longer}\\
+\bottomrule
+\end{tabular}}
+{\scriptsize
+\ct{var a = 0, b = 0; let c = \{ [a] in print(a, b) \}; a = 10; b = 10; c()} prints \textbf{0 10}: list
+entries are copied when the closure is \emph{created}; a class reference copies the reference.
+\ct{weak var delegate: P?} needs \ct{protocol P: AnyObject}.\par
+\textbf{Copy-on-write}: arrays, dictionaries, strings share storage until a copy is modified; own
+structs only by hand — \ct{isKnownUniquelyReferenced(\_:)} counts strong refs only, needs
+synchronisation. \ct{static let}: lazy, initialised once even across threads; \ct{lazy var}: no
+such guarantee. No \ct{mutating} call on a \ct{let} struct. \ct{deinit}: classes, actors and
+\ct{\textasciitilde Copyable} structs / enums (SE-0390, Swift 5.9). Apple: structs by default;
+classes for Objective-C interop or controlled identity.\par
+\textbf{Tools}: Debug Memory Graph (+ scheme Malloc Stack for backtraces) · Allocations, Mark
+Generation around one feature · \ct{leaks}: unreferenced malloc buffers + root cycles · the simulator
+never warns or kills for memory.\par}
+
+\hd{SwiftUI state}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{17mm}L{5mm}L{55mm}@{}}
+\toprule
+\textbf{wrapper} & \textbf{iOS} & \textbf{rule}\\
+\midrule
+\ct{@State} & 13 & owned; also holds an \ct{@Observable} model\\
+\ct{@Binding} & 13 & read / write a source of truth elsewhere (\ct{\$x})\\
+\ct{@StateObject} & 14 & created \textbf{once} per container lifetime\\
+\ct{@ObservedObject} & 13 & an input — never a default value; not for \ct{@Observable}\\
+\ct{@Observable} & 17 & macro; a view updates only for properties \ct{body} reads\\
+\ct{@Bindable} & 17 & bindings into an \ct{@Observable}\\
+\bottomrule
+\end{tabular}}
+{\scriptsize Migration: \ct{StateObject} → \ct{State} · \ct{EnvironmentObject} → \ct{Environment} +
+\ct{.environment(\_:)} · \ct{ObservedObject} → plain property · \ct{@Published} → nothing
+(\ct{@ObservationIgnored} opts out). \ct{some View}: opaque result type, SE-0244, Swift 5.1.\par}
+
+\hd{Testing}
+{\scriptsize \textbf{Pyramid} (Cohn, \emph{Succeeding with Agile}, 2009): Unit · Service · UI; inverted =
+ice-cream cone. \textbf{70/20/10} is Google Testing Blog 2015, ``as a good first guess'' — not Cohn.\par}
+{\scriptsize\textbf{Test doubles} (Meszaros, \emph{xUnit Test Patterns}, 2007): \textbf{Dummy} passed
+around, never used — fills parameter lists · \textbf{Fake} working shortcut implementation (an
+in-memory database) · \textbf{Stub} canned answers to calls made during the test · \textbf{Spy} a stub
+that also records how it was called · \textbf{Mock} pre-programmed expectations = the specification of
+the calls.\par}
+{\scriptsize\textbf{XCTest}: class \ct{setUp()} → per test: \ct{setUp() async throws} → \ct{setUpWithError()}
+→ \ct{setUp()} → test → teardown blocks (LIFO) → \ct{tearDown()} → \ct{tearDownWithError()} →
+\ct{tearDown() async throws} → class \ct{tearDown()}; a crash skips teardown. \textbf{Swift Testing}
+(Swift 6, Xcode 16): \ct{\#expect} records and continues; \ct{\#require} throws
+\ct{ExpectationFailedError}, \ct{try \#require(opt)} unwraps; parallel by default (XCTest: one by
+one); traits \ct{.disabled} \ct{.enabled(if:)} \ct{.bug} \ct{.tags} \ct{.timeLimit} \ct{.serialized};
+exit tests Swift 6.2, not on iOS.\par}
+
+\hd{Patterns \& principles — the authors' words}
+{\scriptsize \textbf{GoF} (Gamma, Helm, Johnson, Vlissides, 1994) — 23: \textbf{5 creational} Abstract
+Factory, Builder, Factory Method, Prototype, Singleton · \textbf{7 structural} Adapter, Bridge,
+Composite, Decorator, Facade, Flyweight, Proxy · \textbf{11 behavioural} Chain of Responsibility,
+Command, Interpreter, Iterator, Mediator, Memento, Observer, State, Strategy, Template Method,
+Visitor.\par}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{12mm}L{66mm}@{}}
+\toprule
+Adapter & \emph{converts} an interface into the one clients expect\\
+Decorator & same interface, \emph{adds} responsibilities at run time — vs ``an explosion of subclasses to support every combination''\\
+Facade & \emph{one higher-level} interface over a subsystem\\
+Proxy & surrogate that \emph{controls access}: remote · virtual (create on demand) · protection · smart reference\\
+\midrule
+Strategy & interchangeable algorithms; the \textbf{client} picks, so it must know them\\
+State & object ``will appear to change its class''; transitions in the Context or (more flexible) in the states\\
+\midrule
+Factory M. & subclasses decide which class to instantiate — one product\\
+Abstract F. & families of related objects, no concrete classes named (``Kit'')\\
+\bottomrule
+\end{tabular}}
+{\scriptsize Template Method = ``Hollywood principle: Don't call us, we'll call you'' · Mediator:
+many-to-many → one-to-many · Command → queue, log, \textbf{undo} (\ct{UndoManager.registerUndo}) ·
+Observer: \ct{NotificationCenter} selector observers need no removal since iOS 9, block observers do;
+\ct{AnyCancellable} cancels on deinit · Builder's \textbf{Director} · Iterator =
+\ct{IteratorProtocol.next()} (\ct{nil} = end) + \ct{Sequence.makeIterator()} · Coordinator
+(Khanlou, 2015) · ``Dependency Injection'': name settled in Fowler's Jan 2004 article (constructor /
+setter / interface injection) — a technique; DIP is a principle.\par}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Auto Layout · URLSession \& networking ·
+Codable in depth · App \& view-controller lifecycle · UIKit touches · ARC · Value vs reference ·
+SwiftUI state \& data flow · Testing fundamentals · Test doubles · XCTest \& Swift Testing ·
+GoF: creational + structural · GoF: behavioural patterns · SOLID · Crashes \& symbolication}
+
+\end{document}

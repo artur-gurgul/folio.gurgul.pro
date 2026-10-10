@@ -1,0 +1,327 @@
+% ios-sandbox-security-model.tex — the iOS security model as an app developer meets it: the
+% sandbox + containers and the brokered ways out, entitlements (signed, allowed by the profile),
+% code integrity (Apple-issued signature, library validation, W^X and who may JIT), Mach/XPC IPC
+% (port rights, audit tokens), the Data Protection KEY HIERARCHY (the class table itself is on
+% keychain-secure-enclave), the silicon mitigation ladder (PAC → SPTM/TXM → MIE), Enhanced Security,
+% and the device-level modes (Lockdown, Stolen Device Protection, Automatic Restart).
+% Sources (checked 2026-10-09):
+%   support.apple.com/guide/security/security-of-runtime-process-sec15bfe098e/web (all third-party apps
+%     sandboxed; user mobile; random home dir at install; OS partition read-only; entitlements = signed
+%     key-value pairs; background only via system APIs; XN; W+X only with the Apple-only dynamic
+%     code-signing entitlement, one mmap, randomized address; Safari's JIT)
+%   …/app-code-signing-process-sec7c917bf14/web (all executable code Apple-signed; Team ID 10 chars;
+%     library validation at launch: platform library or same Team ID; system binaries have none)
+%   …/app-protection-and-app-groups-sec1a976c067/web (default class Protected Until First User
+%     Authentication; App Group = shared container while ≥ 1 app installed, prefs, keychain items)
+%   …/supporting-extensions-secabd3504cd/web (own address space + container, containing app's privacy
+%     grants; keyboards: no network unless Open Access, never in secure text fields)
+%   …/operating-system-integrity-sec8b776536b/web (KIP, Fast Permission Restrictions from A11, SCIP,
+%     PAC five 128-bit keys + per-process B keys, PPL, SPTM + TXM replace PPL on A15+/M2+, MIE on A19/M5)
+%   …/data-protection-overview-secf6276da8a/web (256-bit per-file key; AES-256-XTS on A14–A18 and M1+,
+%     AES-128-XTS on A9–A13) · …/data-protection-sece8608431d/web (NIST AES key wrap; metadata key
+%     wrapped by an SE-only key + an effaceable key; file keys never reach the AP; rewrap on class or
+%     passcode change) · …/data-protection-classes-secb010e978a/web (A: 10 s; B: Curve25519; C default;
+%     D: UID only, in Effaceable Storage) · …/passcodes-and-passwords-sec20230a10d/web (UID entangled,
+%     ~80 ms per try, > 5.5 years for 6 chars a–z0–9, SE-enforced delays, Erase Data after 10)
+%   …/the-secure-enclave-sec59b0b31ff/web (UID fused at manufacture; A9+: made by the SE TRNG, not known
+%     to Apple) · …/signed-system-volume-security-secd698747c9/web (iOS 15) ·
+%     …/boot-process-for-iphone-and-ipad-devices-secb3000f149/web (Boot ROM → iBoot → kernel; LLB ≤ A9)
+%     · …/memory-safe-iboot-implementation-sec30d8d9ec1/web (iOS 14; iPhone A13+)
+%   …/background-security-improvements-sec87fc038c2/web (iOS 26.1; patch + antipatch) ·
+%     …/protecting-user-data-in-the-face-of-attack-secf5549a4f5/web (Automatic Restart, iOS 18.1)
+%   security.apple.com/blog/memory-integrity-enforcement (iPhone 17 + Air, A19; kernel + 70+ userland
+%     processes; EMTE synchronous; kalloc_type iOS 15, xzone malloc iOS 17)
+%   developer.apple.com/documentation/xcode/enabling-enhanced-security-for-your-app (entitlements, build
+%     settings, soft mode, A19/M5) · /creating-enhanced-security-helper-extensions (no UI, XPCSession) ·
+%     /conforming-to-mach-ipc-security-restrictions (EXC_GUARD, ILLEGAL_MOVE) ·
+%     /security/preparing-your-app-to-work-with-pointer-authentication (arm64e A12+; key scopes;
+%     arm64e.x1 PAuth_LR on A20 Pro / M6 / S11+)
+%   developer.apple.com/documentation/bundleresources/entitlements (availability: hardened-process 26.0,
+%     -string keys 26.4, no-guard-objects + checked pointer arithmetic 27.0, app groups / keychain groups
+%     / default-data-protection 3.0, associated-domains 9.0, aps-environment 10.0, App Attest + multicast
+%     14.0, web-browser-engine.host 17.4) · /extensionfoundation (AppExtensionPoint, AppExtensionProcess:
+%     iOS 26) · /xpc/xpcsession (iOS 17) · /browserenginekit (+ designing-your-browser-architecture:
+%     JIT in content extensions; Japan needs checked-allocations) · /webkit/wkwebpagepreferences/
+%     islockdownmodeenabled (iOS 16) · /accessorysetupkit (iOS 18)
+%   developer.apple.com/documentation/foundation/filemanager/containerurl(forsecurityapplicationgroupidentifier:)
+%     (group. prefix; removed with the group's last app) · /uikit/providing-access-to-directories
+%     (iOS 13 folders; minimal bookmark; Settings › Privacy › Files and Folders)
+%   developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles
+%     (who/what/where/when/how; allowlist; App Store re-signs, no profile; DER profile iOS 15) ·
+%     tn3126-inside-code-signing-hashes (kernel may verify each page as it faults in — lazy) ·
+%     tn3179-understanding-local-network-privacy (iOS 14)
+%   developer.apple.com/library/archive: FileSystemProgrammingGuide (bundle signed at install, a write
+%     stops launch; backup rules) · technotes/tn2406 (iOS 8 split) · technotes/tn2415 (get-task-allow)
+%     · KernelProgramming/Mach (single receiver, many senders)
+%   developer.apple.com/forums/thread/92693 (Apple DTS: container path can change, never while running)
+%     · /thread/815819 (Apple DTS, Feb 2026: shipping systems run third-party apps' tagging in soft mode)
+%   developer.apple.com/support/alternative-browser-engines (EU, iOS 17.4 / iPadOS 18) ·
+%     /support/app-distribution-in-japan (iOS 26.2) · /app-store/review/guidelines (2.5.2, 2.5.6, 4.7)
+%   support.apple.com/en-us/105120 (Lockdown Mode, iOS 16) · /en-us/120340 (Stolen Device Protection, 17.3)
+%   github.com/apple-oss-distributions/xnu osfmk/mach/port.h (right types) · bsd/kern/kern_prot.c (audit
+%     token: auid, euid, egid, ruid, rgid, pid, asid, pidversion)
+%   developer.apple.com/videos/play/wwdc2026/379 (Trust Insights, iOS 27, entitlement)
+% Not repeated: Keychain + file-protection class tables, biometrics (keychain-secure-enclave); CodeDirectory,
+% cdhash, AMFI (code-signing-internals); profiles in CI (signing-and-cicd); EU/Japan notarization
+% (notarization-distribution); purpose strings, privacy manifest (app-hardening-privacy); Local Network
+% details (network-framework-local); macOS SIP/Gatekeeper/hardened runtime (macos-security-architecture).
+% @labels: area=os kind=concept platform=apple topic=security,platform-apis discussion=325
+% @tags: app-sandbox, entitlements, provisioning-profile, code-signing, library-validation, jit, xpc, mach-ports, app-groups, data-protection, secure-enclave, pointer-authentication, memory-integrity-enforcement, enhanced-security, lockdown-mode
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  nd/.style={box, font=\tiny, inner sep=1.5pt, align=center},
+  ok/.style={->, thick, draw=sheetGreen!70!black},
+  no/.style={->, thick, draw=sheetRed},
+  key/.style={box, font=\tiny, inner sep=1.5pt, align=center, draw=sheetBrown, fill=sheetBrown!8},
+  ev/.style={font=\tiny, text=black!80, inner sep=0.5pt, align=center},
+  bar/.style={draw=#1!80!black, fill=#1!18, minimum height=3mm, inner sep=1pt, font=\tiny, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{iOS security model — sandbox, entitlements, code, IPC, memory, keys}{os · folio}
+
+\oneliner{Every third-party app runs as user \ct{mobile}, \textbf{sandboxed} in its own container;
+anything more is an \textbf{entitlement} — a key–value pair \emph{signed into} the app and allowed
+by its profile. Only \textbf{Apple-signed code} runs, libraries must share the app's \textbf{Team
+ID}, writable+executable memory is Apple-only. Other processes are reached over
+\textbf{Mach/XPC}; data at rest is encrypted under keys tied to the \textbf{device UID} and the
+\textbf{passcode}; the silicon adds \textbf{PAC}, \textbf{page-table monitors}, \textbf{memory tagging}.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── the app process + sandbox ──
+  \draw[sheetBlue, very thick, dashed, rounded corners=3pt] (0,0.5) rectangle (5.55,3.05);
+  \node[font=\bfseries\tiny, anchor=north west, text=sheetBlue] at (0.05,3.03) {app process · uid \ct{mobile} · sandbox profile};
+  \node[nd, text width=25mm] (bun) at (1.45,2.2) {\textbf{bundle container} \ct{App.app}\\signed at install — a write\\and the app won't launch};
+  \node[nd, text width=25mm, fill=sheetGreen!10, draw=sheetGreen!70!black] (dat) at (1.45,1.12) {\textbf{data container}\\\ct{Documents/} \ct{Library/} \ct{tmp/}\\path may change between runs};
+  \node[nd, text width=21mm, fill=sheetOrange!10, draw=sheetOrange] (code) at (4.15,2.2) {executable pages:\\Apple-issued signature;\\dylibs: system or same Team ID};
+  \node[nd, text width=21mm, fill=black!5, draw=sheetGrey] (ent) at (4.15,1.12) {\textbf{entitlements}\\signed in; each one\\in the profile's allowlist};
+  % ── outside ──
+  \node[nd, text width=19mm, draw=sheetRed, fill=sheetRed!8] (oth) at (7.65,2.78) {another app's container};
+  \node[nd, text width=19mm] (grp) at (7.65,2.12) {App Group container\\\ct{group.<name>}};
+  \node[nd, text width=19mm, fill=sheetBlue!6, draw=sheetBlue] (pick) at (7.65,1.46) {picker $\to$\\security-scoped URL};
+  \node[nd, text width=19mm, fill=black!5, draw=sheetGrey] (d) at (7.65,0.8) {system daemons,\\own extensions};
+  \draw[no] (5.55,2.78) -- node[lbl, above, pos=0.55, text=sheetRed]{denied} (oth.west);
+  \draw[ok] (5.55,2.12) -- node[lbl, above, pos=0.55]{if entitled} (grp.west);
+  \draw[ok] (5.55,1.46) -- node[lbl, above, pos=0.55]{user picks} (pick.west);
+  \draw[ok] (5.55,0.8) -- node[lbl, above, pos=0.55]{XPC/Mach} (d.west);
+  \node[lbl, anchor=west, align=left] at (8.72,1.75) {launchd: name $\to$\\port; sandbox filters\\the lookup; service\\reads the caller's\\\textbf{audit token} $\to$\\entitlements, Team};
+  % kernel bar
+  \fill[sheetBlue!12] (0,0) rectangle (10.35,0.4);
+  \node[font=\tiny, anchor=west, align=left] at (0.05,0.2) {\textbf{XNU} — sandbox policy · page hashes checked as pages fault in · W$\oplus$X · KIP locks kernel code after boot ·\\PPL / \textbf{SPTM+TXM} own page tables + code-signing state · PAC · MIE — system on a \textbf{signed system volume}};
+  \draw[sheetGrey!50] (10.5,3.1) -- (10.5,-0.05);
+  % ── key hierarchy ──
+  \node[font=\bfseries\tiny, anchor=west, text=sheetBlue] at (10.55,2.95) {Data Protection keys — handled in the Secure Enclave};
+  \node[key] (uid) at (11.25,2.4) {\textbf{UID}\\fused in SoC};
+  \node[key] (pc) at (12.75,2.4) {\textbf{passcode}\\entangled w/ UID};
+  \node[key, draw=sheetOrange, fill=sheetOrange!10] (ck) at (12.0,1.6) {class keys A B C · D};
+  \node[key] (fk) at (12.0,0.85) {per-file / per-extent\\key, 256-bit};
+  \node[nd, fill=white, text width=17mm] (f) at (12.0,0.12) {AES Engine:\\data in \textbf{AES-XTS}};
+  \node[key, draw=sheetRed, fill=sheetRed!8] (eff) at (15.3,2.4) {effaceable key\\+ SE-only wrap key};
+  \node[key] (fs) at (15.3,1.6) {file-system\\(metadata) key};
+  \node[key, fill=white] (md) at (15.3,0.85) {metadata: wrapped\\file key + class};
+  \draw[flow] (uid) -- (ck); \draw[flow] (pc) -- node[lbl, right=1pt, pos=0.35]{A B C} (ck);
+  \draw[flow] (ck) -- node[lbl, right]{NIST AES-KW} (fk);
+  \draw[flow] (fk) -- (f);
+  \draw[flow] (eff) -- node[lbl, right]{wraps} (fs);
+  \draw[flow] (fs) -- node[lbl, right]{decrypts} (md);
+  \draw[flow, dashed] (md.west) -- (fk.east);
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (13.4,0.15) {erase = destroy effaceable\\key $\to$ every file unreadable};
+\end{tikzpicture}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \draw[thick, sheetGrey, ->] (0,0.55) -- (16.35,0.55);
+  \foreach \x/\v in {0.35/8, 1.45/13, 2.6/14, 3.8/15, 4.9/16, 5.85/17, 6.85/17.3, 7.9/17.4, 8.95/18, 9.95/18.1, 11.15/26, 12.4/26.1, 13.55/26.2, 15.0/27}
+    { \fill[sheetBlue] (\x,0.55) circle (1.1pt); \node[font=\tiny\bfseries, text=sheetBlue, fill=white, inner sep=0.5pt] at (\x,0.55) {\v}; }
+  \node[font=\tiny\bfseries, anchor=west, text=sheetBlue] at (-0.05,1.2) {iOS};
+  \node[ev, anchor=south] at (1.45,0.66) {folder picker:\\scoped directory};
+  \node[ev, anchor=south] at (3.8,0.66) {signed system vol.\\kalloc\_type · DER profile};
+  \node[ev, anchor=south] at (5.85,0.66) {xzone malloc\\\ct{XPCSession}};
+  \node[ev, anchor=south] at (7.9,0.66) {EU: alternative\\engines};
+  \node[ev, anchor=south] at (9.95,0.66) {Automatic\\Restart};
+  \node[ev, anchor=south] at (12.4,0.66) {Background Security\\Improvements};
+  \node[ev, anchor=south east] at (16.3,0.66) {checked pointer arithmetic\\guard-object opt-out · Trust Insights};
+  \node[ev, anchor=north] at (0.35,0.44) {data container\\split from bundle};
+  \node[ev, anchor=north] at (2.6,0.44) {Local Network alert\\App Attest};
+  \node[ev, anchor=north] at (4.9,0.44) {Lockdown\\Mode};
+  \node[ev, anchor=north] at (6.85,0.44) {Stolen Device\\Protection};
+  \node[ev, anchor=north] at (8.95,0.44) {AccessorySetupKit};
+  \node[ev, anchor=north] at (11.15,0.44) {Enhanced Security · MIE (A19)\\app-defined extension points};
+  \node[ev, anchor=north] at (13.55,0.44) {Japan: alt.\\engines, stores};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\hd{Sandbox and containers}
+\begin{itemize}
+  \item Home directory \textbf{randomly assigned at install}; the OS partition is read-only. Data
+        lives apart from the bundle — ask \ct{FileManager}, never build paths.
+  \item The container path can change whenever the app is \emph{not} running (Apple DTS): persist
+        relative paths or bookmarks, never absolute ones.
+  \item \ct{Documents/} and \ct{Library/} are backed up, \ct{Library/Caches/} and \ct{tmp/} are
+        not; Caches may be purged when storage is low.
+  \item Background work only through system-provided APIs.
+\end{itemize}
+
+\hd{Ways out — always brokered}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{62mm}@{}}
+\toprule
+user's file & document picker $\to$ \textbf{security-scoped URL}; wrap use in
+  \ct{start…}/\ct{stopAccessingSecurityScopedResource()}; a folder grants its whole subtree;
+  keep a minimal \textbf{bookmark}; revocable in Settings › Privacy › Files and Folders \\
+own apps & \textbf{App Group} \ct{group.<name>}: shared container (deleted with the group's last
+  app), prefs, keychain items; IPC by name — Mach/XPC \ct{<group>.<name>}, POSIX sem/shm,
+  UNIX socket inside the container \\
+secrets & keychain access group (same Team ID); a registered App Group doubles as one \\
+LAN, devices & Local Network alert on first use; multicast needs an entitlement;
+  \textbf{AccessorySetupKit}: one picker grants Bluetooth / Wi-Fi / LAN \\
+helper code & \textbf{extension}: own process + container, the containing app's privacy grants;
+  keyboards: no network until \emph{Open Access}, never in secure fields \\
+\bottomrule
+\end{tabular}}
+
+\hd{Entitlements — signed claims, allowed by the profile}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{38mm}>{\raggedright\arraybackslash}p{6mm}@{}}
+\toprule
+\textbf{key} & \textbf{grants} & \textbf{iOS}\\
+\midrule
+\ct{application-identifier} & App ID = Team ID prefix + bundle ID & —\\
+\ct{keychain-access-groups} & shared keychain items & 3\\
+\ct{…security.application-groups} & group container, IPC names & 3\\
+\ct{…default-data-protection} & app-wide default file class & 3\\
+\ct{…associated-domains} & universal links, webcredentials, App Clips & 9\\
+\ct{…networking.multicast} & multicast + broadcast (managed) & 14\\
+\ct{…web-browser-engine.host} & non-WebKit engine (EU, Japan) & 17.4\\
+\ct{get-task-allow} & debugger may attach (dev signing only) & —\\
+\bottomrule
+\end{tabular}}\par
+Being signed they can't change; daemons use them instead of root. The profile (who signs ·
+which App ID · which devices · until when · \textbf{which entitlements}) is an
+\emph{allowlist} — a claimed entitlement outside it and the app won't run. App Store builds
+are re-signed by Apple and carry no profile.
+
+\hd{Code integrity}
+\begin{itemize}
+  \item \textbf{Library validation} at launch: a platform library or the \textbf{same Team ID}
+        (10 chars). System binaries have no Team ID $\to$ system libraries only.
+  \item \textbf{W$\oplus$X}: a writable+executable page needs the \textbf{Apple-only} dynamic
+        code-signing entitlement — and then only one \ct{mmap}, at a random address: Safari's
+        JavaScript JIT.
+  \item \textbf{BrowserEngineKit}: non-WebKit engines split into network, rendering and content
+        extensions; content extensions may JIT, toggling pages W$\to$X. EU and Japan only (Japan
+        also requires \ct{checked-allocations}).
+  \item Everyone else interprets. App Review 2.5.2: no downloaded code that changes features;
+        4.7 carves out HTML5/JS mini apps, games, plug-ins; 2.5.6: browse with WebKit.
+\end{itemize}
+
+\hd{Device modes that change what an app sees}
+\begin{itemize}
+  \item \textbf{Lockdown Mode}: complex web tech blocked — in \ct{WKWebView} too
+        (\ct{isLockdownModeEnabled}, overridable per view); most Messages attachments blocked; no
+        new profiles or MDM enrolment; 2G/3G off; accessories need an unlocked device.
+  \item \textbf{Stolen Device Protection}: away from familiar places, saved passwords and cards
+        need Face/Touch ID with no passcode fallback; Apple Account changes wait an hour.
+  \item \textbf{Automatic Restart}: a long-locked device reboots, After $\to$ Before First
+        Unlock — class C data is locked again.
+  \item \textbf{Background Security Improvements}: WebKit and system-library fixes between
+        updates, active after a restart, removable (shipped as patch + antipatch).
+\end{itemize}
+
+\columnbreak
+
+\hd{IPC — Mach ports and XPC}
+\begin{itemize}
+  \item \textbf{Port} = kernel message queue: \textbf{one receiver}, many senders. Rights: send ·
+        receive · send-once · port set · dead name — carried inside messages. \textbf{XPC} =
+        typed messages over Mach (\ct{NSXPCConnection}, \ct{XPCSession}).
+  \item Authorise the peer by its \textbf{audit token} — kernel-stamped: auid, euid, egid, ruid,
+        rgid, pid, asid, \textbf{pidversion} — never a bare PID, which is recycled.
+  \item Your \textbf{task control port}'s send right = full control of your process; Enhanced
+        Security turns moving it (\ct{ILLEGAL\_MOVE}), raw reply-port misuse and
+        \ct{thread\_set\_state} into \ct{EXC\_GUARD} crashes.
+  \item An app can declare its own extension point (\ct{AppExtensionPoint}), launch the
+        extension (\ct{AppExtensionProcess}) and talk to it over \ct{XPCSession} — e.g.\ an
+        \textbf{Enhanced Security helper}: no UI, tighter sandbox, parses untrusted data.
+\end{itemize}
+
+\hd{Data Protection — what the picture means}
+\begin{itemize}
+  \item New file $\to$ new 256-bit key: \textbf{AES-256-XTS} on A14–A18 and M1+, AES-128-XTS on
+        A9–A13. The SE unwraps it and re-wraps it for the AES Engine with a per-boot key — the
+        application processor never sees a file key.
+  \item Change a file's class $\to$ rewrap its file key; change the passcode $\to$ rewrap the class
+        keys. Class B wraps with Curve25519 ECDH, so locked devices can still \emph{create} files.
+  \item \textbf{UID}: random, fused at manufacture; A9+ made by the SE's TRNG — unknown to Apple.
+        Passcode tangled with it: guessing runs \textbf{on this device}, $\approx$80\,ms a try
+        ($>$5.5 years for 6 chars a–z 0–9), delays 1\,min $\to$ 8\,h enforced by the SE across
+        reboots; Erase Data after 10 failures.
+\end{itemize}
+
+\hd{Silicon mitigation ladder}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x/\a/\m in {0.75/A11/{}, 1.75/A12/M1, 2.75/A13/{}, 3.75/A15/M2, 5.05/A19/M5, 6.35/A20 Pro/M6}
+    { \node[font=\tiny\bfseries, anchor=base] at (\x,1.62) {\a\ \textcolor{black!55}{\m}};
+      \draw[sheetGrey!40] (\x,1.52) -- (\x,-0.05); }
+  \draw[draw=sheetGrey, fill=black!8] (0.6,1.24) rectangle (7.75,1.48);
+  \node[font=\tiny, anchor=west] at (0.62,1.36) {Fast Permission Restrictions (APRR): W/X per thread, no syscall};
+  \draw[draw=sheetBlue, fill=sheetBlue!15] (1.6,0.97) rectangle (7.75,1.21);
+  \node[font=\tiny, anchor=west] at (1.62,1.09) {\textbf{PAC} (arm64e): signed code pointers};
+  \draw[draw=sheetGreen!70!black, fill=sheetGreen!15] (2.6,0.7) rectangle (7.75,0.94);
+  \node[font=\tiny, anchor=west] at (2.62,0.82) {memory-safe iBoot (iPhone, iOS 14)};
+  \draw[draw=sheetOrange, fill=sheetOrange!15] (3.6,0.43) rectangle (7.75,0.67);
+  \node[font=\tiny, anchor=west] at (3.62,0.55) {\textbf{SPTM + TXM} replace PPL};
+  \draw[draw=sheetRed, fill=sheetRed!12] (4.9,0.16) rectangle (7.75,0.4);
+  \node[font=\tiny, anchor=west] at (4.92,0.28) {\textbf{MIE}: EMTE, sync};
+  \draw[draw=sheetBrown, fill=sheetBrown!15] (6.2,-0.11) rectangle (7.75,0.13);
+  \node[font=\tiny, anchor=west] at (6.22,0.01) {\ct{arm64e.x1}};
+  \node[font=\tiny, text=black!60, anchor=west, align=left, fill=white, inner sep=0.5pt] at (-0.05,0.2) {bars run on\\to newer SoCs};
+\end{tikzpicture}\par
+\textbf{PAC}: 5 secret 128-bit keys; return addresses: per-process key + stack-pointer salt;
+function pointers: one key for all processes. \textbf{SPTM} sits above the kernel,
+\textbf{TXM} enforces code-execution policy: page tables hold even against kernel write.
+\textbf{MIE} (iPhone 17, Air): typed allocators (\ct{kalloc\_type}, \ct{xzone malloc}) +
+synchronous tags, always on for the kernel and 70+ system processes.
+
+\hd{Enhanced Security — an opt-in capability}
+Entitlements \ct{com.apple.security.hardened-process} plus
+\ct{.enhanced-security-version-string} ($\geq$ 2 $\to$ freed memory becomes guard regions) ·
+\ct{.checked-allocations} (tagging, A19 / M5+; \ct{.soft-mode} = simulated crash) ·
+\ct{.platform-restrictions-string} (checks on loaded dylibs, incoming Mach messages) ·
+\ct{.dyld-ro} (loader state read-only) · \ct{….enforce-checked-pointer-arithmetic-overflow}
+(\ct{arm64e.x1}). Build settings: arm64e, typed allocators, stack zero-init, libc++ hardening;
+optional \ct{-fbounds-safety}. Apple DTS, Feb 2026: third-party tagging ran in soft mode
+anyway\unverified.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Shipping with tagging \ct{.soft-mode} still on — tag faults only log.}
+  \trap{arm64e: a C++ virtual call through a mismatched declaration, or \ct{dispatch\_queue\_t} /
+        \ct{xpc\_connection\_t} passed between C++ and Objective-C++, now crashes.}
+  \trap{Simulator can't test PAC; tagging acts only on A19 / M5 hardware.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Sandbox = \emph{where}, entitlement = \emph{what}, signature = \emph{which code},
+Data Protection = \emph{when}, silicon = \emph{even if the kernel falls}.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Keychain \& Secure Enclave · Code signing
+internals · App hardening \& privacy · Device attestation · App extensions · Network.framework on
+the LAN · Notarization \& distribution · \texttt{macos-security-architecture} ·
+\texttt{xnu-launchd-xpc} · \texttt{os-fundamentals}}
+
+\end{document}

@@ -1,0 +1,121 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Node.js runtime — libuv, streams, processes, releases — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/runtime/node-runtime.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">310</span></a></li><li><a class="side-area" href="/folios.html?area=ai" data-area="ai">ai<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=ble" data-area="ble">ble<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=c" data-area="c">c<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cicd" data-area="cicd">cicd<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=crypto" data-area="crypto">crypto<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=dev-tools" data-area="dev-tools">dev-tools<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=iot" data-area="iot">iot<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=javascript" data-area="javascript">javascript<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=linux" data-area="linux">linux<span class="count">8</span></a></li><li><a class="side-area" href="/folios.html?area=macos" data-area="macos">macos<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=recall" data-area="recall">recall<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=runtime" data-area="runtime">runtime<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li><li><a class="side-area" href="/folios.html?area=typescript" data-area="typescript">typescript<span class="count">3</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Node.js runtime — libuv, streams, processes, releases</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">runtime · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Node = <strong>V8</strong> (runs JS, GC) + <strong>libuv</strong> (event loop, the kernel’s poller for
+sockets, a <strong>4-thread pool</strong> for files, <code>dns.lookup</code>, crypto, zlib) + C++
+<strong>bindings</strong>. Your JS runs on <strong>one thread</strong> per isolate — block it and <em>every</em>
+request waits.</p>
+<p class="sheet-tools"><a class="sheet-download" href="node-runtime.pdf" download>Download PDF</a> <a href="node-runtime.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/runtime/node-runtime.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="node-runtime-fig1.svg" width="625" height="142" class="wide" alt="Node.js runtime — libuv, streams, processes, releases — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Release lines — 9 October 2026</h2>
+<figure class="sheet-figure"><img src="node-runtime-fig2.svg" width="306" height="89" alt="Node.js runtime — libuv, streams, processes, releases — figure 2" loading="lazy"></figure>
+<p>Even lines: <strong>6 months Current <span class="math">→</span> 12 Active LTS <span class="math">→</span> 18 Maintenance</strong>; odd lines are never LTS (25 ended 1 Jun 2026). This month: <strong>24 <span class="math">→</span> Maintenance 20 Oct</strong>, <strong>26
+<span class="math">→</span> LTS 28 Oct</strong>, 27 Alpha starts. From <strong>27</strong> (announced 10 Mar 2026): one major a year — <strong>Alpha</strong> Oct–Mar (semver-major still allowed), <strong>Current</strong> Apr–Oct, then 30 months LTS; no odd/even split; the number is the year of its Current (27.0.0 in 2027).</p>
+</section>
+<section class="sheet-section">
+<h2>Where the work runs</h2>
+<ul>
+<li><strong>Kernel poller</strong> (also event ports on SunOS): 10k idle connections cost memory,  not threads. <strong>Pool</strong> (list in 1): libuv has no portable async-file primitive;  crypto and zlib are CPU-heavy.</li>
+<li><code>UV_THREADPOOL_SIZE</code>: default <strong>4</strong>, max <strong>1024</strong> (libuv 1.30; was 128),  read once when the pool starts. <strong>One pool per process</strong>, shared by every loop —  workers too. Threads get 8 MB stacks (libuv 1.45).</li>
+<li><strong>DNS</strong>: <code>dns.lookup()</code> = <code>getaddrinfo</code> on the pool, honours  <code>/etc/hosts</code> — and it is the default <code>lookup</code> of every <code>net</code>/<code>http</code>  connect by host name; it keeps the resolver’s address order (<code>verbatim</code>) since 17.0.  <code>dns.resolve*()</code> use c-ares: always the network, no pool, no <code>/etc/hosts</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Blocking the loop</h2>
+<ul>
+<li>Culprits: <code>*Sync</code> calls (<code>readFileSync</code>, <code>pbkdf2Sync</code>, <code>inflateSync</code>,  <code>execSync</code>), big JSON (Node’s guide: 50 MB takes 0.7 s to stringify, 1.3 s to  parse), ReDoS (<code>/(.+)+$/</code>), long loops. Symptom: p99 of <em>all</em> routes, timers  late, health checks fail, one core at 100 %.</li>
+<li>See it: <code>perf_hooks.monitorEventLoopDelay()</code> (histogram in <strong>ns</strong>, 10 ms  resolution, call <code>enable()</code>); <code>performance.eventLoopUtilization()</code> = share of time  spent outside <code>epoll_wait</code>; <code>--cpu-prof</code> (stable 22.4) writes a <code>.cpuprofile</code>.</li>
+<li>Fix: <strong>partition</strong> (chunks + <code>setImmediate</code>), <strong>offload</strong> (worker, child),  stream instead of <code>readFile</code>. Phase order, <code>nextTick</code> vs promises:  <code>js-event-loop</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Streams</h2>
+<ul>
+<li><code>highWaterMark</code> is a <strong>threshold, not a limit</strong> (a Readable stops pulling).  Default <strong>64 KiB</strong> since 22.0 (was 16 KiB; still 16 KiB on Windows),  <strong>16 objects</strong> in <code>objectMode</code>.</li>
+<li><code>.pipe()</code>: a source error does <em>not</em> close the destination (a leak).  <code>pipeline()</code> (<code>node:stream/promises</code>) forwards the error and destroys every  stream. Readables are <code>for await</code>-able.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Buffer</h2>
+<ul>
+<li>A <code>Uint8Array</code> subclass; bytes live outside the V8 heap, counted in  <code>memoryUsage().arrayBuffers</code> (part of <code>external</code>). <code>subarray</code> shares memory  (<code>slice</code> deprecated, <code>new Buffer()</code> too).</li>
+<li><code>alloc</code> is zero-filled; <code>allocUnsafe</code> may hold old bytes (secrets). It,  <code>from(string)</code> and <code>concat</code> carve from a shared pool below  <code>poolSize &gt;&gt;&gt; 1</code>; <code>poolSize</code> 8 KiB <span class="math">→</span> <strong>64 KiB</strong> in 26.3 / 24.18.</li>
+<li>Encodings: <code>utf8 utf16le latin1 base64 base64url hex</code>. A UTF-8 character can split  across chunks: <code>setEncoding(&#39;utf8&#39;)</code>, not <code>chunk.toString()</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>EventEmitter</h2>
+<p><code>emit()</code> calls listeners <strong>synchronously</strong>, in registration order. <code>&#39;error&#39;</code> with no listener <strong>throws</strong> (process exits). <span class="math">&gt;</span>10 listeners on one event <span class="math">→</span> <code>MaxListenersExceededWarning</code> — a leak hint, not a limit. <code>errorMonitor</code> observes without handling; <code>captureRejections</code> routes async-listener rejections to <code>&#39;error&#39;</code>; <code>events.once()</code> <span class="math">→</span> promise, <code>events.on()</code> <span class="math">→</span> async iterator.</p>
+</section>
+<section class="sheet-section">
+<h2>Past one thread</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th><strong>isolation · sharing · talk</strong></th><th><strong>for · catch</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>worker_</code><code>threads</code></td><td>own isolate, loop, Node instance, env copy — one process; <code>SharedArrayBuffer</code> + <code>Atomics</code>; <code>postMessage</code> clones or transfers</td><td>CPU-bound JS — keep a <strong>pool</strong>; <code>process.exit()</code> ends the thread only; no signals</td></tr>
+<tr><td><code>cluster</code></td><td>N processes via <code>fork()</code>; primary accepts and <strong>round-robins</strong> (not on Windows) or hands workers the socket; IPC</td><td>all cores for one server; no shared memory: sessions go to a store</td></tr>
+<tr><td><code>child_</code><code>process</code></td><td>any program, own memory + V8: <code>spawn</code> streams, <code>exec</code> = shell + buffer (<code>maxBuffer</code> 1 MiB), <code>execFile</code> no shell, <code>fork</code> = Node + IPC</td><td>tools; <code>exec</code> + user input = injection; an unread pipe blocks the child</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Crashes and exit</h2>
+<ul>
+<li><strong>Unhandled rejection</strong> <span class="math">→</span> <code>&#39;unhandledRejection&#39;</code> if listened, else an  uncaught exception: default <code>throw</code> since <strong>15.0</strong> (was a warning).</li>
+<li><code>&#39;uncaughtException&#39;</code>: last resort — not safe to resume; clean up synchronously,  exit, let the supervisor restart.</li>
+<li>Exit codes: <strong>1</strong> uncaught exception · 7 the handler threw · 9 bad option · 13  unsettled top-level <code>await</code> · <strong>128 + signal</strong> (SIGINT 130, SIGTERM 143).  SIGTERM/SIGINT exit by default — <strong>a listener removes that</strong>: exit yourself or  wait for the supervisor’s SIGKILL. SIGKILL, SIGSTOP cannot be caught.</li>
+<li><code>process.exit()</code> may drop pending stdout writes — set <code>process.exitCode</code>, let  the loop empty. <code>&#39;exit&#39;</code> listeners: synchronous only.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Graceful shutdown, and outputs</h2>
+<pre class="sheet-code"><code class="hljs language-typescript">process.<span class="hljs-title function_">once</span>(<span class="hljs-string">&#x27;SIGTERM&#x27;</span>, <span class="hljs-function">() =&gt;</span> {     <span class="hljs-comment">// now WE must exit</span>
+  server.<span class="hljs-title function_">close</span>(<span class="hljs-title function_">async</span> (err) =&gt; {     <span class="hljs-comment">// no new conns; idle ones</span>
+    <span class="hljs-keyword">await</span> db.<span class="hljs-title function_">end</span>();                 <span class="hljs-comment">// closed (19+); runs after</span>
+    process.<span class="hljs-property">exitCode</span> = err ? <span class="hljs-number">1</span> : <span class="hljs-number">0</span>; <span class="hljs-comment">// the last conn ends</span>
+  });
+  <span class="hljs-built_in">setTimeout</span>(<span class="hljs-function">() =&gt;</span> process.<span class="hljs-title function_">exit</span>(<span class="hljs-number">1</span>), <span class="hljs-number">10_000</span>).<span class="hljs-title function_">unref</span>();
+});
+stream.<span class="hljs-title function_">getDefaultHighWaterMark</span>(<span class="hljs-literal">false</span>) <span class="hljs-comment">// 65536 (Windows 16384)</span>
+<span class="hljs-title class_">Buffer</span>.<span class="hljs-title function_">from</span>(<span class="hljs-string">&#x27;€&#x27;</span>)   <span class="hljs-comment">// &lt;Buffer e2 82 ac&gt;: 1 char, 3 bytes</span></code></pre>
+</section>
+<section class="sheet-section">
+<h2>Built in — since when (docs v26.11)</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>feature</strong></th><th><strong>version</strong></th><th><strong>what to remember</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><strong>type stripping</strong></td><td>22.6 flag; on 23.6 / 22.18; stable 25.2 / 24.12</td><td><code>node app.ts</code>: types <span class="math">→</span> whitespace, <strong>no type check</strong>, tsconfig ignored. <code>enum</code>, runtime <code>namespace</code>, parameter properties, <code>import =</code> <span class="math">→</span> <code>ERR_UNSUPPORTED_</code><code>TYPESCRIPT_SYNTAX</code> (transform flag gone in 26.0). <code>import type</code>, <code>.ts</code> specifiers; no <code>.tsx</code>, no <code>node_modules</code></td></tr>
+<tr><td><strong><code>node:test</code></strong></td><td>stable 20.0</td><td><code>node --test</code> runs <code>*.test.*</code>, <code>test-*</code>, <code>test/**</code>, a child process per file; mocks incl. timers, snapshots; coverage experimental</td></tr>
+<tr><td><strong>permissions</strong></td><td>23.5 / 22.13</td><td><code>--permission</code> (was <code>--experimental-</code>) denies fs, net, child, worker, addons, WASI, FFI, inspector <span class="math">→</span> <code>ERR_ACCESS_DENIED</code>; grant <code>--allow-fs-read=&lt;path&gt;</code>, <code>-fs-write</code>, <code>-child-process</code>, <code>-worker</code>, <code>-net</code> (25.0). A seat belt: symlinks followed, open fds bypass. (Deno: deny by default)</td></tr>
+<tr><td><strong>CLI</strong></td><td>20.6 · 22.0</td><td><code>--env-file</code> (stable 24.10; the real environment wins) · <code>--watch</code> (stable 22.0) · <code>--run</code> (a <code>package.json</code> script, no pre/post hooks)</td></tr>
+<tr><td><strong>globals</strong></td><td>21.0 · 22.4</td><td><code>fetch</code>, <code>WebSocket</code> stable · <code>AsyncLocalStorage</code> stable 16.4</td></tr>
+<tr><td><code>node:sqlite</code></td><td>22.5; RC 25.7</td><td>a <strong>synchronous</strong> API</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>npm</h2>
+<p><code>npm ci</code>: lockfile required, a mismatch with <code>package.json</code> is an error, wipes <code>node_modules</code>, writes nothing. <strong>npm 12</strong> (8 Jul 2026; Node 26.11 still ships 11.20): dependency install scripts <strong>blocked</strong> unless the root’s <code>allowScripts</code> allows them; git and tarball-URL deps off.</p>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<p><em>Kernel for sockets, pool for files and DNS, workers for CPU — <code>async</code> never unblocks
+the one JS thread.</em></p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> <code>js-event-loop</code> ·
+<code>js-types-coercion-modules</code> (CJS <span class="math">↔</span> ESM, <code>require(esm)</code>) ·
+<code>js-async</code> · <code>js-engines-performance</code> · <code>ts-config-and-practice</code> ·
+<code>dependency-management</code> · <code>supply-chain-security</code> ·
+<code>linux-performance-observability</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=runtime" title="area">runtime</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=backend" title="platform">backend</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=concurrency" title="topic">concurrency</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=performance" title="topic">performance</a></li><li class="sheet-tag"><a href="/folios.html?tag=nodejs">nodejs</a></li><li class="sheet-tag"><a href="/folios.html?tag=libuv">libuv</a></li><li class="sheet-tag"><a href="/folios.html?tag=thread-pool">thread-pool</a></li><li class="sheet-tag"><a href="/folios.html?tag=uv-threadpool-size">uv-threadpool-size</a></li><li class="sheet-tag"><a href="/folios.html?tag=event-loop">event-loop</a></li><li class="sheet-tag"><a href="/folios.html?tag=blocking-event-loop">blocking-event-loop</a></li><li class="sheet-tag"><a href="/folios.html?tag=streams">streams</a></li><li class="sheet-tag"><a href="/folios.html?tag=backpressure">backpressure</a></li><li class="sheet-tag"><a href="/folios.html?tag=buffer">buffer</a></li><li class="sheet-tag"><a href="/folios.html?tag=eventemitter">eventemitter</a></li><li class="sheet-tag"><a href="/folios.html?tag=worker-threads">worker-threads</a></li><li class="sheet-tag"><a href="/folios.html?tag=cluster">cluster</a></li><li class="sheet-tag"><a href="/folios.html?tag=child-process">child-process</a></li><li class="sheet-tag"><a href="/folios.html?tag=graceful-shutdown">graceful-shutdown</a></li><li class="sheet-tag"><a href="/folios.html?tag=unhandled-rejection">unhandled-rejection</a></li><li class="sheet-tag"><a href="/folios.html?tag=permission-model">permission-model</a></li><li class="sheet-tag"><a href="/folios.html?tag=type-stripping">type-stripping</a></li><li class="sheet-tag"><a href="/folios.html?tag=node-test">node-test</a></li><li class="sheet-tag"><a href="/folios.html?tag=npm">npm</a></li><li class="sheet-tag"><a href="/folios.html?tag=lts">lts</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=runtime%2Fnode-runtime.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/331">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

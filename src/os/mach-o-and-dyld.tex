@@ -1,0 +1,315 @@
+% mach-o-and-dyld.tex — the Mach-O file (header, load commands, segments/sections, fat files,
+% encrypted text) and what dyld does with it: fixups (rebase/bind, opcode vs chained formats, the
+% 64-bit chained pointer, page-in linking), dyld4's PrebuiltLoader / JustInTimeLoader, initializer
+% order, how a dylib is found, the shared cache, and the linker/loader changes up to Xcode 27.
+% Sources (checked 2026-10-09):
+%   github.com/apple-oss-distributions/cctools include/mach-o/loader.h (MH_MAGIC_64, filetypes,
+%     flags incl. MH_PIE / MH_TWOLEVEL; LC_* values; LC_REQ_DYLD = dyld refuses an unknown one;
+%     LC_ATOM_INFO 0x36 … LC_LAZY_LOAD_DYLIB_INFO 0x3A; dylib_use_command + DYLIB_USE_* flags,
+%     "first supported in macOS 15, iOS 18"; SG_READ_ONLY; S_* section types; BIND_SPECIAL_DYLIB_*;
+%     PLATFORM_*; cryptid "0 means not-encrypted yet") · include/mach-o/fat.h (big-endian,
+%     0xcafebabe / 0xcafebabf, fat_arch fields) · man/vtool.1 · man/install_name_tool.1 · man/lipo.1
+%   github.com/apple-oss-distributions/xnu osfmk/mach/machine.h (CPU_TYPE_ARM 12 | CPU_ARCH_ABI64
+%     0x01000000; CPU_SUBTYPE_ARM64E 2) · bsd/kern/mach_loader.c (arm64 needs a 4 GB hard page
+%     zero; "kernel does *not* use entryoff from LC_MAIN. Dyld uses it."; DEFAULT_DYLD_PATH;
+%     cryptid 1 → "com.apple.unfree" decrypter, no decrypter → LOAD_DECRYPTFAIL)
+%   github.com/apple-oss-distributions/dyld include/mach-o/fixup-chains.h (header, page_start,
+%     pointer formats + bitfields, import formats) · doc/dyld4.md (Loader, PrebuiltLoader,
+%     JustInTimeLoader, ≤ 2 PrebuiltLoaderSets per process, kernel jumps to dyld's entry) ·
+%     doc/PrebuiltLoaderSet_Policy.md (dyld3 policy per platform; when sets are built / saved;
+%     cdhash + path hash; not after reboot; DYLD_USE_CLOSURES) · doc/CacheLayout.md (single file
+%     before the 2021 releases, then split; mappings incl. arm64e AUTH / AUTH_CONST = DATA /
+%     DATA_CONST with signed pointers; page-table sharing 1 GB x86_64 / 32 MB arm64) ·
+%     dyld/Loader.cpp runInitializersBottomUp (+load "done before C++ initializers", upward
+%     links later, delay-init skipped) · doc/man/man1/dyld.1 (DYLD_* vars, SIP, @executable_path,
+%     @loader_path, @rpath run-path list, DYLD_PRINT_LOADERS) · man3/dlopen.3 (dyld does not
+%     search; chained fixups "default mach-o format since macOS 12 and iOS 15", RTLD_LAZY/NOW no
+%     effect; set[ug]id or entitled → env ignored) · man1/ld.1 (__PAGEZERO 4 GB on 64-bit; page
+%     size 4 or 16 KB; PIE default from 10.7; -weak_framework NULL-check note; -delay_library;
+%     -ld_classic; -undefined dynamic_lookup vs chained fixups) · man1/dyld_info.1 ·
+%     man1/dyld_usage.1 (root, kernel tracing)
+%   developer.apple.com/videos/play/wwdc2022/110362 "Link fast" (stubs load a pointer from DATA;
+%     rebase/bind; exports trie; chained fixups, runtime iOS 13.4+; dyld steps; initializers
+%     bottom up; page-in linking by the kernel, launch only, DATA_CONST clean, a decade for the
+%     shared cache; 15 ms launch / 1 ms fixups; Xcode 14 faster ld64; dyld_info reads the cache)
+%   developer.apple.com/videos/play/wwdc2019/423 (dyld3 introduced 2017; iOS 13 brings it to apps)
+%   developer.apple.com/videos/play/wwdc2023/10268 "Meet mergeable libraries" (metadata roughly
+%     doubles a dylib; not merged in debug — re-exported, dyld redirects)
+%   developer.apple.com/documentation/xcode-release-notes: xcode-15 (new linker default, classic
+%     via -ld64), xcode-16 (-ld_classic deprecated), xcode-27 ("The ld64 linker has been removed
+%     and the -ld_classic option is no longer supported") · macos-release-notes/
+%     macos-big-sur-11_0_1 (system dylibs only in the built-in cache; check with dlopen())
+%   developer.apple.com/documentation/bundleresources/entitlements (allow-dyld-environment-
+%     variables, disable-library-validation)
+%   developer.apple.com/forums/thread/693430 (dyld4 frames in macOS 12 crash logs, Nov 2021)
+%   github.com/swiftlang/swift stdlib/public/runtime/ImageInspectionCommon.h (__TEXT,__swift5_*)
+%   github.com/apple-oss-distributions/objc4 runtime/objc-file.h (ObjC data in __DATA*/__AUTH*)
+%   github.com/llvm/llvm-project lld/MachO InputSection.h, SyntheticSections.cpp (section names
+%     and types; __stubs and __init_offsets in __TEXT)
+% Not repeated here: static vs dynamic, launch tips, mergeable-library setup (Linking & launch
+% time); the signature blob (Code signing internals); FairPlay decryption (iOS reverse
+% engineering); dSYM / UUID workflow (Crashes & symbolication).
+% @labels: area=os kind=concept platform=apple topic=build,performance,platform-apis discussion=326
+% @tags: mach-o, load-commands, linkedit, fat-binary, dyld, chained-fixups, rebase-bind, page-in-linking, dyld-shared-cache, pre-main, rpath, static-initializers, mergeable-libraries, otool, dyld-info
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{ShSheet}{
+  morekeywords={otool,lipo,dyld_info,dyld_usage,vtool,install_name_tool},
+  sensitive=true, morecomment=[l]{\#},
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\scriptsize, anchor=west, text=sheetBlue},
+  rg/.style={draw=sheetGrey, minimum width=24mm, font=\ttfamily\tiny, inner sep=1pt, anchor=north, align=center},
+  lc/.style={draw=sheetGrey, fill=black!4, minimum width=30mm, minimum height=3mm, font=\ttfamily\tiny, inner sep=0pt, anchor=north},
+  st/.style={box, font=\tiny, text width=26mm, inner sep=1.2pt, align=left},
+  pp/.style={->, draw=sheetOrange, thick},
+  bf/.style={draw=sheetGrey, minimum height=3.4mm, font=\ttfamily\tiny, inner sep=0pt, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Mach-O \& dyld — the file, the fixups, the loader}{os · folio}
+
+\oneliner{A \textbf{Mach-O} is a \textbf{header}, a list of \textbf{load commands} (what to map,
+which dylibs, where \ct{main} is, the signature) and the \textbf{segments} they describe. The
+kernel maps the executable and \textbf{dyld}; dyld loads every dependent dylib, writes
+\textbf{fixups} into DATA — \emph{rebase} (add the ASLR slide) and \emph{bind} (another image's
+symbol) — runs initializers bottom-up and calls \ct{main}. Code (\ct{\_\_TEXT}) is never written:
+calls into a dylib go through a stub that loads a pointer from DATA.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── file layout ──
+  \node[ttl] at (-0.05,4.8) {The file — load commands $\to$ segments};
+  \node[lc, fill=sheetBrown!12, minimum height=3.4mm] (fat) at (1.5,4.6) {[fat header \ct{0xcafebabe}]};
+  \node[lc, fill=sheetBlue!15, minimum height=5.6mm, align=center, below=0pt of fat] (hdr) {\textbf{mach\_header\_64} \ct{0xfeedfacf}\\cputype filetype ncmds flags};
+  \node[lc, below=0pt of hdr] (c1) {LC\_SEGMENT\_64 \_\_PAGEZERO};
+  \node[lc, below=0pt of c1] (c2) {LC\_SEGMENT\_64 \_\_TEXT};
+  \node[lc, below=0pt of c2] (c3) {LC\_SEGMENT\_64 \_\_DATA(\_CONST)};
+  \node[lc, below=0pt of c3] (c4) {LC\_SEGMENT\_64 \_\_LINKEDIT};
+  \node[lc, below=0pt of c4] (c5) {LC\_LOAD\_DYLINKER (dyld)};
+  \node[lc, below=0pt of c5] (c6) {LC\_LOAD\_DYLIB ×n · LC\_RPATH};
+  \node[lc, below=0pt of c6] (c7) {LC\_MAIN · LC\_UUID · …};
+  \node[lc, below=0pt of c7] (c8) {LC\_DYLD\_CHAINED\_FIXUPS};
+  \node[lc, below=0pt of c8] (c9) {LC\_CODE\_SIGNATURE};
+  % segments
+  \node[rg, fill=white, draw=sheetRed, dashed, minimum height=4mm] (pz) at (4.95,4.6) {\_\_PAGEZERO: 4\,GiB, ---};
+  \node[rg, fill=sheetOrange!15, minimum height=10.5mm, below=0pt of pz] (text) {\textbf{\_\_TEXT} r-x · clean\\\_\_text \_\_stubs \_\_cstring\\\_\_const \_\_unwind\_info\\\_\_init\_offsets \_\_swift5\_*};
+  \node[rg, fill=sheetGreen!18, minimum height=5.5mm, below=0pt of text] (dc) {\textbf{\_\_DATA\_CONST} rw$\to$r\\fixup-only pointers};
+  \node[rg, fill=sheetGreen!8, minimum height=5.5mm, below=0pt of dc] (data) {\textbf{\_\_DATA} rw · dirty\\\_\_data · \_\_bss (zero)};
+  \node[rg, fill=black!8, minimum height=7.5mm, below=0pt of data] (le) {\textbf{\_\_LINKEDIT} r\\chains · exports trie\\symtab · signature};
+  \node[lbl, anchor=north, align=center, text=sheetBrown] at (4.95,1.2) {arm64e adds \_\_AUTH\_CONST\\and \_\_AUTH (signed pointers)};
+  \draw[pp] (c1.east) -- (pz.south west);
+  \draw[pp] (c2.east) -- ($(text.west)+(0,0.1)$);
+  \draw[pp] (c3.east) -- (dc.south west);
+  \draw[pp] (c4.east) -- ($(le.north west)+(0,-0.12)$);
+  \draw[pp] (c8.east) -- ($(le.west)+(0,-0.05)$);
+  \draw[pp] (c9.east) -- ($(le.south west)+(0,0.1)$);
+  % ── chained fixups ──
+  \draw[sheetGrey!50] (6.35,4.95) -- (6.35,0.3);
+  \node[ttl] at (6.4,4.8) {Chained fixups — one \_\_DATA page};
+  \foreach \i/\t/\c in {0/{rebase $\to$ +0x3f20}/sheetGreen!20, 1/{plain data}/white, 2/{bind \#0 \_malloc}/sheetOrange!20, 3/{plain data}/white, 4/{rebase $\to$ +0x8a10}/sheetGreen!20, 5/{bind \#1 \_free}/sheetOrange!20} {
+    \node[draw=sheetGrey, fill=\c, minimum width=19mm, minimum height=3.1mm, font=\ttfamily\tiny, inner sep=0pt] (p\i) at (7.4,4.38-0.33*\i) {\t};
+  }
+  \draw[->, thick, sheetBlue] (p0.east) to[out=0, in=0] node[lbl, right]{next} (p2.east);
+  \draw[->, thick, sheetBlue] (p2.east) to[out=0, in=0] (p4.east);
+  \draw[->, thick, sheetBlue] (p4.east) to[out=0, in=0] (p5.east);
+  \node[lbl, anchor=north west, align=left] at (9.25,4.6) {\_\_LINKEDIT keeps only\\\textbf{page\_start[]}: offset of\\the 1st fixup per page\\(\ct{0xFFFF} = none) and\\\textbf{imports[]}: lib ordinal,\\weak bit, name offset.\\The rest lives \emph{in} each\\8-byte slot:};
+  % bit layouts, bit 63 on the left, ~0.055 cm per bit
+  \node[lbl, anchor=west, font=\tiny\bfseries] at (6.4,2.4) {DYLD\_CHAINED\_PTR\_64 (format 2) — bit 63 $\to$ 0};
+  \node[bf, minimum width=2mm, fill=sheetGreen!40] (r0) at (6.45,2.08) {0};
+  \node[bf, minimum width=6.6mm, fill=sheetBlue!15, right=0pt of r0] (r1) {next};
+  \node[bf, minimum width=3.9mm, right=0pt of r1] (r2) {7};
+  \node[bf, minimum width=4.4mm, right=0pt of r2] (r3) {8};
+  \node[bf, minimum width=19.8mm, fill=sheetGreen!15, right=0pt of r3] (r4) {target 36 (vmaddr)};
+  \node[lbl, anchor=west, text=sheetGreen!40!black] at (r4.east) {rebase};
+  \node[bf, minimum width=2mm, fill=sheetOrange!45] (b0) at (6.45,1.68) {1};
+  \node[bf, minimum width=6.6mm, fill=sheetBlue!15, right=0pt of b0] (b1) {next};
+  \node[bf, minimum width=10.5mm, right=0pt of b1] (b2) {rsv 19};
+  \node[bf, minimum width=4.4mm, right=0pt of b2] (b3) {8};
+  \node[bf, minimum width=13.2mm, fill=sheetOrange!15, right=0pt of b3] (b4) {ordinal 24};
+  \node[lbl, anchor=west, text=sheetOrange!80!black] at (b4.east) {bind};
+  \node[lbl, anchor=north west, align=left] at (6.4,1.45) {bit 63: 1 = bind · \textbf{next} (12 bits) = hop to the next\\fixup in 4-byte units · rebase: 7 reserved, 8 = top byte,\\target $\le$ 64\,GB image · bind: 8 = addend, ordinal\\$\to$ imports[]. arm64e (format 1, 8-byte stride):\\43-bit target, or \textbf{auth}: key 2 + diversity 16 + addr bit};
+  % ── launch ──
+  \draw[sheetGrey!50] (11.05,4.95) -- (11.05,0.3);
+  \node[ttl] at (11.1,4.8) {Launch — kernel $\to$ dyld $\to$ \ct{main}};
+  \node[st, draw=sheetGrey, fill=black!5] (s0) at (12.5,4.32) {\textbf{kernel} maps the exe (random slide) + dyld, jumps to dyld};
+  \node[st] (s1) at (12.5,3.7) {\textbf{dyld} loads each \ct{LC\_LOAD\_DYLIB}, recursively};
+  \node[st, draw=sheetOrange, fill=sheetOrange!8] (s2) at (12.5,3.08) {\textbf{bind + rebase} DATA (or the kernel, at page-in)};
+  \node[st, draw=sheetGreen!70!black, fill=sheetGreen!8] (s3) at (12.5,2.55) {\ct{\_\_DATA\_CONST} $\to$ read-only};
+  \node[st] (s4) at (12.5,2.02) {\textbf{initializers} bottom-up: \ct{+load}, then C++};
+  \node[st, draw=sheetRed, fill=sheetRed!6] (s5) at (12.5,1.4) {\ct{main()} at the \ct{LC\_MAIN} offset};
+  \foreach \a/\b in {s0/s1,s1/s2,s2/s3,s3/s4,s4/s5} \draw[flow] (\a) -- (\b);
+  \node[lbl, anchor=north west, align=left] at (13.95,4.6) {\textbf{dyld4: a Loader per image}\\\textbf{PrebuiltLoader}: read-only,\\deps + bind targets pre-\\computed. OS programs: in\\the dyld cache; others:\\saved after a launch\\(dyld3's \emph{closure}). May\\depend only on Prebuilt.\\\textbf{JustInTimeLoader}:\\malloc'd, parses the file\\— for an image that\\changed and all above it.};
+  \node[lbl, anchor=north west, align=left, text=sheetBrown] at (13.95,1.25) {\ct{DYLD\_PRINT\_LOADERS=1}\\shows which kind each\\image got};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\footnotesize\setstretch{1.0}
+
+\hd{Header}
+\begin{itemize}
+  \item \ct{MH\_MAGIC\_64} \ct{0xfeedfacf} (32-bit \ct{0xfeedface}). \ct{cputype}
+        \ct{CPU\_TYPE\_ARM64} = ARM 12 | ABI64 \ct{0x01000000} = \ct{0x0100000c}; x86\_64
+        \ct{0x01000007}; \textbf{arm64e} is \ct{cpusubtype} 2, not a cputype.
+  \item \ct{filetype}: OBJECT 1 · \textbf{EXECUTE 2} · \textbf{DYLIB 6} · DYLINKER 7 · BUNDLE 8 ·
+        DSYM \ct{0xa} · FILESET \ct{0xc}. \ct{flags}: TWOLEVEL \ct{0x80} (binds name their
+        library) · \textbf{PIE} \ct{0x200000} (load at a random address; default since 10.7) ·
+        APP\_EXTENSION\_SAFE · DYLIB\_IN\_CACHE.
+\end{itemize}
+
+\hd{Load commands}
+Each = \ct{cmd} + \ct{cmdsize} + payload. \textbf{R} = \ct{| 0x80000000} (\ct{LC\_REQ\_DYLD}):
+dyld refuses an image with an R command it does not know; other unknown ones are ignored.\par
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\ttfamily\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{50mm}@{}}
+\toprule
+SEGMENT\_64 0x19 & name, vmaddr/vmsize, fileoff/filesize, max/init prot, flags, sections\\
+SYMTAB 0x2 · DYSYMTAB 0xb & symbols + strings; indirect table for stubs and GOT\\
+LOAD\_DYLINKER 0xe & \ct{/usr/lib/dyld} — the kernel loads it\\
+LOAD\_DYLIB 0xc & install name + current/compat version; \ct{\_WEAK\_} 0x18|R may be missing; REEXPORT 0x1f|R\\
+ID\_DYLIB 0xd · RPATH 0x1c|R & a dylib's own install name · a run-path entry\\
+MAIN 0x28|R & offset of \ct{main} (replaced UNIXTHREAD); dyld reads it, the kernel does not\\
+UUID 0x1b & 128-bit build id — the symbolication key\\
+BUILD\_VERSION 0x32 & platform, minOS, SDK, tools\\
+DYLD\_INFO\_ONLY 0x22|R & old format: rebase / bind / weak / lazy opcodes + export trie\\
+DYLD\_CHAINED\_FIXUPS 0x34|R & chain starts + imports (exports: EXPORTS\_TRIE 0x33|R)\\
+CODE\_SIGNATURE 0x1d & offset/size of the blob at the end of \ct{\_\_LINKEDIT}\\
+ENCRYPTION\_INFO\_64 0x2c & cryptoff · cryptsize · cryptid (below)\\
+\bottomrule
+\end{tabular}}\par
+Newest in \ct{loader.h}: ATOM\_INFO 0x36 · FUNCTION\_VARIANTS 0x37 (+\_FIXUPS 0x38) ·
+TARGET\_TRIPLE 0x39 · LAZY\_LOAD\_DYLIB\_INFO 0x3A. macOS 15 / iOS 18 read
+\ct{dylib\_use\_command}: one LOAD\_DYLIB with flags weak · re-export · upward · \textbf{delayed-init}.
+
+\hd{Segments and sections}
+\begin{itemize}
+  \item \textbf{Segment} = page-aligned VM range with one protection (page = 4 or 16\,KB by
+        arch); \textbf{section} = named sub-range (\ct{\_\_TEXT,\_\_text}) with a type:
+        \ct{S\_ZEROFILL} (\ct{\_\_bss}: \ct{vmsize} > \ct{filesize}), \ct{S\_SYMBOL\_STUBS},
+        \ct{S\_NON\_LAZY\_SYMBOL\_POINTERS} (\ct{\_\_got}), \ct{S\_MOD\_INIT\_FUNC\_POINTERS},
+        \ct{S\_INIT\_FUNC\_OFFSETS} (32-bit offsets, in \ct{\_\_TEXT}).
+  \item \ct{\_\_PAGEZERO}: ld's default is 4\,GB on 64-bit; xnu \emph{refuses} an arm64
+        executable whose hard page zero does not cover the whole low 32-bit address space.
+  \item \textbf{Clean} pages (\ct{\_\_TEXT}, \ct{\_\_LINKEDIT}) are evictable and re-read from
+        the file; \textbf{dirty} ones (\ct{\_\_DATA}, fixed-up \ct{\_\_DATA\_CONST}) cost RAM.
+        \ct{SG\_READ\_ONLY} \ct{0x10} = ``made read-only after fixups''.
+  \item Runtimes find metadata by section: Swift scans \ct{\_\_TEXT,\_\_swift5\_proto}
+        (conformances), \ct{\_swift5\_types}, \ct{\_swift5\_protos} per image; ObjC lists
+        (\ct{\_\_objc\_classlist}, \ct{\_\_objc\_selrefs}, …) sit in \ct{\_\_DATA*} or \ct{\_\_AUTH*}.
+\end{itemize}
+
+\hd{Fat files and encrypted text}
+\ct{fat\_header} is \textbf{big-endian}: \ct{0xcafebabe} (\ct{\_64}: \ct{0xcafebabf}), then one
+\ct{fat\_arch} per slice: cputype, cpusubtype, offset, size, align ($2^n$). Slices are keyed by
+CPU only — device and simulator arm64 collide; the platform (iOS 2, iOS simulator 7) lives in
+\ct{LC\_BUILD\_VERSION}, hence XCFrameworks. \ct{LC\_ENCRYPTION\_INFO\_64}: xnu maps a
+\ct{cryptid 1} range through a decrypting pager (\ct{com.apple.unfree}); no decrypter $\to$
+exec fails. \ct{cryptid 0} = plain.
+
+\hd{Example — take a binary apart}
+\begin{lstlisting}[language=ShSheet]
+lipo -archs App               # slices: arm64 x86_64 ...
+otool -l App                  # every load command and section
+otool -L App                  # dylibs + compat / current versions
+vtool -show-build App         # platform, minos, sdk
+dyld_info -fixups App         # every rebase / bind and its target
+dyld_info -imports -exports Lib.dylib   # works on cache images too
+dyld_info -inits App          # initializers dyld will run
+DYLD_PRINT_LIBRARIES=1 DYLD_PRINT_INITIALIZERS=1 ./tool
+sudo dyld_usage App           # live trace (kernel tracing: root)
+\end{lstlisting}
+
+\columnbreak
+
+\hd{Fixups — the only writes dyld makes}
+\begin{itemize}
+  \item \textbf{Rebase}: a pointer into its own image, stored as if loaded at 0; dyld adds the
+        slide. \textbf{Bind}: the target is a name (\ct{\_malloc}) looked up in one library's
+        \textbf{exports trie} — two-level: the import's \textbf{lib ordinal} picks the library
+        (0 self · $-1$ main executable · $-2$ flat lookup · $-3$ weak).
+  \item \textbf{Opcode format} (\ct{LC\_DYLD\_INFO\_ONLY}): lists of locations, plus
+        \textbf{lazy binding} (\ct{\_\_stub\_helper} + \ct{\_\_la\_symbol\_ptr}, bound on first call).
+  \item \textbf{Chained fixups}: runtime from iOS 13.4; the default output since macOS 12 /
+        iOS 15. Smaller \ct{\_\_LINKEDIT}; \textbf{no lazy binding} — every bind at load, so
+        \ct{RTLD\_LAZY} = \ct{RTLD\_NOW}, and \ct{-undefined dynamic\_lookup} that relied on
+        lazy binds breaks.
+  \item \textbf{Page-in linking} (WWDC22, iOS 16 generation): dyld skips the fixups and the
+        \textbf{kernel} applies a DATA page's chain as it faults in. Needs chained fixups;
+        launch only (a \ct{dlopen}ed image is fixed by dyld); \ct{\_\_DATA\_CONST} stays
+        \textbf{clean}. Shared-cache dylibs have had it ``for over a decade''. Apple's demo:
+        15\,ms launch, 1\,ms of it fixups.
+\end{itemize}
+
+\hd{dyld4 — when the prebuilt path is used}
+At most two PrebuiltLoaderSets per process: the dyld cache's (every OS dylib) and the program's.
+A program's set is cloned from its JustInTimeLoaders after loading, \emph{before} initializers,
+saved under a name from its \textbf{cdhash} + a hash of its path, and \textbf{never used after a
+reboot} (no persistence for an attacker). None is built with \ct{DYLD\_INSERT\_LIBRARIES},
+\ct{DYLD\_*\_PATH}, \ct{DYLD\_IMAGE\_SUFFIX} or interposing. \ct{DYLD\_USE\_CLOSURES}: 0 JIT ·
+1 JIT + save · 2 prebuilt or fail.
+
+\hd{Timeline — linker and loader}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{16mm}>{\raggedright\arraybackslash}p{61mm}@{}}
+\toprule
+WWDC17 & dyld3: cache the parse / load / lookup work (a launch closure)\\
+iOS 13 & dyld3 for third-party iOS apps (macOS apps stay on dyld2); 13.4: chained-fixup runtime\\
+macOS 11.0.1 & system dylibs only in the built-in cache — no files on disk\\
+macOS 12 · iOS 15 & dyld4 (in macOS 12 crash logs), no dyld2 fallback; chained fixups the default; from ``the 2021 releases'' the cache is split into several files\\
+Xcode 14 · iOS 16 & faster, parallel ld64 · page-in linking (WWDC22)\\
+Xcode 15 & new linker by default (classic via \ct{-ld64}); mergeable libraries — metadata $\approx$ doubles a dylib, Debug re-exports instead of merging\\
+Xcode 16 & \ct{-ld\_classic} deprecated\\
+macOS 15 / iOS 18 & \ct{dylib\_use\_command} (delayed-init dylibs)\\
+\textbf{Xcode 27} & \textbf{ld64 removed}; \ct{-ld\_classic} no longer supported\\
+\bottomrule
+\end{tabular}}
+
+\hd{Initializers — the exact order}
+dyld walks the graph \textbf{bottom-up}: every dependency before its client, \emph{upward}
+links afterwards. Per image: ObjC \ct{+load} first (``done before C++ initializers''), then C++
+static constructors, \ct{\_\_attribute\_\_((constructor))}, \ct{-init}. A \textbf{delay-init}
+dylib (\ct{-delay\_library}) is in the graph, but its initializers are skipped while it stays
+in the delay-init state.
+
+\hd{Finding a dylib · the shared cache}
+\begin{itemize}
+  \item dyld does \textbf{not search}: an install name is a path. \ct{@executable\_path} = the
+        main executable's directory; \ct{@loader\_path} = that of the image holding the load
+        command; \ct{@rpath} = tried with each entry of the \textbf{run-path list}, built from the
+        \ct{LC\_RPATH}s along the dependency chain.
+  \item \ct{DYLD\_LIBRARY\_PATH}, \ct{\_FRAMEWORK\_PATH}, \ct{\_INSERT\_LIBRARIES} are ignored
+        for SIP-protected, set[ug]id or entitled binaries; hardened runtime needs
+        \ct{com.apple.security.cs.allow-dyld-environment-variables} (+ disable-library-validation
+        for another team's code).
+  \item Cache mappings: TEXT r-x · DATA\_CONST · DATA · LINKEDIT r, plus AUTH / AUTH\_CONST
+        on arm64e (DATA / DATA\_CONST with signed pointers), spaced so the read-only parts share
+        kernel page tables (32\,MB granule on arm64, 1\,GB on x86\_64).
+\end{itemize}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{\ct{-weak\_framework} without declaring the functions weak: clang may delete your
+        \ct{if (fn)} NULL check.}
+  \trap{Probing for \ct{/usr/lib/libz.dylib} as a file on macOS 11+ — it is not there;
+        \ct{dlopen()} it.}
+  \trap{\ct{-ld\_classic} still in \ct{OTHER\_LDFLAGS} — no longer supported from Xcode 27.}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Linking \& launch time · Code signing
+internals · Crashes \& symbolication · iOS reverse engineering \& tampering · Modularization \&
+Swift Package Manager · Swift compiler pipeline + runtime internals · \texttt{objc-interop} ·
+\texttt{os-fundamentals} · \texttt{xnu-launchd-xpc} · \texttt{macos-security-architecture} ·
+\texttt{c-undefined-behavior-and-build}}
+
+\end{document}

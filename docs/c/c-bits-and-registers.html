@@ -1,0 +1,155 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Bits, masks and hardware registers in C — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/c/c-bits-and-registers.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">310</span></a></li><li><a class="side-area" href="/folios.html?area=ai" data-area="ai">ai<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=ble" data-area="ble">ble<span class="count">2</span></a></li><li><a class="side-area current" href="/folios.html?area=c" data-area="c">c<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cicd" data-area="cicd">cicd<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=crypto" data-area="crypto">crypto<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=dev-tools" data-area="dev-tools">dev-tools<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=iot" data-area="iot">iot<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=javascript" data-area="javascript">javascript<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=linux" data-area="linux">linux<span class="count">8</span></a></li><li><a class="side-area" href="/folios.html?area=macos" data-area="macos">macos<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=recall" data-area="recall">recall<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=runtime" data-area="runtime">runtime<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li><li><a class="side-area" href="/folios.html?area=typescript" data-area="typescript">typescript<span class="count">3</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Bits, masks and hardware registers in C</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">c · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A register is a fixed address reached through a <code>volatile uint32_t *</code>; a
+field is a <strong>position + width</strong> — read it <em>shift, then mask</em>, write it
+<em>clear, then OR</em>, in <strong>unsigned</strong> arithmetic with shift counts below the width.
+<code>r |= m</code> is a load, an OR and a store: SET/CLR registers, bit-band aliases and
+write-1-to-clear flags exist so that one bit changes in <strong>one store</strong>.</p>
+<p class="sheet-tools"><a class="sheet-download" href="c-bits-and-registers.pdf" download>Download PDF</a> <a href="c-bits-and-registers.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/c/c-bits-and-registers.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="c-bits-and-registers-fig1.svg" width="600" height="75" class="wide" alt="Bits, masks and hardware registers in C — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Six idioms</h2>
+<p><table class="sheet-table">
+<tbody>
+<tr><td>set <span class="math">n</span></td><td><code>r |= 1u &lt;&lt; n</code></td><td>OR forces a 1</td></tr>
+<tr><td>clear <span class="math">n</span></td><td><code>r &amp;= ~(1u &lt;&lt; n)</code></td><td>AND with a hole</td></tr>
+<tr><td>toggle <span class="math">n</span></td><td><code>r ̂= 1u &lt;&lt; n</code></td><td>XOR flips</td></tr>
+<tr><td>test <span class="math">n</span></td><td><code>(r &gt;&gt; n) &amp; 1u</code></td><td>0/1; <code>!!(r &amp; m)</code> too</td></tr>
+<tr><td>get field</td><td><code>(r &amp; Msk) &gt;&gt; Pos</code></td><td><code>Msk</code> = shifted mask</td></tr>
+<tr><td>put field</td><td><code>r = (r &amp; ~Msk) | ((v &lt;&lt; Pos) &amp; Msk)</code></td><td>clear, OR; the last
+ <code>&amp; Msk</code> stops a too-big <code>v</code></td></tr>
+</tbody>
+</table></p>
+<p>Put <strong>DIV = 0x15</strong> into <code>0x002A3080</code>: <code>r &amp; ~0x00FF0000</code> = <code>0x00003080</code>; <code>(0x15 &lt;&lt; 16) &amp; Msk</code> = <code>0x00150000</code>; OR <span class="math">→</span> <code>0x00153080</code>.</p>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th><strong>CMSIS</strong> (Arm)</th><th><strong>ESP-IDF</strong> <code>soc/</code></th><th><strong>Linux</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>where</td><td><code>X_Pos</code></td><td><code>X_S</code></td><td>inside the mask</td></tr>
+<tr><td>mask</td><td><code>X_Msk</code> (shifted)</td><td><code>X_V</code> plain, <code>X_M</code> shifted</td><td><code>GENMASK(h,l)</code>, <code>BIT(n)</code></td></tr>
+<tr><td>put</td><td><code>_VAL2FLD(X,v)</code></td><td><code>REG_SET_FIELD(r,X,v)</code></td><td><code>FIELD_PREP(m,v)</code></td></tr>
+<tr><td>get</td><td><code>_FLD2VAL(X,r)</code></td><td><code>REG_GET_FIELD(r,X)</code></td><td><code>FIELD_GET(m,r)</code></td></tr>
+</tbody>
+</table></p>
+<p><code>FIELD_PREP</code> rejects a non-constant mask, or a constant value too wide for it, at compile time.</p>
+</section>
+<section class="sheet-section">
+<h2>Precedence — where bit tests break</h2>
+<figure class="sheet-figure"><img src="c-bits-and-registers-fig2.svg" width="230" height="37" alt="Bits, masks and hardware registers in C — figure 2" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Shifts — C23 6.5.8</h2>
+<p>Operands promoted; result type = the promoted left one; a count <span class="math">&lt;0</span> or <span class="math">≥</span> its width is <strong>UB for every type</strong>. C23’s mandatory two’s complement (6.2.6.2) changed none of it.</p>
+<p><table class="sheet-table">
+<thead>
+<tr><th><code><strong>32-bit <code>int</code></strong></code></th><th><strong>result</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>1u &lt;&lt; 31</code></td><td><code>0x80000000</code>; unsigned <code>&lt;&lt;</code> wraps mod <span class="math">2<sup>N</sup></span></td></tr>
+<tr><td><code>1 &lt;&lt; 31</code></td><td><strong>UB</strong>: <span class="math">2<sup>31</sup></span> is not an <code>int</code> value (GCC defines it as an extension;
+ <code>-fsanitize=shift</code> still reports it)</td></tr>
+<tr><td><code>-1 &lt;&lt; 1</code></td><td><strong>UB</strong>: negative left operand</td></tr>
+<tr><td><code>-8 &gt;&gt; 1</code></td><td>implementation-defined; GCC sign-extends <span class="math">→</span> <span class="math">-4</span></td></tr>
+<tr><td><code>x &lt;&lt; 32, x &gt;&gt; 32</code></td><td><strong>UB</strong> for <code>uint32_t x</code>: <code>(1u &lt;&lt; w) - 1</code> fails at
+ <span class="math">w = 32</span>; <code>~0u &gt;&gt; (32 - w)</code> works for <span class="math">w</span> 1..32</td></tr>
+<tr><td><code>uint64_t m = 1 &lt;&lt; 40;</code></td><td><strong>UB</strong>: still an <code>int</code> shift — <code>1ULL &lt;&lt; 40</code></td></tr>
+<tr><td><code>(uint8_t)0x80 &lt;&lt; 24</code></td><td>promoted to <code>int</code>, <span class="math">2<sup>31</sup></span> <span class="math">→</span> <strong>UB</strong>; cast to
+ <code>uint32_t</code> first</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Constants, widths, printing</h2>
+<ul>
+<li>Hex, octal, binary constants try <code>int</code>, <code>unsigned</code>, <code>long</code>, …:  <code>0x80000000</code> is <code>unsigned int</code>; decimal <code>2147483648</code> is a (long) <code>long</code>.</li>
+<li>C23: <code>0b1011&#39;0100</code> (binary + <code>&#39;</code> separator); <code>printf(&quot;%#b&quot;)</code>  <span class="math">→</span> <code>0b10110100</code> (glibc <span class="math">≥</span> 2.35); <code>%w32x</code> prints a  <code>uint32_t</code>; <code>UINT32_WIDTH</code> = 32.</li>
+<li><code>uintN_t</code> is <strong>optional</strong> (defined when such a type exists);  <code>uint_leastN_t</code> is required. <code>UINT8_C(1)</code> has the promoted type, <code>int</code>.</li>
+<li><code>uint32_t</code> may be <code>unsigned long</code>: ESP-IDF <span class="math">≥</span> 5.0 (GCC 11) on Xtensa and  RISC-V — <code>&quot;%u&quot;</code> warns, print with <code>PRIx32</code>.</li>
+<li><strong>Promotion</strong>: <code>uint8_t x = 0xFF;</code> <code>~x</code> is the  <code>int</code> <span class="math">-256</span>, never 0 — write <code>(uint8_t)~x</code>. C23  <code>unsigned _BitInt(N)</code> is <em>not</em> promoted: <code>~</code> stays <span class="math">N</span>  bits (GCC 14+: x86, AArch64).</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>The lowest set bit</h2>
+<figure class="sheet-figure"><img src="c-bits-and-registers-fig3.svg" width="261" height="87" alt="Bits, masks and hardware registers in C — figure 3" loading="lazy"></figure>
+<ul>
+<li>Loop <code>x &amp;= x - 1</code> to 0 = popcount in O(set bits) (Wegner 1960; K&amp;R ex. 2-9).  One bit set: <code>x &amp;&amp; !(x &amp; (x - 1))</code> — forget <code>x &amp;&amp;</code> and 0 passes.</li>
+<li><span class="math">a = 2<sup>k</sup></span>, unsigned <code>h</code>: <code>h &amp; (a - 1)</code> = <code>h % a</code>; align up:  <code>(x + a - 1) &amp; ~(a - 1)</code>.</li>
+<li>Sign-extend a <span class="math">w</span>-bit field (<span class="math">w ≤31</span>): <code>m = 1u &lt;&lt; (w - 1)</code>,  <code>(int32_t)(x ̂ m) - (int32_t)m</code> — no implementation-defined step.</li>
+<li>Rotate, defined for <code>n</code> 0..31: <code>(x &lt;&lt; n) | (x &gt;&gt; (-n &amp; 31))</code>  (<code>x &gt;&gt; (32 - n)</code>: UB at 0). GCC 15: <code>__builtin_stdc_rotate_left</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2><code>&lt;stdbit.h&gt;</code> (C23 7.18) vs the builtins</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>need</strong></th><th><code><strong>C23</strong></code></th><th><code><strong>GCC / Clang</strong></code></th><th><strong>at 0</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>count 1s</td><td><code>stdc_count_ones</code></td><td><code>__builtin_popcount</code></td><td>0</td></tr>
+<tr><td>trailing 0s</td><td><code>stdc_trailing_zeros</code></td><td><code>__builtin_ctz</code></td><td>32 · <strong>UB</strong></td></tr>
+<tr><td>leading 0s</td><td><code>stdc_leading_zeros</code></td><td><code>__builtin_clz</code></td><td>32 · <strong>UB</strong></td></tr>
+<tr><td>ffs: index+1</td><td><code>stdc_first_trailing_one</code></td><td><code>__builtin_ffs</code></td><td>0 · 0</td></tr>
+<tr><td>one bit set?</td><td><code>stdc_has_single_bit</code></td><td><code>x &amp;&amp; !(x&amp;(x-1))</code></td><td>false</td></tr>
+<tr><td>bits needed</td><td><code>stdc_bit_width</code></td><td><code>32 - clz</code></td><td>0 · <strong>UB</strong></td></tr>
+<tr><td>power of 2</td><td><code>stdc_bit_floor / _ceil</code></td><td></td><td>0 / 1</td></tr>
+</tbody>
+</table></p>
+<p>Suffixes <code>_uc</code>…<code>_ull</code> + type-generic (unsigned only); <code>bit_ceil</code> <span class="math">→</span> 0 if <span class="math">2<sup>k</sup></span> does not fit. Shipped by the <em>C library</em> (glibc 2.39, Jan 2024); GCC 14: <code>__builtin_stdc_*</code>, <code>__builtin_clzg(x, 32)</code> (2nd arg = result for 0). Byte order: <code>__STDC_ENDIAN_NATIVE__</code>.</p>
+</section>
+<section class="sheet-section">
+<h2>Register access</h2>
+<pre class="sheet-code"><code class="hljs language-c"><span class="hljs-meta">#<span class="hljs-keyword">define</span> REG32(a) (*(volatile uint32_t *)(a))</span>
+<span class="hljs-meta">#<span class="hljs-keyword">define</span> CTRL     REG32(PERIPH_BASE + 0x10u)  <span class="hljs-comment">// illustrative</span></span>
+<span class="hljs-meta">#<span class="hljs-keyword">define</span> DIV_Pos  16u</span>
+<span class="hljs-meta">#<span class="hljs-keyword">define</span> DIV_Msk  (0xFFu &lt;&lt; DIV_Pos)</span>
+<span class="hljs-type">uint32_t</span> div = (CTRL &amp; DIV_Msk) &gt;&gt; DIV_Pos;      <span class="hljs-comment">// 1 load</span>
+CTRL = (CTRL &amp; ~DIV_Msk) | ((v &lt;&lt; DIV_Pos) &amp; DIV_Msk);
+STATUS = DONE;                       <span class="hljs-comment">// W1C: write only that 1</span></code></pre>
+<p><code>volatile</code>: each access in the source happens; <em>what</em> counts as one is implementation-defined (6.7.4.1). Read-only register: <code>const volatile</code>. No atomicity.</p>
+</section>
+<section class="sheet-section">
+<h2>One bit, one store</h2>
+<figure class="sheet-figure"><img src="c-bits-and-registers-fig4.svg" width="249" height="66" alt="Bits, masks and hardware registers in C — figure 4" loading="lazy"></figure>
+<ul>
+<li><strong>ESP32</strong> <code>GPIO_OUT_W1TS</code> / <code>_W1TC</code> (offset <code>0x08</code> / <code>0x0C</code>)  set / clear the 1-bits. ESP-IDF’s <code>REG_SET_BIT</code>, <code>REG_SET_FIELD</code> are plain  C read-modify-writes.</li>
+<li><strong>STM32</strong> <code>GPIOx_BSRR</code>: bits 0–15 set, 16–31 reset <code>ODR</code> — “no risk of an  IRQ occurring between the read and the modify access”; both: set wins.</li>
+<li><strong>Bit-band</strong> (Cortex-M3/M4 option; not M0/M0+, ARMv8-M): alias = base +  byte_offset<span class="math">×</span>32 + bit<span class="math">×</span>4; 1 MB of SRAM <code>0x2000_0000</code> <span class="math">→</span>  <code>0x2200_0000</code>, of peripherals <code>0x4000_0000</code> <span class="math">→</span> <code>0x4200_0000</code>;  <code>0x2200001C</code> = bit 7 of <code>0x20000000</code>. Bit 0 of the written word is the bit.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Status flags — how a bit is cleared</h2>
+<figure class="sheet-figure"><img src="c-bits-and-registers-fig5.svg" width="273" height="52" alt="Bits, masks and hardware registers in C — figure 5" loading="lazy"></figure>
+<p><table class="sheet-table">
+<thead>
+<tr><th><code><strong>kind</strong></code></th><th><strong>clears by</strong></th><th><strong>write</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>rc_w1</code></td><td>writing 1 (W1C): EXTI_PR, ESP32 <code>STATUS_W1TC</code></td><td><code>REG = F</code>; <code>REG |= F</code>
+ writes back every pending 1 and clears flags never handled</td></tr>
+<tr><td><code>rc_w0</code></td><td>writing 0: STM32 <code>TIMx_SR</code></td><td><code>SR = ~F</code>; <code>SR &amp;= ~F</code>
+ zeroes flags raised between its load and store</td></tr>
+<tr><td><code>rc_r</code></td><td>being read</td><td>any read is a side effect</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>C bit-fields vs hardware</h2>
+<p>Unit, order in it, straddling and a plain <code>int</code> field’s sign are <strong>implementation-defined</strong> (GCC: the ABI decides; <code>int</code> fields signed); no <code>&amp;</code> of a field; <code>:0</code> closes the unit. GCC: volatile bit-fields “may be implicitly read when written to, or when adjacent bit-fields are accessed” — “unwise” for hardware; <code>-fstrict-volatile-bitfields</code> (default: the ABI’s) forces one access of the declared width. ESP-IDF’s <code>soc/*_struct.h</code> uses them anyway.</p>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<h3 class="sheet-hd">OR sets, AND-NOT clears, XOR flips, shift-then-mask reads; one bit, one store.</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> <code>c-memory-layout</code> ·
+<code>c-volatile-atomics-isr</code> · <code>c-undefined-behavior-and-build</code> ·
+<code>c-pointers-const-restrict</code> · <code>sanitizers-runtime-checkers</code> ·
+<code>swift-numerics-overflow</code> · <code>hashing-deep</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=c" title="area">c</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=embedded" title="platform">embedded</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=hardware" title="topic">hardware</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=language" title="topic">language</a></li><li class="sheet-tag"><a href="/folios.html?tag=bit-masks">bit-masks</a></li><li class="sheet-tag"><a href="/folios.html?tag=bit-fields">bit-fields</a></li><li class="sheet-tag"><a href="/folios.html?tag=popcount">popcount</a></li><li class="sheet-tag"><a href="/folios.html?tag=stdbit">stdbit</a></li><li class="sheet-tag"><a href="/folios.html?tag=power-of-two">power-of-two</a></li><li class="sheet-tag"><a href="/folios.html?tag=signed-shift">signed-shift</a></li><li class="sheet-tag"><a href="/folios.html?tag=integer-promotion">integer-promotion</a></li><li class="sheet-tag"><a href="/folios.html?tag=undefined-behavior">undefined-behavior</a></li><li class="sheet-tag"><a href="/folios.html?tag=volatile">volatile</a></li><li class="sheet-tag"><a href="/folios.html?tag=mmio">mmio</a></li><li class="sheet-tag"><a href="/folios.html?tag=read-modify-write">read-modify-write</a></li><li class="sheet-tag"><a href="/folios.html?tag=w1ts-w1tc">w1ts-w1tc</a></li><li class="sheet-tag"><a href="/folios.html?tag=w1c">w1c</a></li><li class="sheet-tag"><a href="/folios.html?tag=bit-banding">bit-banding</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=c%2Fc-bits-and-registers.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/292">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

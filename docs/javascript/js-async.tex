@@ -1,0 +1,345 @@
+% js-async.tex — promises as ECMA-262 defines them (states and fates, the resolve functions,
+% thenable adoption, reaction jobs), a counted job trace (then vs await vs return p vs return
+% await p), async functions, rejection tracking (HTML, Node), the four combinators, concurrency
+% shapes (waterfall, forEach, pool, withResolvers), cancellation with AbortSignal, retry with
+% full jitter, async iteration + await using, and the edition each piece arrived in.
+% Event-loop mechanics (tasks, rendering, nextTick, timers, yielding) live in js-event-loop.
+% Sources (checked 2026-10-09):
+%   tc39.es/ecma262 (draft ES2027, Promise Objects): fulfilled / rejected / pending / settled;
+%     resolved = settled or "locked in" to another promise · Promise constructor (executor called
+%     synchronously; abrupt completion → reject) · Promise Resolve Functions (self-resolution
+%     TypeError; Get(resolution, "then") now; NewPromiseResolveThenableJob via
+%     HostEnqueuePromiseJob) · PerformPromiseThen (non-callable handler → empty = pass-through;
+%     settled promise → job enqueued now; HostPromiseRejectionTracker "handle") · RejectPromise
+%     ("reject" when not handled) · PromiseResolve (returns x when x.constructor is C) ·
+%     Promise.all (empty → resolves []), Promise.any (AggregateError, "errors"), Promise.race
+%     (empty → never settles), Promise.try, Promise.withResolvers, finally (thenFinally calls
+%     onFinally with no argument, PromiseResolve's its result, then passes the value on) ·
+%     AsyncBlockStart (return → Resolve(value), throw → Reject) · AsyncGeneratorYield(Await(v))
+%   github.com/tc39/ecma262/pull/1250 (merged 2019-02, in ES2019: Await calls PromiseResolve
+%     instead of always wrapping — awaiting a native promise takes 1 job instead of 3)
+%   github.com/tc39/proposal-faster-promise-adoption (Stage 1; resolving with a native promise
+%     takes 2 ticks) · github.com/tc39/proposal-native-promise-adoption (Stage 1; no tick change)
+%   github.com/tc39/proposals finished-proposals.md (publication year: async functions 2017;
+%     async iteration, finally 2018; allSettled 2020; any 2021; top-level await 2022;
+%     withResolvers, Atomics.waitAsync 2024; Promise.try, sync iterator helpers 2025;
+%     Array.fromAsync 2026; Explicit Resource Management 2027 — the proposal repo's README still
+%     says Stage 3) · README.md (Await Dictionary = Promise.allKeyed / allSettledKeyed: Stage 3;
+%     Async Iterator helpers, Async Context: Stage 2)
+%   github.com/tc39/proposal-explicit-resource-management (await using: Symbol.asyncDispose, else
+%     Symbol.dispose; at block exit; reverse order; SuppressedError; AsyncDisposableStack)
+%   html.spec.whatwg.org/multipage/webappapis.html (HostEnqueuePromiseJob = queue a microtask;
+%     microtask checkpoint → "notify about rejected promises"; unhandledrejection fired from a
+%     global task on the DOM manipulation task source, cancelable, else may be reported to the
+%     console; rejectionhandled when a handler is added later)
+%   nodejs.org/api/cli.html (--unhandled-rejections: throw = emit unhandledRejection, else raise
+%     as an uncaught exception, default since v15.0.0; strict, warn, warn-with-error-code, none)
+%     · nodejs.org/api/timers.html (timers/promises setTimeout(delay, value, {signal, ref})
+%     rejects with an AbortError, v15.0.0)
+%   dom.spec.whatwg.org (abort() default reason: AbortError DOMException; timeout(): TimeoutError;
+%     any(): reason of the signal that caused it; throwIfAborted; abort steps run the abort
+%     algorithms then fire "abort"; APIs should reject with the signal's abort reason)
+%   developer.mozilla.org: Promise.try (Baseline 2025; func called synchronously) ·
+%     AbortSignal.any (no way to unsubscribe from the inputs; remove your listeners) ·
+%     Array.fromAsync (awaits sequentially, lazily; Promise.all is concurrent)
+%   aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter (M. Brooker, 2015: full
+%     jitter = random(0, min(cap, base·2^attempt)); jittered backoff does far less work)
+%   rfc-editor.org RFC 9110 §9.2.2 (PUT, DELETE and safe methods are idempotent), §10.2.3
+%     (Retry-After with 503) · RFC 6585 §4 (429 MAY carry Retry-After)
+%   The output of the trace is derived step by step from the job algorithms above (one FIFO job
+%     queue): S A B E C H D G F — and the listing, run verbatim in Node v26.7.0, prints exactly that.
+% @labels: area=javascript kind=concept platform=web topic=concurrency,language discussion=309
+% @tags: promises, async-await, microtask, thenable, promise-all, promise-allsettled, promise-any, promise-race, unhandled-rejection, abortcontroller, cancellation, jitter, concurrency-pool, async-iterators, async-generators, explicit-resource-management
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{JS}{
+  morekeywords={const,let,var,function,return,async,await,yield,new,try,catch,finally,throw,
+    if,else,for,of,in,while,break,true,false,null,undefined,this,using},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`}
+\lstdefinestyle{js}{style=printup, language=JS, basicstyle=\ttfamily\scriptsize,
+  aboveskip=2pt, belowskip=2pt,
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {>=}{{\hbox{>}\hbox{=}}}2 {===}{{\hbox{=}\hbox{=}\hbox{=}}}3
+           {->}{{\hbox{-}\hbox{>}}}2 {**}{{\hbox{*}\hbox{*}}}2 {?.}{{\hbox{?}\hbox{.}}}2
+           {...}{{\hbox{.}\hbox{.}\hbox{.}}}3}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\fat{\hbox{=}\hbox{>}}% "=>" without the mono font's ligature
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.2mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, anchor=west},
+  lg/.style={circle, fill=sheetBlue, text=white, font=\sffamily\tiny\bfseries, inner sep=0pt,
+             minimum size=3.3mm},
+  ij/.style={rectangle, draw=sheetGrey, fill=black!7, text=black!70, font=\ttfamily\tiny,
+             inner sep=0pt, minimum size=2.8mm},
+  code/.style={font=\ttfamily\tiny, anchor=west, inner sep=1pt},
+  ok/.style={circle, fill=sheetGreen, inner sep=0pt, minimum size=2.2mm},
+  ko/.style={rectangle, fill=sheetRed, inner sep=0pt, minimum size=2mm},
+  ln/.style={thick, draw=black!35},
+  ex/.style={font=\tiny\bfseries, text=sheetOrange, anchor=west, inner sep=1pt},
+}
+
+\begin{document}
+
+\sheettitle{Async JavaScript — promises, await, combinators, cancellation}{javascript · folio}
+
+\oneliner{A promise is a \textbf{settle-once} result: its executor runs \textbf{now}, its
+handlers \textbf{always later}, each as a promise \textbf{job} (a microtask on the web).
+\texttt{then} returns a \textbf{new} promise that adopts whatever its handler returns;
+\texttt{async}/\texttt{await} runs on the same jobs. The work starts when it is called and a
+promise cannot be cancelled — an \texttt{AbortSignal} asks the work to stop.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {3.95,10.6} \draw[sheetGrey!40] (\x,3.1) -- (\x,-0.95);
+  % ── 1 states and fates ──
+  \node[pt] at (-0.1,2.95) {\textcolor{sheetBlue}{1} states and fates};
+  \node[sb, minimum width=10mm] (pe) at (0.45,2.0) {pending};
+  \node[sb, minimum width=13mm, draw=sheetGreen, fill=sheetGreen!10] (fu) at (2.9,2.5) {fulfilled(v)};
+  \node[sb, minimum width=13mm, draw=sheetRed, fill=sheetRed!7] (rj) at (2.9,1.5) {rejected(e)};
+  \node[sb, minimum width=12mm, dashed, fill=white] (lk) at (0.7,0.55) {locked in to t};
+  \draw[flow] (pe.east) -- node[lbl, above, sloped]{\ct{resolve(v)}} (fu.west);
+  \draw[flow] (pe.east) -- (rj.west);
+  \node[lbl, anchor=west] at (0.55,1.47) {\ct{reject(e)} · throw};
+  \draw[flow] (pe.south) -- node[lbl, right, pos=0.6]{\ct{resolve(t)}, t a thenable} (pe.south |- lk.north);
+  \draw[thick, dashed, sheetGrey] (lk.east) -- node[lbl, below]{same fate as t} (3.82,0.55) -- (3.82,2.5);
+  \draw[flow, dashed] (3.82,1.5) -- (rj.east); \draw[flow, dashed] (3.82,2.5) -- (fu.east);
+  \node[lbl, anchor=west, align=left] at (-0.1,0.0) {\textbf{settled} = fulfilled or rejected};
+  \node[lbl, anchor=west, align=left] at (-0.1,-0.24) {\textbf{resolved} = settled or locked in: from then on};
+  \node[lbl, anchor=west, align=left] at (-0.1,-0.46) {\ct{resolve}, \ct{reject} and a throw are ignored};
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (-0.1,-0.7) {\ct{resolve(itself)} → rejected with \ct{TypeError}};
+  % ── 2 counting jobs ──
+  \node[pt] at (4.0,2.95) {\textcolor{sheetBlue}{2} counting jobs (code: left column)};
+  \foreach \r/\x in {1/6.85,2/7.5,3/8.15,4/8.8} {
+    \node[lbl] at (\x,2.5) {\r};
+    \draw[sheetGrey!35] (\x,2.38) -- (\x,0.58); }
+  \node[lbl, anchor=east] at (6.6,2.5) {job round};
+  \foreach \y in {1.975,1.625,1.275,0.925} \draw[sheetGrey!25] (4.05,\y) -- (10.3,\y);
+  \node[code] at (4.0,2.15) {async: await p; A};
+  \node[code] at (4.0,1.8)  {p.then(B).then(C).then(D)};
+  \node[code] at (4.0,1.45) {p.then(E; return p).then(F)};
+  \node[code] at (4.0,1.1)  {async: return p → G};
+  \node[code] at (4.0,0.75) {async: return await p → H};
+  \node[lg] at (6.85,2.15) {A};
+  \node[lg] (b) at (6.85,1.8) {B}; \node[lg] (c) at (7.5,1.8) {C}; \node[lg] (d) at (8.15,1.8) {D};
+  \draw[->, thin, sheetGrey] (b) -- (c); \draw[->, thin, sheetGrey] (c) -- (d);
+  \node[lg] (e) at (6.85,1.45) {E}; \node[ij] (et) at (7.5,1.45) {t}; \node[ij] (er) at (8.15,1.45) {r};
+  \node[lg, fill=sheetOrange] (f) at (8.8,1.45) {F};
+  \draw[->, thin, sheetGrey] (e) -- (et); \draw[->, thin, sheetGrey] (et) -- (er); \draw[->, thin, sheetGrey] (er) -- (f);
+  \node[ij] (gt) at (6.85,1.1) {t}; \node[ij] (gr) at (7.5,1.1) {r}; \node[lg, fill=sheetOrange] (g) at (8.15,1.1) {G};
+  \draw[->, thin, sheetGrey] (gt) -- (gr); \draw[->, thin, sheetGrey] (gr) -- (g);
+  \node[ij] (hw) at (6.85,0.75) {w}; \node[lg, fill=sheetGreen!70!black] (h) at (7.5,0.75) {H};
+  \draw[->, thin, sheetGrey] (hw) -- (h);
+  \node[lbl, anchor=west] at (9.15,2.5) {vs plain};
+  \node[ex, text=black!60] at (9.2,2.15) {+0};
+  \node[ex, text=black!60] at (9.2,1.8) {+0};
+  \node[ex] at (9.2,1.45) {+2 (F)};
+  \node[ex] at (9.2,1.1) {+2 (G)};
+  \node[ex, text=sheetGreen!60!black] at (9.2,0.75) {+1 (H)};
+  \node[sb, anchor=west, minimum width=64mm, draw=sheetGreen, fill=sheetGreen!10] at (4.05,0.25) {prints \ct{S A B E C H D G F} — one FIFO queue, round by round};
+  \node[lbl, anchor=west] at (4.0,-0.17) {\ct{t}: job calling \ct{p.then} · \ct{r}: resolves the outer promise · \ct{w}: \ct{await} resumes};
+  \node[lbl, anchor=west, text=sheetBrown] at (4.0,-0.45) {returning a native promise: \textbf{2 extra jobs}; \ct{return await p}: 1 fewer};
+  \node[lbl, anchor=west, text=sheetGrey] at (4.0,-0.72) {since ES2019 \ct{await} on a native promise takes 1 job (it took 3)};
+  % ── 3 combinators ──
+  \node[pt] at (10.65,2.95) {\textcolor{sheetBlue}{3} combinators, same inputs};
+  \foreach \t/\x in {t1/12.45,t2/13.35,t3/14.25} {
+    \draw[sheetGrey!50, densely dotted] (\x,2.6) -- (\x,0.25);
+    \node[lbl] at (\x,0.12) {\t}; }
+  \node[code] at (10.65,2.45) {a}; \draw[ln] (11.8,2.45) -- (12.45,2.45); \node[ko] at (12.45,2.45) {};
+  \node[code] at (10.65,2.15) {b}; \draw[ln] (11.8,2.15) -- (13.35,2.15); \node[ok] at (13.35,2.15) {};
+  \node[code] at (10.65,1.85) {c}; \draw[ln] (11.8,1.85) -- (14.25,1.85); \node[ok] at (14.25,1.85) {};
+  \node[lbl, anchor=west] at (10.9,2.45) {rejects}; \node[lbl, anchor=west] at (10.9,2.15) {fulfils};
+  \node[lbl, anchor=west] at (10.9,1.85) {fulfils};
+  \draw[sheetGrey!60, dashed] (10.65,1.62) -- (16.55,1.62);
+  \foreach \n/\y in {all/1.35,allSettled/1.05,race/0.75,any/0.45} \node[code] at (10.65,\y) {\n};
+  \draw[ln, draw=sheetBlue!50] (11.8,1.35) -- (12.45,1.35); \node[ko] at (12.45,1.35) {};
+  \draw[ln, draw=sheetBlue!50] (11.8,1.05) -- (14.25,1.05); \node[ok] at (14.25,1.05) {};
+  \draw[ln, draw=sheetBlue!50] (11.8,0.75) -- (12.45,0.75); \node[ko] at (12.45,0.75) {};
+  \draw[ln, draw=sheetBlue!50] (11.8,0.45) -- (13.35,0.45); \node[ok] at (13.35,0.45) {};
+  \node[ko] at (14.7,2.45) {}; \node[lbl, anchor=west] at (14.85,2.45) {rejects};
+  \node[ok] at (14.7,2.15) {}; \node[lbl, anchor=west] at (14.85,2.15) {fulfils};
+  \node[lbl, anchor=west] at (14.45,1.35) {rejects: a's reason};
+  \node[lbl, anchor=west] at (14.45,1.05) {fulfils: 3 \ct{\{status,…\}}};
+  \node[lbl, anchor=west] at (14.45,0.75) {rejects: a's reason};
+  \node[lbl, anchor=west] at (14.45,0.45) {fulfils: b's value};
+  \node[lbl, anchor=west, align=left] at (10.65,-0.2) {no rejection: \ct{all} fulfils at t3 with \ct{[a,b,c]}, \ct{race} at t1};
+  \node[lbl, anchor=west, align=left] at (10.65,-0.45) {all reject: \ct{any} → \ct{AggregateError}, \ct{.errors} in input order};
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (10.65,-0.72) {nothing is cancelled: b and c run on after \ct{all} rejects};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Promise rules (ECMA-262)}
+\begin{itemize}
+  \item The \textbf{executor runs synchronously} inside \ct{new Promise}; a throw in it rejects.
+        The first \ct{resolve}/\ct{reject} wins; later calls do nothing.
+  \item \ct{then} never calls back synchronously: on a settled promise the job is queued at
+        once (HTML: a microtask). A non-function argument lets the value or reason pass.
+  \item \ct{p.then(f, r)} returns a \textbf{new} promise: \ct{f} returns \ct{v} → fulfilled with
+        \ct{v}; throws → rejected; returns a thenable → \textbf{adopts} it. \ct{r} does not see a
+        throw from \ct{f}; \ct{catch(r)} = \ct{then(undefined, r)} placed after it.
+  \item Adopting thenable \ct{t}: \ct{t.then} is read now, called a job later; for a native
+        promise that costs 2 rounds (drawing 2) — Stage 1 ``faster promise adoption'' would cut them.
+  \item \ct{Promise.resolve(x)} returns \ct{x} itself when \ct{x.constructor === Promise};
+        \ct{await} uses the same check (tc39/ecma262 \#1250, ES2019).
+  \item \ct{finally(f)}: \ct{f} gets no argument; the value or reason passes through once
+        \ct{f}'s result settles; a throw or rejection in \ct{f} replaces it.
+  \item \ct{Promise.try(f, ...args)} (ES2025): calls \ct{f} now; a sync throw becomes a
+        rejection. \ct{Promise.withResolvers()} (ES2024): \ct{\{promise, resolve, reject\}}.
+\end{itemize}
+
+\section{The code of drawing 2}
+\begin{lstlisting}[style=js]
+const log = (s) => console.log(s), p = Promise.resolve();
+(async () => { await p; log('A'); })();
+p.then(() => log('B')).then(() => log('C')).then(() => log('D'));
+p.then(() => { log('E'); return p; }).then(() => log('F'));
+(async () => { return p; })().then(() => log('G'));
+(async () => { return await p; })().then(() => log('H'));
+log('S');                                  // S A B E C H D G F
+\end{lstlisting}
+
+\section{async functions}
+\begin{itemize}
+  \item Run synchronously up to the first \ct{await}; always return a new promise:
+        \ct{return v} resolves it (a returned promise is adopted), a throw rejects it.
+  \item \ct{await x}: \ct{PromiseResolve(x)}, then an internal \ct{then} — one job for a native
+        promise or a plain value (\ct{await 1}). Code after an \ct{await} never runs in the
+        same job; state may have changed meanwhile.
+  \item Inside \ct{try}, \ct{return await p}: a plain \ct{return p} leaves the \ct{try} before
+        \ct{p} rejects, so \ct{catch} never sees it. Top-level \ct{await} (ES2022): modules only.
+\end{itemize}
+
+\section{Rejections nobody handles}
+\begin{itemize}
+  \item Engine: rejecting an unhandled promise calls \ct{HostPromiseRejectionTracker(p,
+        "reject")}; a later handler calls it with \ct{"handle"}.
+  \item Browser: checked after every microtask checkpoint → \ct{unhandledrejection} fired from
+        a task, cancelable (\ct{preventDefault()} keeps it off the console); a handler added
+        later → \ct{rejectionhandled}.
+  \item Node $\geq$ 15: \ct{--unhandled-rejections=throw} by default — the
+        \ct{'unhandledRejection'} listener if any, otherwise raised as an uncaught exception.
+        Other modes: \ct{strict}, \ct{warn}, \ct{warn-with-error-code}, \ct{none}.
+\end{itemize}
+
+\section{Combinators}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright}p{11mm}>{\raggedright}p{21mm}>{\raggedright}p{17mm}>{\raggedright}p{15mm}>{\raggedright\arraybackslash}p{7mm}@{}}
+\toprule
+ & \textbf{fulfils with} & \textbf{rejects with} & \textbf{empty input} & \textbf{since}\\
+\midrule
+\ct{all} & values, input order & first rejection & \ct{[]} at once & 2015\\
+\ct{allSettled} & \ct{\{status, value\}} / \ct{\{status, reason\}} & never & \ct{[]} at once & 2020\\
+\ct{race} & first to settle & first to settle & never settles & 2015\\
+\ct{any} & first fulfilment & \ct{AggregateError} & rejects at once & 2021\\
+\bottomrule
+\end{tabular}}\par
+Inputs go through \ct{Promise.resolve}, so plain values are fine. Stage 3:
+\ct{Promise.allKeyed(\{a: pa, b: pb\})} → \ct{\{a, b\}} (Await Dictionary).
+
+\section{Traps}
+\begin{itemize}
+  \trap{\ct{pa = getA(); pb = getB(); await pa; await pb} — if \ct{pb} rejects while
+        \ct{await pa} waits, it has no handler yet: unhandled (Node: uncaught). Use
+        \ct{Promise.all}.}
+  \trap{\ct{new Promise(async (resolve) \fat{} …)}: a throw inside rejects only the executor's
+        own, unhandled promise; the outer one stays pending.}
+  \trap{\ct{Promise.race([work, timeout])} settles, but the work and the timer run on — pass an
+        \ct{AbortSignal} instead.}
+\end{itemize}
+
+\columnbreak
+
+\section{Concurrency shapes}
+\begin{lstlisting}[style=js]
+const a = await getA(); const b = await getB();     // tA + tB
+const [a, b] = await Promise.all([getA(), getB()]); // max(tA, tB)
+items.forEach(async (x) => { await save(x); }); // NOT awaited
+for (const x of items) await save(x);             // one at a time
+await Promise.all(items.map((x) => save(x)));     // all at once
+async function pool(items, n, work) {             // at most n
+  const out = []; let next = 0;
+  const lane = async () => { while (next < items.length) {
+    const i = next++; out[i] = await work(items[i]); } };
+  await Promise.all(Array.from({ length: n }, lane));
+  return out; }  // next++ is safe: no job runs between read and write
+const { promise, resolve, reject } = Promise.withResolvers();
+ws.addEventListener('open', resolve, { once: true });
+ws.addEventListener('error', reject, { once: true });
+await promise;                         // an event as a promise
+\end{lstlisting}
+One failing lane rejects \ct{pool} at once, yet the other lanes keep pulling items — give
+\ct{work} a signal and abort it in \ct{catch}.
+
+\section{Cancel with AbortSignal}
+\begin{lstlisting}[style=js]
+const ac = new AbortController();
+const signal = AbortSignal.any([ac.signal, AbortSignal.timeout(5000)]);
+const res = await fetch(url, { signal }); // rejects with signal.reason
+const sleep = (ms, signal) => new Promise((resolve, reject) => {
+  signal?.throwIfAborted();                  // a throw here = rejection
+  const stop = () => { clearTimeout(t); reject(signal.reason); };
+  const t = setTimeout(() => {
+    signal?.removeEventListener('abort', stop); resolve(); }, ms);
+  signal?.addEventListener('abort', stop, { once: true });
+});
+\end{lstlisting}
+\begin{itemize}
+  \item \ct{abort(reason)} runs the abort algorithms, then the \ct{abort} event, synchronously.
+        Default reason: an \ct{AbortError} \ct{DOMException}; \ct{timeout()} uses
+        \ct{TimeoutError}; \ct{any()} takes the reason of the signal that fired.
+  \item \ct{any()} cannot unsubscribe from its inputs: remove your own listeners when done.
+        Node: \ct{await setTimeout(ms, v, \{ signal \})} from \ct{node:timers/promises}.
+\end{itemize}
+
+\section{Retry with full jitter}
+\begin{lstlisting}[style=js]
+async function retry(fn, { tries = 5, base = 100, cap = 10_000, signal } = {}) {
+  for (let i = 0; ; i++) {
+    try { return await fn(signal); }
+    catch (e) {
+      if (i + 1 >= tries || signal?.aborted) throw e;
+      await sleep(Math.random() * Math.min(cap, base * 2 ** i), signal);
+    } } }
+\end{lstlisting}
+Full jitter = random(0, min(cap, base·2\textsuperscript{attempt})) — the least work of the
+variants in Brooker's 2015 simulation. Retry only idempotent requests (PUT, DELETE, GET, HEAD, OPTIONS,
+TRACE); honour \ct{Retry-After} on 429 / 503.
+
+\section{Async iteration and disposal}
+\begin{lstlisting}[style=js]
+async function* pages(url, signal) {            // Symbol.asyncIterator
+  while (url) {
+    const page = await (await fetch(url, { signal })).json();
+    yield* page.items; url = page.next; } }
+for await (const it of pages('/feed')) if (it.last) break; // -> return()
+const all = await Array.fromAsync(pages('/feed')); // ES2026, one by one
+\end{lstlisting}
+\begin{itemize}
+  \item \ct{break} / \ct{throw} in \ct{for await} calls \ct{return()}: the generator's
+        \ct{finally} runs. Calls to \ct{next()} queue — one at a time. In an async generator
+        \ct{yield v} awaits \ct{v} first.
+  \item \ct{for await (x of [p1, p2])} also works, one at a time — a \ct{p2} that rejects while
+        \ct{p1} is awaited has no handler yet (the first trap).
+  \item \ct{await using r = …} (finished, ES2027): at block exit, also on throw,
+        \ct{r[Symbol.asyncDispose]()} (else \ct{Symbol.dispose}) is awaited, in reverse order;
+        errors combine into \ct{SuppressedError}. \ct{AsyncDisposableStack} holds many.
+\end{itemize}
+
+\section{Remember}
+\textbf{Executor now, handlers later · every \ct{then} is a new promise · a returned native
+promise costs 2 extra jobs · nothing stops unless a signal asks.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{js-event-loop} (tasks,
+\texttt{nextTick}) · \texttt{node-runtime} · \texttt{js-functional-idioms} ·
+\texttt{js-types-coercion-modules} · \texttt{concurrency-patterns} ·
+\texttt{kotlin-coroutines-internals}}
+
+\end{document}

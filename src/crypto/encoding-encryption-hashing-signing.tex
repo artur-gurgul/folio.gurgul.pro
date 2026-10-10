@@ -1,0 +1,286 @@
+% encoding-encryption-hashing-signing.tex — the six things done to bytes and what each one guarantees:
+% encoding (Base16/32/64, base64url, percent, UTF-8), encryption, hashing, MACs, signatures and key
+% derivation; which key each needs and who can undo or check it; what everyday artifacts really are;
+% non-repudiation; password storage under NIST SP 800-63B-4; hashing is not anonymising; what the
+% post-quantum transition changes per job.
+% Hash internals, HMAC construction, OWASP password parameters: cs/hashing-deep.tex. AEAD, ECDH, HPKE
+% in CryptoKit: cs/crypto-cryptokit.tex. JWS vs JWE and JWT attacks: security/jwt-attacks-token-hardening.tex.
+% Sources (checked 2026-10-09):
+%   rfc-editor.org RFC 4648 (alphabets; §3.1 no line breaks unless the referring spec says so, MIME 76;
+%     §3.2 MUST pad unless told otherwise; §3.3 MUST reject non-alphabet characters; §3.5 pad bits MUST
+%     be zero, else no canonical form; §5 base64url = '-' '_', '=' percent-encoded or skipped; §6 Base32
+%     for case-insensitive channels; §7 base32hex keeps sort order; §10 test vectors "f", "foobar")
+%   RFC 3986 §2.1 (%XX, uppercase hex SHOULD), §2.3 (unreserved A-Z a-z 0-9 - . _ ~)
+%     · url.spec.whatwg.org (x-www-form-urlencoded: space serialised as '+', '+' parsed as space)
+%   RFC 3629 (UTF-8) · unicode.org/reports/tr15 (UAX #15, rev. 58, 2026-08-12: U+00E9 and
+%     U+0065 U+0301 canonically equivalent; NFC composes, NFD decomposes)
+%   RFC 8785 (JCS, June 2020: keys sorted by UTF-16 code units, no whitespace, ECMAScript numbers)
+%   RFC 7515 (base64url with '=' omitted; compact = 3 base64url parts; integrity, payload readable)
+%     · developer.apple.com/documentation/appstoreserverapi/jwstransaction (JWS compact, signed by the
+%     App Store) · RFC 7617 (Basic = Base64(user-id ":" password); secure only with e.g. TLS)
+%     · RFC 7468 (PEM: exactly 64-character lines; PUBLIC KEY = DER SubjectPublicKeyInfo)
+%     · kubernetes.io/docs/concepts/configuration/secret (data values base64; Secrets stored unencrypted
+%     in etcd by default)
+%   w3.org/TR/SRI (WD 2026-03-20: user agents MUST support SHA-256/384/512; "sha384-<base64>"; MD5,
+%     SHA-1 not recommended) · RFC 9530 (Content-Digest, 2024: sha-256, sha-512 active; md5, sha,
+%     crc32c, adler … deprecated, no collision resistance; an on-path attacker can replace it — use TLS
+%     or signatures) · RFC 9421 (HTTP Message Signatures: hmac-sha256, ed25519, ecdsa-p256-sha256,
+%     ecdsa-p384-sha384, rsa-pss-sha512, rsa-v1_5-sha256)
+%   docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries (X-Hub-Signature-256 =
+%     "sha256=" + hex HMAC; constant-time compare; X-Hub-Signature = SHA-1, legacy)
+%     · RFC 6238 (TOTP = HOTP(K, T), T = floor(unix time / 30), HMAC-SHA-1 default) · RFC 4226 (≥ 6 digits)
+%   RFC 2104 §5 (truncated HMAC ≥ half the hash output and ≥ 80 bits) · RFC 5116 (AES-GCM: 12-octet
+%     nonce; ciphertext exactly 16 octets longer than the plaintext) · FIPS 180-4 (SHA-256 = 256 bits)
+%   csrc.nist.gov FIPS 186-5 (2023-02-03: RSA, ECDSA incl. deterministic RFC 6979, EdDSA incl. HashEdDSA;
+%     DSA only verifies old signatures; non-repudiation = verifiable by a third party; signature key
+%     pairs "shall not be used for other purposes"; a digest is signed) · RFC 8032 (Ed25519: 32-octet
+%     key, 64-octet signature, SHA-512, no per-signature random number)
+%   RFC 5869 (HKDF: extract "cannot amplify entropy", passwords → PKCS #5; salt default zeros; info
+%     binds context; L ≤ 255·HashLen) · RFC 8018 (PBKDF2: salt ≥ 64 bits, ≥ 1000 iterations, default
+%     PRF HMAC-SHA-1) · nvlpubs.nist.gov SP 800-132 (Dec 2010, "NIST is planning to revise" since
+%     2023-05-11: random salt ≥ 128 bits, ≥ 1000 iterations, 10 000 000 for critical keys; U_j =
+%     HMAC(P, U_j-1), T = XOR of all U)
+%   pages.nist.gov/800-63-4/sp800-63b.html (SP 800-63B-4, final 2025-08-26: ≥ 15 characters single-
+%     factor, ≥ 8 with MFA, permit ≥ 64; no composition rules; no periodic change; blocklist; no hints,
+%     no KBA; NFC before hashing; verify the entire password, no truncation; salt ≥ 32 bits; scheme from
+%     SP 800-132; cost as high as practical; SHOULD add a keyed hash with a secret key in an HSM / TEE)
+%   cheatsheetseries.owasp.org Password_Storage_Cheat_Sheet (hash, not encrypt; encryption only when
+%     the plaintext must be replayed elsewhere; PBKDF2-HMAC-SHA256 600 000) — parameters: hashing-deep
+%   edpb.europa.eu Guidelines 01/2025 on pseudonymisation (adopted 2025-01-16 for consultation; §3.1.2:
+%     keyed one-way functions such as MACs; a plain transformation can be recomputed by anyone who
+%     knows the identifier; secrets of sufficient entropy; pseudonymised data remains personal data)
+%   nvlpubs.nist.gov NIST IR 8547 ipd (2024-11-12, still an initial public draft on 2026-10-09: ECDSA,
+%     RSA, DH / ECDH at 112 bits deprecated after 2030, all disallowed after 2035, EdDSA disallowed after
+%     2035; symmetric ≥ 128 bits meets category 1, no transition expected; 112-bit symmetric disallowed
+%     2030; §3.1.2 authentication only has to hold when it is performed; §3.1.1 code-signing verifiers
+%     in the field need quantum-resistant signatures) · csrc.nist.gov SP 800-131A r3 ipd (2024-10-21,
+%     draft: retire SHA-1 and 224-bit hashes, ECB for confidentiality; 112 → 128 bits)
+%   Dropped from the earlier page as unsourced: "a MAC is ~100× cheaper than a signature". Left to
+%     hashing-deep (said once): salt / pepper mechanics, pepper rotation, the bcrypt 0x00 pre-hash trap.
+%     Ed25519 is NOT "hash, then sign": it hashes R ‖ A ‖ M, so the collision line names RSA and ECDSA.
+% @labels: area=crypto kind=concept platform=general topic=security discussion=302
+% @tags: encoding, base64, base64url, percent-encoding, unicode-normalization, encryption, aead, hashing, sha-256, hmac, digital-signature, ed25519, non-repudiation, jws, jwt, kdf, hkdf, pbkdf2, password-hashing, pepper, pseudonymisation, post-quantum
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcommand\bA[1]{\textcolor{sheetBlue}{#1}}
+\newcommand\bB[1]{\textcolor{sheetOrange}{#1}}
+\newcommand\bC[1]{\textcolor{sheetGreen!70!black}{#1}}
+\tikzset{
+  ph/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  l/.style={font=\tiny, text=black!75, align=left, inner sep=1pt},
+  inp/.style={draw=sheetGrey, fill=white, font=\ttfamily\tiny, inner sep=1.5pt, minimum height=4mm},
+  op/.style={draw=#1, fill=#1!12, thick, rounded corners=1.5pt, font=\sffamily\tiny, align=center,
+             inner sep=1.2pt, minimum height=5.2mm, minimum width=21mm},
+  outp/.style={draw=sheetGrey, fill=black!4, font=\ttfamily\tiny, inner sep=1.5pt, minimum height=4mm},
+  bits/.style={draw=sheetGrey, fill=white, font=\ttfamily\scriptsize, inner sep=1pt, minimum height=4.6mm},
+}
+
+\begin{document}
+
+\sheettitle{Encoding vs encryption vs hashing vs signing}{crypto · folio}
+
+\oneliner{\textbf{Encoding} changes the \emph{format} — anyone reverses it, no secret.
+\textbf{Encryption} hides content — reversible \emph{with a key}. \textbf{Hashing} fingerprints —
+one-way, no key. A \textbf{MAC} (shared key) or a \textbf{signature} (private key) proves \emph{who}
+produced the bytes and that they are unchanged. A \textbf{KDF} turns a secret into keys — slowly, when
+the secret is a password. Choose by the property needed: format, confidentiality, integrity,
+authenticity, non-repudiation.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ================= six jobs
+  \node[ph] at (-0.1,4.0) {Same input, six jobs};
+  \foreach \x/\t in {0.95/operation · key, 3.35/output, 6.0/who makes it, 7.7/who undoes or checks it}
+    \node[l, font=\tiny\bfseries, anchor=west] at (\x,3.6) {\t};
+  \foreach \y/\opn/\key/\col/\outv/\mk/\ck/\cc in {
+      3.12/Base64 (encode)/no key/sheetGrey/aGVsbG8=/anyone/{\textbf{anyone} decodes}/sheetRed,
+      2.57/AES-256-GCM (encrypt)/{key K, shared}/sheetBlue/{12 nonce|5 ct|16 tag}/holders of K/{holders of K decrypt; one flipped bit $\to$ open fails}/sheetBlue,
+      2.02/SHA-256 (hash)/no key/sheetBrown/{2cf24dba…938b9824}/anyone/{\textbf{nobody} undoes; anyone recomputes}/sheetBrown,
+      1.47/HMAC-SHA256 (MAC)/{key K, shared}/sheetOrange/{tag, 32 B}/holders of K/{only holders of K verify}/sheetOrange,
+      0.92/Ed25519 (sign)/private key/sheetGreen/{signature, 64 B}/{private-key holder only}/{\textbf{anyone} with the public key verifies}/sheetGreen!60!black,
+      0.37/Argon2id (KDF)/salt + cost/sheetRed/{key or verifier, 32 B}/anyone with the salt/{nobody undoes; every guess pays memory + time}/sheetRed} {
+    \node[inp] (i) at (0.3,\y) {"hello"};
+    \node[op=\col, anchor=west] (o) at (0.95,\y) {\textbf{\opn}\\[-1pt]\key};
+    \node[outp, anchor=west] (r) at (3.35,\y) {\outv};
+    \draw[flow] (i) -- (o); \draw[flow] (o) -- (r);
+    \node[l, anchor=west, text width=16mm] at (6.0,\y) {\mk};
+    \node[l, anchor=west, text width=24mm, text=\cc] at (7.7,\y) {\ck}; }
+  \node[l, anchor=west, text=sheetGrey] at (-0.1,-0.08) {reversible: encode, encrypt \quad one-way: hash, MAC, signature, KDF — you \emph{verify} or \emph{recompute}, never ``decrypt''};
+  \draw[sheetGrey!50] (10.25,4.15) -- (10.25,-0.2);
+  % ================= Base64 bit diagram
+  \node[ph] at (10.3,4.0) {Base64 — 3 bytes become 4 characters};
+  \foreach \c/\ch/\hx/\bv in {11.45/f/0x66/\bA{01100110}, 13.35/o/0x6F/\bB{01101111}, 15.25/o/0x6F/\bC{01101111}} {
+    \node[l, font=\ttfamily\tiny] at (\c,3.62) {\ch\ = \hx};
+    \node[bits, minimum width=18.6mm] at (\c,3.28) {\bv}; }
+  \foreach \c/\bv/\n/\chr in {11.24/\bA{011001}/25/Z, 12.65/{\bA{10}\bB{0110}}/38/m, 14.05/{\bB{1111}\bC{01}}/61/9, 15.46/\bC{101111}/47/v} {
+    \node[bits, minimum width=13.9mm] (g) at (\c,2.62) {\bv};
+    \draw[flow, thin] (g.south) -- (\c,2.18);
+    \node[l, anchor=north] at (\c,2.2) {{\tiny\n} $\to$ {\normalsize\ttfamily\bfseries \chr}}; }
+  \node[l, anchor=west, font=\ttfamily\tiny] at (10.35,1.5) {fo: 011001 100110 1111\textcolor{sheetRed}{00} → Zm8=};
+  \node[l, anchor=west, font=\ttfamily\tiny] at (10.35,1.2) {f:  011001 10\textcolor{sheetRed}{0000} → Zg==};
+  \node[l, anchor=west, text width=24mm] at (13.9,1.35) {\textcolor{sheetRed}{pad bits} MUST be 0 (§3.5); a lax decoder also reads \ct{Zh==} as \ct{f}};
+  % alphabet bar, proportional to 64 values
+  \def\u{0.0875}
+  \foreach \a/\b/\t/\fc in {0/26/{A–Z \;0–25}/sheetBlue, 26/52/{a–z \;26–51}/sheetOrange, 52/62/{0–9 \;52–61}/sheetGreen, 62/64/{}/sheetRed}
+    \node[draw=sheetGrey, fill=\fc!15, minimum height=4mm, minimum width=(\b-\a)*\u cm, inner sep=0pt, anchor=west, font=\tiny] at (10.45+\a*\u,0.65) {\t};
+  \node[l, anchor=north east, align=right] at (16.05+0.1,0.42) {62 \ct{+} \;63 \ct{/} — base64url: \ct{-} \ct{\_}};
+  \node[l, anchor=west] at (10.35,0.0) {same byte \ct{f}: Base16 \ct{66} · Base32 \ct{MY======} · Base64 \ct{Zg==}\;(RFC 4648 §10)};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\footnotesize\setstretch{1.0}\raggedright
+
+\hd{What each one guarantees — and what it does not}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{25mm}>{\raggedright\arraybackslash}p{17mm}@{}}
+\toprule
+& \textbf{gives} & \textbf{does not give} & \textbf{standard}\\ \midrule
+\textbf{encode} & bytes safe in text: JSON, URL, header & any secrecy or integrity & RFC 4648, 3986, 3629\\
+\textbf{encrypt} & confidentiality; AEAD adds integrity & length hiding — GCM output = input + 16 B & FIPS 197, RFC 5116\\
+\textbf{hash} & a fingerprint: equal digest $\Rightarrow$ equal bytes & tamper-proofing, unless the digest comes by a trusted path & FIPS 180-4, 202\\
+\textbf{MAC} & integrity + origin among key holders & proof to a third party & RFC 2104\\
+\textbf{sign} & integrity + origin + non-repudiation; anyone verifies & confidentiality & FIPS 186-5, 204, 205\\
+\textbf{KDF} & keys or a verifier from a secret & — reversal is not its job & RFC 5869, 8018, 9106\\
+\bottomrule
+\end{tabular}}
+
+\hd{Encodings — RFC 4648 and its neighbours}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{6mm}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{24mm}@{}}
+\toprule
+\textbf{name} & \textbf{alphabet} & \textbf{bits} & \textbf{size} & \textbf{padding / note}\\ \midrule
+Base16 (hex) & \ct{0-9 A-F} & 4 & ×2 & none\\
+Base32 & \ct{A-Z 2-7} & 5 & ×8/5 & \ct{=} to 8 chars; case-insensitive channels\\
+base32hex & \ct{0-9 A-V} & 5 & ×8/5 & keeps the bytes' sort order\\
+Base64 & \ct{A-Z a-z 0-9 + /} & 6 & ×4/3 & \ct{=} to 4 chars\\
+base64url & … \ct{-} \ct{\_} for \ct{+} \ct{/} & 6 & ×4/3 & \ct{=} often skipped; JWS: always\\
+percent & \ct{\%XX} & — & ×3 per escaped byte & RFC 3986 passes \ct{A-Z a-z 0-9 - . \_ \textasciitilde}\\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item RFC 4648: MUST pad, MUST reject characters outside the alphabet, no line breaks — each
+        ``unless the referring spec says otherwise'': MIME wraps at 76, PEM (RFC 7468) at exactly 64.
+  \item Lax decoders give one byte string many spellings: compare and sign \emph{decoded bytes}.
+  \item HTML forms (WHATWG) write space as \ct{+} and read \ct{+} as space: raw Base64 in a query
+        string loses its \ct{+}. Use base64url, or percent-encode with uppercase hex.
+\end{itemize}
+
+\hd{Text is an encoding too — hash and sign bytes}
+\ct{é} is U+00E9 = \ct{C3 A9} in UTF-8 (NFC) or \ct{e} + U+0301 = \ct{65 CC 81} (NFD): canonically
+equivalent (UAX \#15), different bytes and digests — SP 800-63B-4: a password SHOULD be NFC-normalised
+before hashing. JSON: sign the exact bytes sent (JWS signs its base64url text, so key order and whitespace
+never matter) or canonicalise — RFC 8785 JCS: keys by UTF-16 code units, no whitespace.
+
+\hd{What everyday artifacts really are}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{22mm}>{\raggedright\arraybackslash}p{29mm}@{}}
+\toprule
+\textbf{artifact} & \textbf{is} & \textbf{so}\\ \midrule
+\ct{Authorization: Basic dXNlcjpwYXNz} & Base64 of \ct{user:pass} & anyone reads it; RFC 7617: secure only inside TLS\\
+Kubernetes Secret \ct{data:} & Base64 & etcd stores it unencrypted by default\\
+PEM \ct{BEGIN PUBLIC KEY} & Base64 of DER SubjectPublicKeyInfo & encoding of a public value\\
+JWT, App Store \ct{JWSTransaction} & base64url header.payload.signature & signed, not encrypted — decoding is not verifying\\
+SRI \ct{integrity="sha384-…"} & Base64(SHA-384(file)) & trusted because the page carries it; SHA-256/384/512 MUST work\\
+\ct{Content-Digest: sha-256=:…:} & hash (RFC 9530) & an on-path attacker swaps it — add TLS or a signature\\
+GitHub \ct{X-Hub-Signature-256} & \ct{sha256=} + hex HMAC & compare in constant time; SHA-1 header is legacy\\
+TOTP 6-digit code & HMAC-SHA1(K, \ct{floor(t/30)}), truncated & a MAC short enough to type\\
+\bottomrule
+\end{tabular}}
+
+\hd{Hashing an identifier is not anonymising it}
+10-digit phone numbers are only 10\textsuperscript{10} inputs: hash them all and every digest
+reverses. EDPB Guidelines 01/2025: anyone who knows the identifier recomputes an unkeyed pseudonym —
+use a keyed one-way function (a MAC), secret kept apart. Still personal data: \emph{pseudonymised}
+(GDPR Art.\,4(5)), not anonymous.
+
+\columnbreak
+
+\hd{MAC vs signature — who can prove what}
+Both prove integrity and origin. A \textbf{MAC} tag could come from either holder of K: no proof to a
+third party. A \textbf{signature} comes only from the private-key holder and anyone can check it —
+\textbf{non-repudiation} (FIPS 186-5: verifiable ``by a third party''). RFC 9421 HTTP Message
+Signatures carries both: \ct{hmac-sha256} beside \ct{ed25519}, \ct{ecdsa-p256-sha256},
+\ct{rsa-pss-sha512}. A truncated HMAC keeps $\ge$ half the hash and $\ge$ 80 bits (RFC 2104).
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet,
+    kc/.style={draw=#1, fill=#1!12, font=\tiny, align=center, inner sep=1pt, minimum width=26mm, minimum height=5.4mm}]
+  \node[l, font=\tiny\bfseries] at (3.5,1.22) {apply with};
+  \node[l, font=\tiny\bfseries] at (6.25,1.22) {undo or verify with};
+  \node[l, anchor=west] at (-0.1,0.78) {\textbf{public-key encryption}\\RSA-OAEP, HPKE};
+  \node[kc=sheetGreen] at (3.5,0.78) {recipient's \textbf{PUBLIC} key\\anyone can send};
+  \node[kc=sheetRed] at (6.25,0.78) {recipient's \textbf{PRIVATE} key\\only the recipient reads};
+  \node[l, anchor=west] at (-0.1,0.18) {\textbf{signature}\\ECDSA, EdDSA, ML-DSA};
+  \node[kc=sheetRed] at (3.5,0.18) {signer's \textbf{PRIVATE} key\\only the signer makes it};
+  \node[kc=sheetGreen] at (6.25,0.18) {signer's \textbf{PUBLIC} key\\anyone checks it};
+\end{tikzpicture}
+\begin{itemize}
+  \item \textbf{FIPS 186-5} (Feb 2023): RSA, ECDSA (deterministic RFC 6979 too), EdDSA (Ed25519,
+        Ed448); DSA only verifies old signatures; a signing key pair ``shall not'' do anything else.
+  \item ``Signing = encrypting with the private key'' fits only textbook RSA; ECDSA, EdDSA, ML-DSA
+        cannot encrypt. Encryption to a public key proves nothing about who sent it.
+  \item RSA and ECDSA sign a \emph{digest} of the message: a collision makes one signature valid
+        for two documents — why MD5 and SHA-1 are dead for signing.
+\end{itemize}
+
+\hd{Key derivation — match the KDF to the entropy}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{16mm}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{40mm}@{}}
+\toprule
+\textbf{input} & \textbf{KDF} & \textbf{rule}\\ \midrule
+password, PIN — guessable & Argon2id, scrypt, bcrypt, PBKDF2 & salted and slow: the attacker pays the cost per guess, per user\\
+DH secret, master key — already random & HKDF (RFC 5869) & extract concentrates entropy, ``cannot amplify'' it; \ct{info} binds the purpose; $\le$ 255 × hash length\\
+\bottomrule
+\end{tabular}}\par
+PBKDF2: $U_1 = \mathrm{HMAC}(P, S \Vert i)$, $U_j = \mathrm{HMAC}(P, U_{j-1})$, block $= U_1 \oplus
+\dots \oplus U_C$. Its floors aged: RFC 8018 (salt $\ge$ 64 bits) and SP 800-132 (2010, revision
+announced 2023; random salt $\ge$ 128 bits): $\ge$ \textbf{1\,000} iterations; OWASP: \textbf{600\,000} (SHA-256).
+
+\hd{Storing passwords — NIST SP 800-63B-4 (final, Aug 2025)}
+\begin{itemize}
+  \item \textbf{Hash, never encrypt} — an encrypted table is one stolen key from every password;
+        OWASP keeps encryption for a password that must be replayed to another system.
+  \item Salt $\ge$ 32 bits; a scheme from SP 800-132; cost ``as high as practical'', raised over
+        time; SHOULD add a keyed hash with a secret in an HSM or TEE (a \textbf{pepper}).
+  \item Verify the \emph{entire} password, never truncate (bcrypt stops at 72 bytes). $\ge$ 15
+        characters single-factor, $\ge$ 8 with MFA, accept $\ge$ 64; no composition rules; no
+        periodic change; check a blocklist of breached and common passwords; no hints.
+  \item Hashing on the client does not replace the server's: whatever the server compares
+        \emph{is} the password.
+\end{itemize}
+
+\hd{Quantum — what changes per job}
+\noindent\begin{tikzpicture}[sheet]
+  \draw[thick, sheetGrey] (0,0) -- (7.7,0);
+  \foreach \x/\yr/\t/\c in {0.85/2023/{FIPS 186-5: EdDSA in,\\DSA verify-only}/sheetGreen!60!black,
+      2.85/2024/{FIPS 203 ML-KEM, 204\\ML-DSA, 205 SLH-DSA}/sheetBlue,
+      4.85/2030/{112-bit RSA, EC, DH\\deprecated; 112-bit\\symmetric disallowed}/sheetOrange,
+      6.85/2035/{RSA, ECDSA, EdDSA,\\DH, ECDH disallowed}/sheetRed} {
+    \fill[\c] (\x,0) circle (1.3pt);
+    \node[l, anchor=south, font=\tiny\bfseries, text=\c] at (\x,0.04) {\yr};
+    \node[l, anchor=north, align=center] at (\x,-0.04) {\t}; }
+\end{tikzpicture}\par
+Dates: NIST IR 8547, still a draft (Nov 2024). \textbf{Encoding}: unaffected. \textbf{AES $\ge$ 128,
+SHA-256, HMAC}: PQ category $\ge$ 1, no transition planned. \textbf{Public-key} jobs fall to Shor:
+encryption now (recorded today, decrypted later); authentication only when checked — except code a
+device verifies for years. Detail: \texttt{post-quantum-crypto}.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``It's encrypted, so nobody changed it'' — CBC and CTR without a MAC are malleable; use AEAD.}
+  \trap{``A key in the binary keeps it secret'' — whoever has the app has the key.}
+  \trap{``A checksum detects tampering'' — CRC32c, Adler-32, MD5 catch noise, not attackers (RFC 9530
+        deprecates them).}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Hashing (HMAC, OWASP parameters, pepper)
+· Cryptography with CryptoKit · JWT attacks \& token hardening (JWS vs JWE) · \texttt{oauth-oidc-jwt}
+· Privacy compliance for app developers · \texttt{block-cipher-modes} · \texttt{public-key-maths} ·
+\texttt{post-quantum-crypto} · \texttt{secure-randomness}}
+
+\end{document}

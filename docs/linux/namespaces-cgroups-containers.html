@@ -1,0 +1,120 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Containers = namespaces + cgroups + overlayfs — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/linux/namespaces-cgroups-containers.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">310</span></a></li><li><a class="side-area" href="/folios.html?area=ai" data-area="ai">ai<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=ble" data-area="ble">ble<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=c" data-area="c">c<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cicd" data-area="cicd">cicd<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=crypto" data-area="crypto">crypto<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=dev-tools" data-area="dev-tools">dev-tools<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=iot" data-area="iot">iot<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=javascript" data-area="javascript">javascript<span class="count">5</span></a></li><li><a class="side-area current" href="/folios.html?area=linux" data-area="linux">linux<span class="count">8</span></a></li><li><a class="side-area" href="/folios.html?area=macos" data-area="macos">macos<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=recall" data-area="recall">recall<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=runtime" data-area="runtime">runtime<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li><li><a class="side-area" href="/folios.html?area=typescript" data-area="typescript">typescript<span class="count">3</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Containers = namespaces + cgroups + overlayfs</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">linux · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A container is <strong>an ordinary Linux process</strong> on the <strong>shared host kernel</strong>:
+<strong>namespaces</strong> limit what it can <em>see</em>, <strong>cgroups</strong> limit what it can <em>use</em>,
+<strong>capabilities + seccomp + an LSM</strong> limit what it may <em>do</em>, and an <strong>overlayfs</strong> root built
+from read-only image layers is what it stands on. No hypervisor, no guest kernel — a kernel bug is an escape.</p>
+<p class="sheet-tools"><a class="sheet-download" href="namespaces-cgroups-containers.pdf" download>Download PDF</a> <a href="namespaces-cgroups-containers.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/linux/namespaces-cgroups-containers.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="namespaces-cgroups-containers-fig1.svg" width="625" height="161" class="wide" alt="Containers = namespaces + cgroups + overlayfs — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">The 8 namespaces</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th><code><strong>ns</strong></code></th><th><strong>since</strong></th><th><strong>isolates</strong></th><th><strong>what bites</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>mnt</code></td><td>2.4.19</td><td>the mount list; <code>pivot_root</code> to the rootfs</td><td>systemd makes <code>/</code> shared — set private</td></tr>
+<tr><td><code>uts</code></td><td>2.6.19</td><td>hostname, NIS domain</td><td>—</td></tr>
+<tr><td><code>ipc</code></td><td>2.6.19</td><td>SysV IPC, POSIX message queues</td><td>SysV shm between ctrs needs one ns</td></tr>
+<tr><td><code>pid</code></td><td>2.6.24</td><td>PID numbers; 1st child <span class="math">=</span> PID 1</td><td>the host still sees the real PID</td></tr>
+<tr><td><code>net</code></td><td>2.6.24</td><td>devices, stacks, routes, firewall, ports, abstract sockets</td><td>a new one has only <code>lo</code>, and it is down</td></tr>
+<tr><td><code>user</code></td><td>3.8</td><td>uid/gid maps, capabilities</td><td>root inside <span class="math">≠</span> root outside</td></tr>
+<tr><td><code>cgroup</code></td><td>4.6</td><td>cgroup root in <code>/proc/self/cgroup</code></td><td>hides the host’s cgroup path</td></tr>
+<tr><td><code>time</code></td><td>5.6</td><td>MONOTONIC + BOOTTIME offsets</td><td>not REALTIME; for checkpoint/restore</td></tr>
+</tbody>
+</table></p>
+<ul>
+<li><code>/proc/&lt;pid&gt;/ns/&lt;type&gt;</code> is a handle: an open fd or a bind mount keeps the namespace  alive with no process (<code>ip netns add</code>). <code>setns(fd)</code> joins; since 5.8 <code>fd</code> may be  a <strong>pidfd</strong> <span class="math">→</span> several namespaces at once. <code>nsenter -t PID -n</code>, <code>lsns</code>;  per-user quotas in <code>/proc/sys/user/max_*_namespaces</code>.</li>
+<li><strong>PID, time</strong>: <code>unshare</code>/<code>setns</code> move only <em>future children</em>  (<code>pid_for_children</code>, <code>time_for_children</code>) <span class="math">→</span> <code>unshare --pid --fork</code>.  PID and user namespaces nest <span class="math">≤</span>32 deep.</li>
+<li>Init exits <span class="math">→</span> the kernel SIGKILLs the whole PID namespace; a later <code>fork</code> into it  fails <code>ENOMEM</code>. A dying net ns hands physical NICs back to the initial ns and destroys  its veths.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">User namespaces and rootless</span></h3>
+<figure class="sheet-figure"><img src="namespaces-cgroups-containers-fig2.svg" width="290" height="47" alt="Containers = namespaces + cgroups + overlayfs — figure 2" loading="lazy"></figure>
+<ul>
+<li>Unprivileged since <strong>3.8</strong>: the creator gets the <strong>full capability set inside</strong>  its user ns and none in the parent; mount, PID, net … then need <code>CAP_SYS_ADMIN</code>  only <em>there</em> — the basis of rootless. Unmapped ids show as 65534.</li>
+<li>Unprivileged, you may map only your own uid (and write <code>deny</code> to <code>setgroups</code> before  <code>gid_map</code>); ranges come from setuid <code>newuidmap</code>/<code>newgidmap</code> reading  <code>/etc/subuid</code> (<code>alice:100000:65536</code>; Docker rootless wants <span class="math">≥</span>65 536). Container uid  33 = host 100032.</li>
+<li>Rootless network: <strong>pasta</strong> (Podman 5.0 default; slirp4netns removed in 6.0).  Overlay mounts inside a user ns: 5.11 (<code>userxattr</code>).</li>
+<li><strong>Idmapped mounts</strong> (<code>mount_setattr</code>, 5.12): one mount shows files with shifted  owners — no recursive <code>chown</code> of an image; ext4, XFS, btrfs, tmpfs, overlayfs …</li>
+<li>Docker: no user ns unless <code>userns-remap</code> — container root <em>is</em> host uid 0, held  back only by caps, seccomp, LSM. Kubernetes <code>hostUsers: false</code>: stable in 1.36 (kernel  <span class="math">≥</span>6.3), 65 536 ids per pod.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Root switch and mount propagation</span></h3>
+<ul>
+<li>Runtime: new mount ns <span class="math">→</span> mount the rootfs <span class="math">→</span> <code>pivot_root(new, put_old)</code> <span class="math">→</span>  unmount the old root (<code>MNT_DETACH</code>): the host tree is gone, not hidden. <code>chroot</code>  only moves path lookup — <code>mkdir foo; chroot foo; cd ..</code> escapes it; “not intended  … for any kind of security purpose”.</li>
+<li><strong>shared</strong> (peer group, both ways) · <strong>slave</strong> (receives only) ·  <strong>private</strong> · <strong>unbindable</strong>. systemd remounts all as shared at boot, so a  runtime marks the container’s tree private/slave or its mounts leak back; <code>unshare(1)</code>  defaults to private; a less privileged ns gets slave, locked mounts. Read  <code>shared:N master:N</code> in <code>/proc/self/mountinfo</code>.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — a container by hand</span></h3>
+<pre class="sheet-code"><code class="hljs language-plaintext"># new pid+mnt+uts+net ns, fresh /proc: bash becomes PID 1
+sudo unshare --pid --fork --mount-proc --uts --net bash
+hostname box; ps ax; ip link     # 2 procs; only lo (down)
+unshare --user --map-root-user id   # no sudo: uid=0(root)
+# host tools inside a running container&#x27;s net ns
+PID=$(docker inspect -f &#x27;{{.State.Pid}}&#x27; web)
+sudo nsenter -t &quot;$PID&quot; -n ss -tlnp
+# a cgroup by hand
+mkdir /sys/fs/cgroup/demo
+echo 512M          &gt; /sys/fs/cgroup/demo/memory.max
+echo &quot;50000 100000&quot; &gt; /sys/fs/cgroup/demo/cpu.max
+echo $$            &gt; /sys/fs/cgroup/demo/cgroup.procs</code></pre>
+<p><strong><span class="c-sheetblue">cgroup v2 — one tree at <code>/sys/fs/cgroup</code></span></strong></p>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><code>cgroup.procs</code></td><td>write a PID to move it (needs write on the common ancestor’s too)</td></tr>
+<tr><td><code>…subtree_control</code></td><td><code>+memory +cpu +io +pids</code> for the children; <strong>no internal
+ processes</strong>: a non-root cgroup that feeds children holds none</td></tr>
+<tr><td><code>memory.max</code></td><td>hard: reclaim fails <span class="math">→</span> OOM kill <em>inside</em> the cgroup (exit 137 = 128 + 9)</td></tr>
+<tr><td><code>memory.high</code></td><td>throttle + reclaim; never OOM-kills, may be breached</td></tr>
+<tr><td><code>memory.min</code>, <code>low</code></td><td>reclaim protection · <code>oom.group</code>: kill all as one · <code>events</code></td></tr>
+<tr><td><code>cpu.max</code></td><td><code>&quot;$MAX $PERIOD&quot;</code>, default <code>max 100000</code>: a <strong>quota</strong>;
+ <code>--cpus=1.5</code> = <code>150000 100000</code>; <code>nr_throttled</code> in <code>cpu.stat</code></td></tr>
+<tr><td><code>cpu.weight</code></td><td>1–10 000, default 100: a <strong>share</strong>, only under contention</td></tr>
+<tr><td><code>pids.max</code></td><td><code>fork</code>/<code>clone</code> <span class="math">→</span> <code>EAGAIN</code> (Podman default 1024)</td></tr>
+<tr><td><code>io.max</code></td><td>per <code>MAJ:MIN</code>: <code>rbps wbps riops wiops</code>; PSI in <code>*.pressure</code></td></tr>
+<tr><td><code>cgroup.freeze</code> · <code>kill</code></td><td>stop / SIGKILL the whole subtree</td></tr>
+</tbody>
+</table></p>
+<p>Charged memory: page cache + anon + dentries, inodes + TCP buffers. <code>free</code>, <code>top</code>, <code>/proc/meminfo</code> show the <em>host</em>: JDK 10+ (<code>UseContainerSupport</code>) and Go 1.25 (<code>GOMAXPROCS</code> = the <code>cpu.max</code> limit, not requests) read the cgroup instead.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">cgroup v1 sunset</span></h3>
+<figure class="sheet-figure"><img src="namespaces-cgroups-containers-fig3.svg" width="307" height="50" alt="Containers = namespaces + cgroups + overlayfs — figure 3" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">What it may do: capabilities, seccomp, LSM</span></h3>
+<ul>
+<li>Docker keeps <strong>14 caps</strong>: AUDIT_WRITE, CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL,  MKNOD, NET_BIND_SERVICE, NET_RAW, SETFCAP, SETGID, SETPCAP, SETUID, SYS_CHROOT;  Podman <strong>11</strong> (no AUDIT_WRITE, MKNOD, NET_RAW). Best: <code>--cap-drop=ALL</code> + add back.</li>
+<li><strong>Default seccomp</strong>: allowlist, the rest <code>SCMP_ACT_ERRNO</code>; ̃44 of 300+ denied:  <code>mount</code>, new namespaces (not user), <code>keyctl</code> (keyring not namespaced), <code>bpf</code>,  <code>io_uring_*</code> + <code>open_by_handle_at</code> (breakouts), <code>clock_settime</code>.</li>
+<li>LSM: AppArmor <code>docker-default</code> or an SELinux label. <code>no_new_privs</code> is opt-in  (<code>--security-opt no-new-privileges</code>): setuid and <code>sudo</code> stop raising privilege.</li>
+<li><code>--privileged</code>: all caps, no seccomp, no AppArmor, no SELinux label, every host  device, <code>/sys</code> + cgroup mounts rw — “not a securely sandboxed process”.</li>
+</ul>
+<p><strong><span class="c-sheetblue">Image <span class="math">→</span> rootfs <span class="math">→</span> process (OCI)</span></strong></p>
+<p>Index (per platform) <span class="math">→</span> <strong>manifest</strong>: <code>config</code> + <code>layers</code> by sha256, base at index 0; layer = tar (gzip, zstd); delete = <code>.wh.&lt;name&gt;</code>, emptied dir = <code>.wh..wh..opq</code> — hides only <em>lower</em> layers. Copy-up on <em>any</em> write access, <code>chmod</code> too; dir rename without <code>redirect_dir</code> <span class="math">→</span> <code>EXDEV</code>; editing a lower under a live mount: undefined. <code>create</code> sets it all up but <em>must not</em> run the program <span class="math">→</span> <code>start</code> <span class="math">→</span> <code>kill</code> <span class="math">→</span> <code>delete</code>.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">PID 1 in a container</span></h3>
+<ul>
+<li>Init gets only signals it has a <strong>handler</strong> for (SIGKILL/SIGSTOP from an ancestor ns  are forced): SIGTERM unhandled <span class="math">→</span> grace (Docker, Podman <strong>10 s</strong>; Kubernetes  <strong>30 s</strong>) <span class="math">→</span> SIGKILL. <code>STOPSIGNAL</code> picks the first signal.</li>
+<li><strong>Shell form</strong> <code>CMD npm start</code> makes <code>/bin/sh -c</code> PID 1, which passes no  signals: use exec form <code>CMD [&quot;node&quot;,&quot;app.js&quot;]</code>, <code>exec &quot;$@&quot;</code> in entrypoints.</li>
+<li>Orphans re-parent to PID 1; unreaped <strong>zombies</strong> keep their PIDs. Fix:  <code>docker run --init</code> (<code>docker-init</code> = tini).</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">runc escapes (all fixed)</span></h3>
+<p><table class="sheet-table">
+<tbody>
+<tr><td>2019-02</td><td>CVE-2019-5736</td><td>overwrite host runc via <code>/proc/self/exe</code> (runc <span class="math">≤</span>1.0-rc6)</td></tr>
+<tr><td>2024-01</td><td>CVE-2024-21626</td><td>leaked fd to host cgroupfs: <code>WORKDIR /proc/self/fd/7</code></td></tr>
+<tr><td>2025-11</td><td>CVE-2025-31133, 52565, 52881</td><td>masked-path, <code>/dev/console</code>, procfs-write races (fixed
+ in 1.2.8, 1.3.3, 1.4.0-rc.3)</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">“A light VM” — same kernel. Hostile tenants: gVisor (<code>runsc</code>, a user-space kernel in  Go) or Kata Containers (lightweight VMs).</li>
+<li class="trap">Mounting <code>docker.sock</code> = root on the host: the daemon will bind-mount <code>/</code> for you.</li>
+<li class="trap">A secret deleted in a later layer is only whited out — it is still in the image.</li>
+<li class="trap">Ubuntu 24.04: unprivileged user namespaces get no capabilities without an AppArmor profile  (<code>kernel.apparmor_restrict_unprivileged_userns</code>).</li>
+</ul>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> <code>os-fundamentals</code> ·
+<code>linux-networking-stack</code> (netns, veth) · <code>linux-security-permissions</code> (caps, LSMs) ·
+<code>linux-memory-oom</code> (cgroup OOM) · <code>systemd-deep</code> (slices, delegation) ·
+<code>linux-filesystems-storage</code> · <code>linux-performance-observability</code> (PSI) · Supply-chain
+security — from a maintainer’s laptop to your app</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=linux" title="area">linux</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=backend" title="platform">backend</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=platform-apis" title="topic">platform-apis</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=security" title="topic">security</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=tooling" title="topic">tooling</a></li><li class="sheet-tag"><a href="/folios.html?tag=containers">containers</a></li><li class="sheet-tag"><a href="/folios.html?tag=namespaces">namespaces</a></li><li class="sheet-tag"><a href="/folios.html?tag=cgroup-v2">cgroup-v2</a></li><li class="sheet-tag"><a href="/folios.html?tag=overlayfs">overlayfs</a></li><li class="sheet-tag"><a href="/folios.html?tag=copy-on-write">copy-on-write</a></li><li class="sheet-tag"><a href="/folios.html?tag=user-namespace">user-namespace</a></li><li class="sheet-tag"><a href="/folios.html?tag=rootless">rootless</a></li><li class="sheet-tag"><a href="/folios.html?tag=unshare">unshare</a></li><li class="sheet-tag"><a href="/folios.html?tag=nsenter">nsenter</a></li><li class="sheet-tag"><a href="/folios.html?tag=capabilities">capabilities</a></li><li class="sheet-tag"><a href="/folios.html?tag=seccomp">seccomp</a></li><li class="sheet-tag"><a href="/folios.html?tag=apparmor">apparmor</a></li><li class="sheet-tag"><a href="/folios.html?tag=selinux">selinux</a></li><li class="sheet-tag"><a href="/folios.html?tag=sandboxing">sandboxing</a></li><li class="sheet-tag"><a href="/folios.html?tag=psi">psi</a></li><li class="sheet-tag"><a href="/folios.html?tag=oci">oci</a></li><li class="sheet-tag"><a href="/folios.html?tag=runc">runc</a></li><li class="sheet-tag"><a href="/folios.html?tag=containerd">containerd</a></li><li class="sheet-tag"><a href="/folios.html?tag=podman">podman</a></li><li class="sheet-tag"><a href="/folios.html?tag=docker">docker</a></li><li class="sheet-tag"><a href="/folios.html?tag=kubernetes">kubernetes</a></li><li class="sheet-tag"><a href="/folios.html?tag=pid-1">pid-1</a></li><li class="sheet-tag"><a href="/folios.html?tag=tini">tini</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=linux%2Fnamespaces-cgroups-containers.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/320">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

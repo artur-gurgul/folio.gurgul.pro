@@ -1,0 +1,359 @@
+% js-functional-idioms.tex — functions as values in JavaScript: currying vs partial application
+% (fn.length, bind), pipe / compose and the |> proposal, what each array method returns,
+% copy-instead-of-mutate (change-array-by-copy, freeze, Records & Tuples withdrawn), lazy
+% sequences (generators + iterator helpers, drawn against eager arrays), groupBy, memoising with
+% getOrInsertComputed, tagged templates, IIFE / arguments / eval, and an edition timeline.
+% Sources (checked 2026-10-09):
+%   tc39.es/ecma262/2026 table of contents (ES2026: Iterator.from, Iterator.concat; Iterator.prototype
+%     drop every filter find flatMap forEach map reduce some take toArray; Array.fromAsync;
+%     findLast / findLastIndex; toReversed / toSorted / toSpliced / with; %TypedArray% has
+%     toReversed / toSorted / with but no toSpliced; Map.groupBy; Map.prototype.getOrInsert /
+%     getOrInsertComputed)
+%   github.com/tc39/proposals finished-proposals.md (publication year: includes 2016; template
+%     literal restriction lifted, object rest/spread, async iteration 2018; flat/flatMap,
+%     Object.fromEntries 2019; .at(), top-level await 2022; find-from-last, change array by copy
+%     2023; array grouping 2024; sync iterator helpers 2025; Array.fromAsync, iterator sequencing,
+%     upsert 2026; joint iteration, iterator chunking, iterator includes, iterator join 2027) ·
+%     README.md (Stage 2: pipeline operator, async iterator helpers)
+%   github.com/tc39/proposal-pipeline-operator (Stage 2; Hack pipes; "TC39 has rejected F# pipes
+%     multiple times"; topic token % not final) · proposal-record-tuple + issue 394 (withdrawn at
+%     the 14 Apr 2025 plenary, was Stage 2, no consensus for new primitives; successor Composites,
+%     objects not primitives) · proposal-array-grouping (static because Array.prototype.groupBy
+%     clashed with Sugar <= 1.4.0, .group with arrays used as hash maps; null-prototype result)
+%     · proposal-change-array-by-copy (method list) · proposal-iterator-helpers (lazy; Iterator.from)
+%     · proposal-iterator-sequencing (Iterator.concat) · proposal-joint-iteration (Stage 4;
+%     Iterator.zip of an iterable of iterables; modes shortest (default) / longest / strict;
+%     zipKeyed) · proposal-upsert (getOrInsertComputed(key, cb) calls cb(key))
+%   developer.mozilla.org Web/JavaScript/Reference: Function/bind (length = target length - bound
+%     args, min 0; name "bound "; no prototype; new ignores thisArg) · Function/length (stops at
+%     first default, rest excluded, destructuring = 1) · Array/map (parseInt -> [1, NaN, NaN];
+%     holes preserved) · Array/reduce (TypeError on empty without initialValue; single element
+%     returned without a call; starts at index 1) · Array/sort (string order; stable since
+%     ES2019; mutates) · Array/toSorted (holes -> undefined, sorted last) · Array/with (RangeError,
+%     negative index) · Array/forEach (no break; returns undefined; does not wait for promises) ·
+%     Object/groupBy · Object/freeze (shallow; strict TypeError; returns the same object) ·
+%     Iterator (built-in iterators inherit Iterator.prototype; no fork; zip, chunks, windows,
+%     includes, join) · Iterator/take (RangeError) · Iterator/flatMap (strings rejected) ·
+%     Statements/for...of (early exit calls return(); generators not reusable) · Template_literals
+%     (same frozen strings array per call site; raw; invalid escapes cooked undefined;
+%     String.raw; tags may return anything) · Functions/arguments (array-like; none in arrows;
+%     aliasing only for sloppy simple params) · Global_Objects/eval (direct vs indirect,
+%     (0, eval), eval?.(), Function is global-scoped) · Lexical_grammar (no ASI before ( [ `)
+%   nodejs.org/api/vm.html ("not a security mechanism. Do not use it to run untrusted code.")
+%   262.ecma-international.org/5.1 Annex E (5th edition, Ecma GA Dec 2009, added bind, every,
+%     some, forEach, map, filter, reduce, reduceRight)
+%   Every code result on the page was run in Node v26.7.0 and matches, except Iterator.zip
+%     (ES2027, not yet in that engine) — its result is from proposal-joint-iteration.
+% @labels: area=javascript kind=pattern platform=web topic=language,patterns discussion=310
+% @tags: currying, partial-application, bind, function-composition, pipeline-operator, closures, generators, iterators, iterator-helpers, lazy-evaluation, change-array-by-copy, array-grouping, memoization, tagged-templates, iife, rest-parameters
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={import,from,export,default,const,let,var,function,return,async,await,if,
+    else,new,true,false,null,undefined,typeof,this,for,of,in,yield,throw,try,catch,finally,
+    while},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`}
+\lstdefinestyle{js}{style=printup, language=TSSheet, basicstyle=\ttfamily\scriptsize,
+  aboveskip=2pt, belowskip=2pt,
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {>=}{{\hbox{>}\hbox{=}}}2 {===}{{\hbox{=}\hbox{=}\hbox{=}}}3
+           {!=}{{\hbox{!}\hbox{=}}}2 {...}{{\hbox{.}\hbox{.}\hbox{.}}}3}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.6mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, anchor=west},
+  st/.style={cell, font=\ttfamily\scriptsize, fill=sheetGreen!12, draw=sheetGreen!70!black, minimum height=4.4mm},
+  vl/.style={cell, font=\ttfamily\scriptsize, fill=sheetOrange!12, draw=sheetOrange, minimum height=4.4mm},
+  lane/.style={font=\tiny\bfseries, anchor=east},
+  c/.style={cell, minimum width=3.2mm, minimum height=3.4mm, font=\ttfamily\tiny, inner sep=0pt},
+  rl/.style={font=\ttfamily\tiny, anchor=west, inner sep=1pt},
+  ed/.style={font=\bfseries\tiny, inner sep=1pt},
+  ev/.style={font=\tiny, text width=20mm, align=center, inner sep=0.5pt},
+}
+\newcommand\fat{\hbox{=}\hbox{>}}
+\newcommand\bq{\textasciigrave}
+\newcommand\pipeop{\hbox{|}\hbox{>}}
+
+\begin{document}
+
+\sheettitle{Functional idioms — currying, composition, copies, lazy iterators, tags}{javascript · folio}
+
+\oneliner{Functions are values: pass them, return them, let them close over state. Build
+behaviour from \textbf{small functions} over \textbf{values you do not mutate}:
+\textbf{currying} and \textbf{partial application} fix arguments, \textbf{pipe} chains steps,
+\texttt{toSorted} / \texttt{with} copy instead of mutating, \textbf{iterator helpers} pull one
+value at a time, and a \textbf{tagged template} is a function call on a template's pieces.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {5.05,11.3} \draw[sheetGrey!40] (\x,3.15) -- (\x,-0.5);
+  % ── 1 curry vs partial ──
+  \node[pt] at (-0.1,2.95) {\textcolor{sheetBlue}{1} curry vs partial application};
+  \node[lbl, anchor=west, text=sheetGrey] at (-0.1,2.5) {curry: one call per argument until \texttt{fn.length} are in};
+  \node[sb, minimum width=10mm] (a1) at (0.4,1.95) {\texttt{c(1)}\\\texttt{[1]}};
+  \node[sb, minimum width=10mm] (a2) at (1.95,1.95) {\texttt{(2)}\\\texttt{[1,2]}};
+  \node[sb, minimum width=15mm, draw=sheetGreen!70!black, fill=sheetGreen!10] (a3) at (3.85,1.95) {\texttt{(3)} \texttt{[1,2,3]}\\\texttt{sum3(1,2,3)} = 6};
+  \draw[hot] (a1) -- node[lbl, above]{1 < 3} (a2);
+  \draw[hot] (a2) -- node[lbl, above]{2 < 3} (a3);
+  \node[lbl, anchor=west, text=sheetGrey] at (-0.1,1.35) {partial: fix some arguments now, the rest later};
+  \node[sb, minimum width=20mm] (b1) at (1.0,0.85) {\texttt{sum3.bind(null, 10)}};
+  \node[sb, minimum width=16mm, draw=sheetGreen!70!black, fill=sheetGreen!10] (b2) at (3.85,0.85) {\texttt{add10(1, 2)} = 13};
+  \draw[hot] (b1) -- (b2);
+  \node[lbl, anchor=west] at (-0.1,0.4) {\texttt{add10.length} = 3 $-$ 1 = 2 · \texttt{.name} = \texttt{'bound sum3'}};
+  \node[lbl, anchor=west] at (-0.1,0.12) {\texttt{fn.length} stops at the first default, skips rest:};
+  \node[lbl, anchor=west] at (-0.1,-0.13) {\texttt{(a, b = 1, c)} → 1 · \texttt{(...xs)} → 0 · \texttt{(\{a\}, [b])} → 2};
+  \node[lbl, anchor=west, text=sheetRed] at (-0.1,-0.38) {an auto-curry on those fires too early — pass the arity};
+  % ── 2 eager vs lazy ──
+  \node[pt] at (5.1,2.95) {\textcolor{sheetBlue}{2} eager arrays vs lazy iterators};
+  \node[lbl, font=\tiny\bfseries] at (7.57,2.55) {\texttt{Array}: eager};
+  \node[lbl, font=\tiny\bfseries] at (10.0,2.55) {\texttt{Iterator}: lazy, pulled};
+  \node[rl] at (5.1,2.15) {source};
+  \node[rl] at (5.1,1.6) {.map(sq)};
+  \node[rl] at (5.1,1.05) {.filter(even)};
+  \node[rl] at (5.1,0.5) {.slice(0,2)};
+  \node[rl, text=sheetBlue] at (5.1,0.28) {| .take(2)};
+  \draw[sheetGrey!40] (8.78,2.4) -- (8.78,0.2);
+  \foreach \v [count=\k from 0] in {1,2,3,4,5,6} \node[c] at (6.72+0.34*\k,2.15) {\v};
+  \foreach \v [count=\k from 0] in {1,4,9,16,25,36} \node[c, fill=sheetOrange!14] at (6.72+0.34*\k,1.6) {\v};
+  \foreach \v [count=\k from 0] in {4,16,36} \node[c, fill=sheetOrange!14] at (6.72+0.34*\k,1.05) {\v};
+  \foreach \v [count=\k from 0] in {4,16} \node[c, fill=sheetGreen!14] at (6.72+0.34*\k,0.5) {\v};
+  \foreach \v [count=\k from 0] in {1,2,3,4} {
+    \node[c] at (9.15+0.34*\k,2.15) {\v};
+    \draw[->, thin, sheetBlue] (9.15+0.34*\k,1.98) -- (9.15+0.34*\k,1.77); }
+  \foreach \v [count=\k from 4] in {5,6} \node[c, dashed, text=sheetGrey, draw=sheetGrey!60] at (9.15+0.34*\k,2.15) {\v};
+  \node[lbl, text=sheetGrey] at (10.66,1.75) {never};
+  \node[lbl, text=sheetGrey] at (10.66,1.55) {read};
+  \foreach \v [count=\k from 0] in {1,4,9,16} {
+    \node[c] at (9.15+0.34*\k,1.6) {\v};
+    \draw[->, thin, sheetBlue] (9.15+0.34*\k,1.43) -- (9.15+0.34*\k,1.22); }
+  \foreach \k in {0,2} \node[lbl, text=sheetRed] at (9.15+0.34*\k,1.05) {$\times$};
+  \foreach \k in {1,3} {
+    \node[lbl, text=sheetGreen!50!black] at (9.15+0.34*\k,1.05) {\checkmark};
+    \draw[->, thin, sheetBlue] (9.15+0.34*\k,0.88) -- (9.15+0.34*\k,0.67); }
+  \node[c, fill=sheetGreen!14] at (9.49,0.5) {4};
+  \node[c, fill=sheetGreen!14] at (10.17,0.5) {16};
+  \node[lbl, text=sheetBlue, anchor=west] at (10.38,0.5) {2 taken:};
+  \node[lbl, text=sheetBlue, anchor=west] at (10.38,0.28) {\texttt{return()}};
+  \node[lbl, anchor=west, text=sheetOrange] at (5.1,-0.08) {\texttt{sq} ×6 · \texttt{even} ×6 · 2 temp arrays};
+  \node[lbl, anchor=west, text=sheetBlue] at (8.85,-0.08) {\texttt{sq} ×4 · \texttt{even} ×4 · 0 temp};
+  \node[lbl, anchor=west] at (5.1,-0.35) {one value runs the whole chain before the next is pulled → infinite sources};
+  % ── 3 tagged template ──
+  \node[pt] at (11.35,2.95) {\textcolor{sheetBlue}{3} \texttt{tag\bq Hi \$\{name\}, age \$\{n\}!\bq}};
+  \node[lbl, anchor=west] at (11.4,2.5) {is the call \texttt{tag(strings, name, n)}:};
+  \node[lane] at (12.35,1.85) {strings};
+  \node[st] (s0) at (12.85,1.85) {"Hi "};
+  \node[st] (t1) at (14.35,1.85) {", age "};
+  \node[st] (t2) at (15.8,1.85) {"!"};
+  \node[lane] at (12.35,1.2) {values};
+  \node[vl] (v0) at (13.6,1.2) {name};
+  \node[vl] (v1) at (15.1,1.2) {n};
+  \draw[flow] (s0.east) -- (v0.north west); \draw[flow] (v0.north east) -- (t1.west);
+  \draw[flow] (t1.east) -- (v1.north west); \draw[flow] (v1.north east) -- (t2.west);
+  \node[lbl, anchor=west, align=left] at (11.4,0.62) {\texttt{strings.length} = values + 1 (an end may be \texttt{""})};
+  \node[lbl, anchor=west, align=left] at (11.4,0.37) {\texttt{strings} + \texttt{strings.raw}: \textbf{frozen}, and the};
+  \node[lbl, anchor=west, align=left, text=sheetBrown] at (11.4,0.12) {\textbf{same array} each time this call site runs};
+  \node[lbl, anchor=west, align=left, text=sheetBrown] at (11.4,-0.13) {→ the tag can cache by its identity};
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (11.4,-0.38) {values arrive as-is: not stringified, not escaped};
+\end{tikzpicture}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[anchor=west, align=left, text width=19mm, font=\tiny, inner sep=0pt] at (-0.1,0) {\textbf{\small\textcolor{sheetBlue}{4} When it landed}\\[1pt]ESyyyy = the edition published that year; Stage 4 = finished, waiting for its edition};
+  \draw[thick, sheetGrey] (2.3,0) -- (14.1,0);
+  \draw[thick, dashed, sheetGrey] (14.1,0) -- (16.45,0);
+  \foreach \i/\e/\t [count=\n from 0] in {
+     2.75/ES5 · 2009/{\texttt{map filter reduce forEach some every} · \texttt{bind}},
+     3.83/ES2015/{arrows · \texttt{...rest} · defaults · \texttt{function*} · tagged templates · \texttt{Array.from} · \texttt{find}},
+     4.91/ES2016/{\texttt{includes}},
+     5.99/ES2018/{\texttt{\{...o\}} · \texttt{for await} · tags accept bad escapes},
+     7.07/ES2019/{\texttt{flat flatMap} · \texttt{Object.fromEntries} · stable \texttt{sort}},
+     8.15/ES2022/{\texttt{at(-1)} · top-level \texttt{await}},
+     9.23/ES2023/{\texttt{findLast(Index)} · \texttt{toSorted toReversed toSpliced with}},
+     10.31/ES2024/{\texttt{Object.groupBy} \texttt{Map.groupBy}},
+     11.39/ES2025/{iterator helpers: \texttt{Iterator.from} + 11 methods},
+     12.47/ES2026/{\texttt{Iterator.concat} · \texttt{Array.fromAsync} · \texttt{Map} \texttt{getOrInsert(Computed)}},
+     13.55/ES2027/{finished, unpublished: \texttt{Iterator.zip} · \texttt{chunks windows} · \texttt{includes join}}} {
+    \fill[sheetBlue] (\i,0) circle (1.3pt);
+    \ifodd\n
+      \node[ed, anchor=north] at (\i,-0.07) {\e};
+      \node[ev, anchor=north] at (\i,-0.28) {\t};
+    \else
+      \node[ed, anchor=south] at (\i,0.07) {\e};
+      \node[ev, anchor=south] at (\i,0.28) {\t};
+    \fi }
+  \fill[sheetOrange] (14.63,0) circle (1.3pt);
+  \node[ed, anchor=north, text=sheetOrange] at (14.63,-0.07) {Stage 2};
+  \node[ev, anchor=north] at (14.63,-0.28) {\texttt{\pipeop} Hack pipe · async iterator helpers};
+  \fill[sheetRed] (15.71,0) circle (1.3pt);
+  \node[ed, anchor=south, text=sheetRed] at (15.71,0.07) {withdrawn 2025};
+  \node[ev, anchor=south, text width=15mm] at (15.71,0.28) {Records \& Tuples \texttt{\#\{\}} \texttt{\#[]}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Currying, partial application, composition}
+\begin{itemize}
+  \item \textbf{Currying} turns \texttt{f(a, b, c)} into \texttt{f(a)(b)(c)}, one argument per
+        call; an auto-curry (diagram 1) also takes several per step. \textbf{Partial
+        application} fixes \emph{some} and returns a function of the rest:
+        \texttt{f.bind(t, 10)}, \texttt{(...r) \fat{} f(10, ...r)}.
+  \item \texttt{bind} also fixes \texttt{this} — ignored by arrows (lexical \texttt{this}) and
+        by \texttt{new} (bound arguments are still prepended). The bound function has no
+        \texttt{prototype}; \texttt{instanceof} uses the target's.
+  \item \texttt{pipe(f, g)(x)} = \texttt{g(f(x))}: left to right, a \texttt{reduce}.
+        \texttt{compose(f, g)(x)} = \texttt{f(g(x))}: right to left (maths order), a
+        \texttt{reduceRight}. Steps take one value: curry first.
+  \item \texttt{\pipeop} \textbf{pipeline operator} — Stage 2, \textbf{Hack} style: the right
+        side is any expression with a topic placeholder, \texttt{x \pipeop{} f(\%) \pipeop{}
+        g(\%, 1)}; the \texttt{\%} token is not final. TC39 has rejected F\# pipes (right side =
+        a unary function) several times.
+\end{itemize}
+
+\begin{lstlisting}[style=js]
+const curry = (fn, n = fn.length) => function curried(...args) {
+  return args.length >= n ? fn.apply(this, args)
+    : (...more) => curried.apply(this, [...args, ...more]); };
+const sum3 = (a, b, c) => a + b + c;
+curry(sum3)(1)(2)(3); curry(sum3)(1, 2)(3);       // 6, 6
+const pipe = (...fs) => x => fs.reduce((v, f) => f(v), x);
+const compose = (...fs) => x => fs.reduceRight((v, f) => f(v), x);
+const inc = x => x + 1, dbl = x => x * 2;
+pipe(inc, dbl)(3); compose(inc, dbl)(3);          // 8, 7
+Array.from({ length: 4 }, (_, i) => i * i);       // [0, 1, 4, 9]
+\end{lstlisting}
+
+\section{Array methods — what comes back}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{14mm}>{\raggedright\arraybackslash}p{39mm}@{}}
+\toprule
+\textbf{method} & \textbf{returns} & \textbf{edge cases}\\
+\midrule
+\texttt{map(f)} & array, same length & holes stay holes; \texttt{f} is not called on them\\
+\texttt{filter(p)} & array & keeps references, does not copy items\\
+\texttt{flatMap(f)} & array & \texttt{map} + \texttt{flat(1)}; a non-array stays one item\\
+\texttt{reduce(f, init)} & any value & no \texttt{init}: starts at index 1, \texttt{[]} → TypeError, one item → returned, \texttt{f} never called\\
+\texttt{find}, \texttt{findLast} & item & \texttt{undefined} if none — ambiguous if stored\\
+\texttt{findIndex}, \texttt{findLastIndex} & index & $-1$ if none\\
+\texttt{some}, \texttt{every} & boolean & stop at the first decisive item; \texttt{[]} → \texttt{false}, \texttt{true}\\
+\texttt{forEach(f)} & \texttt{undefined} & no \texttt{break} short of a throw\\
+\texttt{Object.groupBy} & null-proto object & keys coerced to string or symbol\\
+\texttt{Map.groupBy} & \texttt{Map} & any value as key\\
+\bottomrule
+\end{tabular}}\par
+\texttt{groupBy} is static because \texttt{Array.prototype.groupBy} broke sites that load the
+Sugar library (versions until 1.4.0 patched it), and \texttt{.group} broke code using arrays
+as hash maps.
+
+\section{Copy, don't mutate}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{36mm}>{\raggedright\arraybackslash}p{41mm}@{}}
+\toprule
+\textbf{mutates · returns} & \textbf{copies · returns the new array}\\
+\midrule
+\texttt{sort(cmp)} · the same array & \texttt{toSorted(cmp)}\\
+\texttt{reverse()} · the same array & \texttt{toReversed()}\\
+\texttt{splice(i, n, ...x)} · the removed items & \texttt{toSpliced(i, n, ...x)}\\
+\texttt{a[i] = v} · \texttt{v} & \texttt{with(i, v)} — RangeError if out of range\\
+\texttt{push(x)}, \texttt{unshift(x)} · new length & \texttt{[...a, x]}, \texttt{[x, ...a]}\\
+\texttt{pop()}, \texttt{shift()} · the removed item & \texttt{a.slice(0, -1)}, \texttt{a.slice(1)}\\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item Copies are \textbf{shallow} and \textbf{dense}: holes become \texttt{undefined}
+        (\texttt{[3, , 1].toSorted()} → \texttt{[1, 3, undefined]}); \texttt{with} counts a
+        negative index from the end. TypedArrays get \texttt{toSorted}, \texttt{toReversed},
+        \texttt{with} — no \texttt{toSpliced}.
+  \item Objects: \texttt{\{...o, k: v\}} copies one level. \texttt{Object.freeze(o)} returns
+        the same \texttt{o} and is shallow — nested objects stay writable; writing a frozen
+        property throws TypeError in strict code and is silently dropped in sloppy code.
+  \item \textbf{Records \& Tuples} (deeply immutable, compared by value) were
+        \textbf{withdrawn} at Stage 2 on 14 Apr 2025: no consensus for new primitives. The
+        successor, \textbf{Composites}, makes objects, not primitives — early stage.
+\end{itemize}
+
+\columnbreak
+
+\section{Lazy: generators + iterator helpers}
+\begin{itemize}
+  \item Calling a \texttt{function*} runs nothing: it returns a generator; each \texttt{next()}
+        runs to the next \texttt{yield} and parks the frame — only that frame is kept, so a
+        sequence can be infinite.
+  \item Generators and the array, \texttt{Map}, \texttt{Set} and string iterators inherit
+        \texttt{Iterator.prototype}, so helpers chain directly; an array needs
+        \texttt{.values()}; any iterable or \texttt{next()} object → \texttt{Iterator.from(x)}.
+  \item \textbf{Lazy}, return an iterator: \texttt{map filter flatMap take drop}.
+        \textbf{Consuming}: \texttt{reduce toArray forEach some every find}. Iterator
+        \texttt{flatMap} must get an iterator or iterable back — a string throws TypeError;
+        \texttt{take}, \texttt{drop}: RangeError for a negative or NaN count.
+  \item \textbf{Single pass, no fork}: helpers share their source, and a consumed iterator
+        just yields nothing — no error. \texttt{break} or a throw in \texttt{for…of} calls
+        \texttt{return()}: the generator runs its \texttt{finally} and is finished for good.
+\end{itemize}
+
+\begin{lstlisting}[style=js]
+function* naturals() { let n = 1; while (true) yield n++; }
+naturals().map(n => n * n).filter(n => n % 2 === 0)
+  .take(3).toArray();            // [4, 16, 36] - map ran 6 times
+Iterator.concat([1, 2], new Set([3])).toArray();      // [1, 2, 3]
+Iterator.zip([[1, 2, 3], ['a', 'b']]).toArray();
+  // [[1, 'a'], [2, 'b']]  shortest by default; 'longest', 'strict'
+Object.groupBy([1, 2, 3, 4], n => n % 2 ? 'odd' : 'even');
+  // { odd: [1, 3], even: [2, 4] }   null prototype
+const memo = f => { const cache = new Map();   // f(x) once per x
+  return x => cache.getOrInsertComputed(x, f); };
+const sql = (strs, ...vals) => ({
+  text: strs.reduce((q, s, i) => q + '$' + i + s), values: vals });
+sql`SELECT * FROM t WHERE id = ${7}`;
+  // { text: 'SELECT * FROM t WHERE id = $1', values: [7] }
+\end{lstlisting}
+
+\section{Tags, IIFE, \texttt{arguments}, code from strings}
+\begin{itemize}
+  \item A \emph{tagged} template may hold invalid escapes (\texttt{\textbackslash unicode}):
+        cooked \texttt{undefined}, raw kept; untagged it is a SyntaxError.
+        \texttt{String.raw\bq Hi\textbackslash n\$\{2 + 3\}!\bq} → \texttt{Hi\textbackslash n5!}
+        (6 characters). A tag may return anything — a function, a query object; an
+        \texttt{html} tag must escape the values, an \texttt{sql} tag sends them as parameters.
+  \item \textbf{IIFE} \texttt{(function () \{ … \})()}, \texttt{(() \fat{} \{ … \})()}: the
+        parentheses make it an expression — a private scope run once; each module now has its
+        own. Modules have top-level \texttt{await}: an async IIFE is for CommonJS and classic
+        scripts.
+  \item \texttt{arguments}: array-like (no \texttt{map}), absent in arrows. In sloppy code
+        with only simple parameters it is \emph{aliased}: \texttt{arguments[0] = 99} changes
+        \texttt{a}; strict code or default / rest / destructured parameters break the link.
+        \texttt{...rest} is a real array.
+  \item Direct \texttt{eval(s)} sees the local scope; indirect \texttt{(0, eval)(s)},
+        \texttt{eval?.(s)} and \texttt{new Function('a', 'return a + 1')} see only globals.
+        \texttt{node:vm}: ``not a security mechanism. Do not use it to run untrusted code.''
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\texttt{['1', '2', '3'].map(parseInt)} → \texttt{[1, NaN, NaN]}: the index becomes the
+        radix (\texttt{parseInt('2', 1)}). Use \texttt{map(Number)}.}
+  \trap{\texttt{[10, 9, 1].sort()} → \texttt{[1, 10, 9]}: compared as strings — and the array
+        itself is reordered. \texttt{toSorted((a, b) \fat{} a - b)}.}
+  \trap{\texttt{xs.forEach(async x \fat{} …)} returns before any \texttt{await} settles: use
+        \texttt{for…of} + \texttt{await}, or \texttt{Promise.all(xs.map(f))}.}
+  \trap{A line starting with \texttt{(}, \texttt{[} or \bq{} continues the previous one:
+        \texttt{const a = b} + newline + \texttt{(() \fat{} \{\})()} is \texttt{b(() \fat{}
+        \{\})()}. Start such a line with \texttt{;}.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Curry: one argument per call · partial: some now · pipe: left to right · copy:
+\texttt{toSorted}, \texttt{with} · iterators: lazy, one pass · tag: a call on the pieces.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{js-scope-closures-this}
+(closures, \texttt{this}, \texttt{call} / \texttt{apply}) · \texttt{js-prototypes-objects-classes}
+(iterator protocol, generators as coroutines) · \texttt{js-async} (promises, async iteration) ·
+\texttt{js-types-coercion-modules} (ESM, top-level \texttt{await}, copying values)}
+
+\end{document}

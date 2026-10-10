@@ -1,0 +1,323 @@
+% ts-config-and-practice.tex — TypeScript in a real codebase, as of October 2026: who compiles
+% the .ts (tsc vs per-file strippers vs Node), the 6.0 defaults and deprecations and the native
+% TypeScript 7, the strict family and the flags beyond it, module / moduleResolution per loader,
+% erasable syntax (isolatedModules, verbatimModuleSyntax, erasableSyntaxOnly, Node type
+% stripping), declarations + augmentation, enums vs unions, runtime validation at the edges,
+% project references and type-check speed, suppression comments.
+% Sources (checked 2026-10-09):
+%   api.github.com/repos/microsoft/TypeScript/releases (v6.0.2 "TypeScript 6.0" 2026-03-23, v6.0.3
+%     2026-04-16, v7.0.2 mirrored from typescript-go) · api.github.com/repos/microsoft/typescript-go/
+%     releases (typescript/v7.0.2, 2026-07-08) · registry.npmjs.org/-/package/typescript/dist-tags
+%     (latest 7.0.2, next 7.1.0-dev, read 2026-10-09)
+%   devblogs.microsoft.com/typescript/announcing-typescript-7-0 (July 8 2026; Go port, "10x";
+%     VS Code 125.7 s → 10.6 s = 11.9×, 16.7× with --checkers 8; memory −6 … −26 %; adopts 6.0
+%     defaults, 6.0 deprecations = hard errors; no API in 7.0, a new one expected in 7.1;
+%     @typescript/typescript6 ships tsc6 + the 6.0 API; Vue, MDX, Astro, Svelte, Angular templates
+%     not yet; --checkers (default 4), --builders, --singleThreaded; watch on Parcel's watcher;
+%     JSDoc: @enum ignored, values not types, @class no constructor)
+%   devblogs.microsoft.com/typescript/announcing-typescript-6-0 (March 23 2026; strict true, module
+%     esnext, target = latest spec (es2025), types [], rootDir = tsconfig dir (else dist/src/…),
+%     noUncheckedSideEffectImports true, libReplacement false; deprecations + ignoreDeprecations
+%     "6.0"; baseUrl → prefixes in paths; stableTypeOrdering ~25 % slower; "#/" subpath imports;
+%     "the last release based on the current JavaScript codebase")
+%   typescriptlang.org/tsconfig (strict family + versions: strictBuiltinIteratorReturn 5.6,
+%     useUnknownInCatchVariables 4.4, noUncheckedIndexedAccess 4.1, exactOptionalPropertyTypes 4.4,
+%     noImplicitOverride 4.3, noPropertyAccessFromIndexSignature 4.2; isolatedModules: type
+%     re-exports, script-file namespaces, ambient const enums; verbatimModuleSyntax rewrite example;
+%     paths "does not change how import paths are emitted"; composite / incremental / tsBuildInfoFile)
+%   typescriptlang.org/docs/handbook/release-notes: 3.9 (@ts-expect-error, "Unused
+%     '@ts-expect-error' directive.") · 5.0 (verbatimModuleSyntax, bundler, allowImportingTsExtensions
+%     only with noEmit / emitDeclarationOnly, extends arrays, 5.5 removals) · 5.4 (preserve) · 5.5
+%     (isolatedDeclarations needs declaration or composite) · 5.6 (noUncheckedSideEffectImports,
+%     declare module "*.css" {}, --noCheck, --stopOnBuildErrors) · 5.7 (rewriteRelativeImportExtensions
+%     and what it never rewrites) · 5.8 (erasableSyntaxOnly list, require(esm) under nodenext, node18,
+%     libReplacement) · 5.9 (lean tsc --init, node20 implies es2023, import defer)
+%   typescriptlang.org/docs/handbook: modules/reference (format by extension + "type"; CJS default
+%     import = module.exports; nodenext ESM needs "./mod.js"; ambient module vs augmentation; "types"
+%     condition first; customConditions) · modules/guides/choosing-compiler-options (bundler app,
+%     Node app, library = node18 + lowest target + strict + declaration + rootDir/outDir; bundler
+%     resolution "infectious"; no "type": "module" in bundler projects) · project-references (composite,
+%     .d.ts of referenced projects, tsc -b flags) · declaration-merging (global augmentation from a
+%     module) · enums (reverse maps, const enum pitfalls, as const)
+%   github.com/microsoft/TypeScript/wiki/Performance (interfaces over intersections, return annotations,
+%     unions over a dozen members, types [], --extendedDiagnostics, --explainFiles, --traceResolution,
+%     --generateTrace + @typescript/analyze-trace)
+%   github.com/microsoft/TypeScript v6.0.3 src/lib: es5.d.ts (JSON.parse(): any) · dom.generated.d.ts
+%     (Body.json(): Promise<any>)
+%   nodejs.org/api/typescript.html + cli.html (docs v26: type stripping added 22.6.0, default 23.6.0 /
+%     22.18.0, no warning 24.3.0, stable 25.2.0 / 24.12.0 with --no-strip-types, transform-types
+%     removed 26.0.0; whitespace replacement; no tsconfig; enum / runtime namespace / parameter
+%     properties / import = unsupported; no .tsx; no .ts under node_modules; recommended tsconfig)
+%   typescript-eslint.io/rules/ban-ts-comment (recommended: ts-ignore banned, ts-expect-error with a
+%     description ≥ 3 chars) · zod.dev/basics (Zod 4: parse throws ZodError, safeParse, z.infer)
+%   esbuild.github.io/content-types (files compiled independently, like Babel; no type check; enable
+%     isolatedModules) · swc.rs/docs/migrating-from-tsc (file-by-file, no type check) ·
+%     reactnative.dev/docs/typescript (Babel transforms TS during bundling; tsc for type checking)
+%   Compiler claims run against typescript 6.0.3 (verbatimModuleSyntax emits, the extension
+%     rewrite and its alias exception, enum emit, erasableSyntaxOnly, unused @ts-expect-error):
+%     all match.
+% @labels: area=typescript kind=tooling platform=web topic=build,tooling,language discussion=332
+% @tags: tsconfig, strict-mode, nouncheckedindexedaccess, moduleresolution, nodenext, esm-vs-commonjs, verbatimmodulesyntax, isolatedmodules, erasablesyntaxonly, type-stripping, isolateddeclarations, typescript-7, declaration-files, branded-types, zod, project-references, ts-expect-error
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={import,from,export,default,const,let,type,interface,extends,function,
+    return,async,await,if,else,switch,case,new,true,false,null,undefined,typeof,keyof,
+    as,satisfies,never,string,number,boolean,void,declare,namespace,readonly},
+  morekeywords={unknown,any,unique,symbol,global,module,var,enum,require},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`}
+
+\newcommand\ct[1]{\texttt{#1}}
+% 0xProto ligates -- and => inside \texttt; a zero kern splits the glyph run.
+\newcommand\dd{-\kern0pt-}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, anchor=west},
+  chip/.style={draw=#1, fill=#1!12, rounded corners=1.5pt, font=\sffamily\tiny\bfseries,
+               inner sep=1.2pt, minimum height=3mm},
+  ev/.style={font=\tiny, text=black!80, align=center, inner sep=0.5pt, anchor=north},
+}
+
+\begin{document}
+
+\sheettitle{TypeScript in practice — tsconfig, modules, 6.0 \& 7.0, boundaries}{typescript · folio}
+
+\oneliner{Types are \textbf{erased}: \texttt{tsc} proves consistency \emph{inside} the program,
+nothing checks the data that enters it. The config decides how strict the proof is, how imports
+resolve for whoever \textbf{loads} the output, and which syntax a per-file transpiler or Node can
+strip. Since July 2026 \texttt{tsc} is the native Go port (\textbf{TypeScript 7}); 6.0 was the
+last JavaScript-based release.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {5.5,11.1} \draw[sheetGrey!40] (\x,3.0) -- (\x,-0.45);
+  % ── 1 who compiles ──
+  \node[pt] at (0,2.85) {\textcolor{sheetBlue}{1} who turns \texttt{.ts} into \texttt{.js}?};
+  \node[sb] (src) at (0.4,1.45) {\texttt{.ts}};
+  \node[sb, minimum width=22mm] (tsc) at (2.35,2.25) {\texttt{tsc} (7.0: Go)\\whole program};
+  \node[sb, minimum width=22mm, draw=sheetOrange, fill=sheetOrange!8] (bab) at (2.35,1.45) {Babel · esbuild · swc\\Metro: \textbf{one file}};
+  \node[sb, minimum width=22mm, draw=sheetOrange, fill=sheetOrange!8] (nod) at (2.35,0.65) {Node $\geq$ 23.6, 22.18\\types $\to$ spaces};
+  \node[sb, minimum width=12mm, draw=sheetGreen, fill=sheetGreen!10] (o1) at (4.7,2.25) {types ✓\\\texttt{.js}+\texttt{.d.ts}};
+  \node[sb, minimum width=12mm] (o2) at (4.7,1.45) {\texttt{.js}, types\\unchecked};
+  \node[sb, minimum width=12mm] (o3) at (4.7,0.65) {runs it, no\\\texttt{tsconfig}};
+  \draw[flow] (src) |- (tsc); \draw[flow] (src) -- (bab); \draw[flow] (src) |- (nod);
+  \draw[flow] (tsc) -- (o1); \draw[flow] (bab) -- (o2); \draw[flow] (nod) -- (o3);
+  \node[lbl, text=sheetOrange, anchor=west] at (0,0.08) {one file cannot see if \texttt{\{Foo\}} is a type $\to$};
+  \node[lbl, text=sheetOrange, anchor=west] at (0,-0.15) {\texttt{isolatedModules} · \texttt{verbatimModuleSyntax} ·};
+  \node[lbl, text=sheetOrange, anchor=west] at (0,-0.38) {\texttt{erasableSyntaxOnly}; types: \texttt{tsc \dd{}noEmit} in CI};
+  % ── 2 the boundary ──
+  \node[pt] at (5.6,2.85) {\textcolor{sheetBlue}{2} erased types $\to$ validate at the edge};
+  \foreach \src/\y in {HTTP JSON/2.3,storage · DB row/1.8,URL · query/1.3,env · argv · IPC/0.8} {
+    \node[sb, draw=sheetRed, fill=sheetRed!6, minimum width=17mm] at (6.55,\y) {\src};
+  }
+  \node[sb, minimum width=13mm] (unk) at (8.4,1.55) {\texttt{unknown}};
+  \foreach \y in {2.3,1.8,1.3,0.8} \draw[flow] (7.42,\y) -- (unk.west);
+  \node[sb, draw=sheetOrange, fill=sheetOrange!10] (par) at (9.45,2.35) {\texttt{parse}\\(zod)};
+  \node[sb, draw=sheetGreen, fill=sheetGreen!10, minimum width=15mm] (dom) at (10.2,1.1) {typed core\\\texttt{User}, \texttt{UserId}};
+  \draw[flow] (unk) |- (par); \draw[flow] (par) -| (dom);
+  \node[lbl, text=sheetRed, anchor=west] at (5.6,0.08) {\texttt{JSON.parse}: \texttt{any}; \texttt{res.json()}: \texttt{Promise<any>};};
+  \node[lbl, text=sheetRed, anchor=west] at (5.6,-0.15) {\texttt{as User} is a claim, not a check · brands mint only in the parser};
+  % ── 3 module setting per loader ──
+  \node[pt] at (11.2,2.85) {\textcolor{sheetBlue}{3} who \emph{loads} the output?};
+  \node[sb, minimum width=25mm, align=center] at (12.55,2.0) {Node runs \texttt{.js}\\\texttt{module: nodenext}\\\texttt{import "./a.js"}};
+  \node[sb, minimum width=25mm, align=center, draw=sheetGreen, fill=sheetGreen!8] at (15.25,2.0) {bundler · Bun\\\texttt{preserve}/\texttt{esnext}\\+ \texttt{bundler}: no ext.};
+  \node[sb, minimum width=25mm, align=center, draw=sheetOrange, fill=sheetOrange!8] at (12.55,0.85) {published library\\\texttt{node18}/\texttt{nodenext}\\never \texttt{bundler}};
+  \node[sb, minimum width=25mm, align=center] at (15.25,0.85) {Node runs \texttt{.ts}\\\texttt{nodenext} + \texttt{rewrite-}\\\texttt{RelativeImportExtensions}};
+  \node[lbl, anchor=west] at (11.2,0.08) {all read \texttt{package.json} \texttt{"exports"}, \texttt{"types"} first;};
+  \node[lbl, anchor=west] at (11.2,-0.15) {\texttt{nodenext}: \texttt{.mts}/\texttt{.cts} or \texttt{"type"} picks ESM vs CJS};
+  % ── release timeline (versions in order, not to scale) ──
+  \begin{scope}[yshift=-1.8cm]
+  \draw[sheetGrey!60, thick] (1.15,1.05) -- (16.55,1.05);
+  \draw[sheetGrey!60, thick] (1.15,0.2) -- (16.55,0.2);
+  \node[font=\sffamily\scriptsize\bfseries, text=sheetBlue, anchor=east] at (1.1,1.05) {TypeScript};
+  \node[font=\sffamily\scriptsize\bfseries, text=sheetGreen!50!black, anchor=east] at (1.1,0.2) {Node};
+  \foreach \x/\v/\t in {
+      1.95/5.0/{\texttt{verbatimModule-}\\\texttt{Syntax} · \texttt{bundler}},
+      3.65/5.4/{\texttt{module:}\\\texttt{preserve}},
+      5.2/5.5/{\texttt{isolated-}\\\texttt{Declarations}},
+      6.85/5.6/{\texttt{noUnchecked-}\\\texttt{SideEffectImports}},
+      8.55/5.7/{\texttt{rewriteRelative-}\\\texttt{ImportExtensions}},
+      10.2/5.8/{\texttt{erasable-}\\\texttt{SyntaxOnly}},
+      11.7/5.9/{\texttt{node20} · lean\\\texttt{tsc \dd{}init}}} {
+    \node[chip=sheetBlue] at (\x,1.05) {\v};
+    \node[ev] at (\x,0.92) {\t};
+  }
+  \node[chip=sheetOrange] at (13.3,1.05) {6.0 · 2026-03-23};
+  \node[ev] at (13.3,0.92) {new defaults · last\\JS-based release};
+  \node[chip=sheetRed] at (15.45,1.05) {7.0 · 2026-07-08};
+  \node[ev] at (15.45,0.92) {Go, $\sim$10$\times$ · 6.0\\deprecations = errors};
+  \foreach \x/\v/\t in {
+      2.1/22.6/{\texttt{\dd{}experimental-}\\\texttt{strip-types}},
+      5.2/23.6 · 22.18/{stripping on\\by default},
+      8.3/24.3/{no experimental\\warning (22.18 too)},
+      11.4/25.2 · 24.12/{stable; opt out:\\\texttt{\dd{}no-strip-types}},
+      14.6/26.0/{\texttt{\dd{}experimental-transform-}\\\texttt{types} removed}} {
+    \node[chip=sheetGreen] at (\x,0.2) {\v};
+    \node[ev] at (\x,0.07) {\t};
+  }
+  \end{scope}
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Defaults: 5.9 $\to$ 6.0 (and 7.0)}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{29mm}>{\raggedright\arraybackslash}p{22mm}>{\raggedright\arraybackslash}p{26mm}@{}}
+\toprule
+\textbf{option} & \textbf{$\leq$ 5.9} & \textbf{6.0 · 7.0}\\
+\midrule
+\ct{strict} & \ct{false} & \textbf{\ct{true}}\\
+\ct{module} & \ct{commonjs} & \ct{esnext}\\
+\ct{target} & \ct{es5} & latest spec: \ct{es2025}\\
+\ct{types} & every \ct{@types/*} & \ct{[]} — list them\\
+\ct{rootDir} & common dir of inputs & the \ct{tsconfig}'s dir\\
+\ct{noUncheckedSideEffectImports} & \ct{false} & \ct{true}\\
+\ct{libReplacement} & \ct{true} & \ct{false}\\
+\ct{stableTypeOrdering} & — & opt-in, $\sim$25\,\% slower · 7.0: always\\
+\bottomrule
+\end{tabular}}\par
+\textbf{Deprecated in 6.0} (silence: \ct{"ignoreDeprecations": "6.0"}), \textbf{hard errors in
+7.0}: \ct{target: es5}, \ct{downlevelIteration}, \ct{moduleResolution: node}/\ct{node10}/\ct{classic},
+\ct{module: amd}/\ct{umd}/\ct{system}/\ct{none}, \ct{outFile}, \ct{baseUrl} (write the prefix into
+each \ct{paths} entry), \ct{esModuleInterop} or \ct{allowSyntheticDefaultImports: false},
+\ct{alwaysStrict: false}, the \ct{module} keyword for namespaces, \ct{import … assert} (use
+\ct{with}), \ct{/// <reference no-default-lib>}.
+
+\section{Strict, and beyond strict}
+\begin{itemize}
+  \item \ct{\textbf{strict}} = \ct{alwaysStrict}, \ct{strictNullChecks}, \ct{strictFunctionTypes},
+        \ct{strictBindCallApply}, \ct{strictPropertyInitialization}, \ct{noImplicitAny},
+        \ct{noImplicitThis}, \ct{useUnknownInCatchVariables} (4.4: \ct{catch (e)} is
+        \ct{unknown}), \ct{strictBuiltinIteratorReturn} (5.6: built-in iterators return
+        \ct{undefined}, not \ct{any}). New members join on upgrade — pin the TS version.
+  \item \textbf{Not in strict}: \ct{noUncheckedIndexedAccess} (4.1, \ct{a[i]}: \ct{T|undefined}),
+        \ct{exactOptionalPropertyTypes} (4.4), \ct{noImplicitOverride} (4.3),
+        \ct{noPropertyAccessFromIndexSignature} (4.2), \ct{noImplicitReturns},
+        \ct{noFallthroughCasesInSwitch}, \ct{noUnusedLocals}/\ct{Parameters}.
+  \item \textbf{5.9 \ct{tsc \dd{}init}} turns on the first two above, plus \ct{nodenext},
+        \ct{verbatimModuleSyntax}, \ct{isolatedModules}, \ct{moduleDetection: force},
+        \ct{skipLibCheck}, \ct{declaration}, \ct{types: []}.
+  \item \ct{extends} takes an array (5.0; later wins); \ct{\$\{configDir\}} in path options (5.5)
+        = the directory of the config that is compiled, not of the shared base.
+  \item \textbf{JS in the program}: \ct{allowJs} mixes \ct{.js} in; \ct{checkJs} or a per-file
+        \ct{// @ts-check} checks it from JSDoc, \ct{// @ts-nocheck} opts a file out.
+\end{itemize}
+
+\section{Modules — match the loader}
+\begin{itemize}
+  \item \ct{\textbf{nodenext}}: \ct{.mts} ESM · \ct{.cts} CJS · \ct{.ts} follows the nearest
+        \ct{"type"}. ESM relative imports name the \emph{output}: \ct{"./mod.js"}. Default import
+        of CJS = \ct{module.exports}. Implies \ct{esModuleInterop} and floating
+        \ct{target: esnext}; allows \ct{require(esm)} (5.8, Node 22.12+). Frozen snapshots:
+        \ct{node18} (5.8, no \ct{require(esm)}), \ct{node20} (5.9, implies \ct{es2023}).
+  \item \ct{\textbf{bundler}} (5.0): extensionless, reads \ct{"exports"} with the \ct{import}
+        condition. \ct{\textbf{module: preserve}} (5.4) implies it, plus \ct{esModuleInterop} and
+        \ct{resolveJsonModule}; emits \ct{import} as written, \ct{import x = require()} as
+        \ct{require}. App recipe: \ct{esnext}+\ct{bundler}, \ct{noEmit},
+        \ct{allowImportingTsExtensions} (only with \ct{noEmit} / \ct{emitDeclarationOnly}),
+        \ct{verbatimModuleSyntax}; no \ct{"type": "module"} or \ct{.mts} in bundler projects.
+  \item \textbf{Library}: \ct{node18}, the \emph{lowest} \ct{target} you support, \ct{strict} (or
+        its \ct{.d.ts} breaks strict users), \ct{declaration}+\ct{declarationMap},
+        \ct{rootDir}/\ct{outDir} (else users load your \ct{.ts}). \ct{bundler} resolution is
+        ``infectious'': it accepts imports Node cannot load.
+  \item \ct{"exports"}: TS takes \ct{"types"} first, then \ct{default}/runtime conditions;
+        add your own with \ct{customConditions}. \ct{paths} only tells TS — \ct{tsc} never
+        rewrites them, so the bundler / Jest / Node (\ct{"imports"}) needs the same map.
+\end{itemize}
+
+\section{Enums vs unions}
+Numeric \ct{enum} = runtime object + reverse map (\ct{E[0]} is \ct{"A"}); string enums have none.
+\ct{const enum} is inlined: ambient ones break \ct{isolatedModules} and inline a stale value when
+the library version changes (handbook: lint them away or \ct{preserveConstEnums}). Neither survives
+\ct{erasableSyntaxOnly} — use an \ct{as const} object or a literal union.
+
+\columnbreak
+
+\section{Erasable TypeScript}
+\begin{itemize}
+  \item \ct{\textbf{isolatedModules}}: errors where one file is not enough — a type re-exported
+        without \ct{export type}, a namespace in a script file, an ambient \ct{const enum}.
+  \item \ct{\textbf{verbatimModuleSyntax}} (5.0, below): replaced \ct{importsNotUsedAsValues} and
+        \ct{preserveValueImports} (gone in 5.5); CJS output needs \ct{import x = require()}.
+  \item \ct{\textbf{erasableSyntaxOnly}} (5.8) bans what has runtime meaning: \ct{enum}, namespaces
+        with code, parameter properties, \ct{import =} / \ct{export =}.
+  \item \textbf{Node} swaps types for spaces (lines hold, no source map), ignores \ct{tsconfig},
+        needs extensions and \ct{import type}; no \ct{.tsx}, no \ct{.ts} in \ct{node\_modules}.
+        Its docs: panel 3 + \ct{verbatimModuleSyntax}, \ct{erasableSyntaxOnly},
+        \ct{target: esnext}, \ct{noEmit}.
+  \item \ct{rewriteRelativeImportExtensions} (5.7): \ct{./a.ts} $\to$ \ct{./a.js} — relative
+        literals only; never \ct{paths} aliases, packages, \ct{\#/…}, computed \ct{import()}.
+\end{itemize}
+\begin{lstlisting}[language=TSSheet]
+import type { A } from "a";       // erased entirely
+import { b, type c } from "bcd";  // -> import { b } from "bcd";
+import { type x } from "xyz";     // -> import {} from "xyz";
+\end{lstlisting}
+
+\section{TypeScript 7 — the native compiler}
+\begin{itemize}
+  \item \ct{npm i -D typescript} = 7.0.2, still \ct{tsc}: VS Code 125.7\,s $\to$ 10.6\,s
+        (11.9$\times$), memory $-$6 to $-$26\,\%; \ct{\dd{}checkers N} (4), \ct{\dd{}builders N},
+        \ct{\dd{}singleThreaded}.
+  \item \textbf{No API in 7.0} (7.1: a new, different one): typed lint rules, webpack loaders,
+        Vue / Svelte / Astro / MDX, Angular templates stay on 6 — \ct{@typescript/typescript6}
+        ships \ct{tsc6} + the 6.0 API.
+  \item Clean on 6.0 with \ct{stableTypeOrdering}, no \ct{ignoreDeprecations} $\Rightarrow$
+        should compile identically on 7.0. JSDoc: \ct{@enum} ignored, values not usable as types.
+\end{itemize}
+
+\section{References, declarations, speed}
+\begin{itemize}
+  \item \ct{\textbf{composite}}: \ct{declaration} on, \ct{rootDir} = its dir, every file in
+        \ct{include}; importers read its \ct{.d.ts}. \ct{tsc -b} builds stale projects in
+        order (\ct{.tsbuildinfo}); since 5.6 past errors (\ct{\dd{}stopOnBuildErrors}).
+  \item \ct{\textbf{isolatedDeclarations}} (5.5): exports fully annotated, so any tool emits
+        \ct{.d.ts} per file, in parallel; \ct{\dd{}noCheck} (5.6) emits without checking.
+  \item \textbf{Cost}: interfaces over big \ct{\&} (cached); annotated returns; unions past a
+        dozen members compare pairwise. Measure: \ct{\dd{}extendedDiagnostics},
+        \ct{\dd{}explainFiles}, \ct{\dd{}generateTrace} + \ct{@typescript/analyze-trace}.
+\end{itemize}
+
+\section{Example — the edges}
+\begin{lstlisting}[language=TSSheet]
+const User = z.object({ id: z.string(), age: z.number() });
+type User = z.infer<typeof User>;   // one source of truth
+async function load(res: Response): Promise<User> {
+  return User.parse(await res.json()); } // throws ZodError
+declare const tag: unique symbol;   // brand: nominal, 0 bytes
+type UserId = string & { readonly [tag]: 'UserId' };
+const Dir = { Up: 'up', Down: 'down' } as const;  // not enum
+type Dir = (typeof Dir)[keyof typeof Dir];        // 'up' | 'down'
+// globals.d.ts -- has export: a module, so this augments
+export {}; declare global { var __APP_VERSION__: string }
+// assets.d.ts -- no import/export: a script, ambient modules
+declare module '*.css' {}           // side-effect imports pass
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{6.0 \ct{types: []}: \ct{describe}, \ct{process}, \ct{fs} vanish — list
+        \ct{"types": ["node", "jest"]}. \ct{rootDir} = \ct{.}: output lands in \ct{dist/src/}
+        unless \ct{"rootDir": "./src"}.}
+  \trap{\ct{declare module "x"} in a file that has \emph{any} import/export is an augmentation,
+        not a declaration — one stray import turns a shim into a patch.}
+  \trap{\ct{@ts-ignore} hides every future error on its line; \ct{@ts-expect-error} (3.9) fails
+        with \textit{Unused '@ts-expect-error' directive.} once fixed. typescript-eslint
+        \ct{ban-ts-comment}: ignore banned, expect-error needs a $\geq$3-char reason.}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\raggedright\textit{Related:} \texttt{ts-type-system} ·
+\texttt{ts-generics-advanced} · \texttt{js-types-coercion-modules} (Node CJS $\leftrightarrow$ ESM)
+· \texttt{node-runtime} · \texttt{lint-static-analysis} (typescript-eslint typed rules) · RN testing
++ TypeScript · \texttt{metro-bundler} · \texttt{typed-contracts-across-teams}\par}
+
+\end{document}

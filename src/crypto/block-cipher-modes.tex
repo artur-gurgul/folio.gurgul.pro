@@ -1,0 +1,319 @@
+% block-cipher-modes.tex — AES as a block cipher and the modes that turn it into a message cipher:
+% the SP 800-38A confidentiality modes (ECB, CBC, CFB, OFB, CTR) with their IV rules and error
+% behaviour, GCM inside out, CCM, ChaCha20-Poly1305, GCM-SIV, XTS, Ascon; padding oracles and the
+% attacks that shaped the rules; per-key limits; cipher + MAC order; NIST's status as of Oct 2026.
+% AEAD API use, nonce basics and envelope encryption live in cs/crypto-cryptokit.tex — not repeated.
+% Sources (checked 2026-10-09):
+%   csrc.nist.gov/pubs/fips/197/final (AES, 26 Nov 2001; upd1 9 May 2023 = no technical changes;
+%     128-bit block; AES-128/192/256) · nist.gov/news-events/news/2024/12/nist-proposes-standardize-
+%     wider-variant-aes (24 Dec 2024: Rijndael-256, 256-bit block, one 256-bit key, for large volumes)
+%   nvlpubs.nist.gov SP 800-38A (Dec 2001): §6.1–6.5 (CBC/CFB IV unpredictable, OFB IV a nonce, CTR
+%     counters distinct across all messages under the key; which steps run in parallel), App. A
+%     (padding), App. B (counter blocks), App. C (unpredictable IV = RBG output or E_K(nonce)),
+%     App. D Table D.2 (effect of a bit error in C_j per mode)
+%   csrc.nist.gov/News/2023/decision-to-revise-nist-sp-800-38a (28 Apr 2023: limit ECB to uses other
+%     NIST documents allow, clarify IVs + counters, urge authentication, merge the CBC-CS1/2/3
+%     addendum (Oct 2010); BEAST = CVE-2011-3389 cited as an IV failure; would consider deprecating
+%     38A modes if a tweakable wide mode is approved) · csrc.nist.gov/pubs/ir/8459/final (Sep 2024,
+%     review of 38A–F) · csrc.nist.gov/pubs/ir/8552/final (accordions, Apr 2025)
+%   nvlpubs.nist.gov SP 800-38D (Nov 2007): §5.2.1.1 (len P ≤ 2^39−256, A and IV ≤ 2^64−1 bits,
+%     96-bit IVs recommended), §5.2.1.2 (t = 128/120/112/104/96; 64 or 32 per App. C), §6.3 (field
+%     polynomial via R = 11100001‖0^120), §6.4 (GHASH = X1·H^m ⊕ … ⊕ Xm·H), Alg. 4–5 (H = E_K(0^128);
+%     J0 = IV‖0^31‖1; C from inc32(J0); T = MSB_t(GCTR(J0, S)); tag may be checked first), §8 (IV
+%     repeat probability ≤ 2^-32), §8.2.1 (32-bit fixed field + 64-bit invocation field suggested),
+%     §8.2.2 (random field ≥ 96 bits), §8.3 (≤ 2^32 invocations unless 96-bit deterministic IVs),
+%     §9.1 (power loss must not repeat IVs), App. A (CTR malleability; IV reuse → H → forgeries),
+%     App. B (targeted forgery ≈ n/2^t, each success leaks H — Ferguson 2005; ≤ 2^64 blocks per key),
+%     App. C (32/64-bit tag caps; SRTP example), refs [1] Ferguson 2005, [5] Joux
+%   csrc.nist.gov/csrc/media/projects/block-cipher-techniques/documents/bcm/joux_comments.pdf (Joux,
+%     "Authentication Failures in NIST version of GCM", 2006: names the repeated-IV "forbidden
+%     attack"; recovers the GHASH key, after which GCM is unauthenticated)
+%   csrc.nist.gov/news/2024/nist-to-revise-sp-80038d-gcm-and-gmac-modes (5 Mar 2024: drop tags
+%     < 96 bits; TLS 1.3 IV construction approved) · csrc.nist.gov/pubs/sp/800/38/d/r1/2prd (1 Jun
+%     2026: wGCM for Rijndael-256, 192-bit default IV, ≤ 2^64 invocations asked)
+%   csrc.nist.gov/pubs/sp/800/38/b/upd1/final + /38/c/upd1/final (CMAC May 2005, CCM May 2004;
+%     revisions decided 10 Apr 2025) · /38/e/final + PDF (Jan 2010; XTS = XEX tweakable block cipher
+%     + ciphertext stealing, IEEE 1619-2007, storage only, no authentication, data unit ≤ 2^20 blocks)
+%     · /38/e/r1/ipd (3 Sep 2026, IEEE 1619-2025) · /38/g/r1/2pd (3 Feb 2025, FF3 removed)
+%     · publications search "800-38" (38F key wrap Dec 2012; 38G Mar 2016)
+%   nvlpubs.nist.gov SP 800-131A Rev. 3 ipd (Oct 2024; csrc page: still the only Rev. 3 version):
+%     Table 1 (TDEA encryption disallowed), Table 2 + §2.2 (ECB disallowed for encryption, legacy
+%     decryption, acceptable for non-confidentiality uses per IR 8459; FF3 disallowed; FF1 ≥ 10^6)
+%   csrc.nist.gov/news/2017/update-to-current-use-and-deprecation-of-tdea (2^32 → 2^20 blocks per
+%     key bundle; collision at ~2^32 blocks; why AES has a 128-bit block) · csrc.nist.gov/pubs/sp/800/
+%     67/r2/final (withdrawn 1 Jan 2024) · sweet32.info (Bhargavan, Leurent, CCS 2016; 32 GB;
+%     785 GB for a two-block HTTPS cookie)
+%   csrc.nist.gov/pubs/sp/800/232/final + PDF (13 Aug 2025; Ascon-AEAD128: 128-bit key, nonce and
+%     tag, 320-bit state, rate 128; R3 unique nonces, R4 truncated tag ≥ 32, R6 ≤ 2^54 bytes per key)
+%   rfc-editor.org RFC 5652 §6.3 (PKCS#7 padding, defined iff k < 256) · RFC 3610 (CCM: nonce 15−L
+%     octets, L 2…8, M 4…16 even; CBC-MAC then CTR) · RFC 8439 (256-bit key, 96-bit nonce, 32-bit
+%     counter, 274 877 906 880 B, Poly1305 key from block 0, ~3× AES without AES hardware, reuse
+%     reveals the XOR) · RFC 8452 (GCM-SIV: reuse reveals only equality; 2^36 B; 2^32 × 8 GiB or
+%     2^48 × 32 MiB) · RFC 8446 §5.3 (nonce = IV ⊕ seq), §5.5 (2^24.5 records), B.4 (5 suites) ·
+%     RFC 9001 §5.4.3 (header protection = one AES-ECB block), §6.6 (limits) · RFC 4346 §1.1
+%     (TLS 1.1 explicit IV, Apr 2006) · RFC 7366 (EtM for TLS, Sep 2014) · RFC 4253 §6.4 (SSH MAC
+%     over the unencrypted packet) · RFC 4303 §3.3.2.1, §3.4.4.1 (ESP: encrypt, then ICV; verify first)
+%   bluetooth.com Core 6.1 Vol 6 Part E §1 (LE link layer: AES-CCM, M = 4, 13-octet nonce)
+%   Vaudenay, Eurocrypt 2002, LNCS 2332 534–545 (infoscience.epfl.ch/record/99410) · Canvel,
+%     Hiltgen, Vaudenay, Vuagnoux, CRYPTO 2003 (TLS by timing) · learn.microsoft.com MS10-070
+%     (28 Sep 2010) · isg.rhul.ac.uk/tls/Lucky13.html (AlFardan, Paterson 2013; 13 = 5 + 8 header
+%     bytes) · openssl-library.org/files/ssl-poodle.pdf (Möller, Duong, Kotowicz, Sep 2014; SSL 3.0
+%     padding not deterministic, not MAC-ed) · eprint.iacr.org/2000/025 (Bellare, Namprempre)
+%     · eprint.iacr.org/2016/475 (184 servers repeat GCM nonces, > 70 000 random) · eprint.iacr.org/
+%     2019/016 (Dodis, Grubbs, Ristenpart, Woodage, CRYPTO 2018) · usenix.org sec21 Len, Grubbs,
+%     Ristenpart (partitioning oracles: AES-GCM, ChaCha20/Poly1305 non-committing; Shadowsocks)
+%   raw.githubusercontent.com/apple-oss-distributions/CommonCrypto/main/include/CommonCryptor.h
+%     (default CBC; no IV → all-zero IV) · docs.oracle.com/en/java/javase/25/security/oracle-providers
+%     (SunJCE: mode/padding omitted → ECB + PKCS5Padding) · support.google.com/faqs/answer/10046138
+%     · pkg.go.dev/crypto/cipher + go.dev/doc/go1.24 (no ECB; OFB/CFB deprecated; NewGCMWithRandomNonce
+%     ≤ 2^32 messages) · doc.libsodium.org/secret-key_cryptography/aead (AES256-GCM needs AES-NI or ARM
+%     Crypto; XChaCha20 random nonces) · openssh.org/txt/release-6.2 (EtM MACs, default when available)
+% @labels: area=crypto kind=concept platform=general topic=security,algorithms discussion=301
+% @tags: aes, aead, aes-gcm, ecb, cbc, ctr, ghash, ccm, chacha20-poly1305, aes-gcm-siv, xts, padding-oracle, pkcs7, nonce-reuse, encrypt-then-mac, key-commitment, tls13, quic
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{PseudoSheet}{
+  morekeywords={for,in,if,return,def,and,not,range},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]",
+  literate={==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2 {->}{{\hbox{-}\hbox{>}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\tikzset{
+  bk/.style={draw=sheetGrey, fill=white, minimum height=4.2mm, minimum width=6.5mm, font=\ttfamily\tiny, inner sep=1pt},
+  ek/.style={draw=sheetOrange, fill=sheetOrange!15, thick, minimum height=4.2mm, minimum width=7mm, font=\sffamily\tiny\bfseries, inner sep=1pt},
+  xo/.style={circle, draw=sheetBlue, thick, inner sep=0pt, minimum size=3.2mm, font=\scriptsize},
+  ph/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  l/.style={font=\tiny, text=black!75, align=left, inner sep=1pt},
+  a/.style={->, thin, draw=black!70},
+  px/.style={minimum size=1.3mm, inner sep=0pt, draw=white, line width=0.15pt},
+}
+% a 5×5 "image" of 25 blocks: 1 = dark block, 0 = light block
+\def\pat{{0,1,1,1,0, 1,0,0,0,1, 1,0,1,0,1, 1,0,0,0,1, 0,1,1,1,0}}
+
+\begin{document}
+
+\sheettitle{Block cipher modes — ECB, CBC, CTR, GCM, padding oracles}{crypto · folio}
+
+\oneliner{\textbf{AES} is a keyed \emph{permutation} of one 16-byte block; a \textbf{mode} makes it
+a message cipher. \textbf{ECB} shows equal blocks, \textbf{CBC} chains (unpredictable IV + padding),
+\textbf{CTR} is a stream cipher (unique counters), \textbf{GCM} = CTR + a GF(2\textsuperscript{128}) MAC
+= \textbf{AEAD}. No confidentiality-only mode protects integrity; a repeated or predictable IV breaks them.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet, yscale=0.9]
+  % ================= ECB
+  \node[ph] at (-0.1,3.55) {ECB};
+  \foreach \x/\p/\c in {0.6/A/X, 1.9/A/X} {
+    \node[bk] (p) at (\x,3.0) {P=\p};
+    \node[ek] (e) at (\x,2.3) {E$_K$};
+    \node[bk, draw=sheetRed, text=sheetRed] (c) at (\x,1.6) {C=\c};
+    \draw[a] (p) -- (e); \draw[a] (e) -- (c); }
+  \node[l, text=sheetRed] at (1.25,1.15) {same P $\Rightarrow$ same C};
+  \foreach \gx/\kind in {0.05/0, 0.95/1, 1.85/2} {
+    \foreach \r in {0,...,4} { \foreach \c in {0,...,4} {
+      \pgfmathtruncatemacro\v{\pat[5*\r+\c]}
+      \pgfmathtruncatemacro\k{mod(7*\r*\r+13*\c+5*\r*\c+3,5)}
+      \ifcase\kind
+        \ifnum\v=1 \def\col{black!80}\else\def\col{black!6}\fi
+      \or
+        \ifnum\v=1 \def\col{sheetOrange!80}\else\def\col{sheetGreen!45}\fi
+      \or
+        \ifcase\k \def\col{sheetOrange!80}\or\def\col{sheetGreen!45}\or\def\col{sheetBlue!45}\or\def\col{sheetBrown!55}\else\def\col{sheetRed!45}\fi
+      \fi
+      \node[px, fill=\col] at (\gx+0.13*\c+0.065, 0.78-0.1444*\r) {};
+    }}}
+  \node[l] at (0.38,0.0) {25 blocks};
+  \node[l, text=sheetRed] at (1.28,0.0) {ECB};
+  \node[l] at (2.18,0.0) {CBC, CTR};
+  \node[l] at (1.2,-0.45) {no IV · padding · enc + dec\\parallel · for data: \textbf{never}};
+  \draw[sheetGrey!50] (2.6,3.7) -- (2.6,-0.75);
+  % ================= CBC
+  \node[ph] at (2.65,3.55) {CBC};
+  \node[bk, fill=sheetGreen!12, draw=sheetGreen] (iv) at (3.2,2.4) {IV};
+  \node[bk] (p1) at (4.1,3.0) {P$_1$}; \node[xo] (x1) at (4.1,2.4) {$\oplus$};
+  \node[ek] (e1) at (4.1,1.75) {E$_K$}; \node[bk] (c1) at (4.1,1.1) {C$_1$};
+  \node[bk] (p2) at (5.6,3.0) {P$_2$}; \node[xo] (x2) at (5.6,2.4) {$\oplus$};
+  \node[ek] (e2) at (5.6,1.75) {E$_K$}; \node[bk] (c2) at (5.6,1.1) {C$_2$};
+  \draw[a] (iv) -- (x1); \draw[a] (p1) -- (x1); \draw[a] (x1) -- (e1); \draw[a] (e1) -- (c1);
+  \draw[a] (p2) -- (x2); \draw[a] (x2) -- (e2); \draw[a] (e2) -- (c2);
+  \draw[a, draw=sheetBlue, thick] (c1.east) -- ++(0.3,0) |- (x2.west);
+  \node[l] at (4.85,0.5) {dec: P$_i$ = D$_K$(C$_i$) $\oplus$ C$_{i-1}$};
+  \node[l] at (4.4,-0.2) {IV: 16 B, public, \textbf{unpredictable}:\\RBG output or E$_K$(nonce) · padding\\enc serial, dec parallel · \textbf{no integrity}};
+  \draw[sheetGrey!50] (6.2,3.7) -- (6.2,-0.75);
+  % ================= CTR
+  \node[ph] at (6.25,3.55) {CTR};
+  \foreach \x/\n/\i in {7.35/1/1, 8.9/2/2} {
+    \node[bk, fill=sheetGreen!12, draw=sheetGreen] (n) at (\x,3.0) {N$\Vert$\n};
+    \node[ek] (e) at (\x,2.3) {E$_K$};
+    \node[xo] (x) at (\x,1.65) {$\oplus$};
+    \node[bk, minimum width=5mm] (p) at (\x-0.62,1.65) {P$_\i$};
+    \node[bk] (c) at (\x,1.05) {C$_\i$};
+    \draw[a] (n) -- (e); \draw[a] (e) -- node[l, right, pos=0.4]{ks} (x); \draw[a] (p) -- (x); \draw[a] (x) -- (c); }
+  \node[l] at (7.9,0.5) {= a stream cipher:\\C = P $\oplus$ keystream};
+  \node[l] at (7.95,-0.2) {every counter block \textbf{unique}\\across all messages under K\\no padding · parallel, seekable\\\textbf{malleable}: flip C bit = flip P bit};
+  \draw[sheetGrey!50] (9.65,3.7) -- (9.65,-0.75);
+  % ================= GCM
+  \node[ph] at (9.7,3.55) {GCM = CTR + GHASH (AEAD)};
+  \foreach \x/\n/\i in {11.15/2/1, 12.7/3/2} {
+    \node[bk, fill=sheetGreen!12, draw=sheetGreen] (n\i) at (\x,3.0) {N$\Vert$\n};
+    \node[ek] (e) at (\x,2.3) {E$_K$};
+    \node[xo] (x) at (\x,1.65) {$\oplus$};
+    \node[bk, minimum width=5mm] (p) at (\x-0.62,1.65) {P$_\i$};
+    \node[bk] (gc\i) at (\x,1.05) {C$_\i$};
+    \draw[a] (n\i) -- (e); \draw[a] (e) -- (x); \draw[a] (p) -- (x); \draw[a] (x) -- (gc\i); }
+  \node[bk, fill=sheetBlue!8] (aad) at (10.05,1.05) {AAD};
+  \node[box, font=\tiny, minimum width=36mm, inner sep=2pt] (gh) at (11.9,0.3) {GHASH$_H$(AAD, C$_1$, C$_2$, lengths)\\$= X_1H^m \oplus \dots \oplus X_mH$ in GF(2$^{128}$)};
+  \draw[a] (aad) -- (aad |- gh.north); \draw[a] (gc1) -- (gc1 |- gh.north); \draw[a] (gc2) -- (gc2 |- gh.north);
+  \node[ek] (ej) at (14.55,1.65) {E$_K$(N$\Vert$1)};
+  \node[xo] (xt) at (14.55,0.3) {$\oplus$};
+  \node[bk, fill=sheetGreen!18, draw=sheetGreen, minimum width=11mm] (tag) at (14.55,-0.4) {tag 16 B};
+  \draw[a] (gh) -- (xt); \draw[a] (ej) -- (xt); \draw[a] (xt) -- (tag);
+  \node[l] at (15.35,2.75) {H = E$_K$(0$^{128}$)\\N = 96-bit IV,\\32-bit block counter\\J$_0$ = N$\Vert$1 masks the tag};
+  \node[l, text=sheetRed] at (11.9,-0.45) {nonce reused $\Rightarrow$ keystream reused \textbf{and}\\two tags give a polynomial in H $\Rightarrow$ \textbf{forgery}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{How it works}
+\begin{itemize}
+  \item \textbf{AES} (FIPS 197, 2001; the 2023 update is editorial only): 128-bit block; 128/192/256-bit
+        key $\to$ 10/12/14 rounds of SubBytes · ShiftRows · MixColumns · AddRoundKey (no MixColumns
+        in the last). Same key + same block $\to$ same output, always — the rest is the mode. NIST
+        proposed (Dec 2024) adding \textbf{Rijndael-256}: 256-bit block, one 256-bit key, for bulk data.
+  \item \textbf{Padding} (ECB, CBC): PKCS\#7 (RFC 5652) appends $n$ bytes of value $n$, 1–16 — a whole
+        block of \ct{0x10} if already aligned. Ciphertext stealing (CBC-CS1/2/3, SP 800-38A addendum,
+        2010) needs none; nor do CTR, GCM, ChaCha20: $|C| = |P|$.
+  \item \textbf{IV vs nonce} (SP 800-38A App.~C): a CBC/CFB IV must be \emph{unpredictable} — RBG
+        output, or E$_K$(nonce); an OFB IV and the CTR counter blocks need only be \emph{unique}.
+        Both are public. TLS 1.0 used the last ciphertext block as the next IV: BEAST (2011);
+        TLS 1.1 (2006) had already switched to explicit IVs.
+  \item \textbf{Birthday bound}: after $\sim$2$^{b/2}$ blocks, ciphertext collisions leak plaintext
+        XORs. 64-bit blocks (3DES, Blowfish): 2$^{32}$ blocks = 32~GB; Sweet32 (2016) took a two-block
+        HTTPS cookie with 785~GB. NIST then capped 3DES at 2$^{20}$ blocks per key (2017); TDEA encryption
+        is disallowed since 2024. AES: rekey well before 2$^{64}$ blocks.
+\end{itemize}
+
+\section{The SP 800-38A modes}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{7mm}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{23mm}>{\raggedright\arraybackslash}p{20mm}@{}}
+\toprule
+\textbf{mode} & \textbf{IV} & \textbf{parallel enc/dec} & \textbf{1 bit flipped in C$_j$} & \textbf{IV repeated}\\ \midrule
+ECB & none & yes/yes & P$_j$ random & equal blocks always show\\
+CBC & unpredictable & no/yes & P$_j$ random, \textbf{same bit} in P$_{j+1}$ & equal prefixes show\\
+CFB & unpredictable & no/yes & same bit in P$_j$, next $b/s$ segments random & first segments' XOR leaks\\
+OFB & unique & no/no (precompute) & same bit in P$_j$ & two-time pad\\
+CTR & unique counters & yes/yes & same bit in P$_j$ & two-time pad\\
+\bottomrule
+\end{tabular}}\par
+Random = each bit wrong with probability 1/2; same bit = exactly the flipped position — the
+attacker's steering wheel. \textbf{NIST, Oct 2026}: 38A is being revised (decided 2023) to limit ECB to
+uses other NIST rules allow — one-block jobs like IV generation, challenge–response, QUIC header
+protection; the SP 800-131A Rev.~3 \emph{draft} (2024; Rev.~2 still in force) disallows ECB for
+encryption. CBC…CTR stay acceptable, the CTS addendum folds into 38A, and NIST may deprecate these
+modes once a wide-block ``accordion'' (IR 8552) is approved.
+
+\section{AEAD constructions}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{14mm}>{\raggedright\arraybackslash}p{14mm}>{\raggedright\arraybackslash}p{28mm}@{}}
+\toprule
+\textbf{construction} & \textbf{nonce} & \textbf{max message} & \textbf{if the nonce repeats}\\ \midrule
+AES-GCM & 96 bit, unique & 2$^{39}{-}256$ bits ($\approx$64~GiB) & two-time pad + H recovered $\to$ forgeries\\
+AES-CCM & 7–13 B, unique & $<2^{8L}$ B, $L = 15 - |N|$ & two-time pad\\
+ChaCha20-Poly1305 & 96 bit, unique & 274\,877\,906\,880 B ($\approx$256~GB) & two-time pad + one-time Poly1305 key reused\\
+XChaCha20-Poly1305 & 192 bit, random OK & $\sim$2$^{64}$ B & as ChaCha20 — collisions negligible\\
+AES-GCM-SIV & 96 bit & 2$^{36}$ B & leaks only \emph{whether} two messages were equal\\
+Ascon-AEAD128 & 128 bit, unique & 2$^{54}$ B per key & ``shall be distinct'' (SP 800-232 R3)\\
+\bottomrule
+\end{tabular}}\par
+CCM (CBC-MAC, then CTR; two passes) runs BLE's link layer with a 4-byte MIC and 13-byte nonce, so
+$L = 2$: payloads $<$64~KiB. ChaCha20 is $\sim$3$\times$ AES on chips without AES instructions;
+libsodium ships AES-GCM only for chips with them (x86 AES-NI, ARM Crypto extensions).
+
+\section{Malleability, worked (CTR, no MAC)}
+Known plaintext \ct{amount=100}. XOR the ciphertext byte under \ct{1} with \ct{"1"} $\oplus$ \ct{"9"}
+(= \ct{0x08}) — no key, no decryption — and the server reads \ct{amount=900}. Encryption hid the
+value; it never protected it.
+
+\columnbreak
+
+\section{Example — the CBC padding oracle}
+Vaudenay (2002): ``bad padding'' answered unlike ``bad MAC'' (status, text, \emph{timing}).
+P$_i$ = D$_K$(C$_i$) $\oplus$ C$_{i-1}$, so edit C$_{i-1}$: $\le$256 tries a byte, no key.
+\begin{lstlisting}[language=PseudoSheet]
+def last_byte(prev, block):            # recover P[15] of block
+  for g in range(256):
+    fake = prev[:15] + bytes([g])      # we control C(i-1)
+    if oracle(fake + block) == "padding ok":   # P'[15] is 0x01
+      d = g ^ 0x01                     # d = D_K(block)[15]
+      return d ^ prev[15]   # then force 0x02 0x02 for byte 14 ...
+\end{lstlisting}
+Then: TLS by timing (2003) · ASP.NET (MS10-070, 2010: \ct{web.config}) · \textbf{Lucky 13} (2013): MAC-then-encrypt timing; 13 = 5 header + 8 sequence bytes in the MAC ·
+\textbf{POODLE} (2014): SSL 3.0 padding is neither deterministic nor MAC-ed — a moved block passes
+1 time in 256. Fix: \textbf{verify a MAC over IV + ciphertext before decrypting}, or use AEAD.
+
+\section{GCM, inside (SP 800-38D)}
+\begin{itemize}
+  \item J$_0$ = IV $\Vert$ 0$^{31}$ $\Vert$ 1 for a 96-bit IV (others are GHASHed; NIST
+        recommends 96 only); data from inc$_{32}$(J$_0$); T = MSB$_t$(E$_K$(J$_0$) $\oplus$ GHASH).
+  \item P(IV repeats under a key) $\le$ 2$^{-32}$: deterministic IV = 32-bit \textbf{fixed field}
+        (device) $\Vert$ 64-bit \textbf{invocation counter}, or random $\ge$96 bits and
+        $\le$\textbf{2$^{32}$ messages per key}. TLS 1.3: nonce = static IV $\oplus$ record number.
+        \textbf{Power loss must not repeat an IV}.
+  \item Tags 128…96 bits; 64/32 only under App.~C's caps. Targeted forgery $\approx n/2^t$ for $n$
+        blocks, each success leaks H (Ferguson 2005). Rev.~1 (decided Mar 2024): no tags $<$96, TLS
+        1.3 IVs approved; pre-draft (Jun 2026): wGCM for Rijndael-256.
+  \item \textbf{Nonce reuse}: XOR of two tags = a known polynomial in H; its roots give H (Joux,
+        ``forbidden attack'', 2006) $\to$ tags for any ciphertext. 2016: 184 HTTPS servers repeated
+        GCM nonces.
+\end{itemize}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{33mm}>{\raggedright\arraybackslash}p{42mm}@{}}
+\toprule
+\textbf{rekey before} & \textbf{limit per key}\\ \midrule
+TLS 1.3 AES-GCM (RFC 8446) & 2$^{24.5}$ full-size records\\
+QUIC AES-GCM · AES-CCM (RFC 9001) & 2$^{23}$ · 2$^{21.5}$ packets\\
+QUIC ChaCha20-Poly1305 & 2$^{36}$ failed forgeries (no confidentiality limit)\\
+AES-GCM-SIV, random nonces & 2$^{32}$ msgs of 8~GiB, or 2$^{48}$ of 32~MiB\\
+\bottomrule
+\end{tabular}}
+
+\section{Cipher + MAC: the order}
+\textbf{Encrypt-then-MAC} — C, MAC(IV $\Vert$ C) — rejects forgeries before decrypting: IPsec ESP,
+TLS RFC 7366 (2014), OpenSSH \ct{-etm} MACs (6.2). \textbf{MAC-then-encrypt} (TLS $\le$1.2 CBC)
+must decrypt first $\to$ Lucky 13, POODLE. \textbf{Encrypt-and-MAC} (SSH, RFC 4253: MAC over
+sequence number + plaintext): a MAC need not hide its input.
+Bellare–Namprempre (2000): only EtM is secure for \emph{every} secure cipher + MAC pair. Separate
+keys. GCM, ChaCha20-Poly1305 MAC the ciphertext; TLS 1.3: AEAD only.
+
+\section{Beyond the basic modes}
+\textbf{GCM-SIV} (RFC 8452): the tag (POLYVAL) is the CTR IV, keys per nonce — misuse-resistant, two
+passes. \textbf{XTS} (SP 800-38E): XEX tweakable cipher + ciphertext stealing, tweak = data-unit number; no
+expansion, so \textbf{no tag}; storage only; data unit $\le$2$^{20}$ blocks; Rev.~1 draft (Sep 2026)
+cites IEEE 1619-2025. \textbf{Ascon-AEAD128} (SP 800-232, Aug 2025): no block cipher — a 320-bit
+permutation; 128-bit key, nonce, tag. \textbf{Not key-committing}: a GCM or ChaCha20-Poly1305
+ciphertext can open under two keys — invisible salamanders (2018), partitioning oracles (2021,
+Shadowsocks).
+
+\section{Traps}
+\begin{itemize}
+  \trap{\ct{CCCrypt}: default \textbf{CBC}, no IV $\to$ \textbf{all-zero IV}. Java SunJCE
+        \ct{getInstance("AES")} = \textbf{ECB}/PKCS5Padding (Google Play flags it). Go: no ECB,
+        OFB/CFB deprecated (1.24).}
+  \trap{IV from the key, a constant IV, a counter reset on reinstall or shared by two devices;
+        plaintext released before the tag check.}
+\end{itemize}
+
+\section{Remember}
+\textbf{ECB leaks · CBC chains · CTR streams · GCM = CTR + tag · verify, then decrypt.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Cryptography with CryptoKit · Hashing ·
+TLS 1.3 in depth · \texttt{encoding-encryption-hashing-signing} · \texttt{secure-randomness} ·
+\texttt{public-key-maths}}
+
+\end{document}

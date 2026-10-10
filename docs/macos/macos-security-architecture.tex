@@ -1,0 +1,290 @@
+% macos-security-architecture.tex — the macOS protection layers from boot to runtime on Apple
+% silicon (the only Mac platform from macOS 27): Secure Boot + LocalPolicy (Full / Reduced /
+% Permissive, 1TR), SIP, the Signed System Volume, the hardware runtime protections (KIP, SPTM,
+% MIE), Gatekeeper + quarantine + notarization at first open, XProtect and the macOS 26.4
+% terminal / script protections, Background Security Improvements, TCC, hardened runtime vs App
+% Sandbox, FileVault, Lockdown Mode.
+% Pictures: what happens when a downloaded app is opened; the Apple-silicon boot chain.
+% Sources (checked 2026-10-09):
+%   support.apple.com/guide/security — Apple Platform Security (covers the 26.5 releases; revised Aug 2026):
+%     boot-process-secac71d5623 (Boot ROM → LLB → iBoot; LLB checks the LocalPolicy anti-replay value;
+%       Full / Reduced / Permissive; any signature failure → recoveryOS; AuxKC + SCIP; iBoot checks the
+%       SSV root hash)
+%     startup-disk-security-policy-control-sec7d92dc49f (Full = personalised ECID signature, security
+%       epochs; Reduced = global signature, required for kexts, AuxKC hash in LocalPolicy, restart;
+%       Permissive = locally SE-signed boot objects, required to turn SIP off, CLI only; SIP store moved
+%       from NVRAM to LocalPolicy; power-button recoveryOS; no firmware password)
+%     contents-a-localpolicy-file-mac-apple-silicon-secc745a0845 (1TR = single press-and-hold; OIK =
+%       "Ownership"; nsih SHA-384; auxp/auxi/auxr; coih via kmutil configure-boot; sip0–sip3; which
+%       fields are mutable in 1TR only)
+%     system-integrity-protection-secb7ea06b49 (MAC on every process; KIP separate; OS X 10.11)
+%     signed-system-volume-security-secd698747c9 (SHA-256 in the metadata tree, seal, read-path check,
+%       boot halts on failure, APFS snapshots, no SSV-off while FileVault is on)
+%     operating-system-integrity-sec8b776536b (KIP, SCIP, PAC; SPTM + TXM on M2 or later replace PPL;
+%       neither forces signed-only code on macOS; MIE = EMTE synchronous on A19 / M5 or later)
+%     gatekeeper-and-runtime-protection-sec5599b66df (Developer ID + notarized by default; first-open
+%       malware check regardless of origin; override unless MDM restricts; randomized read-only locations)
+%     protecting-against-malware-sec469d47bd8 (revocation tickets via CloudKit, more frequent than XProtect
+%       updates; XProtect YARA, daily check, 10.15 triggers, Trash; remediation + behavioural engines;
+%       Endpoint Security events for Gatekeeper bypass + XProtect detections in macOS 15)
+%     terminal-and-script-protections-sece3b202c4b (macOS 26.4: paste warning + its conditions, 24 h grace,
+%       pasteboard command blocking, AppleScript / JXA scanning, in-memory scripts not overridable)
+%     background-security-improvements-sec87fc038c2 (26.1; cryptexes on the preboot volume; no reseal;
+%       Safari relaunch; patch + antipatch)
+%     controlling-app-access-to-files-secddd1d86a6 (10.15 folders; full-disk access since 10.13)
+%     volume-encryption-with-filevault-sec4c6dc1b6e (AES-XTS; keys only in the Secure Enclave; UID-only
+%       key while off; enabling is immediate; 24-character recovery key; iCloud Keychain sync)
+%     data-protection-overview-secf6276da8a (macOS 26.4: FileVault on by default; Class C volume key)
+%     securely-extending-the-kernel-sec8e454101b (kexts: 1TR → Reduced; system extensions in user space)
+%     lockdown-mode-security-sec2437264f0 (macOS 13, more in 14)
+%   support.apple.com/en-us/102149 (SIP paths; startup disk) · /102445 (Open Anyway flow, alert
+%     meanings) · /102657 + /126604 (BSI from 26.1; first one macOS 26.3.1 (a), 17 Mar 2026; built-in
+%     disk only) · /105120 (Lockdown Mode: profiles, accessories) · /127255 (macOS 27: Apple silicon
+%     only) · /149035 (macOS 27 security content: released 14 Sep 2026) · /124963 (Tahoe 26: FileVault unlock over SSH; 26.2 MDM grants shown) · /148830 (macOS 27:
+%     MDM launch control, consolidated consent, PPPC Accessibility notice, tccutil list, no direct
+%     TCC database access)
+%   support.apple.com/guide/deployment/privacy-preferences-policy-control-payload-dep38df53c2a (camera,
+%     microphone, screen capture: deny only; most restrictive payload wins)
+%   developer.apple.com/news/?id=saqachfa (macOS 15: no Control-click override) · /news/?id=w4atic4c
+%     (original Developer ID Sub-CA expires 1 Feb 2027; .pkg stops installing; G2)
+%   developer.apple.com/documentation: security/hardened-runtime · security/app-sandbox ·
+%     security/accessing-files-from-the-macos-app-sandbox (container, Powerbox panels, bookmarks, macOS 14
+%     container consent, no entitlement for Full Disk Access, EPERM vs EACCES) ·
+%     security/notarizing-macos-software-before-distribution (plug-ins 10.15) ·
+%     security/resolving-common-notarization-issues (get-task-allow) · entitlements com.apple.security.cs.*
+%     (library validation = Apple or same Team ID; MAP_JIT) · technotes/tn3127 (designated requirement =
+%     the identity TCC records) · technotes/tn3179 (local network, macOS 15) ·
+%     macos-release-notes/macos-big-sur-11_0_1-universal-apps-release-notes (arm64 must be signed)
+%   developer.apple.com/videos/play/wwdc2022/10096 (Ventura: all notarized apps integrity-checked;
+%     NSUpdateSecurityPolicy, App Management)
+%   developer.apple.com/forums/thread/706442 + /130560 (Apple DTS: curl / scp do not quarantine,
+%     tar / unzip do not propagate, Archive Utility does; syspolicy_check since macOS 14)
+% Not repeated: the code-signature format (code-signing-internals); notarytool + packaging
+% (notarization-distribution); keychain (keychain-secure-enclave); launchd + SMAppService
+% (macos/xnu-launchd-xpc); the iOS sandbox + PAC detail (os/ios-sandbox-security-model).
+% @labels: area=macos kind=concept platform=apple topic=security,platform-apis discussion=323
+% @tags: secure-boot, localpolicy, sip, signed-system-volume, gatekeeper, quarantine, notarization, developer-id, xprotect, tcc, hardened-runtime, app-sandbox, entitlements, filevault, lockdown-mode, endpoint-security
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{ShSheet}{
+  morekeywords={xattr,spctl,syspolicy_check,codesign,csrutil,tccutil,fdesetup},
+  sensitive=true, morecomment=[l]{\#},
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  st/.style={box, font=\tiny, text width=20mm, minimum height=15mm, align=center, inner sep=1.5pt},
+  bc/.style={box, font=\tiny, text width=15.5mm, minimum height=10mm, align=center, inner sep=1.5pt},
+  bad/.style={box, font=\tiny, draw=sheetRed, fill=sheetRed!7, align=center, inner sep=1.5pt},
+  yes/.style={->, thick, draw=sheetGreen!70!black},
+  no/.style={->, thick, draw=sheetRed},
+}
+
+\begin{document}
+
+\sheettitle{macOS security architecture — boot, seal, first launch, runtime}{macos · folio}
+
+\oneliner{Each layer catches what the one before cannot: \textbf{Secure Boot} starts only an
+Apple-signed macOS, as its \textbf{LocalPolicy} allows; \textbf{SIP} keeps the \textbf{sealed}
+system volume (\textbf{SSV}) read-only even for \ct{root}; a \textbf{quarantined} download meets
+\textbf{Gatekeeper} (signature, Developer ID, \textbf{notarization}, \textbf{XProtect}) at first
+open; then the \textbf{hardened runtime} blocks injection, the \textbf{App Sandbox} confines,
+\textbf{TCC} asks per resource, \textbf{FileVault} encrypts. macOS 27 (Sep 2026): Apple silicon only.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (-0.05,1.0) {First open of a downloaded app — what Gatekeeper checks (Apple does not document the order)};
+  \node[st, fill=sheetGreen!10, draw=sheetGreen!70!black] (s1) at (1.05,0) {\textbf{1 download}\\Safari, AirDrop set \ct{com.apple.quarantine}; Archive Utility keeps it\\\textcolor{sheetRed}{\ct{curl}, \ct{scp}: none; \ct{tar}, \ct{unzip} drop it}};
+  \node[st] (s2) at (3.4,0) {\textbf{2 open}\\quarantined $\to$ Gatekeeper; may run it from a \textbf{randomized read-only} path, so plug-ins beside it don't load};
+  \node[st] (s3) at (5.75,0) {\textbf{3 signature valid?}\\code + sealed resources unchanged since signing};
+  \node[st] (s4) at (8.1,0) {\textbf{4 identified?}\\Developer ID or App Store signed; certificate not revoked};
+  \node[st] (s5) at (10.45,0) {\textbf{5 notarized?}\\ticket stapled or found online; no revocation ticket};
+  \node[st] (s6) at (12.8,0) {\textbf{6 known malware?}\\XProtect YARA rules, on every first open, whatever the origin};
+  \node[st, fill=sheetGreen!10, draw=sheetGreen!70!black] (s7) at (15.15,0) {\textbf{7 consent}\\``downloaded from the Internet — open?'' asked once};
+  \foreach \a/\b in {s1/s2,s2/s3,s3/s4,s4/s5,s5/s6,s6/s7} \draw[yes] (\a) -- (\b);
+  \node[bad, text width=19mm] (d3) at (5.75,-1.45) {``can't be opened'': modified or damaged};
+  \node[bad, text width=42mm] (d45) at (9.275,-1.45) {\textbf{blocked}: developer cannot be verified / Apple cannot check it. \textbf{macOS 15}: no Control-click; Privacy \& Security $\to$ \textbf{Open Anyway} $\to$ Open = saved exception};
+  \node[bad, text width=19mm] (d6) at (12.8,-1.45) {``will damage your computer''; known malware to the Trash};
+  \draw[no] (s3) -- node[lbl, right]{no} (d3);
+  \draw[no] (s4) -- node[lbl, right]{no} (s4 |- d45.north);
+  \draw[no] (s5) -- node[lbl, right]{no} (s5 |- d45.north);
+  \draw[no] (s6) -- node[lbl, right]{hit} (d6);
+  \node[lbl, anchor=north west, align=left, text width=38mm] at (-0.05,-0.86) {\textbf{macOS 13+}: every notarized app is integrity-checked, quarantined or not; \textbf{App Management}: only the same team (or an \ct{NSUpdateSecurityPolicy}) may modify an app without the user's OK.};
+  \node[lbl, anchor=north west, align=left, text width=19mm] at (14.1,-0.86) {replay the verdict:\\\ct{syspolicy\_check}\\\ct{distribution} (14+)};
+  \fill[sheetBlue!12] (-0.05,-2.42) rectangle (16.55,-2.08);
+  \node[font=\tiny, anchor=west, text width=164mm] at (0,-2.25) {\textbf{every launch}: arm64 code needs a valid signature (ad hoc suffices) · hardened runtime · sandbox if entitled · \textbf{TCC} at first camera / mic / Documents use · XProtect rescans changed apps};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\hd{Secure Boot on Apple silicon}
+\noindent\begin{tikzpicture}[sheet]
+  \node[bc, fill=black!6, draw=black!60] (rom) at (0.8,0) {\textbf{Boot ROM}\\in the chip: first link of trust};
+  \node[bc] (llb) at (2.78,0) {\textbf{LLB}\\loads LocalPolicy, checks its SE signature + anti-replay value};
+  \node[bc] (ib) at (4.76,0) {\textbf{iBoot}\\checks AuxKC + SSV root hash; SCIP locks the kernel collections};
+  \node[bc, fill=sheetGreen!10, draw=sheetGreen!70!black] (k) at (6.74,0) {\textbf{XNU}\\mounts the sealed volume; KIP locks kernel code};
+  \draw[yes] (rom) -- (llb); \draw[yes] (llb) -- (ib); \draw[yes] (ib) -- (k);
+  \node[bad, text width=76mm] (rec) at (3.77,-1.05) {any signature failure $\to$ \textbf{recoveryOS} to repair · seal mismatch $\to$ boot halts, reinstall macOS};
+  \draw[no] (llb) -- (llb |- rec.north); \draw[no] (ib) -- (ib |- rec.north);
+\end{tikzpicture}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{66mm}@{}}
+\toprule
+\textbf{Full} & default, as on iOS: install fetches a \textbf{personalised} signature (ECID) from Apple's signing server, so only the newest macOS at install time boots; the server refuses old security epochs \\
+\textbf{Reduced} & trusts the \textbf{global} signature shipped with macOS (older versions); required for third-party \textbf{kexts} — merged into an \textbf{AuxKC} whose hash is in the LocalPolicy, loaded after a restart, never on demand \\
+\textbf{Permissive} & chain still verified, but iBoot also accepts objects the Secure Enclave signed locally (a custom XNU kernel collection); required to turn \textbf{SIP off}; command line only \\
+\bottomrule
+\end{tabular}}\par
+\textbf{LocalPolicy}: an Image4 file per installed macOS, signed by the \textbf{Owner Identity Key}
+in the Secure Enclave (``Ownership''). Full $\leftrightarrow$ Reduced in Startup Security Utility.
+\textbf{1TR} (paired One True recoveryOS) = power button single press-and-hold; NVRAM, a double
+press or a boot error reach plain recoveryOS, which may set Reduced but not the SIP bits or a
+custom kernel. Malware cannot hold a button, so these Macs neither need nor support a
+\textbf{firmware password}. Fields: \ct{nsih} SHA-384 of the macOS manifest (iBoot, trust cache, kernel
+collection, SSV root hash) · \ct{auxp}/\ct{auxi} approved kexts + AuxKC · \ct{coih} custom
+kernel (\ct{kmutil configure-boot}) · \ct{sip0} SIP bits (were NVRAM) · \ct{sip1} accept a bad
+SSV root hash · \ct{sip2} leave kernel memory writable · \ct{sip3} drop the boot-args allow-list.
+Prefer \textbf{system extensions} (10.15, user space: DriverKit, Endpoint Security, Network
+Extension) to kexts.
+
+\hd{SIP — System Integrity Protection (OS X 10.11)}
+\begin{itemize}
+  \item Mandatory access control (same kernel mechanism as the sandbox) on \emph{every}
+        process, sandboxed or \ct{root}: \ct{/System}, \ct{/usr}, \ct{/bin}, \ct{/sbin},
+        \ct{/var} and preinstalled apps are writable only by Apple-signed processes with special
+        entitlements (software update, installers). Third parties write \ct{/Applications},
+        \ct{/Library}, \ct{/usr/local}. Also stops software choosing the startup disk.
+  \item Denial is \ct{EPERM}; POSIX permissions and ACLs fail with \ct{EACCES}.
+  \item \ct{csrutil disable} only in 1TR, by a user holding Ownership $\to$ Permissive; kept
+        in the LocalPolicy, not NVRAM. SIP off also stops kext signature checks when the AuxKC is
+        built. Xcode debugging never needs it off; dev DriverKit installs may.
+\end{itemize}
+
+\hd{Signed System Volume (macOS 11)}
+Each file's SHA-256 sits in the file-system metadata tree, itself hashed up to one root — the
+\textbf{seal}, signed by Apple and re-measured on the Mac at install and update. Data is hashed on every
+read; a mismatch is never returned. iBoot verifies the seal before the kernel starts. Built on
+APFS snapshots: a failed update returns to the old system without reinstalling. The system volume
+needs no encryption any more, and SSV cannot be turned off while FileVault is on. \textbf{SIP stops
+writes; SSV detects them.}
+
+\hd{Hardware runtime protections}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{64mm}@{}}
+\toprule
+\textbf{KIP} & after kernel start-up the memory controller refuses writes to kernel + kext code \\
+\textbf{SCIP} & the same lock for coprocessor firmware (and the AuxKC region) \\
+\textbf{PAC} & signed pointers against memory-corruption exploits \\
+\textbf{SPTM + TXM} & M2 or later: SPTM runs above the kernel and guards page tables even against kernel write access; on macOS it does \emph{not} force signed-only code \\
+\textbf{MIE} & M5 or later: Enhanced MTE (synchronous) + secure allocators, always on for the kernel and key attack surfaces \\
+\bottomrule
+\end{tabular}}
+
+\hd{FileVault}
+Apple silicon: internal storage is \emph{always} AES-XTS encrypted, keys handled only in the
+Secure Enclave. Off: the key is guarded by the hardware UID alone, so turning it on is instant
+(UID + password; old key retired). \textbf{On by default from macOS 26.4}
+(opt-out). Recovery key: 24 characters, synced by iCloud Keychain if used. macOS 26: unlock over
+SSH after a restart when Remote Login is on.
+
+\hd{Lockdown Mode (macOS 13, more in 14)}
+For targeted users: complex web tech off (per-site exceptions), no new profiles or MDM
+enrolment; on Apple-silicon laptops an accessory needs unlock + approval.
+
+\columnbreak
+
+\hd{Gatekeeper \& notarization — the rules}
+\begin{itemize}
+  \item Default: outside the App Store = \textbf{Developer ID} signature + \textbf{notarized}
+        (10.15+). Settings: App Store only / + identified developers; per-app override unless MDM
+        forbids; Gatekeeper can be switched off entirely.
+  \item Notarization = Apple's automated malware + signing scan, not App Review. Revocation
+        tickets reach Macs by CloudKit, far more often than XProtect rules. Since 10.15 a
+        quarantined plug-in loads only if notarized or user-approved.
+  \item Arm64 code must be signed — ad hoc passes the kernel, never Gatekeeper; Rosetta x86 code
+        is exempt (general-purpose Rosetta through macOS 27).
+  \item macOS 15: Endpoint Security reports Gatekeeper overrides + XProtect hits. macOS 27: MDM
+        decides which apps and binaries may run; App Attest on the Mac.
+  \item 1 Feb 2027: the original Developer ID Sub-CA expires — \ct{.pkg}s signed under it stop
+        installing (re-sign with G2); timestamped, notarized apps keep running.
+\end{itemize}
+
+\hd{XProtect \& the newer layers}
+\begin{itemize}
+  \item \textbf{XProtect}: YARA rules updated apart from OS updates (checked daily); scans at
+        first launch, when an app changes, when rules update; a hit is blocked and moved to the
+        Trash. Plus a periodic \textbf{remediation} engine and a \textbf{behavioural} one.
+  \item \textbf{Terminal \& scripts (26.4)}: (1) Terminal asks before running text pasted from a
+        browser, Messages, Mail… if unused 30+ days and no Xcode / IDE is found (24 h grace after
+        setup). (2) Paste into \emph{any} terminal: XProtect follows the process tree, checks its
+        hosts against Safe Browsing, blocks bad ones. (3) AppleScript + JXA scanned in OpenScripting;
+        in-memory scripts cannot be overridden.
+  \item \textbf{Background Security Improvements} (26.1+): Safari / WebKit / library fixes as
+        sealed \textbf{cryptexes} on the preboot volume — no SSV reseal; active after a restart
+        (Safari: a relaunch). Patch + antipatch: removal returns to the base update. First one:
+        macOS 26.3.1 (a), 17 Mar 2026. Built-in startup disk only.
+\end{itemize}
+
+\hd{TCC — Transparency, Consent \& Control}
+\begin{itemize}
+  \item Per app, per resource: camera, microphone, screen recording, Input Monitoring,
+        Accessibility, Automation, \textbf{Files \& Folders} (Desktop, Documents, Downloads, iCloud
+        Drive, network + removable volumes; 10.15). \textbf{Full Disk Access} (10.13): the user
+        adds the app in System Settings; no entitlement grants it. Hardened apps also need the
+        resource entitlement (\ct{device.camera}…) beside the usage string.
+  \item Identity = the \textbf{designated requirement}: ad hoc = this build only (re-prompts per
+        build); Apple Development $\neq$ Developer ID; Xcode-signed App Store and Developer ID
+        builds share grants. macOS 14: another app's container needs consent.
+  \item \textbf{Local Network} (macOS 15): per user; launchd daemons, \ct{root} and Terminal / SSH
+        tools pass; agents don't; credited to the responsible app; no MDM control.
+  \item MDM (PPPC): camera, microphone, screen capture can only be \emph{denied}; the most
+        restrictive payload wins. macOS 27: no direct TCC-database reads; \ct{tccutil list}
+        (managed); MDM-granted Accessibility is announced, user-revocable.
+\end{itemize}
+
+\hd{Hardened runtime vs App Sandbox {\normalfont(prefix \ct{com.apple.security.})}}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{37mm}>{\raggedright\arraybackslash}p{31mm}@{}}
+\toprule
+ & \textbf{hardened runtime} & \textbf{App Sandbox} \\ \midrule
+stops & JIT / W+X memory, \ct{DYLD\_*}, libraries not Apple- or team-signed, memory tampering & all outside its container: files, network, devices, other apps \\
+needed for & \textbf{notarization} (no \ct{get-task-allow}) & \textbf{Mac App Store} \\
+opt-outs & \ct{cs.allow-jit}, \ct{cs.disable-library-validation} (Gatekeeper checks harder) & \ct{files.user-selected.read-write}, \ct{network.client} \\
+\bottomrule
+\end{tabular}}\par
+Container: \ct{\~{}/Library/Containers/<id>}. Open / save panels run \textbf{out of process} and
+widen the sandbox to the pick; a \textbf{security-scoped bookmark} keeps it.
+
+\hd{Inspect every layer}
+\begin{lstlisting}[language=ShSheet]
+xattr -p com.apple.quarantine Tool.app  # present: Gatekeeper runs
+syspolicy_check distribution Tool.app   # 14+; older: spctl -a -t exec
+codesign -d --entitlements - Tool.app   # runtime exceptions
+csrutil status                          # SIP (change it only in 1TR)
+fdesetup status                         # FileVault is On.
+\end{lstlisting}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{\ct{xattr -d com.apple.quarantine} skips Gatekeeper for that copy — \textbf{notarize}
+        instead. \ct{strip} / \ct{install\_name\_tool} after linking break the signature.}
+  \trap{SIP $\neq$ sandbox $\neq$ TCC: SIP guards the OS from \ct{root}, the sandbox confines one
+        app, TCC asks the user.}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\raggedright\textit{Related:} Code signing internals · Notarization
+\& distribution channels · \texttt{keychain-secure-enclave} · macOS keychains \& the security
+CLI · \texttt{xnu-launchd-xpc} · \texttt{ios-sandbox-security-model} · \texttt{mach-o-and-dyld} ·
+\texttt{macos-power-user-cli} · \texttt{linux-security-permissions}\par}
+
+\end{document}

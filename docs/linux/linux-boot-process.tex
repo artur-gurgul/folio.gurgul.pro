@@ -1,0 +1,294 @@
+% linux-boot-process.tex — the Linux boot chain: firmware (BIOS + MBR vs UEFI + ESP, Boot####,
+% BootOrder), Secure Boot (PK / KEK / db / dbx, shim + MOK, SBAT, lockdown, the 2026 Microsoft CA
+% rollover), boot loaders (GRUB 2, systemd-boot, Boot Loader Spec), the kernel command line, how the
+% kernel picks PID 1, initramfs generators and switch_root (nullfs since Linux 7.0), systemd targets,
+% rescue vs emergency, every way to break in, measured boot (TPM PCRs), UKIs, kdump and pstore.
+% Picture: the boot chain with, under each stage, what Secure Boot checks, what the TPM measures,
+% how it fails and how you get in.
+% Sources (checked 2026-10-09):
+%   support.microsoft.com "Windows Secure Boot certificate expiration and CA updates" (KEK CA 2011
+%     24 Jun 2026, UEFI CA 2011 27 Jun 2026, Windows Production PCA 2011 19 Oct 2026; stores; 2023
+%     replacements; devices without the 2023 certs keep starting)
+%   learn.microsoft.com windows-secure-boot-key-creation-and-management-guidance (PK from the OEM,
+%     no PK = setup mode; KEK; db allowed; dbx forbidden) · windows-and-gpt-faq (4 MBR entries,
+%     protective MBR 0xEE, ESP type GUID)
+%   lwn.net/Articles/1079808 (2026-07-01: from Oct 2025 each shim returned signed by the 2011 and the
+%     2023 CA; 2011-signed shims keep working; a 2023-only shim needs the 2023 CA) ·
+%     developers.redhat.com/articles/2026/02/04 (existing systems keep booting; mokutil --db,
+%     sbverify --list; fwupdmgr update via LVFS)
+%   github.com/rhboot/shim README.md (LoadImage first, then built-in cert; DBX / MOKX / SBAT;
+%     protocol for the 2nd stage; 16.1 overrides LoadImage/StartImage) · SBAT.md (generations,
+%     SbatLevel; BootHole: 3 certs + 150 hashes ~ 1/3 of dbx) · github.com/rhboot/efibootmgr README
+%   uefi.org/specs/UEFI/2.11 §3.5.1.1 (removable-media default \EFI\BOOT\BOOT{arch}.EFI) · §5.2.1
+%     (legacy MBR: code, 4 x 16-byte records at 446, 0xAA55 at 510, 32-bit LBA fields) — read via
+%     search excerpts, the site answered 403
+%   wiki.debian.org/SecureBoot (shim embeds Debian's key; lockdown under SB; unsigned modules
+%     refused; mokutil --import + MokManager; DKMS mok_signing_key) · packages.debian.org trixie
+%     linux-image-6.12.111+deb13-amd64 (depends initramfs-tools | linux-initramfs-tool)
+%   documentation.ubuntu.com/release-notes/25.10 (Desktop: dracut replaces initramfs-tools; Server
+%     and Raspberry Pi keep initramfs-tools) · fedoraproject.org/wiki/Changes/BootLoaderSpecByDefault
+%     (Fedora 30, /boot/loader/entries)
+%   cgit.git.savannah.gnu.org grub.git: docs/grub.texi (MBR gap >= 1023 KiB; BIOS boot partition
+%     >= 31 KiB, EF02; GRUB_CMDLINE_LINUX vs _DEFAULT; os-prober off by default; superusers restrict
+%     the CLI + editing; under SB modules outside core.img and kernels must be signed) ·
+%     grub-core/kern/main.c + rescue_reader.c ("grub rescue>" when normal cannot load) · NEWS 2.14
+%     + lists.gnu.org grub-devel 2026-01 (released 14 Jan 2026: BLS + UKI, Argon2, TPM2 protector)
+%   docs.kernel.org (7.3-rc6): admin-guide/kernel-parameters (unknown words to init; "--"; 256-4096
+%     chars; init=, rdinit=, ro, rootwait, panic=, nomodeset, lockdown=, module.sig_enforce,
+%     crashkernel=) · filesystems/ramfs-rootfs-initramfs (cpio into rootfs; /init; nullfs;
+%     pivot_root) · admin-guide/efi-stub · arch/x86/microcode (early uncompressed cpio) ·
+%     admin-guide/kdump/kdump (crashkernel= forms, kexec -p, /proc/vmcore, SysRq-c)
+%   lkml.iu.edu/hypermail/linux/kernel/2602.0/09476.html (2026-02-06 "[GIT PULL 08/12 for v7.0]
+%     vfs nullfs": pivot_root works in the initramfs; enabled unconditionally)
+%   github.com/torvalds/linux init/main.c (/init, init=, /sbin/init, /etc/init, /bin/init, /bin/sh,
+%     "No working init found") · init/do_mounts.c (root MS_RDONLY by default; "VFS: Unable to mount
+%     root fs") · kernel/exit.c ("Attempted to kill init!")
+%   man7.org (systemd 262~devel): bootup(7), systemd.special(7), kernel-command-line(7),
+%     systemd-debug-generator(8) (systemd.break= since 258, values; debug shell on tty9),
+%     systemd-boot(7) (ESP + XBOOTLDR, keys, LoaderTime* for systemd-analyze, boot counting),
+%     systemd-stub(7) (sections; PCR 4/9/11/12/13; .cmdline override ignored under SB; .profile
+%     257), ukify(1), systemd-cryptenroll(1) (--tpm2-pcrs= default none; public-key PCR 11; PCR
+%     table), systemd-analyze(1), systemd.mount(5) (nofail), systemd-system.conf(5) (device timeout
+%     90 s), systemd-pstore.service(8), dracut.cmdline(7) (dracut-ng), kernel_lockdown(7)
+%   github.com/systemd/systemd units/getty@.service.in (agetty; Conflicts=rescue.service) ·
+%     api.github.com/repos/systemd/systemd/releases (v262 published 2026-09-22)
+%   manpages.debian.org trixie initramfs-tools(7) (0.148.4: break= phases, default premount; script
+%     order)
+%   uapi-group.org/specifications: boot_loader_specification (Type #1 / #2, XBOOTLDR, mount points,
+%     boot counting) · unified_kernel_image (.linux the only required section; addons) ·
+%     linux_tpm_pcr_registry
+% Not repeated: units, dependencies, systemd-analyze blame (linux/systemd-deep); fstab, LVM, LUKS
+% (linux/linux-filesystems-storage).
+% @labels: area=linux kind=concept platform=general topic=platform-apis,security,debugging discussion=314
+% @tags: boot-process, uefi, secure-boot, shim, mok, sbat, grub2, systemd-boot, kernel-cmdline, initramfs, dracut, switch-root, pid-1, systemd, rescue-target, uki, tpm, measured-boot, kdump, digital-signature
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{ShellSheet}{
+  sensitive=true, morecomment=[l]{\#},
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {>=}{{\hbox{>}\hbox{=}}}2 {<=}{{\hbox{<}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct{\texttt}
+\newcommand\dd{\hbox{-}\hbox{-}}
+\newcommand\bs{\textbackslash}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  stg/.style={box, font=\tiny, text width=19.5mm, inner sep=2pt, align=left, anchor=north,
+              minimum height=12mm},
+  chip/.style={draw=#1, fill=#1!7, rounded corners=1.5pt, font=\tiny, inner sep=1.5pt,
+               align=left, anchor=north, text width=19.5mm, minimum height=6.2mm},
+  wchip/.style={chip=#1, text width=43mm},
+  brk/.style={box, font=\tiny, text width=19.5mm, inner sep=2pt, align=left, anchor=north,
+              draw=sheetRed, fill=sheetRed!6, minimum height=10.5mm},
+  ib/.style={box, font=\tiny, inner sep=1.5pt, align=center, text width=16mm, minimum height=8mm},
+}
+
+\begin{document}
+
+\sheettitle{Linux boot — firmware to login, and how to break in}{linux · folio}
+
+\oneliner{\textbf{Firmware} (UEFI) runs a \textbf{loader} from the ESP; the loader loads the
+\textbf{kernel} + \textbf{initramfs} and hands over a \textbf{command line}; the initramfs makes
+the real root reachable (drivers, LUKS, LVM), mounts it and \textbf{switches root} to
+\textbf{systemd as PID~1}, which walks targets to \ct{default.target}. \textbf{Secure Boot}
+checks each stage's signature; the \textbf{TPM} records each stage's hash.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (-0.1,3.55) {The boot chain (time $\rightarrow$); under each stage: what
+    \textcolor{sheetGreen!60!black}{Secure Boot checks} · which \textcolor{sheetBrown}{TPM PCRs} it extends · \textcolor{sheetRed}{how it fails · how you get in}};
+  \foreach \i/\c/\t in {
+    0/sheetGrey/{\textbf{1 Firmware}\\POST; tries \ct{BootNext},\\then \ct{BootOrder}'s\\\ct{Boot\#\#\#\#} $\rightarrow$ an \ct{.efi}},
+    1/sheetBlue/{\textbf{2 Loader}\\shim $\rightarrow$ GRUB 2 or\\systemd-boot: menu,\\kernel, initrd, cmdline},
+    2/sheetBlue/{\textbf{3 Kernel}\\EFI stub, decompress,\\CPUs, memory, built-in\\drivers; cpio $\rightarrow$ rootfs},
+    3/sheetOrange/{\textbf{4 initramfs} \ct{/init}\\udev loads modules;\\LUKS, LVM, RAID, fsck;\\root on \ct{/sysroot}},
+    4/sheetOrange/{\textbf{5 switch root}\\initramfs freed,\\\ct{/sysroot} becomes \ct{/};\\exec \ct{/sbin/init}},
+    5/sheetGreen!60!black/{\textbf{6 systemd, PID 1}\\sysinit $\rightarrow$ basic $\rightarrow$\\multi-user / graphical\\= \ct{default.target}},
+    6/sheetGreen!60!black/{\textbf{7 Login}\\\ct{getty@tty1}: agetty\\$\rightarrow$ login (PAM) $\rightarrow$\\shell; sshd; GDM}}
+  { \node[stg, draw=\c, fill=\c!8] (s\i) at (1.1+2.35*\i,3.3) {\t}; }
+  \foreach \i in {0,...,5} { \pgfmathtruncatemacro\j{\i+1} \draw[flow] (s\i.east) -- (s\j.west); }
+  % Secure Boot row
+  \node[chip=sheetGreen!60!black] at (1.1,2.0) {loader's signature in\\\ct{db}, not in \ct{dbx}};
+  \node[chip=sheetGreen!60!black] at (3.45,2.0) {shim: its distro cert\\+ MOK $\rightarrow$ GRUB, kernel};
+  \node[chip=sheetGreen!60!black] at (5.8,2.0) {lockdown: signed\\modules only};
+  \node[wchip=sheetGreen!60!black] at (9.325,2.0) {initramfs + cmdline \textbf{not signed} —\\unless built into a signed UKI};
+  \node[wchip=sheetGreen!60!black] at (14.025,2.0) {root fs, units, services:\\outside Secure Boot};
+  % PCR row
+  \node[chip=sheetBrown] at (1.1,1.29) {0 code · 1 config\\2 option ROMs · 7 SB};
+  \node[chip=sheetBrown] at (3.45,1.29) {4 loader · 5 GPT\\14 MOK (shim)\\GRUB: 8 cmdline, 9 files};
+  \node[chip=sheetBrown] at (5.8,1.29) {9 initrds · 11 UKI\\12 cmdline override};
+  \node[wchip=sheetBrown] at (9.325,1.29) {11 boot-phase strings\\(\ct{systemd-pcrphase})};
+  \node[wchip=sheetBrown] at (14.025,1.29) {15 machine-id, LUKS volume key,\\file-system ids (optional)};
+  % fails / break in row
+  \foreach \i/\t in {
+    0/{``No bootable device'':\\\ct{efibootmgr -v}; fallback\\\ct{\bs EFI\bs BOOT\bs BOOTX64}},
+    1/{\ct{grub rescue>}: no\\\ct{normal.mod} at \ct{\$prefix};\\SB refusal; \ct{e} edits},
+    2/{panic ``VFS: Unable to\\mount root fs'': driver\\not in the initramfs},
+    3/{\ct{rd.break} · \ct{break=} ·\\\ct{rd.systemd.break=};\\wrong UUID, LUKS, LVM},
+    4/{\ct{init=/bin/sh}; if PID 1\\exits: panic ``Attempted\\to kill init!''},
+    5/{dead \ct{fstab} entry $\Rightarrow$\\emergency after 90\,s;\\cmdline \ct{rescue} / \ct{1}},
+    6/{\ct{journalctl -b -1}\\\ct{systemctl \dd failed}\\\ct{systemd-analyze}}}
+  { \node[brk] (b\i) at (1.1+2.35*\i,0.47) {\t}; }
+  \node[font=\tiny, anchor=north west, text=black!75, text width=16.3cm, align=left, inner sep=0pt] at (-0.05,-0.66) {\ct{systemd-analyze}: ``Startup finished in
+    … (firmware) + … (loader) + … (kernel) + … (initrd) + … (userspace)'' — firmware and loader appear only when the loader exports
+    \ct{LoaderTime*} EFI variables (systemd-boot does). \ct{systemd-analyze pcrs} prints the PCRs.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\footnotesize\setstretch{1.0}
+
+\hd{Firmware — BIOS vs UEFI}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{8mm}>{\raggedright\arraybackslash}p{32mm}>{\raggedright\arraybackslash}p{37mm}@{}}
+\toprule
+ & \textbf{legacy BIOS} & \textbf{UEFI} \\ \midrule
+disk & \textbf{MBR}, sector 0: boot code, 4 × 16-byte partition entries at 446, \ct{0x55AA} at 510; 32-bit LBA $\Rightarrow$ 2\,TiB at 512-byte sectors & \textbf{GPT}; sector 0 holds a protective MBR (one type \ct{0xEE} entry); backup GPT at the end of the disk \\
+loader & MBR code $\rightarrow$ GRUB \ct{core.img} in the gap before partition 1 (leave $\ge$1023\,KiB) or a BIOS boot partition (GPT, \ct{EF02}) & a PE \ct{.efi} on the \textbf{ESP} (FAT, type \ct{C12A7328-…}); BLS: mount it at \ct{/boot} or \ct{/efi}, not \ct{/boot/efi} \\
+choice & the setup menu's device list & NVRAM \ct{Boot\#\#\#\#} entries + \ct{BootOrder}; \ct{BootNext} = once; \ct{BootCurrent} = this boot (\ct{efibootmgr}) \\
+\bottomrule
+\end{tabular}}\par
+\ct{\bs EFI\bs BOOT\bs BOOTX64.EFI} is the spec's removable-media default (\ct{BOOTAA64.EFI} on
+arm64); most firmware also falls back to it on internal disks\unverified.
+
+\hd{Secure Boot — keys, shim, MOK, SBAT, lockdown}
+\begin{itemize}
+  \item \textbf{PK} (one; the owner's, usually the OEM; none = \emph{setup mode}, SB off)
+        authorises \textbf{KEK} changes; KEK signs updates to \textbf{db} (allowed certs, hashes)
+        and \textbf{dbx} (revoked). An image runs only if \ct{db} vouches and \ct{dbx} does not.
+  \item \textbf{shim}, signed by Microsoft's UEFI CA, embeds the distro's cert. It tries the
+        firmware's \ct{LoadImage()}; if refused, checks the next stage against its own cert and the
+        \textbf{MOK} list, denies \ct{dbx}/MOKX/SBAT hits, and gives GRUB a protocol to verify the kernel.
+  \item \textbf{MOK} = your key: \ct{mokutil \dd import key.der}, reboot, confirm in MokManager.
+        DKMS signs modules with it (\ct{mok\_signing\_key} in \ct{/etc/dkms/framework.conf}).
+  \item \textbf{SBAT}: a \ct{.sbat} CSV (component, generation, vendor…); shim refuses anything
+        below the \ct{SbatLevel} minimum. Why: BootHole (CVE-2020-10713) cost 3 certs + 150
+        hashes in \ct{dbx} $\approx$ a third of its space.
+  \item \textbf{Lockdown} (Debian switches it on under SB; upstream \ct{lockdown=integrity}
+        \textbar{} \ct{confidentiality}): no unsigned modules or kexec, no unencrypted
+        hibernation, no \ct{/dev/mem}.
+\end{itemize}
+
+\hd{2026: the Microsoft 2011 CAs expire}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{28mm}>{\raggedright\arraybackslash}p{5mm}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{30mm}@{}}
+\toprule
+\textbf{Microsoft cert} & \textbf{in} & \textbf{expires} & \textbf{replaced by} \\ \midrule
+Corporation KEK CA 2011 & KEK & 24 Jun 2026 & Corporation KEK 2K CA 2023 \\
+UEFI CA 2011: shim, 3rd-party loaders, option ROMs & db & 27 Jun 2026 & UEFI CA 2023 + Option ROM UEFI CA 2023 \\
+Windows Production PCA 2011 (Windows loader) & db & 19 Oct 2026 & Windows UEFI CA 2023 \\
+\bottomrule
+\end{tabular}}\par
+Expiry ends \emph{signing}, not booting: shims already signed keep booting. From Oct 2025 to the
+June expiry Microsoft returned every shim signed by both CAs; a 2023-only shim boots only where
+\ct{db} holds UEFI CA 2023 — KEK/\ct{db} updates come from LVFS (\ct{fwupdmgr update}). Check:
+\ct{mokutil \dd db}, \ct{sbverify \dd list shimx64.efi}.
+
+\hd{Boot loaders}
+\begin{itemize}
+  \item \textbf{GRUB 2} reads file systems, LVM, LUKS itself. \ct{grub.cfg} is \emph{generated}
+        (\ct{update-grub} / \ct{grub2-mkconfig}) from \ct{/etc/default/grub} + \ct{/etc/grub.d/}:
+        \ct{GRUB\_CMDLINE\_LINUX} goes into every entry, \ct{\_DEFAULT} only into the default
+        (not recovery). Upstream, os-prober is off by default. Under SB every module
+        outside \ct{core.img} and every kernel must be signed. \textbf{2.14} (14 Jan 2026): BLS +
+        UKI loading, Argon2 for LUKS2, TPM2 key protector.
+  \item \ct{grub rescue>}: \ct{core.img} ran but could not load \ct{normal} from \ct{\$prefix}
+        (moved \ct{/boot}, new UUID) — \ct{set prefix=… root=…}, \ct{insmod normal}, \ct{normal}.
+  \item \textbf{Fedora} (since 30): GRUB's menu comes from BLS snippets, one per kernel, in
+        \ct{/boot/loader/entries/}.
+  \item \textbf{systemd-boot}: UEFI-only; reads only the ESP and XBOOTLDR — a file system the
+        firmware can read, usually VFAT.
+        Type~\#1 entries \ct{/loader/entries/*.conf}, Type~\#2 UKIs in \ct{/EFI/Linux/}, plus
+        Windows, EFI shell, firmware setup.
+        \ct{e} edits, \ct{d} sets the default; boot counting renames \ct{entry+3-0.conf} on each
+        try. \ct{bootctl status}.
+\end{itemize}
+
+\hd{After a panic}
+\textbf{kdump}: \ct{crashkernel=256M} reserves RAM, \ct{kexec -p} loads a capture kernel that
+exposes the dead one as \ct{/proc/vmcore} (ELF); test with SysRq-c. \textbf{pstore}: ERST / UEFI
+variables $\rightarrow$ \ct{/sys/fs/pstore} $\rightarrow$ \ct{systemd-pstore} $\rightarrow$ journal.
+
+\columnbreak
+
+\hd{The kernel command line — who reads which word}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{66mm}@{}}
+\toprule
+kernel & \ct{root=UUID=…} \ct{rootfstype=} \ct{rootflags=} · \ct{ro} (default without an initramfs) / \ct{rw} · \ct{rootwait} · \ct{init=} · \ct{rdinit=} · \ct{console=ttyS0,115200} · \ct{quiet} · \ct{loglevel=} · \ct{panic=10} (reboot after 10\,s) · \ct{nomodeset} · \ct{lockdown=} · \ct{crashkernel=} · \ct{module.param=v} \\
+initramfs & dracut: \ct{rd.luks.uuid=} \ct{rd.lvm.lv=} \ct{rd.shell} \ct{rd.debug} · initramfs-tools: \ct{debug} \\
+systemd & \ct{systemd.unit=} · \ct{systemd.log\_level=debug} · \ct{systemd.mask=}; \ct{rd.}-prefixed = initrd only \\
+PID 1 & unknown words without a dot: \ct{k=v} $\rightarrow$ init's environment, others $\rightarrow$ argv; all after \ct{\dd} $\rightarrow$ argv \\
+\bottomrule
+\end{tabular}}\par
+Read it back in \ct{/proc/cmdline}; the limit is 256–4096 characters, per architecture.
+
+\hd{How the kernel picks PID 1}
+\begin{tikzpicture}[sheet]
+  \node[ib] (a) at (0,0) {\ct{/init} in the\\initramfs\\(\ct{rdinit=})};
+  \node[ib] (b) at (2.05,0) {none: kernel\\mounts \ct{root=}\\read-only};
+  \node[ib] (c) at (4.1,0) {\ct{init=}, else \ct{/sbin/init},\\\ct{/etc/init}, \ct{/bin/init},\\\ct{/bin/sh}};
+  \node[ib, draw=sheetRed, fill=sheetRed!6] (d) at (6.25,0) {panic ``No\\working init\\found''};
+  \draw[flow] (a) -- (b); \draw[flow] (b) -- (c); \draw[flow] (c) -- (d);
+\end{tikzpicture}\par
+Whichever runs is PID~1 for life: if it exits, panic ``Attempted to kill init!''.
+
+\hd{initramfs and switch root}
+\begin{itemize}
+  \item A (compressed) \textbf{cpio} unpacked into \textbf{rootfs} (tmpfs/ramfs); concatenated
+        archives overwrite earlier files. Early microcode is an uncompressed cpio placed first
+        (\ct{kernel/x86/microcode/GenuineIntel.bin}, \ct{AuthenticAMD.bin}).
+  \item \textbf{Debian 13}: initramfs-tools, shell scripts \ct{init-top} $\rightarrow$
+        \ct{init-premount} $\rightarrow$ \ct{local-*} $\rightarrow$ \ct{init-bottom};
+        \ct{update-initramfs -u}. \textbf{Fedora, RHEL, Ubuntu Desktop 25.10+}: \textbf{dracut},
+        systemd inside: \ct{sysroot.mount} $\rightarrow$ \ct{initrd-root-fs.target} $\rightarrow$
+        \ct{initrd.target} $\rightarrow$ \ct{initrd-switch-root.service}; \ct{dracut -f}.
+  \item rootfs could never be unmounted, so \ct{switch\_root} \emph{deletes} the initramfs files,
+        moves the new root over \ct{/}, chroots and execs init — same PID~1. \textbf{Linux 7.0}
+        (2026) puts an empty \textbf{nullfs} under rootfs: plain \ct{pivot\_root(".", ".")} +
+        \ct{umount2(".", MNT\_DETACH)} now works.
+\end{itemize}
+
+\hd{Breaking in}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{61mm}@{}}
+\toprule
+dracut & \ct{rd.break} = shell just before switch root, root on \ct{/sysroot}; \ct{rd.break=pre-mount}, \ct{pre-pivot}, … \\
+initramfs-tools & \ct{break=} \ct{top} · \ct{modules} · \ct{premount} (default) · \ct{mount} · \ct{mountroot} · \ct{bottom} · \ct{init} \\
+systemd $\ge$ 258 & \ct{rd.systemd.break=} \ct{pre-udev} · \ct{pre-basic} · \ct{pre-mount} · \ct{pre-switch-root} (default); \ct{systemd.break=} on the host \\
+systemd & \ct{systemd.unit=rescue.target} (\ct{1}) · \ct{emergency} · \ct{systemd.debug\_shell} (tty9) \\
+kernel & \ct{init=/bin/sh}: shell as PID~1, no systemd, \ct{/} read-only — \ct{mount -o remount,rw /}, \ct{sync} before reset \\
+\bottomrule
+\end{tabular}}\par
+\textbf{rescue.target}: base system, all mounts, root shell, no services (gettys conflict with
+it). \textbf{emergency.target}: console shell, no other mounts or services; entered when
+\ct{local-fs.target} fails — typically an \ct{fstab} device gone, after the 90\,s device timeout.
+Fix: \ct{nofail} (wanted, not required), \ct{x-systemd.device-timeout=10s}.
+
+\hd{UKI and measured boot}
+A \textbf{UKI} is one PE: \textbf{systemd-stub} + \ct{.linux} (only required section) + \ct{.osrel}
+\ct{.cmdline} \ct{.initrd} \ct{.ucode} \ct{.dtb} \ct{.sbat} \ct{.pcrsig} …; \ct{.profile} =
+several profiles (systemd 257). One signature covers initrd + cmdline; with SB on and a
+\ct{.cmdline}, typed overrides are ignored. \ct{ukify build \dd pcr-private-key=…} adds a signed
+PCR~11 policy. \ct{systemd-cryptenroll \dd tpm2-device=auto} binds no PCRs unless told
+(\ct{\dd tpm2-pcrs=7}) — or that signed PCR~11 policy, which survives kernel updates.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{GRUB without \ct{superusers} + \ct{password\_pbkdf2} (they lock the CLI and editing) on an
+        unencrypted disk: \ct{e}, \ct{init=/bin/sh} = root. Secure Boot does not stop it — the
+        cmdline is unsigned (a UKI's \ct{.cmdline} is not).}
+  \trap{New kernel, stale initramfs or \ct{grub.cfg} $\rightarrow$ old kernel boots, or a panic.}
+  \trap{\ct{root=}/\ct{fstab} by \ct{/dev/sdX}: names move between boots — use \ct{UUID=}.}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\raggedright\footnotesize\color{sheetGrey}\textit{Related:} \texttt{systemd-deep} ·
+\texttt{linux-filesystems-storage} · \texttt{linux-security-permissions} ·
+\texttt{namespaces-cgroups-containers} · \texttt{os-fundamentals} · \texttt{public-key-maths}\par}
+
+\end{document}

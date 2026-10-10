@@ -1,0 +1,298 @@
+% linux-performance-observability.tex — Linux performance analysis: the USE method and the
+% first-60-seconds checklist, what load average / CPU states / iostat really count, perf sampling,
+% flame graphs and off-CPU time, eBPF (BCC, libbpf CO-RE, bpftrace), ftrace, schedstats,
+% strace vs perf trace, PSI, sysstat history.
+% Picture: the system resource map (apps, syscalls, kernel subsystems, hardware) with the tool
+% that observes each layer; the CPU-time bar; a flame graph; PSI some vs full.
+% Sources (checked 2026-10-09):
+%   brendangregg.com/usemethod.html (U = average time busy, S = extra work it can't service,
+%     often queued, E = count of error events; errors easiest, check first; a burst hides in a
+%     long average) · /USEmethod/use-linux.html (per-resource commands: vmstat si/so, sar -B
+%     pgscan, dmesg OOM, iostat %util + avgqu-sz/await, smartctl, ip -s link, sar -n EDEV,
+%     netstat -s retransmits; CPU errors = processor error events) · /Slides/FISL13_USE_Method
+%     (100 % usually a bottleneck, 70 %+ often for I/O; 60 % over 5 min may be 100 % for 3;
+%     any non-zero saturation adds latency)
+%   netflixtechblog.com "Linux Performance Analysis in 60,000 Milliseconds" (Nov 2015; the 10
+%     commands in order; r > CPU count = saturated; si/so non-zero = out of memory; pidstat %CPU
+%     summed over CPUs; top clears the screen) — copy at brendangregg.com/Articles
+%   brendangregg.com/blog/2017-08-08/linux-load-averages.html (M. Urlichs, 29 Oct 1993, adds
+%     TASK_UNINTERRUPTIBLE; other OSes count CPU demand) · man7.org proc_loadavg(5) (R + D;
+%     runnable/total entities; last PID)
+%   man7.org: proc_stat(5) (cpu fields + kernel versions; iowait "not reliable") · vmstat(8)
+%     (r, b; us includes nice; first report = since boot) · top(1) (st; %CPU > 100 % in Irix
+%     mode, 'I' = Solaris mode ÷ CPUs; D = uninterruptible) · mpstat(1) (%iowait = idle with an
+%     outstanding disk I/O; %steal) · pidstat(1) (cswch/s, nvcswch/s, %wait, iodelay) · iostat(1)
+%     (Jul 2025: %util caveat for parallel devices; aqu-sz was avgqu-sz; r/w_await include queue
+%     time; first report since boot; -y) · sar(1) (/var/log/sa/saDD; -q load + PSI; -n keywords)
+%     · strace(1) 7.1 (--seccomp-bpf needs -f, not with -p; "runs more slowly") · perf-record(1)
+%     (fp default, dwarf copies 8192 B, lbr user-only; --off-cpu via BPF) · perf-trace(1)
+%     (-s summary; BPF stats) · journalctl(1) (-k implies -b 0; -b -1; -p levels) ·
+%     capabilities(7) (CAP_PERFMON, CAP_BPF since 5.8) · bpf(2) (maps shared with user space;
+%     JIT; CONFIG_BPF_JIT_ALWAYS_ON 4.15)
+%   docs.kernel.org: accounting/psi (some / full; avg10/60/300 + total in µs; CPU full = 0
+%     system-wide, reported since 5.13; triggers, window 500 ms–10 s, unprivileged multiple of
+%     2 s) · admin-guide/cgroup-v2 (cpu|memory|io|irq.pressure; cpu.stat nr_throttled) ·
+%     admin-guide/sysctl/kernel (perf_event_paranoid default 2) · admin-guide/perf-security ·
+%     bpf/verifier (descends all paths before load) · bpf/libbpf/libbpf_overview (CO-RE,
+%     /sys/kernel/btf/vmlinux, no compiler on the target) · scheduler/sched-stats
+%     (/proc/PID/schedstat) · scheduler/sched-eevdf (6.6) · trace/ftrace (tracefs, tracers,
+%     trace_pipe, set_ftrace_filter) · networking/snmp_counter (TcpExtListenOverflows)
+%   kernelnewbies.org Linux_4.20 (PSI) · Linux_6.1 (PSI_IRQ; per-cgroup cgroup.psi switch) ·
+%     github.com/torvalds/linux kernel/sched/psi.c (pressure/irq under CONFIG_IRQ_TIME_ACCOUNTING;
+%     only_full for PSI_IRQ)
+%   brendangregg.com/flamegraphs.html (released Dec 2011; x = population sorted alphabetically,
+%     not time; flame charts put time on x) · github.com/brendangregg/FlameGraph README (capture,
+%     fold, flamegraph.pl; colours carry no information; --inverted icicle) · perf.html (99 Hz
+%     avoids lockstep; a dd test 2.5x slower under perf, 62x under strace) · blog/2017-05-09
+%     cpu-utilization-is-wrong (IPC < 1 likely memory-stalled — a rule of thumb, calibrate;
+%     %CPU includes stall cycles) · offcpuanalysis.html (offcputime: off-CPU time summed by
+%     stack in kernel, Linux 4.8+, --state 2) · blog/2014-05-11 strace-wow-much-syscall (dd 442x
+%     slower under strace -eaccept; two stops + context switches per syscall)
+%   github.com/bpftrace/bpftrace docs/tutorial_one_liners (args.field syntax) + releases
+%     (v0.27.0 latest on 2026-10-09) · github.com/iovisor/bcc README (tools, libbpf-tools)
+%   nodejs.org/learn/diagnostics/poor-performance/using-linux-perf (--perf-basic-prof →
+%     /tmp/perf-PID.map; -only-functions for production) · docs.python.org/3/whatsnew/3.12
+%     (-X perf) · fedoraproject.org/wiki/Changes/fno-omit-frame-pointer (Fedora 38) ·
+%     ubuntu.com/blog …frame-pointers-by-default + 24.04 release announcement (64-bit, 1–2 %)
+%   grafana.com/blog/the-red-method-how-to-instrument-your-services (Wilkie, 2015; from USE)
+%   wiki.debian.org/sysstat (/var/log/sysstat; every 10 min; ENABLED= in /etc/default/sysstat)
+%     · github.com/sysstat/sysstat cron/sysstat-collect.timer.in (OnCalendar=*:00/interval)
+% Not repeated: scheduling and context switches (os-fundamentals); memory accounting and OOM
+% (linux-memory-oom); network stack internals (linux-networking-stack); cgroups
+% (namespaces-cgroups-containers).
+% @labels: area=linux kind=process platform=backend topic=performance,debugging,tooling discussion=318
+% @tags: use-method, 60-second-checklist, load-average, vmstat, iostat, cpu-steal, perf, flame-graphs, off-cpu, ebpf, bpftrace, ftrace, strace, psi, cgroup-v2, journald, ss
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{ShellSheet}{
+  sensitive=true, morecomment=[l]{\#},
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {>=}{{\hbox{>}\hbox{=}}}2 {<=}{{\hbox{<}\hbox{=}}}2
+           {||}{{\hbox{|}\hbox{|}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lay/.style={box, font=\scriptsize, inner sep=2pt, minimum height=5mm},
+  ks/.style={box, font=\scriptsize, text width=35mm, inner sep=2pt, align=center, anchor=north},
+  hw/.style={box, font=\scriptsize, text width=35mm, inner sep=2pt, draw=sheetGrey, fill=black!6},
+  tl/.style={font=\tiny\ttfamily, text=sheetOrange!85!black, align=left, inner sep=1pt},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  seg/.style={draw=white, line width=0.4pt, font=\tiny\ttfamily, inner sep=0pt, minimum height=4mm},
+  fr/.style={draw=white, line width=0.5pt, font=\tiny\ttfamily, inner sep=0pt, minimum height=3.2mm, anchor=south west},
+}
+
+\begin{document}
+
+\sheettitle{Linux performance — USE, the first 60 seconds, perf, eBPF, PSI}{linux · folio}
+
+\oneliner{Start \textbf{from resources, not guesses}: for every resource check \textbf{U}tilization,
+\textbf{S}aturation, \textbf{E}rrors (USE) with fixed first-minute counters; then \textbf{profile}
+(perf samples stacks $\rightarrow$ flame graph) or \textbf{trace} (eBPF: in-kernel, aggregated,
+cheap). Know what each number counts — Linux load includes \textbf{D-state} tasks, \ct{wa} is
+\emph{idle} time, \ct{\%util} cannot see parallelism, PSI measures stalls directly.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (-0.1,3.75) {The resource map — every layer has its observer (tools in \textcolor{sheetOrange!85!black}{orange})};
+  \node[lay, minimum width=165mm, fill=sheetGreen!8, draw=sheetGreen!60!black] (app) at (8.15,3.3) {\textbf{Applications} · runtimes (JVM, Node, Python) · libc};
+  \node[tl, anchor=east] at (16.35,3.3) {perf top · pidstat 1 · top · uprobes / USDT};
+  \node[tl, anchor=west] at (0.0,3.3) {RED: rate · errors · duration};
+  \node[lay, minimum width=165mm] (sys) at (8.15,2.72) {\textbf{System-call interface}};
+  \node[tl, anchor=west] at (0.0,2.72) {strace (ptrace, slow) · perf trace -s};
+  \node[tl, anchor=east] at (16.35,2.72) {bpftrace tracepoint:syscalls:*};
+  % kernel subsystems
+  \node[ks] (k1) at (1.95,2.35) {\textbf{Scheduler}\\run queues, EEVDF (6.6+)};
+  \node[ks] (k2) at (6.05,2.35) {\textbf{Virtual memory}\\page cache, reclaim, swap};
+  \node[ks] (k3) at (10.15,2.35) {\textbf{VFS $\rightarrow$ FS $\rightarrow$ block}\\I/O scheduler, queues};
+  \node[ks] (k4) at (14.25,2.35) {\textbf{Sockets $\rightarrow$ TCP/UDP}\\IP, qdisc, driver};
+  \node[tl, anchor=north] at (1.95,1.6) {uptime · vmstat 1 (r)\\mpstat -P ALL 1\\runqlat · offcputime\\/proc/PID/schedstat\\/proc/pressure/cpu};
+  \node[tl, anchor=north] at (6.05,1.6) {free -m · vmstat (si so)\\sar -B (pgscan) · slabtop\\oomkill · memleak\\cachestat\\/proc/pressure/memory};
+  \node[tl, anchor=north] at (10.15,1.6) {iostat -xz 1 · pidstat -d\\biolatency · biosnoop\\ext4slower · opensnoop\\function\_graph (ftrace)\\/proc/pressure/io};
+  \node[tl, anchor=north] at (14.25,1.6) {sar -n DEV,EDEV,TCP 1\\ss -tin · nstat\\tcpretrans · tcpconnect\\tcplife · tcpdump\\/proc/net/dev (drop)};
+  % hardware
+  \node[hw] (h1) at (1.95,-0.15) {\textbf{CPUs} · caches · MMU};
+  \node[hw] (h2) at (6.05,-0.15) {\textbf{DRAM} · NUMA nodes};
+  \node[hw] (h3) at (10.15,-0.15) {\textbf{Disks} (NVMe, SSD, HDD)};
+  \node[hw] (h4) at (14.25,-0.15) {\textbf{NICs} · links};
+  \node[tl, anchor=west] at (-0.1,-0.6) {perf stat (IPC, cache misses) · turbostat};
+  \node[tl, anchor=west] at (4.3,-0.6) {numastat · perf mem};
+  \node[tl, anchor=west] at (8.4,-0.6) {smartctl · nvme smart-log · dmesg};
+  \node[tl, anchor=west] at (12.5,-0.6) {ethtool -S · ip -s link (errors)};
+  \foreach \k in {k1,k2,k3,k4} \draw[flow] (sys.south -| \k.north) -- (\k.north);
+  \draw[flow] (1.95,0.5) -- (h1.north); \draw[flow] (6.05,0.5) -- (h2.north);
+  \draw[flow] (10.15,0.5) -- (h3.north); \draw[flow] (14.25,0.5) -- (h4.north);
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\footnotesize\setstretch{1.0}
+
+\hd{USE — for every resource: Utilization · Saturation · Errors}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{8mm}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{19mm}@{}}
+\toprule
+ & \textbf{U} — busy & \textbf{S} — queued work & \textbf{E} — errors \\ \midrule
+CPU & \ct{mpstat -P ALL}: per CPU, not the average & \ct{vmstat} \ct{r} $>$ CPUs · PSI cpu · \ct{runqlat} & CPU error events (cache ECC) \\
+memory & used vs \ct{available} & \ct{si}/\ct{so} swapping · \ct{sar -B} page scans · PSI memory & OOM kills, physical failures in \ct{dmesg} \\
+disk & \ct{iostat} \ct{\%util} (serial devices only) & \ct{aqu-sz} · \ct{r\_await}/\ct{w\_await} · PSI io & \ct{smartctl}, kernel I/O errors \\
+network & rx/tx vs link speed (\ct{sar -n DEV}) & drops, overruns, retransmits, \ct{ListenOverflows} & \ct{ip -s link}, \ct{sar -n EDEV} \\
+\bottomrule
+\end{tabular}}\par
+U = \% of time busy · S = work it cannot serve yet, usually a \emph{queue length} · E = a count;
+errors are the easiest to read — check them first. 100\% U is usually a bottleneck,
+\textbf{70\%+ often} on I/O (a disk cannot preempt low-priority work); \textbf{any} saturation
+adds latency; 60\% over 5~min may be 100\% for 3~min, then idle. For request-driven
+\emph{services}: \textbf{RED} — Rate, Errors, Duration (T.~Wilkie, 2015, inspired by USE).
+
+\hd{The first 60 seconds (Netflix Tech Blog, 2015)}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\ttfamily\raggedright\arraybackslash}p{21mm}>{\raggedright\arraybackslash}p{55mm}@{}}
+\toprule
+uptime & load 1/5/15 min: 1-min $>$ 15-min = still rising \\
+dmesg | tail & OOM kills, TCP dropping requests, I/O errors \\
+vmstat 1 & \ct{r} $>$ CPU count = CPU saturated · \ct{b} blocked · \ct{si so} $\neq$ 0 = out of memory \\
+mpstat -P ALL 1 & one hot CPU = a single-threaded bottleneck \\
+pidstat 1 & rolling per-process; \%CPU summed over all CPUs \\
+iostat -xz 1 & \ct{r/s w/s}, \ct{r\_await w\_await}, \ct{aqu-sz}, \ct{\%util}; \ct{-z} hides idle disks \\
+free -m & \ct{available}, buff/cache, swap used \\
+sar -n DEV 1 & \ct{rxkB/s txkB/s} per NIC vs its limit \\
+sar -n TCP,ETCP 1 & \ct{active/s} out, \ct{passive/s} in, \ct{retrans/s} \\
+top & cross-check; it clears the screen, so trends hide \\
+\bottomrule
+\end{tabular}}\par
+\ct{mpstat}, \ct{pidstat}, \ct{iostat}, \ct{sar} are \textbf{sysstat}. The \textbf{first} line of
+\ct{vmstat} and \ct{iostat} is the average \emph{since boot} — read from the second
+(\ct{iostat -y} skips it). \ct{pidstat -w}: \ct{cswch/s} voluntary (blocked on a resource) vs
+\ct{nvcswch/s} involuntary (slice used up: CPU contention); \ct{-u} \ct{\%wait} = waiting to
+run; \ct{-d} \ct{iodelay} = ticks blocked on block I/O.
+
+\hd{Load average — Linux counts more than CPU}
+\ct{/proc/loadavg}: 1/5/15-min damped averages of tasks \textbf{R} (runnable) \emph{plus}
+\textbf{D} (uninterruptible: disk I/O, some locks), then \ct{runnable/total} entities and the
+last PID. D was added by M.~Urlichs's patch of 29~Oct 1993; other Unixes count CPU demand only.
+Load 16 on 8 idle CPUs can be blocked I/O: compare \ct{vmstat} \ct{r} with \ct{b}, \ct{ps} state
+\ct{D}, or read PSI, which splits cpu, io and memory.
+
+\hd{CPU time — \ct{iowait} is a kind of idle}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \a/\b/\n/\c in {0/2.2/us/sheetGreen!55, 2.2/2.6/ni/sheetGreen!30, 2.6/3.7/sy/sheetBlue!45, 3.7/4.05/hi/sheetOrange!45, 4.05/4.5/si/sheetOrange!30, 4.5/5.1/st/sheetRed!45, 5.1/6.0/wa/black!22, 6.0/7.8/id/black!8}
+    \node[seg, fill=\c, minimum width=\b cm-\a cm] at ({(\a+\b)/2},0) {\n};
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}, sheetGrey] (0,-0.27) -- (5.1,-0.27) node[midway, below=2pt, lbl] {CPU busy: user, nice, kernel, hard / soft IRQ — or \textbf{stolen}};
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}, sheetGrey] (5.1,-0.27) -- (7.8,-0.27) node[midway, below=2pt, lbl] {\textbf{idle}};
+  \node[lbl, anchor=south east, text=sheetRed] at (5.1,0.22) {\ct{st}: hypervisor ran another vCPU};
+  \node[lbl, anchor=south west] at (5.15,0.22) {\ct{wa}: idle + a disk I/O pending};
+  \node[lbl, anchor=south west] at (0,0.22) {\ct{vmstat us} includes \ct{ni}};
+\end{tikzpicture}\par
+\ct{wa} is idle time with a disk I/O outstanding — \textbf{not reliable}: tasks wait, CPUs do
+not; it vanishes once another task gets that CPU, and can even decrease. High \ct{st} = a noisy neighbour, not your code.
+\ct{top} \%CPU is per CPU (Irix mode): 400\% = 4 CPUs; \ct{I} toggles Solaris mode (\pdfonly{$\div$}\htmlonly{÷} CPUs).
+
+\hd{The past, not only now}
+sysstat's collector (\ct{sa1}, a timer or cron job, every 10~min by default; Debian: set
+\ct{ENABLED="true"} in \ct{/etc/default/sysstat}) writes \ct{/var/log/sa/saDD} (Debian:
+\ct{/var/log/sysstat/}). Replay with \ct{sar -f FILE} + \ct{-u} CPU · \ct{-q} load + PSI ·
+\ct{-r} memory · \ct{-B} paging · \ct{-d} disks · \ct{-n DEV,EDEV,TCP,ETCP}. Kernel events:
+\ct{journalctl -k} (this boot; \ct{-b -1} = previous), \ct{-p err}, \ct{-S "-1h"}.
+
+\hd{strace vs perf trace}
+\ct{strace} uses \textbf{ptrace}: the tracee stops twice per syscall with a context switch each
+time — \ct{dd} ran \textbf{442$\times$ slower} (2014) while strace traced only \ct{accept()},
+which \ct{dd} never calls. \ct{\dd seccomp-bpf} (needs \ct{-f}, not for \ct{-p}) makes the kernel
+stop only on traced syscalls. \ct{perf trace} is buffered: one \ct{dd} test ran 2.5$\times$
+slower under perf, 62$\times$ under strace.
+
+\columnbreak
+
+\hd{perf — count, sample, trace}
+\begin{lstlisting}[language=ShellSheet]
+perf stat -a -- sleep 10       # cycles, instructions -> IPC
+perf top -g                    # live hottest functions
+perf record -F 99 -a -g -- sleep 30   # 99 Hz, all CPUs
+perf script | stackcollapse-perf.pl | flamegraph.pl > cpu.svg
+perf record --off-cpu -p PID   # blocked time, via BPF
+perf trace -s -p PID           # syscall min/avg/max per thread
+\end{lstlisting}
+\begin{itemize}
+  \item \textbf{99~Hz}, not 100: avoids sampling in lockstep with periodic work.
+  \item \textbf{Stacks}: \ct{\dd call-graph fp} (default; needs frame pointers) · \ct{dwarf}
+        (copies 8~KiB of user stack per sample) · \ct{lbr} (user only). Frame pointers are
+        default in \textbf{Fedora 38} and \textbf{Ubuntu 24.04} (64-bit; Canonical: 1–2\% cost).
+  \item \textbf{JITs} need a symbol map: Node \ct{\dd perf-basic-prof(-only-functions)}
+        $\rightarrow$ \ct{/tmp/perf-PID.map}; CPython 3.12+ \ct{-X perf}.
+  \item \textbf{IPC} $<$ 1 likely memory-stalled, $>$ 1 instruction-bound — a rule of thumb,
+        calibrate per CPU. \%CPU counts stall cycles as busy.
+  \item \ct{perf\_event\_paranoid} default \textbf{2}: no kernel profiling without
+        \ct{CAP\_PERFMON} (Linux 5.8).
+\end{itemize}
+
+\hd{Flame graph — how to read it}
+\noindent\begin{tikzpicture}[sheet, x=1cm, y=1cm]
+  \node[fr, fill=sheetOrange!60, minimum width=4.6cm] at (0,0) {main};
+  \node[fr, fill=sheetOrange!35, minimum width=1.0cm] at (0,0.32) {parse};
+  \node[fr, fill=sheetRed!40, minimum width=3.6cm] at (1.0,0.32) {serve};
+  \node[fr, fill=sheetOrange!25, minimum width=0.5cm] at (0,0.64) {strlen};
+  \node[fr, fill=sheetOrange!45, minimum width=0.6cm] at (1.0,0.64) {gzip};
+  \node[fr, fill=sheetRed!25, minimum width=2.6cm] at (1.6,0.64) {hash};
+  \node[fr, fill=sheetOrange!30, minimum width=0.8cm] at (1.6,0.96) {memcpy};
+  \draw[hot] (3.3,1.45) node[lbl, anchor=south, text=sheetOrange!85!black] {top edge = on CPU: \textbf{hash} itself} -- (3.3,0.98);
+  \draw[<->, thin, sheetGrey] (1.0,-0.12) -- (4.6,-0.12) node[midway, below=0pt, lbl] {width = share of samples};
+  \node[lbl, anchor=west, align=left] at (4.75,0.9) {y: stack depth, root at bottom};
+  \node[lbl, anchor=west, align=left] at (4.75,0.6) {x: frames sorted \textbf{A–Z}, \textbf{not time}};
+  \node[lbl, anchor=west, align=left] at (4.75,0.3) {colours: random, no meaning};
+  \node[lbl, anchor=west, align=left] at (4.75,0.0) {look for wide plateaus};
+\end{tikzpicture}\par
+Released Dec~2011 (FlameGraph: capture $\rightarrow$ fold $\rightarrow$ \ct{flamegraph.pl};
+\ct{\dd inverted} = icicle). A \emph{flame chart} (browser devtools) puts \emph{time} on x.
+\textbf{Off-CPU}: CPU samples miss blocked time — \ct{offcputime} (BCC, Linux 4.8+) sums it per
+stack in the kernel; \ct{\dd state 2} keeps only D-state waits.
+
+\hd{eBPF — run in the kernel, return only summaries}
+The \textbf{verifier} walks every path before load; then JIT to native code; \textbf{maps}
+(shared with user space) hold counts and histograms, so per-event cost is tiny. Attach to
+\ct{tracepoint} (static kernel events: \ct{syscalls}, \ct{sched}, \ct{block}) · \ct{kprobe}
+(kernel functions: no stable interface) · \ct{uprobe} / \ct{usdt} (user code) ·
+\ct{profile:hz:N}. \ct{CAP\_BPF} (5.8) splits BPF out of \ct{CAP\_SYS\_ADMIN}. \textbf{BCC} compiles with Clang on the target; \textbf{libbpf-tools} use
+BTF (\ct{/sys/kernel/btf/vmlinux}) — \textbf{CO-RE}, one binary for many kernels; tools as in
+the map, plus \ct{execsnoop} for short-lived processes. \textbf{bpftrace} (0.27):
+\begin{lstlisting}[language=ShellSheet]
+bpftrace -e 'tracepoint:raw_syscalls:sys_enter { @[comm] = count(); }'
+bpftrace -e 'tracepoint:block:block_rq_issue { @ = hist(args.bytes); }'
+bpftrace -e 'profile:hz:99 /pid == 1234/ { @[ustack] = count(); }'
+\end{lstlisting}
+
+\hd{Without extra tools: ftrace, schedstats}
+tracefs \ct{/sys/kernel/tracing} (or \ct{/sys/kernel/debug/tracing}): \ct{current\_tracer} =
+\ct{function}, \ct{function\_graph} (entry + exit), \ct{wakeup}, \ct{irqsoff};
+\ct{set\_ftrace\_filter} narrows, \ct{trace\_pipe} streams. \ct{/proc/PID/schedstat}: ns on CPU
+· ns \textbf{waiting on a run queue} · timeslices — scheduler latency per task, no tracer.
+
+\hd{PSI — stall time, measured directly (4.20+)}
+\noindent\begin{tikzpicture}[sheet, x=0.48cm, y=0.27cm]
+  \foreach \y/\l in {3/task A, 2/task B, 1/\textbf{some}: $\geq$1 stalled, 0/\textbf{full}: all non-idle stalled} \node[lbl, anchor=east] at (-0.1,\y) {\l};
+  \foreach \y in {0,...,3} \draw[black!15] (0,\y) -- (12,\y);
+  \foreach \a/\b in {1/5, 7.5/9} \fill[sheetOrange!70] (\a,2.7) rectangle (\b,3.3);
+  \foreach \a/\b in {3/6.5, 8/10.5} \fill[sheetOrange!70] (\a,1.7) rectangle (\b,2.3);
+  \foreach \a/\b in {1/6.5, 7.5/10.5} \fill[sheetBlue!45] (\a,0.7) rectangle (\b,1.3);
+  \foreach \a/\b in {3/5, 8/9} \fill[sheetRed!60] (\a,-0.3) rectangle (\b,0.3);
+\end{tikzpicture}\par
+Orange = waiting on the resource. \ct{/proc/pressure/\{cpu,memory,io\}}, plus \ct{irq} (6.1+,
+needs \ct{CONFIG\_IRQ\_TIME\_ACCOUNTING}, \ct{full} line only); per cgroup \ct{cpu|memory|io|irq.pressure}. Line:
+\ct{some avg10= avg60= avg300= total=}$\mu$s. System-wide CPU \ct{full} is undefined, shown as 0
+(since 5.13). \textbf{Triggers}: write \ct{some 150000 1000000} (150~ms stall per 1~s window),
+\ct{poll()} the fd; window 500~ms–10~s. A container slow on an idle host: \ct{cpu.stat}
+\ct{nr\_throttled} — its CPU quota, not the CPU.
+
+\end{multicols}
+
+\noindent{\raggedright\footnotesize\color{sheetGrey}\textit{Related:} \texttt{os-fundamentals} (scheduling,
+context switches) · \texttt{linux-memory-oom} (\ct{available}, reclaim, PSI memory) ·
+\texttt{linux-networking-stack} (\ct{ss}, accept queue) · \texttt{linux-filesystems-storage}
+(I/O path, page cache) · \texttt{namespaces-cgroups-containers} (cgroup limits) ·
+\texttt{systemd-deep} (journal, \ct{systemd-cgtop})\par}
+
+\end{document}

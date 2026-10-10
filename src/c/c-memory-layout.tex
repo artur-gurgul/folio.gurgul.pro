@@ -1,0 +1,340 @@
+% c-memory-layout.tex — where C objects live (storage durations, sections, start-up copy and zero,
+% stacks on an MCU and on Linux), size and alignment per ABI, struct padding byte by byte, packed
+% and misaligned access, byte order and portable buffer reads, integer promotion and conversions.
+% Sources (checked 2026-10-09):
+%   open-std.org/jtc1/sc22/wg14/www/docs/n3220.pdf (C23 working draft of ISO/IEC 9899:2024): 6.2.4
+%     (four storage durations; static initialised once before startup; automatic indeterminate;
+%     thread_local) · 6.2.5p11 (unsigned arithmetic modulo 2^N) · 6.2.6.1p6 (storing leaves padding
+%     bytes unspecified) · 6.2.6.2 NOTE 2 (two's complement only) · 6.2.8 (alignas / alignof keywords,
+%     powers of two, max_align_t, over-aligned) · 6.3.1.1 (integer promotions; bit-precise types
+%     exempt) · 6.3.1.3 (out-of-range to signed: implementation-defined) · 6.3.1.8 (usual arithmetic
+%     conversions, _BitInt example) · 6.3.2.3p7 (misaligned pointer conversion = UB) · 6.4.5p7
+%     (literal arrays may share; modifying = UB) · 6.5.1p5-7 (overflow = UB; effective type) ·
+%     6.5.8p4 (signed << overflow = UB) · 6.7.3.2
+%     (declaration order, no padding at the start, trailing padding, bit-field unit / order / straddle
+%     implementation-defined, flexible array member) · 6.7.3.3 (enum fixed underlying type) ·
+%     6.7.11p10-11 (default and empty initialisation zero the padding; unnamed members stay
+%     indeterminate) · 6.7.12 (static_assert, message optional) · 7.15 (<stdalign.h> empty) ·
+%     7.18.2 (__STDC_ENDIAN_LITTLE__ / _BIG__ / _NATIVE__) · 7.21 (offsetof: size_t constant, UB on a
+%     bit-field; max_align_t)
+%   gitlab.com/x86-psABIs/x86-64-ABI low-level-sys-info.tex (scalar sizes and alignments; char =
+%     signed byte; long double 16/16 with 10 significant bytes + 6 tail padding; aggregate alignment,
+%     lowest aligned offset, size a multiple of alignment; bit-fields right to left; misaligned
+%     access slower except __m128/__m256/__m512; user addresses 0 .. 0x00007fffffffffff; 128-byte red
+%     zone; (RSP + 8) multiple of 16 at entry)
+%   gitlab.com/x86-psABIs/i386-ABI (char signed; long long and double 8/4; long double 12/4;
+%     (ESP + 4) multiple of 16 at entry)
+%   github.com/ARM-software/abi-aa aapcs64.rst (char = unsigned byte; long double = IEEE quad 16/16;
+%     aggregate rules; SP mod 16 = 0; both byte orders allowed) · aapcs32.rst (char unsigned; 8-byte
+%     types align 8; long double = double; SP mod 8 = 0 at public interfaces)
+%   developer.apple.com/documentation/xcode/writing-arm64-code-for-apple-platforms (char signed;
+%     long double = double; 128-byte red zone; SP 16-aligned)
+%   learn.microsoft.com/cpp: cpp/data-type-ranges (long 4 bytes on 32- and 64-bit compilers; long
+%     double = double; char signed, /J unsigned) · build/stack-usage (x64: stack 16-byte aligned
+%     outside prologs; memory beyond RSP volatile; malloc 16-aligned on 64-bit)
+%   documentation-service.arm.com DUI 0497A Cortex-M0 Devices Generic User Guide §3.3.4 (no unaligned
+%     access: HardFault) · keil.com/appnotes/files/apnt209.pdf (M3/M4/M7: unaligned LDM/STM/LDRD/STRD
+%     always UsageFault; single loads/stores trap only with CCR.UNALIGN_TRP)
+%   docs.espressif.com esp-idf v6.1 (ESP32): api-guides/memory-types (code from flash through the
+%     MMU cache; IRAM_ATTR; DROM; DRAM = .data/.bss/heap/stack; ~160 KB static limit; IRAM word
+%     access only; __NOINIT_ATTR survives software restart; RTC memory survives deep sleep) ·
+%     api-guides/fatal-errors (LoadStoreAlignment; end-of-stack watchpoint on the last 32 bytes;
+%     CONFIG_COMPILER_STACK_CHECK_MODE) · api-reference/system/freertos_idf (stack depth and high-water
+%     mark in bytes) · api-reference/peripherals/spi_master ("ESP32 is a little-endian chip")
+%   github.com/FreeRTOS/FreeRTOS-Kernel include/task.h (xTaskCreate allocates TCB + stack;
+%     xTaskCreateStatic takes yours; depth and high-water mark in words) · include/stack_macros.h
+%     (1: top of stack vs limit; > 1: also four 0xa5a5a5a5 words = last 16 bytes;
+%     vApplicationStackOverflowHook) · freertos.org stack usage and overflow checking (not
+%     guaranteed to catch every overflow)
+%   gcc.gnu.org: gcc-10/changes (-fno-common default; duplicate tentative definitions = link error) ·
+%     gcc-9/changes (-Waddress-of-packed-member, on by default) · onlinedocs Common-Attributes (packed;
+%     aligned only increases unless packed; scalar_storage_order, no address of its fields) ·
+%     onlinedocs Integers-implementation (narrowing to signed: modulo 2^N) ·
+%     releases.llvm.org/11.0.0 clang ReleaseNotes (-fno-common default)
+%   sourceware.org/binutils/docs: ld Output-Section-LMA (VMA vs LMA; ROM start-up copies .data and
+%     zeroes .bss) · binutils size (Berkeley format counts read-only data in text)
+%   akkadia.org/drepper/tls.pdf (.tdata / .tbss = .data / .bss + SHF_TLS; image copied per thread)
+%   man7.org mallopt(3) (M_MMAP_THRESHOLD 128 KiB, dynamic) · brk(2) (program break = first location
+%     after the uninitialised data segment; raising it allocates) · github.com/torvalds/linux
+%     include/uapi/linux/resource.h (_STK_LIM 8 MiB) · sourceware.org/glibc/manual Aligned-Memory-Blocks
+%     (malloc: multiple of 8, 16 on 64-bit)
+%   cdrdv2-public.intel.com SDM Vol. 1 §1.3.1 (Intel 64 / IA-32 little-endian) · rfc-editor.org RFC 791
+%     App. B (most significant octet first) · pubs.opengroup.org htonl (host <-> network order)
+% @labels: area=c kind=concept platform=embedded topic=memory,language discussion=293
+% @tags: memory-layout, bss, data-segment, rodata, crt0, linker-script, stack-overflow, alignment, padding, struct-padding, packed, offsetof, data-model, endianness, integer-promotion, bitint
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\lstdefinestyle{CSheet}{style=printup, language=C, basicstyle=\ttfamily\scriptsize,
+  morekeywords={uint8_t,uint16_t,uint32_t,size_t,bool,restrict,inline,static_assert,alignas,alignof}}
+
+\tikzset{
+  seg/.style={draw=sheetGrey, minimum width=13mm, minimum height=3.8mm,
+              font=\ttfamily\tiny, inner sep=0.5pt},
+  pseg/.style={draw=sheetGrey, minimum width=17mm, minimum height=2.7mm,
+              font=\ttfamily\tiny, inner sep=0pt},
+  byte/.style={draw=sheetGrey, minimum width=4mm, minimum height=3.8mm,
+               font=\ttfamily\tiny, inner sep=0pt},
+  pad/.style={byte, fill=black!10, text=black!40},
+  hd/.style={font=\bfseries\scriptsize, text=sheetBlue, anchor=west, inner sep=0pt},
+  l/.style={font=\tiny, text=black!75, inner sep=0.5pt},
+}
+
+\begin{document}
+
+\sheettitle{C memory layout — sections, alignment, padding, byte order, promotion}{c · folio}
+
+\oneliner{Four \textbf{storage durations}, which the toolchain maps to \textbf{sections}: code and
+constants in \ct{.text}/\ct{.rodata} (flash on an MCU), initialised statics in \ct{.data} (an
+image copied to RAM at start-up), zero statics in \ct{.bss} (zeroed, no image bytes), locals on
+the \textbf{stack}, \ct{malloc} on the \textbf{heap}. The \textbf{ABI} fixes sizes and
+alignments; members sit in order at multiples of their alignment, so structs get
+\textbf{padding}. Byte order is the CPU's; arithmetic below \ct{int} happens \textbf{in \ct{int}}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ===== MCU
+  \node[hd] at (-0.1,2.55) {MCU: flash + SRAM, no MMU};
+  \node[l, font=\bfseries\tiny] at (0.55,2.25) {FLASH};
+  \node[seg, fill=black!6] at (0.55,1.95) {vectors};
+  \node[seg, fill=sheetBlue!12] at (0.55,1.53) {.text};
+  \node[seg, fill=sheetBlue!20] at (0.55,1.11) {.rodata};
+  \node[seg, fill=sheetOrange!18] (di) at (0.55,0.69) {.data image};
+  \node[l] at (0.55,0.36) {load address (LMA)};
+  \node[l, font=\bfseries\tiny] at (2.5,2.25) {SRAM};
+  \node[seg, fill=sheetOrange!18] (d) at (2.5,1.95) {.data};
+  \node[seg, fill=sheetGreen!15] at (2.5,1.53) {.bss};
+  \node[seg, fill=sheetBrown!14] at (2.5,1.11) {heap $\uparrow$};
+  \node[seg, draw=sheetGrey!60, dashed, text=sheetGrey] at (2.5,0.69) {free};
+  \node[seg, fill=sheetRed!10] at (2.5,0.27) {stack $\downarrow$};
+  \draw[hot] (di.east) -- ++(0.2,0) |- (d.west);
+  \node[l, text=sheetOrange, rotate=90] at (1.56,1.32) {copied};
+  \node[l, anchor=west] at (3.22,1.95) {run address (VMA)};
+  \node[l, anchor=west] at (3.22,1.53) {zeroed at start-up};
+  \node[l, anchor=west] at (3.22,1.11) {\ct{malloc}};
+  \node[l, anchor=west, text=sheetRed] at (3.22,0.69) {meet: silent clash};
+  \node[l, anchor=west] at (3.22,0.27) {locals, frames};
+  \node[l, anchor=west] at (-0.1,-0.1) {flash = text + data \quad RAM = data + bss + heap + stacks};
+  \node[l, anchor=west] at (-0.1,-0.38) {ld: \ct{.data : \{…\} >RAM AT>FLASH}};
+  \draw[sheetGrey!50] (4.72,2.65) -- (4.72,-0.55);
+  % ===== Linux x86-64 process
+  \node[hd] at (4.82,2.55) {Linux x86-64 process (LP64)};
+  \node[l, anchor=west] at (4.82,2.28) {top of user space: \ct{0x00007fffffffffff} (psABI)};
+  \foreach \y/\t/\c in {2.0/stack $\downarrow$/sheetRed!10, 1.72/$\downarrow$ \quad $\uparrow$/white,
+      1.44/mmap/sheetBlue!6, 1.16/$\downarrow$ \quad $\uparrow$/white,
+      0.88/heap $\uparrow$/sheetBrown!14, 0.6/.bss/sheetGreen!15, 0.32/.data/sheetOrange!18,
+      0.04/.rodata/sheetBlue!20, -0.24/.text/sheetBlue!12}
+    \node[pseg, fill=\c] at (5.7,\y) {\t};
+  \node[l, anchor=west] at (4.82,-0.48) {0 = low addresses};
+  \node[l, anchor=west] at (6.62,2.0) {$\le$ \ct{RLIMIT\_STACK}, 8\,MiB default};
+  \node[l, anchor=west] at (6.62,1.5) {shared libs, thread stacks,};
+  \node[l, anchor=west] at (6.62,1.3) {\ct{malloc} $\ge$128\,KiB (threshold adapts)};
+  \node[l, anchor=west] at (6.62,0.88) {\ct{brk} raises the program break};
+  \node[l, anchor=west] at (6.62,0.6) {NOBITS: zero pages, no file bytes};
+  \node[l, anchor=west] at (6.62,0.32) {initial values from the file};
+  \node[l, anchor=west] at (6.62,-0.1) {read-only; \ct{.text} also executable};
+  \draw[sheetGrey!50] (10.0,2.65) -- (10.0,-0.55);
+  % ===== struct bytes
+  \node[hd] at (10.1,2.55) {\ct{struct Msg}: 12\,B, 4 of them padding};
+  \node[l, anchor=west, font=\ttfamily\tiny] at (10.1,2.28) {uint8\_t type; uint32\_t id; uint8\_t flags; uint16\_t len;};
+  \foreach \i/\s/\t in {0/byte/type,1/pad/,2/pad/,3/pad/,4/byte/id,5/byte/id,6/byte/id,7/byte/id,
+                        8/byte/flg,9/pad/,10/byte/len,11/byte/len}{
+    \node[\s] at (10.35+0.42*\i,1.9) {\t};
+    \node[l, font=\ttfamily\tiny, text=sheetGrey] at (10.35+0.42*\i,1.65) {\i}; }
+  \node[byte, fill=sheetBlue!15] at (10.35,1.9) {type};
+  \foreach \i in {4,5,6,7} \node[byte, fill=sheetOrange!18] at (10.35+0.42*\i,1.9) {id};
+  \node[byte, fill=sheetGreen!18] at (10.35+0.42*8,1.9) {flg};
+  \foreach \i in {10,11} \node[byte, fill=sheetBrown!18] at (10.35+0.42*\i,1.9) {len};
+  \draw[decorate, decoration={brace, mirror, amplitude=2pt}] (10.58,1.5) -- (11.6,1.5)
+    node[midway, below=1.5pt, l]{\ct{id} needs \%4};
+  \draw[decorate, decoration={brace, mirror, amplitude=2pt}] (13.9,1.5) -- (14.2,1.5)
+    node[midway, below=1.5pt, l]{\ct{len} \%2};
+  \node[l, anchor=west] at (15.4,1.9) {\textbf{12\,B}};
+  \node[l, anchor=west] at (10.1,0.95) {reordered, largest alignment first:};
+  \foreach \i in {0,1,2,3} \node[byte, fill=sheetOrange!18] at (10.35+0.42*\i,0.6) {id};
+  \foreach \i in {4,5} \node[byte, fill=sheetBrown!18] at (10.35+0.42*\i,0.6) {len};
+  \node[byte, fill=sheetBlue!15] at (10.35+0.42*6,0.6) {type};
+  \node[byte, fill=sheetGreen!18] at (10.35+0.42*7,0.6) {flg};
+  \node[l, anchor=west] at (13.65,0.6) {\textbf{8\,B}, no padding};
+  \node[l, anchor=west] at (10.1,0.25) {\ct{\_\_attribute\_\_((packed))} original:};
+  \node[byte, fill=sheetBlue!15] at (10.35,-0.1) {type};
+  \foreach \i in {1,2,3,4} \node[byte, fill=sheetOrange!18, draw=sheetRed] at (10.35+0.42*\i,-0.1) {id};
+  \node[byte, fill=sheetGreen!18] at (10.35+0.42*5,-0.1) {flg};
+  \foreach \i in {6,7} \node[byte, fill=sheetBrown!18] at (10.35+0.42*\i,-0.1) {len};
+  \node[l, anchor=west, text=sheetRed] at (13.65,-0.1) {8\,B, \ct{id} misaligned at 1};
+  \node[l, anchor=west] at (10.1,-0.45) {same on every ABI in the table: \ct{uint32\_t} aligns to 4};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Where an object lives}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{29mm}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{14mm}>{\raggedright\arraybackslash}p{23mm}@{}}
+\toprule
+\textbf{declaration (scope)} & \textbf{duration} & \textbf{section} & \textbf{starts as}\\ \midrule
+\ct{int g = 5;} (file) & static & \ct{.data} & 5, from the image\\
+\ct{int z;} (file) · \ct{static int n;} (block) & static & \ct{.bss} & 0 · null · padding 0\\
+\ct{const int k = 5;} (file) & static & \ct{.rodata} & 5, read-only\\
+\ct{"abc"} & static & \ct{.rodata} & write = UB; may be shared\\
+\ct{thread\_local int t = 1;} & thread & \ct{.tdata}/\ct{.tbss} & image copied per thread\\
+\ct{int x;} (block) & automatic & stack / reg. & \textcolor{sheetRed}{indeterminate}\\
+\ct{const int c = 5;} (block) & automatic & stack & const $\neq$ ROM\\
+\ct{(int[])\{1, 2\}} (block) & automatic & stack & compound literal\\
+\ct{p = malloc(n)} & allocated & heap & indeterminate; \ct{calloc}: 0\\
+\bottomrule
+\end{tabular}}\par
+C23 defines only the four durations; section names are the ELF / GCC convention. Static and
+thread objects are initialised before \ct{main} / the thread starts — \ct{int z;} and
+\ct{int z = 0;} both land in \ct{.bss}.
+
+\section{Before \texttt{main}}
+\begin{itemize}
+  \item Start-up code (\ct{crt0}, reset handler) copies \ct{.data} from its \textbf{load address}
+        (LMA, flash) to its \textbf{run address} (VMA, RAM), zeroes \ct{.bss}, then calls
+        \ct{main}. A hosted loader maps the file instead.
+  \item \ct{size app.elf} (Berkeley): \ct{text} = code \emph{and} read-only data.
+  \item \ct{int x;} at file scope in two files: GCC 10+ and Clang 11+ default to
+        \ct{-fno-common} — a multiple-definition link error (\ct{-fcommon} used to merge them).
+        Header: \ct{extern int x;}, one \ct{.c} defines it.
+\end{itemize}
+
+\section{ESP32 (ESP-IDF 6.1)}
+\begin{itemize}
+  \item Code runs from flash through the MMU cache; \ct{IRAM\_ATTR} puts a function in internal
+        IRAM (ISRs flagged \ct{ESP\_INTR\_FLAG\_IRAM}, timing-critical code). \ct{.rodata} goes to
+        DROM (flash, cached); \ct{DRAM\_ATTR} forces data into DRAM. IRAM takes 4-byte-aligned
+        word accesses only.
+  \item DRAM holds \ct{.data}, \ct{.bss}, heap and stacks; static data is capped at
+        $\sim$160\,KB — the rest of DRAM is heap only.
+  \item \ct{\_\_NOINIT\_ATTR} → \ct{.noinit}: not initialised at start-up, survives a software
+        restart. RTC slow memory survives deep sleep.
+\end{itemize}
+
+\section{Stack overflow}
+\begin{itemize}
+  \item No MMU / MPU: nothing faults — the stack runs into the heap or the next task's stack.
+        Causes: recursion, a big local (\ct{uint8\_t buf[8192]}), a VLA.
+  \item FreeRTOS: \ct{xTaskCreate} allocates TCB + stack from the heap,
+        \ct{xTaskCreateStatic} takes your buffers. Stack depth and
+        \ct{uxTaskGetStackHighWaterMark()} are in \textbf{words} — in \textbf{bytes} on ESP-IDF.
+  \item \ct{configCHECK\_FOR\_STACK\_OVERFLOW 1}: stack pointer checked at each switch;
+        \ct{2}: the stack is pre-filled with a known value and the last 16 bytes are checked too
+        → \ct{vApplicationStackOverflowHook}. Neither catches every overflow.
+  \item ESP-IDF adds a watchpoint on the last 32 bytes of the running task's stack
+        (\ct{CONFIG\_FREERTOS\_WATCHPOINT\_END\_OF\_STACK}) and \ct{-fstack-protector}
+        (\ct{CONFIG\_COMPILER\_STACK\_CHECK\_MODE}).
+\end{itemize}
+
+\section{Packed and misaligned access}
+\ct{\_\_attribute\_\_((packed))} sets alignment 1 and drops padding; \ct{m.id} then compiles to
+byte-wise loads, but \ct{uint32\_t *q = \&m.id} loses that and \ct{*q} is a misaligned load —
+GCC 9+ warns by default (\ct{-Waddress-of-packed-member}). \ct{aligned(N)} only raises
+alignment unless \ct{packed} is given too.\par
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{60mm}@{}}
+\toprule
+x86, x86-64 & works, slower; \ct{\_\_m128}/\ct{256}/\ct{512} operands must be aligned\\
+Cortex-M3/M4/M7 & \ct{LDR}/\ct{STR}/\ct{LDRH}/\ct{STRH} work (trap only with \ct{CCR.UNALIGN\_TRP});
+  \ct{LDRD}/\ct{STRD}/\ct{LDM}/\ct{STM} \textbf{always} UsageFault — a \ct{double} or
+  \ct{uint64\_t} read through a byte pointer\\
+Cortex-M0 & no unaligned access at all: \textbf{HardFault}\\
+ESP32 (Xtensa) & \textbf{\ct{LoadStoreAlignment}} panic: 32-bit only at \%4, 16-bit at \%2\\
+\bottomrule
+\end{tabular}}\par
+Where the CPU copes, C still does not: \ct{*(uint32\_t *)(buf + 1)} is UB (alignment and
+effective type) — the optimiser may emit an aligned-only instruction.
+
+\columnbreak
+
+\section{Size and alignment — six ABIs}
+{\scriptsize\setlength{\tabcolsep}{1.6pt}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+ & \textbf{i386} & \textbf{Arm32} & \textbf{x86-64} & \textbf{AArch64} & \textbf{Apple arm64} & \textbf{Win x64}\\
+\midrule
+model & ILP32 & ILP32 & LP64 & LP64 & LP64 & LLP64\\
+\ct{char} & signed & \textbf{unsigned} & signed & \textbf{unsigned} & signed & signed\\
+\ct{long} & 4 & 4 & 8 & 8 & 8 & \textbf{4}\\
+\ct{long long} & 8\,/\,\textbf{4} & 8 & 8 & 8 & 8 & 8\\
+pointer & 4 & 4 & 8 & 8 & 8 & 8\\
+\ct{double} & 8\,/\,\textbf{4} & 8 & 8 & 8 & 8 & 8\\
+\ct{long double} & 12\,/\,4 x87 & 8 & 16 x87 & 16 quad & 8 & 8\\
+SP at a call & 16 & 8 & 16 & 16 & 16 & 16\\
+\bottomrule
+\end{tabular}}\par
+$a / b$ = size / alignment where they differ; x87 \ct{long double} uses 10 bytes. Red zone
+(below SP, usable without moving it): 128\,B on x86-64 SysV and Apple arm64, none on Win x64.
+\ct{\{char c; double d;\}}: 12\,B on i386, 16 elsewhere; \ct{\{char c; long l;\}}: 16 on LP64,
+8 on LLP64 — never \ct{memcpy} a struct across ABIs.
+
+\section{Struct layout — the rules}
+\begin{itemize}
+  \item C23: members at increasing addresses in declaration order; \textbf{no padding before the
+        first} (a struct pointer converts to a pointer to its first member); padding between
+        members and at the end.
+  \item ABIs: each member at the lowest offset that is a multiple of its alignment; struct
+        alignment = its strictest member's; size rounded up to it, so \ct{T a[n]} has no gaps.
+  \item Pin a wire or ABI layout: \ct{static\_assert(sizeof(struct Msg) == 12);}
+        \ct{static\_assert(offsetof(struct Msg, len) == 10);} — C23 keyword, message optional;
+        \ct{offsetof} is a \ct{size\_t} constant (\ct{<stddef.h>}), UB on a bit-field.
+  \item \ct{alignas(64)}, \ct{alignof(T)}: C23 keywords (\ct{<stdalign.h>} is empty); every
+        alignment is a power of two; \ct{max\_align\_t} has the largest fundamental one.
+        \ct{malloc} (glibc, MSVC): 16-aligned on 64-bit; more → \ct{aligned\_alloc}.
+  \item Flexible array member \ct{struct pkt \{ uint16\_t len; uint8\_t data[]; \};}:
+        \ct{sizeof} leaves \ct{data} out; allocate \ct{sizeof(struct pkt) + n}.
+  \item Bit-fields: storage unit, straddling and bit order are implementation-defined (x86-64:
+        right to left); plain \ct{int} bit-field signedness too; no \ct{\&}. Not for wire formats.
+        C23 \ct{enum op : uint8\_t \{…\}} is 1 byte; a plain enum's type is the compiler's choice.
+  \item \textbf{Padding bytes}: a store leaves them unspecified — \ct{memcmp} on structs lies, a
+        sent struct leaks old bytes. Statics without an initialiser and C23 \ct{= \{\}} zero
+        the padding; otherwise \ct{memset} first.
+\end{itemize}
+
+\section{Byte order: \texttt{0x01020304} at \texttt{0x100}}
+\begin{tikzpicture}[sheet]
+  \foreach \i in {0,1,2,3} \node[l, font=\ttfamily\tiny, text=sheetGrey] at (2.6+0.62*\i,0.36) {0x10\i};
+  \node[l, anchor=east] at (2.25,0) {\textbf{little}: x86, x86-64, ESP32};
+  \foreach \i/\v in {0/04,1/03,2/02,3/01} \node[byte, minimum width=5.6mm, fill=sheetGreen!12] at (2.6+0.62*\i,0) {\v};
+  \node[l, anchor=east] at (2.25,-0.46) {\textbf{big}: network order};
+  \foreach \i/\v in {0/01,1/02,2/03,3/04} \node[byte, minimum width=5.6mm, fill=sheetBlue!12] at (2.6+0.62*\i,-0.46) {\v};
+  \node[l, anchor=west, align=left] at (4.75,-0.23) {least significant byte at the lowest\\address (C23 7.18.2); RFC 791: most\\significant octet first on the wire};
+\end{tikzpicture}
+\begin{lstlisting}[style=CSheet]
+uint32_t rd_be32(const uint8_t *p) {      // any alignment, any host
+  return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16
+       | (uint32_t)p[2] << 8  | p[3]; }   // p[0] << 24 alone is int
+uint32_t v; memcpy(&v, buf + 1, 4); v = ntohl(v);   // same result
+#if __STDC_ENDIAN_NATIVE__ == __STDC_ENDIAN_LITTLE__ // C23 <stdbit.h>
+\end{lstlisting}
+Shifts act on values: no byte-order dependence. AAPCS64 allows either order. GCC
+\ct{scalar\_storage\_order("big-endian")} stores a struct's scalars big-endian (\ct{\&} of
+such a field is an error).
+
+\section{Integer promotion + usual conversions}
+\begin{itemize}
+  \item Rank below \ct{int} (\ct{char}, \ct{short}, \ct{uint8\_t}, \ct{uint16\_t}, \ct{bool},
+        narrow bit-fields) → \ct{int} if it holds every value, else \ct{unsigned} — before
+        arithmetic, unary \ct{+ - \textasciitilde}, shifts. \ct{\_BitInt(N)} is exempt.
+  \item \ct{uint8\_t a = 200, b = 100;} \ct{a + b} is \ct{int} \textbf{300}; only
+        \ct{uint8\_t r = a + b;} wraps to 44. As \ct{unsigned \_BitInt(8)}, \ct{a + b} is 44.
+  \item \ct{\textasciitilde x} for \ct{uint8\_t x = 0xFF} is \ct{int} $-256$, not 0: test
+        \ct{(uint8\_t)\textasciitilde x}. \ct{uint16\_t a = 65535; a * a} overflows \ct{int}:
+        UB; write \ct{(uint32\_t)a * a}. \ct{p[0] << 24} with \ct{p[0] >= 0x80}: UB, cast first.
+  \item Mixed signs: unsigned of rank $\ge$ the signed wins — \ct{-1 < 1u} and
+        \ct{i < sizeof buf} (\ct{i = -1}) are \textbf{false}; a wider signed type that holds every
+        unsigned value wins — \ct{-1L < 1u} is true on LP64, false on ILP32 / LLP64.
+  \item \ct{char c = 0xFF; c == 0xFF} is true where \ct{char} is unsigned (Arm32, AArch64
+        Linux), false where signed: 255 does not fit, GCC wraps it to $-1$.
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{c-pointers-const-restrict} ·
+\texttt{c-bits-and-registers} · \texttt{c-undefined-behavior-and-build} · Ownership ·
+exclusivity · memory layout · Cross-language FFI}
+
+\end{document}

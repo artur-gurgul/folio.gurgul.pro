@@ -1,0 +1,139 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>tmux panes — split, move, resize, join, float — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/dev-tools/tmux-panes.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">310</span></a></li><li><a class="side-area" href="/folios.html?area=ai" data-area="ai">ai<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=ble" data-area="ble">ble<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=c" data-area="c">c<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cicd" data-area="cicd">cicd<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=crypto" data-area="crypto">crypto<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area current" href="/folios.html?area=dev-tools" data-area="dev-tools">dev-tools<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=iot" data-area="iot">iot<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=javascript" data-area="javascript">javascript<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=linux" data-area="linux">linux<span class="count">8</span></a></li><li><a class="side-area" href="/folios.html?area=macos" data-area="macos">macos<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=recall" data-area="recall">recall<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=runtime" data-area="runtime">runtime<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li><li><a class="side-area" href="/folios.html?area=typescript" data-area="typescript">typescript<span class="count">3</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">tmux panes — split, move, resize, join, float</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">dev-tools · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A <strong>pane</strong> is one pseudo-terminal running one program; panes tile a
+<strong>window</strong>, windows make a <strong>session</strong>, and one <strong>server</strong> process owns them
+all (socket in <code>$TMUX_TMPDIR</code> or <code>/tmp</code>), so detaching leaves every program running.
+Keys are the <strong>prefix</strong> <code>C-b</code>, then the key. Moving a pane moves the terminal itself —
+the program never restarts.</p>
+<p class="sheet-tools"><a class="sheet-download" href="tmux-panes.pdf" download>Download PDF</a> <a href="tmux-panes.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/dev-tools/tmux-panes.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="tmux-panes-fig1.svg" width="633" height="192" class="wide" alt="tmux panes — split, move, resize, join, float — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Default keys — after the prefix <code>C-b</code></h2>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><code><span class="c-sheetblue"><strong>split · close</strong></span><br>
+%</code></td><td>split left | right — <code>split-window -h</code></td></tr>
+<tr><td><code>&quot;</code></td><td>split top / bottom — <code>split-window</code> (<code>-v</code> is the default)</td></tr>
+<tr><td><code>x</code></td><td>kill the pane after <code>y/n</code>; <code>exit</code> in its shell does the same</td></tr>
+<tr><td><code>!</code></td><td>break the pane out into a window of its own</td></tr>
+<tr><td><code><span class="c-sheetblue"><strong>focus</strong></span><br>
+arrows<sup><span class="c-sheetorange"><strong>r</strong></span></sup></code></td><td>pane above / below / left / right (<code>select-pane -U -D -L -R</code>)</td></tr>
+<tr><td><code>o  ;</code></td><td>next pane · last active pane (<code>l</code> last window, <code>L</code> last <em>session</em>)</td></tr>
+<tr><td><code>q</code></td><td>number every pane (<code>display-panes</code>); a digit jumps there</td></tr>
+<tr><td><code><span class="c-sheetblue"><strong>size</strong></span><br>
+C-arrows<sup><span class="c-sheetorange"><strong>r</strong></span></sup></code></td><td>resize by 1 cell · <code>M-</code>arrows<sup><span class="c-sheetorange"><strong>r</strong></span></sup> by 5 cells (<code>resize-pane</code>)</td></tr>
+<tr><td><code>z</code></td><td>zoom: the pane fills the window, <code>Z</code> on its tab; again to undo</td></tr>
+<tr><td><code><span class="c-sheetblue"><strong>rearrange</strong></span><br>
+{  }</code></td><td>swap with the previous / next pane (<code>swap-pane -U / -D</code>)</td></tr>
+<tr><td><code>C-o  M-o</code></td><td>rotate every pane forwards / backwards (<code>rotate-window</code>)</td></tr>
+<tr><td><code>Space</code></td><td>next preset layout · <code>M-1</code>…<code>M-7</code> pick one · <code>E</code> even out</td></tr>
+<tr><td><code>m  M</code></td><td>mark this pane (toggle) · clear the mark; one marked pane at a time</td></tr>
+<tr><td><code><span class="c-sheetblue"><strong>more</strong></span><br>
+T</code></td><td>set the pane title (3.8) · <code>&gt;</code> pane menu · <code>&lt;</code> window menu</td></tr>
+<tr><td><code>*</code></td><td>new floating pane (3.7) · <code>g</code> then 1–4 or an arrow: move it (3.8)</td></tr>
+<tr><td><code>[  ]</code></td><td>copy mode (<code>PgUp</code>: enter + scroll) · paste the newest buffer</td></tr>
+<tr><td><code>:  ?</code></td><td>command prompt · list every binding</td></tr>
+<tr><td><code>C-b</code></td><td>send a literal <code>C-b</code> — reaches a nested, inner tmux</td></tr>
+<tr><td><code>d  D</code></td><td>detach this client · choose a client to detach</td></tr>
+<tr><td><code>Tab</code></td><td>fuzzy window switcher; <code>S-Tab</code> sessions (3.8)</td></tr>
+</tbody>
+</table></p>
+<p><sup><span class="c-sheetorange"><strong>r</strong></span></sup> = bound with <code>bind -r</code>: repeats <em>without</em> the prefix while presses come within <code>repeat-time</code> (500 ms). Copy keys: vi <code>Space</code> begin, <code>Enter</code> copy; emacs <code>C-Space</code>, <code>M-w</code>.</p>
+<p><strong>Mouse</strong> (<code>mouse on</code> — the default since 3.8): click selects a pane · drag a border resizes (<code>resize-pane -M</code>) · drag in a pane selects in copy mode · wheel up enters copy mode unless the program is full-screen or wants the mouse · right-click: pane menu · double / triple click copies a word / line · Ctrl-drag: new floating pane (3.8).</p>
+</section>
+<section class="sheet-section">
+<h2>Pane commands — the flags that matter</h2>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><code>split-window</code></td><td><code>-h</code> side by side · <code>-v</code> stacked · <code>-b</code> before · <code>-f</code> full span · <code>-l 20</code> or <code>-l 30%</code> · <code>-c dir</code> · <code>-d</code> keep focus · <code>-Z</code> zoom it · <code>-I</code> empty pane fed from stdin</td></tr>
+<tr><td><code>join-pane</code></td><td>split <code>-t</code> and move <code>-s</code> into the gap; same <code>-h -v -b -f -l -d</code>; the reverse of <code>break-pane</code>; 3.8: tiles a floating pane</td></tr>
+<tr><td><code>move-pane</code></td><td>= <code>join-pane</code>; 3.8 adds moving floating panes</td></tr>
+<tr><td><code>break-pane</code></td><td><code>-s</code> pane → own window · <code>-d</code> stay here · <code>-n name</code> · <code>-a / -b</code> after / before this index; 3.8: floats a tiled pane</td></tr>
+<tr><td><code>resize-pane</code></td><td><code>-U -D -L -R</code> <span class="math">n</span> relative · <code>-x / -y</code> absolute, <span class="math">n</span> or <span class="math">n</span>% · <code>-Z</code> zoom · <code>-M</code> mouse drag · <code>-T</code> trim lines below cursor</td></tr>
+<tr><td><code>swap-pane</code></td><td><code>-s -t</code>, or <code>-U / -D</code> neighbour · <code>-d</code> keep the active pane · <code>-Z</code> keep zoom</td></tr>
+<tr><td><code>rotate-window</code></td><td><code>-U</code> / <code>-D</code> · <code>-Z</code> keep zoom</td></tr>
+<tr><td><code>select-layout</code></td><td>a name, or <code>-n / -p</code> · <code>-E</code> spread this pane and its neighbours · <code>-o</code> undo</td></tr>
+<tr><td><code>select-pane</code></td><td><code>-L -R -U -D</code> · <code>-m / -M</code> mark / clear · <code>-T</code> title · <code>-d / -e</code> block / allow input</td></tr>
+<tr><td><code>kill-pane</code></td><td><code>-a</code> every pane except <code>-t</code>; the last pane takes its window with it</td></tr>
+<tr><td><code>respawn-pane</code></td><td>rerun a dead pane’s command (<code>-k</code> kills a live one first)</td></tr>
+<tr><td><code>capture-pane</code></td><td><code>-p</code> to stdout · <code>-S / -E</code> line range, negative = history · <code>-J</code> join wrapped lines · <code>-e</code> keep colours</td></tr>
+<tr><td><code>pipe-pane</code></td><td>pipe a pane’s output to a command; <code>-o</code> opens only if none is open, so one key toggles</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>What changed recently</h2>
+<figure class="sheet-figure"><img src="tmux-panes-fig2.svg" width="307" height="58" alt="tmux panes — split, move, resize, join, float — figure 2" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Targets — <code>-t</code> and <code>-s</code></h2>
+<figure class="sheet-figure"><img src="tmux-panes-fig3.svg" width="262" height="33" alt="tmux panes — split, move, resize, join, float — figure 3" loading="lazy"></figure>
+<p><table class="sheet-table">
+<tbody>
+<tr><td>window</td><td><code>^</code> lowest · <code>$</code> highest · <code>!</code> previous current · <code>+ / -</code> next / previous (<code>+2</code>)</td></tr>
+<tr><td>pane</td><td><code>!</code> last active · <code>+ / -</code> · <code>{top}</code> <code>{bottom}</code> <code>{left}</code> <code>{right}</code> <code>{top-left}</code>… · <code>{up-of}</code> <code>{down-of}</code> <code>{left-of}</code> <code>{right-of}</code> the active pane · <code>{marked}</code> = <code>~</code> · <code>{mouse}</code> = <code>=</code></td></tr>
+<tr><td>short</td><td><code>:1</code> window 1 here · <code>:.2</code> pane 2 here · <code>:1.0</code> · <code>%7</code> by id · <code>work:</code> a session</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Options that shape panes</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><code><strong>option</strong></code></th><th><strong>default</strong></th><th><strong>values · note</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>base-index</code></td><td>0</td><td>first window number; <code>pane-base-index</code> 0: first pane</td></tr>
+<tr><td><code>synchronize-panes</code></td><td>off</td><td>input goes to every pane of the window not in a mode</td></tr>
+<tr><td><code>remain-on-exit</code></td><td>off</td><td><code>on</code> · <code>failed</code> · <code>key</code> (3.7) · <code>failed-key</code> (3.8); then <code>respawn-pane</code></td></tr>
+<tr><td><code>display-panes-time</code></td><td>1000 ms</td><td>how long the <code>C-b q</code> numbers stay</td></tr>
+<tr><td><code>repeat-time</code></td><td>500 ms</td><td><sup><span class="c-sheetorange"><strong>r</strong></span></sup> keys; <code>initial-repeat-time</code> (3.6) 0 = the same</td></tr>
+<tr><td><code>escape-time</code></td><td>10 ms</td><td>500 before 3.5: a 0.5 s wait after every <code>Esc</code></td></tr>
+<tr><td><code>history-limit</code></td><td>2000</td><td>scrollback lines per pane</td></tr>
+<tr><td><code>main-pane-width</code></td><td>80</td><td><code>main-pane-height</code> 24: the main pane of <code>main-*</code></td></tr>
+<tr><td><code>pane-border-status</code></td><td>off</td><td><code>top</code> · <code>bottom</code>: a title line on each border</td></tr>
+<tr><td><code>pane-border-lines</code></td><td>single</td><td><code>double</code> · <code>heavy</code> · <code>simple</code> · <code>number</code> · <code>spaces</code> (3.6)</td></tr>
+<tr><td><code>pane-scrollbars</code></td><td>off</td><td><code>modal</code> · <code>on</code> (3.6) · <code>auto-hide</code> (3.8)</td></tr>
+<tr><td><code>mouse</code></td><td>on</td><td><code>off</code> before 3.8</td></tr>
+<tr><td><code>focus-follows-mouse</code></td><td>off</td><td>hover selects the pane (3.7; needs <code>mouse</code>)</td></tr>
+<tr><td><code>mode-keys</code></td><td>emacs</td><td><code>vi</code> if <code>$VISUAL</code> or <code>$EDITOR</code> contains “vi”</td></tr>
+<tr><td><code>renumber-windows</code></td><td>off</td><td>windows keep the gap a closed one leaves</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Saving layouts: resurrect + continuum</h2>
+<p>Plugins via TPM: <code>set -g @plugin &#39;tmux-plugins/tmux-resurrect&#39;</code>, <code>prefix I</code> installs. <strong>resurrect</strong>: <code>prefix C-s</code> save · <code>prefix C-r</code> restore sessions, windows, panes and their order, layouts, working directories, the active pane; reruns only <code>vi vim nvim emacs
+man less more tail top htop irssi weechat mutt</code>; pane text with <code>@resurrect-capture-pane-contents &#39;on&#39;</code>; files in <code>~/.tmux/resurrect</code>; panes that exist are left alone. <strong>continuum</strong>: autosave every 15 min (<code>@continuum-save-interval</code>, <code>0</code> = off), <code>@continuum-restore &#39;on&#39;</code> restores at server start. It hooks <code>status-right</code>: status line on, plugin listed last — a theme that rewrites <code>status-right</code> stops the autosave silently.</p>
+</section>
+<section class="sheet-section">
+<h2>Recipes</h2>
+<pre class="sheet-code"><code class="hljs language-plaintext"># terminal on the right, 30 %, same directory
+tmux split-window -h -l 30% -c &#x27;#{pane_current_path}&#x27;
+# type into every pane of this window (off to stop)
+tmux set -w synchronize-panes on
+# last 200 lines of pane %3 as text
+tmux capture-pane -p -S -200 -t %3
+# log a pane to a file; the same key stops it (man page)
+bind-key C-p pipe-pane -o &#x27;cat &gt;&gt;~/output.#I-#P&#x27;</code></pre>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap"><code>-h</code> is side by side: tmux names the split by how the panes line up, Vim names the  same split <code>:vsplit</code>.</li>
+<li class="trap">A forgotten mark: <code>join-pane</code>, <code>move-pane</code>, <code>swap-pane</code> without <code>-s</code>  take the <strong>marked</strong> pane — <code>C-b M</code> clears it.</li>
+<li class="trap"><code>M-</code>keys type symbols on a Mac until Option sends Meta: Terminal <em>Use Option
+ as Meta key</em>; iTerm2 Option key <em>Esc+</em>.</li>
+<li class="trap">With mouse on, the terminal’s own selection needs <strong>Shift</strong> (many Linux  terminals) or <strong>Option</strong> (iTerm2).</li>
+</ul>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> <code>vim-editing-grammar</code> ·
+<code>macos-power-user-cli</code> · <code>os-fundamentals</code> · <code>linux-security-permissions</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=dev-tools" title="area">dev-tools</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=tooling" title="kind">tooling</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=general" title="platform">general</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=tooling" title="topic">tooling</a></li><li class="sheet-tag"><a href="/folios.html?tag=tmux">tmux</a></li><li class="sheet-tag"><a href="/folios.html?tag=terminal">terminal</a></li><li class="sheet-tag"><a href="/folios.html?tag=panes">panes</a></li><li class="sheet-tag"><a href="/folios.html?tag=splits">splits</a></li><li class="sheet-tag"><a href="/folios.html?tag=split-window">split-window</a></li><li class="sheet-tag"><a href="/folios.html?tag=join-pane">join-pane</a></li><li class="sheet-tag"><a href="/folios.html?tag=break-pane">break-pane</a></li><li class="sheet-tag"><a href="/folios.html?tag=resize-pane">resize-pane</a></li><li class="sheet-tag"><a href="/folios.html?tag=layouts">layouts</a></li><li class="sheet-tag"><a href="/folios.html?tag=floating-panes">floating-panes</a></li><li class="sheet-tag"><a href="/folios.html?tag=key-bindings">key-bindings</a></li><li class="sheet-tag"><a href="/folios.html?tag=targets">targets</a></li><li class="sheet-tag"><a href="/folios.html?tag=tmux-resurrect">tmux-resurrect</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=dev-tools%2Ftmux-panes.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/306">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

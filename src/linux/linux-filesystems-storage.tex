@@ -1,0 +1,325 @@
+% linux-filesystems-storage.tex — the VFS objects (superblock, inode, dentry, file) and the descriptors
+% that reach them, hard vs symbolic links, the page cache and writeback defaults, the durability
+% ladder (write → fdatasync → fsync → fsync of the directory), crash-safe replace, writeback errors,
+% the I/O paths (O_DIRECT, RWF_*, io_uring, reflinks), ext4 / XFS / Btrfs / tmpfs, the block layer
+% (blk-mq, device mapper, LVM, md RAID, LUKS, fscrypt), mounts + fstab, df vs du, and the traps.
+% Sources (checked 2026-10-09):
+%   docs.kernel.org/filesystems/vfs (dentries live in RAM, never saved; one inode, many dentries;
+%     the file structure goes into the fd table; get_tree() on mount)
+%   man7.org open(2) (open file description; dup / fork share offset + status flags; O_DIRECT
+%     "does not give the guarantees of O_SYNC", don't mix with buffered I/O or mmap, STATX_DIOALIGN
+%     6.1; O_SYNC vs O_DSYNC; O_TMPFILE 3.11 + linkat) · dup(2) (close-on-exec not shared) · link(2)
+%     (EXDEV across mounts, EPERM for a directory, no "original") · unlink(2) (lives until the last
+%     fd closes) · path_resolution(7) (40 symlinks, ELOOP; relative to the link's directory)
+%   man7.org fsync(2) (flushes the disk cache; fdatasync skips mtime, not size; fsync the directory;
+%     since 4.13 writeback errors reported to all fds) · sync(2) (Linux waits; syncfs 2.6.39,
+%     reports writeback errors since 5.8) · rename(2) (atomic replace, a window where both names
+%     exist, EXDEV; RENAME_NOREPLACE ext4 3.15) · readv(2) (RWF_DSYNC / RWF_SYNC 4.7, RWF_ATOMIC
+%     6.11: power of 2, aligned, O_DIRECT, all-or-nothing; RWF_DONTCACHE 6.14) · statx(2) (4.11;
+%     STATX_WRITE_ATOMIC on ext4 + XFS 6.13) · fallocate(2) (PUNCH_HOLE 2.6.38) · ioctl_ficlone(2)
+%     (4.5, was Btrfs-only; EXDEV) · cp(1) coreutils 9.11 (--reflink=auto by default) · lsof(8) (+L1)
+%   docs.kernel.org admin-guide/sysctl/vm (ratios of available = free + reclaimable memory; *_bytes)
+%     · github.com/torvalds/linux mm/page-writeback.c (10 %, 20 %, 5 s, 30 s)
+%     · docs.kernel.org admin-guide/sysctl/kernel (io_uring_disabled 0 / 1 / 2)
+%   docs.kernel.org block/writeback_cache_control (REQ_PREFLUSH, REQ_FUA, stripped without a volatile
+%     cache) · block/blk-mq (software staging + hardware dispatch queues) · block/switching-sched
+%     (/sys/block/<dev>/queue/scheduler) · block/elevator.c (mq-deadline when one hardware queue,
+%     else none) · man7.org io_uring(7) (SQ / CQ rings via mmap, batching, SQPOLL, 5.1)
+%   wiki.postgresql.org/wiki/Fsync_Errors (2018; pages marked clean, retried fsync "succeeds";
+%     PostgreSQL PANICs on fsync failure; 4.13 errors after open(), 4.16 errseq_t, still once)
+%     · docs.kernel.org core-api/errseq
+%   docs.kernel.org admin-guide/ext4 (data=ordered default; writeback: "incorrect data" after
+%     crash + recovery; data=journal disables delalloc and O_DIRECT; commit=5; auto_da_alloc on)
+%     · filesystems/ext4/blocks (4 KiB blocks: file 16 TiB with extents) · filesystems/ext4/journal
+%     (jbd2) · filesystems/ext4/atomic_writes (6.13) · man7.org mke2fs(8) (5 % reserved for root;
+%     inode ratio fixed after mkfs) · tune2fs(8) (-m: the reserved percentage) · resize2fs(8)
+%     (shrink unmounted, grow mounted)
+%   docs.kernel.org admin-guide/xfs (V4 format removal September 2030) · man7.org xfs_growfs(8)
+%     (grown while mounted; shrink: only the last AG, not removed) · mkfs.xfs(8) (allocation groups
+%     for parallel allocation; reflink on by default; inode space only capped by maxpct) ·
+%     docs.redhat.com RHEL 9 Managing file systems (XFS default since RHEL 7; no shrinking)
+%   btrfs.readthedocs.io Status (RAID56 unstable) · btrfs-man5 (profiles; write hole; metadata on
+%     raid1 / raid1c3) · Checksumming (crc32c default; xxhash, sha256, blake2b since 5.5) ·
+%     Compression (zlib, lzo, zstd 4.14) · mkfs.btrfs (single device: data single + metadata DUP)
+%     · Defragmentation (in-place rewrites fragment; defrag breaks reflink / snapshot sharing)
+%     · fedoraproject.org Changes/BtrfsByDefault (Fedora 33 desktop)
+%   docs.kernel.org filesystems/tmpfs (page cache + swap; half of RAM; not preallocated) ·
+%     filesystems/fscrypt (ext4, F2FS, UBIFS, CephFS; contents, names, symlink targets — not sizes,
+%     times, permissions, xattrs; v2 since 5.4; AES-256-XTS + AES-256-CBC-CTS) ·
+%     admin-guide/device-mapper dm-crypt, verity (read-only hash tree), dm-integrity (per-sector
+%     tags, + dm-crypt = authenticated)
+%   man7.org lvm(8) (PV, VG, LV; types) · lvmthin(7) (overprovisioning; full pool: error or queue
+%     60 s; thin snapshots share blocks; fstrim returns chunks) · lvcreate(8) (COW space, extend with
+%     lvextend) · lvextend(8) (-r via fsadm) · md(4) (levels 0/1/4/5/6/10; near / far / offset;
+%     write-intent bitmap; journal 4.4, PPL 4.12; sync_action check / repair)
+%   gitlab.com/cryptsetup/cryptsetup FAQ.md (damaged header = no decryption, luksHeaderBackup;
+%     LUKS2 uses Argon2; one volume key, keyslots hold it; aes-xts-plain64 default since 1.6.0) ·
+%     man7.org cryptsetup-luksFormat(8) (LUKS2 default; 8 vs 32 keyslots)
+%   man7.org mount(8) (relatime 2.6.30 + the 1-day rule; lazytime; defaults; a mount hides the
+%     directory's previous contents) · fstab(5)
+%     · fstrim(8) (weekly is enough; discard may cost) · kernelnewbies.org Linux_4.0 (lazytime)
+%   kernelnewbies.org Linux_2_6_28 (ext4 stable) · 2_6_29 (Btrfs merged, "UNSTABLE") · 2_6_30
+%     (relatime default; auto_da_alloc) · 3.13 (blk-mq; single lock ~800 000 IOPS) · 5.0 (non-mq
+%     code removed) · 5.1 (io_uring) · 6.7 + 6.18 (bcachefs merged / removed) · 6.11 + 6.13 (atomic
+%     writes) · 7.0 (2026-04-12: fserror, XFS self-healing) · 7.2 (2026-08-16: dm-inlinecrypt, XFS
+%     zoned not experimental) · LinuxVersions (release dates)
+% NOT repeated: ZFS (its own folio, os/zfs); mmap and page faults (os-fundamentals); reclaim and
+% OOM (linux-memory-oom); iostat / biolatency (linux-performance-observability); overlayfs and
+% mount namespaces (namespaces-cgroups-containers).
+% @labels: area=linux kind=concept platform=backend topic=data,platform-apis,debugging discussion=315
+% @tags: vfs, inode, dentry, file-descriptor, hard-link, symlink, page-cache, writeback, fsync, atomic-rename, io-uring, ext4, xfs, btrfs, copy-on-write, snapshots, checksums, lvm, raid, dm-crypt, luks
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinestyle{CSheet}{style=printup, language=C,
+  morekeywords={size_t,ssize_t},
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2
+           {<=}{{\hbox{<}\hbox{=}}}2 {>=}{{\hbox{>}\hbox{=}}}2 {||}{{\hbox{|}\hbox{|}}}2}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\small\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\sheettitle{Linux filesystems \& storage — VFS, page cache, durability}{linux · folio}
+
+\oneliner{A \textbf{file descriptor} indexes the process's fd table $\to$ an \textbf{open file
+description} (offset, status flags) $\to$ an \textbf{inode} (metadata + block map, \emph{no name});
+\textbf{dentries} map names to inodes. \ct{write()} only dirties the \textbf{page cache}; data is
+durable after \ct{fsync()}, and a file is replaced atomically by \textbf{write tmp, fsync, rename,
+fsync the directory}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet,
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    fd/.style={cell, minimum width=5mm, minimum height=3.4mm, font=\tiny\ttfamily},
+    ob/.style={box, font=\tiny, inner sep=1.5pt, align=left},
+    pg/.style={draw=sheetGrey, minimum width=4mm, minimum height=4mm, inner sep=0pt, font=\tiny},
+    st/.style={box, draw=sheetGrey, fill=black!5, font=\tiny, text width=21mm, inner sep=1.2pt}]
+  % fd tables
+  \node[font=\bfseries\tiny, text=sheetBlue] at (0.5,3.55) {proc A fds};
+  \foreach \i in {0,...,4} \node[fd] (a\i) at (0.5,3.2-0.34*\i) {\i};
+  \node[font=\bfseries\tiny, text=sheetBlue] at (0.5,1.3) {child B (fork)};
+  \foreach \i in {0,...,3} \node[fd] (b\i) at (0.5,0.95-0.34*\i) {\i};
+  \node[l, text=sheetGrey] at (0.5,-0.55) {per process;\\\ct{FD\_CLOEXEC} here};
+  % open file descriptions
+  \node[ob, text width=24mm] (o1) at (2.7,2.35) {\textbf{open file description 1}\\offset 4096 · \ct{O\_RDWR|O\_APPEND}\\refcount 2 (A:3, B:3)};
+  \node[ob, text width=24mm] (o2) at (2.7,0.85) {\textbf{open file description 2}\\offset 0 · \ct{O\_RDONLY}\\a second \ct{open()} by A};
+  \draw[flow] (a3.east) -- (o1.west);
+  \draw[flow] (b3.east) -- (o1.south west);
+  \draw[flow] (a4.east) -- (o2.west);
+  \node[l, text=sheetGrey, align=center] at (2.7,-0.35) {system-wide (\ct{struct file})\\\ct{dup}/\ct{fork} share one $\Rightarrow$ shared offset};
+  % dentries
+  \node[ob, draw=sheetGreen, fill=sheetGreen!8, text width=18mm] (d1) at (5.55,2.2) {dentry \ct{/srv/app.db}};
+  \node[ob, draw=sheetGreen, fill=sheetGreen!8, text width=18mm] (d2) at (5.55,2.95) {dentry \ct{/bak/app.db}\\(hard link)};
+  \node[ob, draw=sheetBrown, fill=sheetBrown!8, text width=18mm] (s1) at (5.55,1.05) {\ct{latest} $\to$ symlink:\\own inode 88 holds\\the \emph{path} \ct{/srv/app.db}};
+  \draw[flow] (o1.east) -- (d1.west);
+  \draw[flow] (o2.east) -- (d1.south west);
+  \draw[flow, dashed, draw=sheetBrown] (s1.north) -- node[l, right, text=sheetBrown]{resolves by name} (d1.south);
+  \node[l, text=sheetGreen!45!black] at (5.55,0.2) {dcache: RAM only,\\never written};
+  % inode + superblock
+  \node[ob, draw=sheetOrange, fill=sheetOrange!8, text width=24mm] (ino) at (8.55,2.35) {\textbf{inode 1234} (no name!)\\mode 0640 · uid · size\\\textbf{nlink 2} · a/m/ctime\\extents $\to$ disk blocks};
+  \draw[flow] (d1.east) -- (ino.west);
+  \draw[flow] (d2.east) -- (ino.west);
+  \node[ob, draw=sheetGrey, fill=black!4, text width=24mm] (sb) at (8.55,0.85) {\textbf{superblock}: one per\\mounted fs · type, block size,\\free counts, \ct{s\_op} methods};
+  \node[l, align=left, text=sheetRed] at (8.55,-0.3) {freed only when nlink = 0\\\textbf{and} the last fd is closed};
+  % page cache
+  \node[font=\bfseries\tiny, text=sheetBlue] at (11.55,3.5) {page cache (per inode)};
+  \foreach \i/\c in {0/white,1/sheetRed!25,2/white,3/sheetRed!25,4/white}
+    \node[pg, fill=\c] (p\i) at (10.75+0.42*\i,3.05) {};
+  \node[l, anchor=north west, align=left] at (10.5,2.75) {\colorbox{sheetRed!25}{dirty}: written, not on disk\\\ct{write()} returns here};
+  \draw[flow] (ino.east) -- ++(0.35,0) |- (p0.west);
+  \node[l, anchor=north west, align=left, text=sheetBrown] at (10.5,2.1) {\textbf{writeback} (flusher threads), \ct{vm.}:\\every 5\,s: \ct{dirty\_writeback\_centisecs}\\dirty $>$ 30\,s: \ct{dirty\_expire\_centisecs}\\10\,\% dirty: \ct{dirty\_background\_ratio}\\20\,\%: writers throttled, \ct{dirty\_ratio}\\\% of \emph{available} memory (free +\\reclaimable), not RAM; \ct{*\_bytes}\\twins are absolute. \ct{fsync()}: now};
+  \draw[hot] (12.9,3.05) -- (13.95,3.05);
+  % block stack
+  \node[st] (bl) at (15.15,3.05) {\textbf{bio} $\to$ blk-mq queues\\none · mq-deadline · bfq · kyber};
+  \node[st, fill=sheetRed!6, draw=sheetRed] (dm) at (15.15,2.3) {dm-crypt (LUKS2)};
+  \node[st] (lv) at (15.15,1.75) {LVM: LV in a VG};
+  \node[st] (md) at (15.15,1.2) {md RAID 1/5/6/10};
+  \node[st, fill=sheetGreen!8, draw=sheetGreen] (dk) at (15.15,0.55) {NVMe / SSD / HDD\\volatile write cache};
+  \foreach \a/\b in {bl/dm, dm/lv, lv/md, md/dk} \draw[flow] (\a) -- (\b);
+  \node[l, align=center, text=sheetRed] at (15.15,-0.25) {\ct{fsync} $\to$ \ct{REQ\_PREFLUSH} /\\\ct{REQ\_FUA}: the cache too};
+  % layer labels
+  \draw[decorate, decoration={brace, amplitude=3pt}, sheetBlue] (1.5,3.75) -- (9.9,3.75) node[midway, above=2pt, l, text=sheetBlue]{\textbf{VFS}: generic objects, the same for every filesystem};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\hd{VFS objects and descriptors}
+\begin{itemize}
+  \item \textbf{superblock} = a mounted fs · \textbf{inode} = one object (mode, owner, size,
+        nlink, times, block map) · \textbf{dentry} = name $\to$ inode, cached in RAM (the
+        \textbf{dcache}), never saved · \textbf{file} = an open file description.
+  \item \ct{dup} / \ct{fork} copy descriptors that share one description: one offset, one set of
+        status flags (\ct{O\_APPEND}, \ct{O\_NONBLOCK}); \ct{FD\_CLOEXEC} is per descriptor.
+        Another \ct{open()} gets its own offset.
+  \item \textbf{Hard link}: one more name for the inode, no ``original''; same mount only
+        (\ct{EXDEV}), never a directory (\ct{EPERM}). \textbf{Symlink}: own inode holding a path;
+        crosses filesystems, may dangle, resolves from the link's directory; $>$40 in one lookup
+        $\to$ \ct{ELOOP}. \ct{unlink} drops a name; the inode lives on until nlink = 0 \emph{and}
+        the last descriptor is closed.
+\end{itemize}
+
+\hd{Durability ladder — what survives power loss}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}L{25mm}L{53mm}@{}}
+\toprule
+\textbf{call returned} & \textbf{durable}\\
+\midrule
+\ct{write()} & nothing — copied into the page cache, no device I/O\\
+\ct{fdatasync(fd)} & data + metadata needed to read it back (size), not mtime / atime\\
+\ct{fsync(fd)} & data + all of the inode + a flush of the device's write cache\\
+\ct{fsync(dirfd)} & the directory: a new, renamed or removed \emph{name}\\
+\ct{O\_DSYNC} · \ct{O\_SYNC} & as fdatasync · fsync, after every \ct{write}; \ct{RWF\_DSYNC} ·
+  \ct{RWF\_SYNC} (4.7) per call\\
+\ct{syncfs(fd)} · \ct{sync()} & one filesystem · all; on Linux both wait for the I/O\\
+\bottomrule
+\end{tabular}}\par
+A flush reaches the device as \ct{REQ\_PREFLUSH} (empty the volatile cache first) +
+\ct{REQ\_FUA} (complete only once on stable media); stripped if there is no volatile cache.
+
+\hd{Crash-safe replace}
+\begin{lstlisting}[style=CSheet, basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt]
+int fd = open("conf.tmp", O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0644);
+write_all(fd, buf, len);           /* page cache only         */
+if (fsync(fd) != 0) abort();       /* data + inode on disk    */
+close(fd);
+rename("conf.tmp", "conf.json");   /* atomic replace          */
+int dir = open(".", O_RDONLY | O_DIRECTORY);
+fsync(dir); close(dir);            /* the new name is durable */
+\end{lstlisting}
+\ct{rename}: \ct{conf.json} is never missing (both names may briefly exist); same mount only
+(\ct{EXDEV}). \ct{renameat2} (3.15): \ct{RENAME\_NOREPLACE}, \ct{RENAME\_EXCHANGE} (swap).
+\ct{O\_TMPFILE} (3.11): a file with no name until \ct{linkat()} gives it one, when complete. ext4
+\ct{auto\_da\_alloc} (2.6.30) eases code that skips fsync — no guarantee.
+
+\hd{Writeback errors — ``fsyncgate'' (PostgreSQL, 2018)}
+After a failed writeback the pages were marked \textbf{clean}: a retried \ct{fsync}
+``succeeded'' over lost data. \textbf{4.13}: the error reaches every fd that might have written
+it (tracked by \ct{errseq\_t}); \textbf{4.16}: an fd opened after the error still gets it if
+nobody has seen it — and only \textbf{once}. PostgreSQL now PANICs on fsync failure. \ct{syncfs} reports errors since 5.8; 7.0 adds a generic
+\ct{fserror} feed to fsnotify.
+
+\hd{I/O paths}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}L{17mm}L{61mm}@{}}
+\toprule
+\ct{O\_DIRECT} & skips the cache; alignment from \ct{STATX\_DIOALIGN} (6.1); \emph{not} O\_SYNC's
+  guarantee; don't mix with buffered I/O or mmap on one file\\
+\ct{RWF\_DONTCACHE} & 6.14: buffered, but the pages are dropped after the I/O\\
+\ct{RWF\_ATOMIC} & 6.11 (ext4, XFS: 6.13): O\_DIRECT, power-of-2 size, aligned, within
+  \ct{STATX\_WRITE\_ATOMIC} $\Rightarrow$ never torn by power loss\\
+io\_uring & 5.1: submission + completion rings mmap-shared with the kernel; many ops per
+  \ct{io\_uring\_enter}, none with SQPOLL; \ct{kernel.io\_uring\_disabled} = 0 / 1 / 2\\
+reflink & \ct{FICLONE} (4.5, was Btrfs-only): share extents, CoW on write, same fs only;
+  \ct{cp} tries it by default\\
+\bottomrule
+\end{tabular}}
+
+\hd{Mounts and fstab}
+\ct{relatime} (default, 2.6.30): atime written only if older than m/ctime or $>$1 day;
+\ct{noatime} never; \ct{lazytime} (4.0) keeps timestamps in memory until another inode change,
+fsync, eviction or 24\,h. \ct{defaults} = rw, suid, dev, exec, auto, nouser, async — add
+\ct{nosuid,nodev,noexec} for untrusted media. fstab: spec (\ct{UUID=}, \ct{LABEL=},
+\ct{PARTUUID=}) · target · type · options · dump · fsck pass (root 1, others 2, 0 skip);
+\ct{nofail} for optional disks. Weekly \ct{fstrim} is enough; \ct{-o discard} can cost speed.
+
+\columnbreak
+
+\hd{Filesystems}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}L{9mm}L{69mm}@{}}
+\toprule
+\textbf{ext4} & jbd2 journal, commit every 5\,s. \ct{data=ordered} (default): data on disk before
+  its metadata commits · \ct{writeback}: stale data possible after a crash · \ct{journal}: all
+  written twice, no delalloc, no O\_DIRECT. Extents, delayed allocation; \textbf{inode count fixed
+  at mkfs}; 5\,\% kept for root; shrinks only unmounted; file $\le$ 16\,TiB (4\,KiB blocks).
+  Stable 2.6.28 (2008).\\
+\textbf{XFS} & \textbf{allocation groups} allocate in parallel; reflink on by default; inodes on
+  demand. Grows mounted; shrinks only inside the last AG. RHEL default since 7. V4 format removal due
+  Sept 2030; 7.0: self-healing daemon; 7.2: zoned allocator out of experimental.\\
+\textbf{Btrfs} & CoW B-trees; checksums on data + metadata (crc32c; xxhash, sha256, blake2b: 5.5);
+  subvolumes, snapshots, send/receive, scrub; zstd (4.14), zlib, lzo. mkfs: data \ct{single},
+  metadata \ct{DUP}. \textbf{RAID56 ``unstable''} (write hole) — metadata on raid1 / raid1c3.
+  Merged 2.6.29; Fedora desktop default since 33.\\
+tmpfs & page cache + swap; default size half of RAM, not preallocated.\\
+bcachefs & merged 6.7 (2024), removed 6.18 (2025).\\
+ZFS & out of tree (CDDL) — its own folio.\\
+\bottomrule
+\end{tabular}}\par
+\textbf{Journal}: log the change, commit, then write it home — replay after a crash.
+\textbf{CoW}: new blocks, then flip a pointer — snapshots share blocks; in-place rewrites
+fragment, and defrag un-shares reflinked or snapshotted extents (space grows).
+
+\hd{Block layer, device mapper, LVM}
+\begin{itemize}
+  \item \textbf{bio} $\to$ \textbf{blk-mq} (3.13): per-CPU staging queues $\to$ hardware dispatch
+        queues; the single-lock queue (ceiling $\approx$800\,000 IOPS) went in 5.0.
+        \ct{/sys/block/<dev>/queue/scheduler}: \ct{mq-deadline} on one hardware queue, \ct{none}
+        on many (NVMe); \ct{bfq}, \ct{kyber}.
+  \item dm targets: \ct{crypt} · \ct{integrity} (per-sector tags; + crypt = authenticated) ·
+        \ct{verity} (read-only hash tree) · \ct{thin} · \ct{cache} · linear / striped ·
+        \ct{pcache} (6.18) · \ct{inlinecrypt} (7.2).
+  \item \textbf{LVM}: PV $\to$ VG $\to$ LV (linear, striped, raid, thin, cache, vdo);
+        \ct{lvextend -r} grows the fs too. Thick snapshot: a fixed CoW area — extend it before it
+        fills. \textbf{Thin pool}: overprovisioned; full $\to$ errors, or writes queued 60\,s;
+        \ct{fstrim} returns freed chunks.
+\end{itemize}
+
+\hd{md RAID}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}L{6mm}L{9mm}L{11mm}L{48mm}@{}}
+\toprule
+\textbf{level} & \textbf{usable} & \textbf{survives} & \textbf{notes}\\
+\midrule
+0 & $n$ & 0 disks & stripe: one loss = everything\\
+1 & 1 disk & $n{-}1$ & mirror\\
+5 & $n{-}1$ & 1 & distributed parity; write hole $\to$ journal (4.4) or PPL (4.12)\\
+6 & $n{-}2$ & 2 & dual parity\\
+10 & $n/2$ & $\ge$1 & 2 copies; near / far / offset layouts\\
+\bottomrule
+\end{tabular}}\par
+Write-intent \textbf{bitmap}: after a crash, resync only the marked regions.
+\ct{echo check > md/sync\_action} scrubs (\ct{repair} fixes); state in \ct{/proc/mdstat}.
+
+\hd{Encryption: whole device vs per directory}
+\textbf{LUKS2} (default) on dm-crypt: a passphrase, stretched by \textbf{Argon2} (LUKS1: PBKDF2),
+opens a \textbf{keyslot} holding the one \textbf{volume key}; 32 keyslots (LUKS1: 8);
+\ct{aes-xts-plain64}. Damaged header = undecryptable: \ct{luksHeaderBackup}. \textbf{fscrypt}
+(ext4, F2FS, UBIFS, CephFS): per directory; contents, names, symlink targets — \emph{not} sizes,
+times, permissions, xattrs; v2 policies (5.4).
+
+
+\hd{df vs du, and ``No space left''}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}L{22mm}L{56mm}@{}}
+\toprule
+\ct{df} full, \ct{du} small & deleted but still open (rotated log): \ct{lsof +L1}; restart or
+  truncate \ct{/proc/<pid>/fd/<n>}\\
+files ``vanish'' & a mount over a non-empty directory hides them\\
+95\,\%, root still writes & ext4 keeps 5\,\% for root (\ct{tune2fs -m})\\
+\ct{ENOSPC}, space free & \textbf{inodes} gone (\ct{df -i}): fixed count on ext4\\
+\ct{ls -l} \pdfonly{$\gg$}\htmlonly{≫} \ct{du} & sparse file: holes (\ct{fallocate} \ct{PUNCH\_HOLE}, 2.6.38) take no blocks\\
+\bottomrule
+\end{tabular}}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{fsync the file but not the directory: after a crash the new name can be missing.}
+  \trap{Retrying a failed \ct{fsync} and trusting the ``success''.}
+  \trap{Replace via tmp + rename = a \emph{new inode}: hard links and \ct{tail -f} keep the old.}
+  \trap{Parent and child after \ct{fork} share an offset — interleaved writes to one log.}
+  \trap{RAID and snapshots are not backups: same disks, and \ct{rm} is mirrored too.}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\raggedright\footnotesize\color{sheetGrey}\textit{Related:} \texttt{os-fundamentals} (mmap, page
+faults) · \texttt{linux-memory-oom} · \texttt{linux-performance-observability} (I/O latency) ·
+\texttt{namespaces-cgroups-containers} (overlayfs) · \texttt{linux-boot-process} · ZFS — pools,
+copy-on-write, checksums, snapshots · SQLite internals for app engineers (+ GRDB)\par}
+
+\end{document}

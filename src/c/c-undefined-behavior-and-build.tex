@@ -1,0 +1,335 @@
+% c-undefined-behavior-and-build.tex — undefined behaviour in C23 (the four kinds of behaviour, a
+% catalogue with clause numbers, what the optimiser does with UB, the flags that switch its
+% assumptions off, C23's new tools), catching it (warnings, sanitizers, hardening, -O levels), and
+% the build: translation phases, preprocess / compile / assemble / link, linkage and the one
+% external definition, archives vs shared libraries, LTO, header guards and macro traps.
+% Sources (checked 2026-10-09):
+%   open-std.org/jtc1/sc22/wg14/www/docs/n3220.pdf (working draft of ISO/IEC 9899:2024, C23):
+%     3.5.1-3.5.4 (implementation-defined, locale-specific, undefined, unspecified + the EXAMPLE of
+%     each; UB note 3: observable behaviour before the UB appears as specified) · 5.1.1.1 (TU =
+%     source file + #included files, after preprocessing) · 5.1.1.2 (8 phases, conceptual, folded
+%     in practice; phase 1 without trigraphs) · 5.1.1.3 (constraint violation needs a diagnostic even
+%     if also UB) · 5.1.2.3.4 (reaching main's } returns 0) · 6.2.2 (three linkages; file-scope
+%     static / constexpr object = internal) · 6.2.4p2 (use outside lifetime; the pointer becomes
+%     indeterminate) · 6.2.5p11 (unsigned arithmetic modulo 2^N, never overflows) · 6.2.6.2 NOTE 2
+%     (two's complement only) · 6.2.7p2 (incompatible declarations = UB) · 6.3.2.1p2 (uninitialised
+%     automatic whose address is never taken = UB) · 6.3.2.3p7-8 (misaligned pointer conversion;
+%     call through an incompatible function pointer) · 6.4.5p7 (modifying a string literal) ·
+%     6.5.1p2 + footnote 81 (i = ++i + 1; a[i++] = i) · 6.5.1p5 (exceptional condition) · 6.5.1p7
+%     (effective type list, character types) · 6.5.3.4 footnote 93 (union type punning
+%     reinterprets) · 6.5.6p6-7 (÷ 0; a/b not representable) · 6.5.7p9-10 (pointer arithmetic past
+%     one-past-the-end; subtraction across arrays) · 6.5.8p3-5 (shift rules; >> of a negative value
+%     = implementation-defined) · 6.5.9p6 (relational compare of unrelated pointers) · 6.5.10 (==
+%     between any pointers) · 6.7.5p7 (inline definition is not an external definition) · 6.8.6.1p4 +
+%     footnote 187 (loops assumed to terminate) · 6.9.1p5 (exactly one external definition) ·
+%     6.9.2p13 (using the value of a function that ran off its end) · 6.9.3p2 (tentative definition)
+%     · 6.10.2p13 (#if: identifiers left after expansion → 0) · 7.20 (<stdckdint.h>: ckd_add /
+%     ckd_sub / ckd_mul, true = overflow, wrapped result stored) · 7.21.1 (unreachable) ·
+%     7.24.3.7p3 (realloc with size 0 = UB) · Annex F.3 (/ bound to ISO/IEC 60559 division) · J.2
+%     (221 numbered UB cases) · M.2 (C23 changes: realloc 0, unreachable, () = (void),
+%     identifier-list definitions removed, attributes, nullptr, typeof, memset_explicit, #embed,
+%     #elifdef, #warning, __VA_OPT__)
+%   gcc.gnu.org/onlinedocs/gcc: Optimize-Options (-O0 default … -Og for edit-compile-debug; -Ofast =
+%     -O3 + -ffast-math + -fallow-store-data-races; -fstrict-aliasing at -O2 / -O3 / -Os;
+%     -fdelete-null-pointer-checks on by default on most targets, never on AVR / MSP430; loop
+%     vectorisation at -O2; -flto writes GIMPLE) · Code-Gen-Options (-fwrapv, -fwrapv-pointer,
+%     -ftrapv, -fstrict-overflow ↔ -fno-wrapv -fno-wrapv-pointer; -fno-common is the default;
+%     -fPIC / -fPIE; -fvisibility=hidden) · Instrumentation-Options (sanitizer list, no
+%     -fsanitize=memory; address not with thread / hwaddress; -fsanitize-trap;
+%     -fstack-protector-strong; -fhardened's list) · Warning-Options (-Wall is not all;
+%     -Wnull-dereference only with -fdelete-null-pointer-checks; -Wstrict-aliasing=3 in -Wall;
+%     -Wheader-guard in -Wall; -Wundef; -Wlto-type-mismatch on by default) · Common-Attributes
+%     (weak) · cpp/Once-Only-Headers (a wrapped header is not rescanned) ·
+%     cpp/Alternatives-to-Wrapper-#ifndef (#pragma once not recognised by all preprocessors)
+%   gcc.gnu.org gcc-10/changes + porting_to (-fno-common default → multiple definition; -fanalyzer)
+%     · gcc-14/changes (-std=c23, <stdckdint.h>, -fhardened) + porting_to (six warnings now errors,
+%     -fpermissive) · gcc-15/changes (default -std=gnu23; -Wheader-guard) · gcc-announce 2026-04-30
+%     (GCC 16.1; 16.2 on 2026-08-07)
+%   clang.llvm.org/docs: CommandGuide/clang (default C standard gnu17; -O0…-Oz, -Og like -O1, -Ofast
+%     deprecated; -flto=thin; -save-temps) · UndefinedBehaviorSanitizer (what -fsanitize=undefined
+%     includes and leaves out; -fsanitize=integer; trap mode; report-and-continue default) ·
+%     AddressSanitizer (bug classes; ~2×; leak detection on by default on Linux) · ThreadSanitizer
+%     (5-15× CPU, 5-10× memory, no 32-bit) · MemorySanitizer (3×; all code incl. libc
+%     instrumented) · analyzer/user-docs/CommandLineUsage (clang --analyze, scan-build in front of
+%     the build command) · releases.llvm.org 11.0.0 (-fno-common default) · 19.1.0 (-Ofast deprecated) ·
+%     discourse.llvm.org "LLVM 23.1.0 released" (2026-08-25)
+%   sourceware.org/binutils/docs: ld Options (-l: archive searched once, at its position;
+%     --start-group "significant performance cost"; --gc-sections; -Map; --as-needed) · ld
+%     Basic-Script-Concepts (VMA vs LMA: data kept in ROM, copied to RAM at start-up) · binutils nm
+%     (symbol letters W, V = weak)
+%   lld.llvm.org/ELF/warn_backrefs (lld remembers archives seen; --warn-backrefs)
+%   best.openssf.org Compiler-Options-Hardening-Guide-for-C-and-C++ (2026-08-20: TL;DR flag set;
+%     _FORTIFY_SOURCE=3 GCC 12 / Clang 9, -O1 or higher; Table 2 run-time protection:
+%     -fno-delete-null-pointer-checks, -fno-strict-overflow, -fno-strict-aliasing,
+%     -ftrivial-auto-var-init; -fstrict-flex-arrays=3)
+%   blog.llvm.org 2011-05 "What Every C Programmer Should Know About Undefined Behavior" 1-2 (Lattner:
+%     x+1 > x, X*2/2, i <= N loops, type rules → memset, contains_null_check)
+%   cveawg.mitre.org CVE-2009-1897 (tun_chr_poll, Linux 2.6.30, -fno-delete-null-pointer-checks
+%     omitted → local privilege gain) · lwn.net/Articles/342330 (tun->sk read before if (!tun)) ·
+%     github.com/torvalds/linux Makefile (7.3-rc6: -std=gnu11, -fno-strict-aliasing,
+%     -fno-delete-null-pointer-checks, -fno-strict-overflow, -fno-common)
+%   github.com/espressif/esp-idf Kconfig (COMPILER_OPTIMIZATION default "Debug (-Og)") ·
+%     docs.espressif.com esp-idf api-guides/performance/size (-ffunction-sections -fdata-sections +
+%     --gc-sections; idf.py size, size-components, size-files)
+% @labels: area=c kind=concept platform=embedded topic=language,build,debugging discussion=295
+% @tags: undefined-behavior, c23, integer-overflow, strict-aliasing, compiler-optimization, ubsan, asan, translation-unit, linkage, tentative-definition, static-library, shared-library, linker-script, gc-sections, lto, macros
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinestyle{CSheet}{style=printup, language=C, basicstyle=\ttfamily\scriptsize,
+  aboveskip=2pt, belowskip=2pt, morekeywords={uint8_t,uint16_t,uint32_t,size_t,bool,inline}}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\pa{\mbox{-}\mbox{>}}  % C's -> without the mono font's arrow ligature
+\newcommand\cl[1]{{\color{sheetGrey}\,#1}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\tikzset{
+  file/.style={draw=sheetGrey, fill=white, font=\ttfamily\scriptsize,
+               minimum height=4mm, inner sep=1.5pt},
+  tool/.style={font=\ttfamily\tiny, text=sheetOrange, inner sep=1pt},
+  l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  ph/.style={draw=#1, fill=#1!8, rounded corners=1pt, minimum width=19.5mm,
+             minimum height=7mm, font=\tiny, align=center, inner sep=1pt},
+  code/.style={draw=sheetGrey, fill=tangoShade, font=\ttfamily\tiny, align=left,
+               anchor=north west, inner sep=2pt},
+}
+
+\begin{document}
+
+\sheettitle{Undefined behaviour \& the C build — preprocess, compile, link}{c · folio}
+
+\oneliner{\textbf{Undefined behaviour} is behaviour ``for which this document imposes no
+requirements'' (C23 3.5.3). The optimiser \textbf{assumes it never happens}, so checks vanish and
+loops change shape — often only at \ct{-O2}, far from the bug. \textbf{Building} = per
+\emph{translation unit} preprocess → compile → assemble to a \ct{.o}; then the \textbf{linker}
+resolves every symbol to one definition, places the sections and patches the addresses.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[hd] at (-0.05,3.0) {Translation phases (C23 5.1.1.2) — conceptual; real tools fold them together};
+  \foreach \i/\c/\t in {
+      1/sheetBlue/{source characters\\mapped (no trigraphs)},
+      2/sheetBlue/{\textbackslash{} + newline deleted:\\lines spliced},
+      3/sheetBlue/{pp-tokens; each\\comment → one space},
+      4/sheetBlue/{directives, macros;\\\#include: 1–4 again},
+      5/sheetGreen/{escapes → execution\\character set},
+      6/sheetGreen/{\ct{"a" "b"} → \ct{"ab"}:\\adjacent literals joined},
+      7/sheetGreen/{parse + translate:\\the translation unit},
+      8/sheetOrange/{external references\\resolved; libs linked}} {
+    \node[ph=\c] (p\i) at ({0.975+(\i-1)*2.08},2.35) {\textbf{\i}\enspace\t};
+  }
+  \draw[decorate, decoration={brace, mirror, amplitude=3pt}, sheetBlue] (0.05,1.95) -- (8.16,1.95)
+    node[midway, below=3pt, l, text=sheetBlue] {preprocessor · \ct{cc -E} → \ct{.i} · macros and comments are gone};
+  \draw[decorate, decoration={brace, mirror, amplitude=3pt}, sheetGreen!60!black] (8.36,1.95) -- (14.4,1.95)
+    node[midway, below=3pt, l, text=sheetGreen!50!black] {compiler \ct{-S} → \ct{.s} · assembler \ct{-c} → \ct{.o}};
+  \draw[decorate, decoration={brace, mirror, amplitude=3pt}, sheetOrange] (14.58,1.95) -- (16.49,1.95)
+    node[midway, below=3pt, l, text=sheetOrange] {linker \ct{ld} / \ct{lld}};
+  % files
+  \node[file] (c1) at (0.5,1.2) {main.c};
+  \node[file] (i1) at (2.45,1.2) {main.i};
+  \node[file] (s1) at (4.35,1.2) {main.s};
+  \node[file] (o1) at (6.25,1.2) {main.o};
+  \draw[flow] (c1) -- node[tool, above]{cpp -E} (i1);
+  \draw[flow] (i1) -- node[tool, above]{cc1 -S} (s1);
+  \draw[flow] (s1) -- node[tool, above]{as -c} (o1);
+  \node[file] (c2) at (0.5,0.7) {uart.c};
+  \node[file] (o2) at (6.25,0.7) {uart.o};
+  \draw[flow, dashed] (c2) -- (o2);
+  \node[l, fill=white] at (3.4,0.7) {same steps, its own TU: knows main.c only by declarations};
+  \node[file, fill=sheetBrown!10] (a) at (6.25,0.2) {libc.a};
+  \node[l, anchor=east] at (5.75,0.2) {archives: \ct{ar} bundles of \ct{.o} · \ct{-save-temps} keeps every \ct{.i}, \ct{.s}, \ct{.o}};
+  \node[file, draw=sheetOrange, very thick, fill=sheetOrange!10, minimum width=11mm] (ld) at (8.25,0.7) {ld};
+  \foreach \n in {o1,o2,a} \draw[hot] (\n.east) -- (ld.west);
+  \node[l, below] at (8.25,0.48) {+ linker script};
+  \node[file, draw=sheetBlue, very thick, fill=sheetBlue!8] (e) at (10.0,0.7) {app.elf};
+  \node[file] (b) at (11.85,0.7) {app.bin};
+  \draw[flow] (ld) -- (e);
+  \draw[flow] (e) -- node[tool, above]{objcopy} (b);
+  \node[l] at (10.9,0.3) {firmware: raw image to flash};
+  \node[l, anchor=north west, align=left, text width=36mm] at (12.75,1.52) {%
+    \textbf{resolve}: each undefined symbol → exactly one definition, else an error\\
+    \textbf{collect}: an archive member only if it defines something still undefined\\
+    \textbf{drop}: unreferenced sections (\ct{-{}-gc-sections})\\
+    \textbf{place}: sections into memory per the script\\
+    \textbf{relocate}: patch every address};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Four kinds of behaviour (C23 3.5)}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{17mm}L{31mm}L{28mm}@{}}
+\toprule
+\textbf{kind} & \textbf{the standard} & \textbf{its own example}\\ \midrule
+\textbf{undefined} & \textbf{no requirements}; J.2 lists 221 & null pointer dereference\\
+unspecified & $\ge$2 options, choice not documented & order of evaluating arguments\\
+impl.-defined & unspecified, choice documented & \ct{>>} of a negative value\\
+locale-specific & per locale, documented & \ct{islower} beyond a–z\\
+\bottomrule
+\end{tabular}}\par
+A \emph{constraint} violation needs a diagnostic even if it is also UB (5.1.1.3); UB alone needs
+none. C23 note 3: observable behaviour \emph{before} the UB still happens as specified.
+
+\section{The catalogue}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{20mm}L{33mm}L{23mm}@{}}
+\toprule
+\textbf{UB}\cl{(clause)} & \textbf{example} & \textbf{defined instead}\\ \midrule
+signed overflow\cl{6.5.1} & \ct{INT\_MAX + 1}, \ct{INT\_MIN / -1} & unsigned wraps; \ct{ckd\_add}\\
+shift\cl{6.5.8} & count $<$0 or $\ge$ width; \ct{1 << 31}; \ct{-1 << 1} & \ct{1u << 31}\\
+divide by 0\cl{6.5.6} & \ct{x / 0}, \ct{x \% 0} & float: ±∞, NaN (Annex F)\\
+pointer maths\cl{6.5.7} & past one-past-the-end, even unread; \ct{p - q}, \ct{p < q} across objects & \ct{==} across objects\\
+lifetime\cl{6.2.4} & use after \ct{free}; a returned \ct{\&local} & \ct{p = NULL} after \ct{free}\\
+uninitialised\cl{6.3.2.1} & \ct{int x; return x;} (no \ct{\&x}) & \ct{int x = \{\};}\\
+null\cl{3.5.3} & \ct{p\pa{}f} with \ct{p == NULL} & test before first use\\
+effective type\cl{6.5.1} & \ct{*(uint32\_t *)\&f}; \ct{char} may alias all & \ct{memcpy}; a union\\
+misaligned\cl{6.3.2.3} & \ct{(uint32\_t *)(buf + 1)}: the cast & \ct{memcpy} to a local\\
+unsequenced\cl{6.5.1} & \ct{i = ++i + 1;}\enspace\ct{a[i++] = i;} & one write per statement\\
+data race\cl{5.1.2.5} & 2 threads, $\ge$1 write, no sync & \ct{\_Atomic}, mutex\\
+string literal\cl{6.4.5} & \ct{char *s = "hi"; s[0] = 'H';} & \ct{char s[] = "hi";}\\
+2 declarations\cl{6.2.7} & \ct{extern long n;} vs \ct{int n;} & one header for both\\
+fn pointer\cl{6.3.2.3} & call through another function type & a wrapper\\
+no \ct{return}\cl{6.9.2} & caller uses the missing value & only \ct{main} gets 0\\
+\bottomrule
+\end{tabular}}\par
+\textbf{Not UB, same effect}: a loop whose condition is not constant and that does no I/O,
+\ct{volatile} or atomic access may be \emph{assumed to terminate} (6.8.6.1) — empty ones are deleted;
+\ct{while (1)} is not.
+
+\section{What the optimiser does with it}
+\begin{tikzpicture}[sheet]
+  \node[code] (a) at (0,0) {int dev\_read(struct dev *d) \{\\
+\ \ int v = d\pa{}val; \textcolor{tangoComment}{// *d ⇒ d != NULL}\\
+\ \ if (!d) return -1; \textcolor{tangoComment}{// so: dead}\\
+\ \ return v;\ \}};
+  \node[code] (b) at (4.85,0) {int dev\_read(struct dev *d) \{\\
+\ \ return d\pa{}val;\ \}\\[1pt]\textcolor{tangoComment}{// the null test is gone}};
+  \draw[hot] (a.east |- b.west) -- node[tool, above]{-O2} (b.west);
+\end{tikzpicture}
+\begin{itemize}
+  \item Overflow ``cannot happen'' ⇒ \ct{x + 1 > x} → \ct{true}, \ct{x * 2 / 2} → \ct{x},
+        \ct{for (i = 0; i <= n; i++)} runs exactly $n{+}1$ times. Type rules ⇒ a \ct{float} store
+        cannot change a \ct{float *}: a store loop becomes one \ct{memset} (Lattner, 2011).
+  \item Linux 2.6.30 \ct{tun} (CVE-2009-1897): \ct{tun\pa{}sk} read before \ct{if (!tun)}; GCC
+        deleted the test → local privilege gain.
+  \item Fine at \ct{-O0}, broken at \ct{-O2} or with the next compiler = latent UB. Fix the code;
+        a lower \ct{-O} only hides it.
+\end{itemize}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{31mm}L{46mm}@{}}
+\toprule
+\textbf{GCC flag} & \textbf{switches the assumption off}\\ \midrule
+\ct{-ftrapv} & trap on signed overflow\\
+\ct{-fwrapv} · \ct{-fwrapv-pointer} & signed $+\,-\,\times$ · pointer $+\,-$ wrap\\
+\ct{-fno-strict-overflow} & both of the above\\
+\ct{-fno-strict-aliasing} & no type-based aliasing (on at \ct{-O2 -O3 -Os})\\
+\ct{-fno-delete-null-pointer-checks} & keep null tests (deleted by default on most targets)\\
+\bottomrule
+\end{tabular}}\par
+Linux builds with the last three: a GCC \emph{dialect}, not C.
+
+\section{C23: new tools, same rules}
+Two's complement is now the only representation — signed overflow is \textbf{still} UB.
+\ct{<stdckdint.h>}: \ct{ckd\_add(\&r, a, b)} (\ct{\_sub}, \ct{\_mul}) computes as if infinitely
+wide, stores the wrapped result, returns \ct{true} on overflow. New: \ct{unreachable()} (reaching
+it is UB), \ct{nullptr}, \ct{typeof}, \ct{memset\_explicit}, \ct{[[nodiscard]]},
+\ct{[[fallthrough]]}, \ct{[[maybe\_unused]]}. Newly UB: \ct{realloc(p, 0)}. Gone: K\&R
+definitions; \ct{int f();} means \ct{f(void)}. GCC 15+ defaults to \ct{-std=gnu23} (Clang 23 still
+\ct{gnu17}); GCC 14 turned implicit declarations, implicit \ct{int}, int-conversion and
+incompatible pointers into errors (\ct{-fpermissive} undoes it).
+
+\columnbreak
+
+\section{Catch it}
+\ct{-Wall -Wextra} is not ``all'': add \ct{-Wconversion -Wshadow -Wundef -Wcast-align -Wvla
+-Wformat=2 -Wnull-dereference} (the last only when optimising). \ct{-Wall} brings
+\ct{-Wstrict-aliasing=3} and (GCC 15) \ct{-Wheader-guard}. Static analysis: \ct{gcc -fanalyzer}
+(GCC 10+), \ct{clang -{}-analyze}, \ct{scan-build make}.
+
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{12mm}L{42mm}L{22mm}@{}}
+\toprule
+\ct{-fsanitize=} & \textbf{finds — only on paths a run executes} & \textbf{cost · limits}\\ \midrule
+\ct{address} & out of bounds (heap, stack, globals), use after free / return / scope, double free; leaks (Linux) & $\sim$2$\times$; not with \ct{thread}\\
+\ct{undefined} & signed overflow, shift, \pdfonly{$\div$}\htmlonly{÷}0, null, misalignment, bounds — not unsigned wrap & reports, continues; \ct{-fsanitize-trap}\\
+\ct{thread} & data races & 5–15$\times$ CPU\\
+\ct{memory} & reads of uninitialised memory & Clang, 3$\times$; instrument all\\
+\bottomrule
+\end{tabular}}\par
+\textbf{Ship hardened} (OpenSSF, Aug 2026): \ct{-D\_FORTIFY\_SOURCE=3} (\ct{-O1}+),
+\ct{-fstack-protector-strong}, \ct{-fstack-clash-protection}, \ct{-ftrivial-auto-var-init=zero},
+\ct{-Wl,-z,relro,-z,now}, the three \ct{-fno-…} above; GCC 14+: \ct{-fhardened}, most in one flag.
+
+\section{Optimisation levels}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{9mm}L{68mm}@{}}
+\ct{-O0} & default: fastest compile, most debuggable · \ct{-Og}: GCC's ``edit-compile-debug'' level, ESP-IDF's default; Clang: like \ct{-O1}\\
+\ct{-O2} & GCC: all that does not trade size for speed; strict aliasing; loop vectorising\\
+\ct{-O3} & + slower or larger passes · \ct{-Os}, \ct{-Oz}: for size, harder for size\\
+\ct{-Ofast} & \ct{-O3 -ffast-math} — not IEEE; deprecated in Clang 19\\
+\end{tabular}}
+
+\section{Linkage, archives, shared libraries}
+\textbf{External} (file-scope default): one entity across all TUs. \textbf{Internal}: \ct{static}
+at file scope. \textbf{None}: locals (\ct{static} there = storage). A used external name needs
+\textbf{exactly one} external definition (6.9.1; C++: the ODR): two → \emph{multiple
+definition}, none → \emph{undefined reference}.
+\begin{itemize}
+  \item Header \emph{declares} \ct{extern int count;}, one \ct{.c} \emph{defines} it.
+        \ct{int count;} in a header is a \textbf{tentative definition} per TU — merged as
+        ``common'' until GCC 10 / Clang 11 made \ct{-fno-common} the default.
+  \item C \ct{inline} with no \ct{extern} declaration in the TU is only an inline definition:
+        an un-inlined call (\ct{-O0}) needs an external one elsewhere. Headers: \ct{static inline}.
+  \item \ct{\_\_attribute\_\_((weak))}: a default any normal definition overrides. LTO
+        (\ct{-flto}, \ct{=thin}): objects carry IR, the link optimises across TUs.
+\end{itemize}
+\vspace{1pt}
+\begin{tikzpicture}[sheet]
+  \node[l, anchor=west] at (-0.05,0.88) {GNU ld, \ct{cc main.o -lfoo -lc}: each archive searched once, left → right};
+  \node[file] (m) at (0.5,0.5) {main.o};
+  \node[file, fill=sheetBrown!10] (f) at (2.35,0.5) {libfoo.a};
+  \node[file, fill=sheetBrown!10] (c) at (4.2,0.5) {libc.a};
+  \draw[flow] (m) -- (f); \draw[flow] (f) -- (c);
+  \node[l] at (0.5,0.1) {needs \ct{foo\_init},\\\ct{printf}};
+  \node[l] at (2.35,0.1) {pulls \ct{foo.o},\\which needs \ct{malloc}};
+  \node[l] at (4.2,0.1) {pulls \ct{printf.o},\\\ct{malloc.o}};
+  \node[l, anchor=west, align=left, text=sheetRed] at (5.1,0.32) {\ct{cc -lfoo main.o}:\\
+    libfoo.a scanned while\\nothing is undefined →\\\emph{undefined reference}};
+\end{tikzpicture}
+\begin{itemize}
+  \item Users before providers; cycles need \ct{-{}-start-group … -{}-end-group} (``significant
+        performance cost''). lld remembers every archive seen; \ct{-{}-warn-backrefs} flags lines
+        GNU ld would reject.
+  \item \ct{.so}/\ct{.dylib}/\ct{.dll}: mapped by the dynamic loader at run time, shared,
+        replaceable; \ct{-fPIC}; \ct{-fvisibility=hidden} exports only what you mark.
+  \item ESP-IDF builds with \ct{-ffunction-sections -fdata-sections -Wl,-{}-gc-sections}. In ROM:
+        \ct{.data} stored in flash (LMA), copied to RAM (VMA) at start-up.
+        \ct{-Wl,-Map=app.map}, \ct{idf.py size-components}: who uses the flash.
+\end{itemize}
+
+\section{Headers \& macros}
+\begin{lstlisting}[style=CSheet]
+#ifndef UART_H                  /* guard: the whole file */
+#define UART_H
+#define SQ(x) ((x) * (x))       // parenthesise args AND body
+#define SWAP(a, b) do { int t_ = (a); (a) = (b); (b) = t_; } while (0)
+static inline int sq(int x) { return x * x; }  // typed, x once
+#endif
+\end{lstlisting}
+\ct{SQ(i++)}: two unsequenced writes, UB. \ct{do\{\}while(0)} lets \ct{if (c) SWAP(x, y); else}
+parse. \ct{\#if FOO}, \ct{FOO} undefined: silently 0 (\ct{-Wundef}). \ct{\#pragma once} is not in
+every preprocessor.
+
+\textbf{Remember: UB is a promise to the optimiser; \ct{-O0} only hides a broken one.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{c-memory-layout} ·
+\texttt{c-pointers-const-restrict} · \texttt{c-volatile-atomics-isr} · Sanitizers \& runtime
+checkers · Release-only bugs · Cross-language FFI}
+
+\end{document}

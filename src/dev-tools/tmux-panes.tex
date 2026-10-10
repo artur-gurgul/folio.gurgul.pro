@@ -1,0 +1,307 @@
+% tmux-panes.tex — panes in stock tmux: the server › session › window › pane model, split, focus,
+% resize, zoom, swap/rotate, the seven preset layouts, join/break between windows, the marked pane,
+% targets, pane options and their defaults, floating panes (3.7+), and saving layouts with the
+% tmux-resurrect / tmux-continuum plugins.
+% Sources (checked 2026-10-09):
+%   man.openbsd.org/tmux (DESCRIPTION: panes are separate pseudo terminals; socket under TMUX_TMPDIR
+%     or /tmp, named "default", -L in tmux-UID; DEFAULT KEY BINDINGS incl. *, T, Tab, g, M-1…M-7;
+%     target-session/-window/-pane grammar, tokens, $ @ % ids, TMUX_PANE; split-window -h/-v/-b/-f/
+%     -l N%/-c/-d/-Z/-I; join-pane (marked pane = default -s, reverse of break-pane); move-pane;
+%     break-pane -d -n -a -b; resize-pane -U/-D/-L/-R, -x/-y N%, -Z, -M, -T; swap-pane -U/-D -d -Z;
+%     rotate-window; select-layout -E -o -n -p and the seven presets; display-panes digits;
+%     select-pane -m/-M (one marked pane), -T, -d/-e; kill-pane -a; respawn-pane; capture-pane -p -S
+%     -E -J -e; pipe-pane -o; remain-on-exit on/failed/key/failed-key; synchronize-panes skips panes
+%     in a mode; mode-keys emacs unless VISUAL/EDITOR contains "vi"; bind-key -r / -n)
+%   github.com/tmux/tmux key-bindings.c (master: prefix bindings and their -r flags, E, < >, T, *,
+%     g, Tab/BTab; mouse root table: click, border drag, wheel, right-click menu, double/triple
+%     click, C-drag floating pane; 3.5 tag: M-6/M-7 mirrored layouts already bound)
+%     · options-table.c (master: repeat-time 500, initial-repeat-time 0, escape-time 10,
+%     history-limit 2000, display-panes-time 1000, base-index 0, pane-base-index 0,
+%     main-pane-width "80", main-pane-height "24", synchronize-panes / renumber-windows /
+%     focus-follows-mouse 0; 3.4 tag: escape-time 500, mouse 0)
+%   github.com/tmux/tmux CHANGES (3.5: mirrored main layouts, escape-time 10 ms · 3.6: pane
+%     scrollbars, initial-repeat-time, tiled-layout-max-columns, pane-border-lines spaces · 3.7:
+%     floating panes, new-pane on *, focus-follows-mouse, remain-on-exit key, {current}/{active} ·
+%     3.8: mouse defaults on, Tab/BTab switch-mode, C-b T, C-b g floating moves, JSON layout strings,
+%     scrollbar auto-hide, display-panes is a mode, break-pane floats / join-pane tiles,
+%     remain-on-exit failed-key) · api.github.com/repos/tmux/tmux/releases (published_at: 3.5
+%     2024-09-27, 3.6 2025-11-26, 3.7 2026-06-26, 3.8 2026-09-09, none a pre-release)
+%   github.com/tmux/tmux/wiki Getting-Started (-h horizontal / -v vertical naming; Z marks a zoomed
+%     window; C-b q; copy keys vi Space/Enter, emacs C-Space/M-w) · wiki FAQ (with mouse on, Shift on
+%     many Linux terminals, Option in iTerm2, to use the terminal's own selection)
+%   support.apple.com/guide/terminal trmlkbrd ("Use Option as Meta key") · iterm2.com
+%     documentation-preferences-profiles-keys (Option key "+Esc" for meta)
+%   github.com/tmux-plugins/tmux-resurrect README + docs/save_dir.md + docs/restoring_pane_contents.md
+%     (prefix C-s / C-r; what is saved; default program list; idempotent; ~/.tmux/resurrect,
+%     @resurrect-dir; @resurrect-capture-pane-contents 'on'; TPM prefix I) ·
+%     github.com/tmux-plugins/tmux-continuum README + docs/faq.md (every 15 min;
+%     @continuum-save-interval in minutes, 0 = off; @continuum-restore 'on'; needs the status line,
+%     hook in status-right; put it last in the TPM list)
+% @labels: area=dev-tools kind=tooling platform=general topic=tooling discussion=306
+% @tags: tmux, terminal, panes, splits, split-window, join-pane, break-pane, resize-pane, layouts, floating-panes, key-bindings, targets, tmux-resurrect
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinestyle{tmux}{style=printup, morecomment=[l]{\#}}
+\tikzset{
+  hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  l/.style={font=\tiny, text=black!75, align=center, inner sep=1pt},
+  win/.style={draw=sheetGrey, fill=black!3, rounded corners=1pt},
+  pn/.style={font=\scriptsize, align=center, inner sep=1pt},
+  th/.style={draw=sheetBlue, fill=sheetBlue!5},
+  mn/.style={fill=sheetBlue!22, draw=none},
+  lay/.style={l, anchor=north, text width=19mm},
+}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dq{\texttt{"}}
+\newcommand\rp{\textsuperscript{\textcolor{sheetOrange}{\textbf{r}}}}
+\newcommand\grp[1]{\multicolumn{2}{@{}l}{\textcolor{sheetBlue}{\textbf{#1}}}\\}
+
+\begin{document}
+
+\sheettitle{tmux panes — split, move, resize, join, float}{dev-tools · folio}
+
+\oneliner{A \textbf{pane} is one pseudo-terminal running one program; panes tile a
+\textbf{window}, windows make a \textbf{session}, and one \textbf{server} process owns them
+all (socket in \ct{\$TMUX\_TMPDIR} or \ct{/tmp}), so detaching leaves every program running.
+Keys are the \textbf{prefix} \ct{C-b}, then the key. Moving a pane moves the terminal itself —
+the program never restarts.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet, yscale=0.92]
+  % ===== 1 the model
+  \node[hd] at (-0.1,2.95) {1 · server › session › window › pane};
+  \node[box, font=\tiny, inner sep=1.5pt] (c1) at (0.38,2.0) {client\\tty 1};
+  \node[box, font=\tiny, inner sep=1.5pt] (c2) at (0.38,0.95) {client\\tty 2};
+  \draw[win, draw=sheetBlue, fill=sheetBlue!4] (1.0,0.05) rectangle (5.2,2.75);
+  \node[l, anchor=north west] at (1.02,2.73) {\textbf{server}: one process · socket \ct{tmux-UID/default}};
+  \draw[win, fill=white] (1.12,0.15) rectangle (5.08,2.4);
+  \node[l, anchor=north west] at (1.14,2.38) {\textbf{session} \ct{\$0} ``work''};
+  \draw[win] (1.24,0.25) rectangle (4.96,2.06);
+  \node[l, anchor=north west] at (1.26,2.04) {\textbf{window} \ct{@0}, index 0};
+  \draw[win, fill=white] (1.34,0.35) rectangle (3.08,1.7);
+  \draw[win, fill=white] (3.14,0.35) rectangle (4.86,1.7);
+  \node[pn] at (2.21,1.03) {pane \ct{\%0}\\pty → \ct{bash}};
+  \node[pn] at (4.0,1.03) {pane \ct{\%1}\\pty → \ct{vim}};
+  \draw[flow] (c1.east) -- (1.0,2.0);
+  \draw[flow, dashed] (c2.east) -- (1.0,0.95);
+  \node[l, anchor=north west, align=left] at (-0.1,-0.02) {\ct{d} detaches the client; programs run on · ids \ct{\$ @ \%} never change};
+  % ===== 2 split
+  \draw[sheetGrey!40] (5.42,3.05) -- (5.42,-0.35);
+  \node[hd] at (5.5,2.95) {2 · a split divides the \emph{current} pane};
+  \draw[win] (5.65,0.35) rectangle (10.85,2.6);
+  \draw[sheetGrey, thick] (8.05,0.35) -- (8.05,2.6);
+  \draw[sheetGrey, thick] (8.05,1.47) -- (10.85,1.47);
+  \node[pn] at (6.85,1.47) {\textbf{1}\\the pane\\you were in};
+  \node[pn] at (9.45,2.04) {\textbf{2} = \ct{C-b \%} on 1\\\ct{split-window -h}};
+  \node[pn] at (9.45,0.91) {\textbf{3} = \ct{C-b "} on 2\\\ct{split-window} (\ct{-v})};
+  \node[l, anchor=north west, align=left] at (5.5,0.27) {\ct{-b} new pane left/above · \ct{-f} full window height/width ·\\\ct{-l 30\%} size · \ct{-c dir} start directory · \ct{-d} keep focus};
+  % ===== 3 join / break
+  \draw[sheetGrey!40] (11.08,3.05) -- (11.08,-0.35);
+  \node[hd] at (11.15,2.95) {3 · move a pane between windows};
+  \draw[win] (11.3,1.85) rectangle (13.45,2.55); \node[pn] at (12.37,2.2) {window \textbf{0}: shell};
+  \draw[win] (13.95,1.85) rectangle (16.3,2.55); \node[pn] at (15.12,2.2) {window \textbf{1}: editor};
+  \draw[win] (11.3,0.35) rectangle (16.3,1.27);
+  \draw[sheetGrey, thick] (13.8,0.35) -- (13.8,1.27);
+  \node[pn] at (12.55,0.81) {shell};
+  \node[pn] at (15.05,0.81) {editor — same pty,\\same process};
+  \draw[flow, sheetBlue] (14.3,1.83) -- node[l, left, text=sheetBlue]{\ct{join-pane -h -s :1}} (14.3,1.29);
+  \draw[flow, sheetRed] (15.4,1.29) -- node[l, right, text=sheetRed]{\ct{C-b !}} (15.4,1.83);
+  \node[l, anchor=north west, align=left] at (11.15,0.27) {no \ct{-s}: the marked pane, else the current one ·\\\ct{-t :2} sends \emph{this} pane away · window 1 closes};
+  % ===== 4 layouts
+  \draw[sheetGrey!40] (-0.1,-0.48) -- (16.3,-0.48);
+  \node[hd] at (-0.1,-0.68) {4 · preset layouts \textmd{\textcolor{black!75}{— prefix + key; every pane stays, only the borders move (shaded = main pane)}}};
+  \begin{scope}[shift={(0.1,-1.45)}, yscale=0.75]
+    \draw[th] (0,0) rectangle (1.25,0.8); \draw[sheetBlue] (0.417,0)--(0.417,0.8) (0.833,0)--(0.833,0.8);
+    \node[lay] at (0.625,-0.05) {\ct{M-1}\\even-horizontal};
+  \end{scope}
+  \begin{scope}[shift={(2.1,-1.45)}, yscale=0.75]
+    \draw[th] (0,0) rectangle (1.25,0.8); \draw[sheetBlue] (0,0.267)--(1.25,0.267) (0,0.533)--(1.25,0.533);
+    \node[lay] at (0.625,-0.05) {\ct{M-2}\\even-vertical};
+  \end{scope}
+  \begin{scope}[shift={(4.1,-1.45)}, yscale=0.75]
+    \draw[th] (0,0) rectangle (1.25,0.8); \fill[mn] (0.01,0.38) rectangle (1.24,0.79);
+    \draw[sheetBlue] (0,0.38)--(1.25,0.38) (0.417,0)--(0.417,0.38) (0.833,0)--(0.833,0.38);
+    \node[lay] at (0.625,-0.05) {\ct{M-3}\\main-horizontal};
+  \end{scope}
+  \begin{scope}[shift={(6.1,-1.45)}, yscale=0.75]
+    \draw[th] (0,0) rectangle (1.25,0.8); \fill[mn] (0.01,0.01) rectangle (0.72,0.79);
+    \draw[sheetBlue] (0.72,0)--(0.72,0.8) (0.72,0.4)--(1.25,0.4);
+    \node[lay] at (0.625,-0.05) {\ct{M-4}\\main-vertical};
+  \end{scope}
+  \begin{scope}[shift={(8.1,-1.45)}, yscale=0.75]
+    \draw[th] (0,0) rectangle (1.25,0.8); \draw[sheetBlue] (0.625,0)--(0.625,0.8) (0,0.4)--(1.25,0.4);
+    \node[lay] at (0.625,-0.05) {\ct{M-5}\\tiled};
+  \end{scope}
+  \begin{scope}[shift={(10.1,-1.45)}, yscale=0.75]
+    \draw[th] (0,0) rectangle (1.25,0.8); \fill[mn] (0.01,0.01) rectangle (1.24,0.42);
+    \draw[sheetBlue] (0,0.42)--(1.25,0.42) (0.417,0.42)--(0.417,0.8) (0.833,0.42)--(0.833,0.8);
+    \node[lay] at (0.625,-0.05) {\ct{M-6} (3.5)\\main-horizontal-mirrored};
+  \end{scope}
+  \begin{scope}[shift={(12.1,-1.45)}, yscale=0.75]
+    \draw[th] (0,0) rectangle (1.25,0.8); \fill[mn] (0.53,0.01) rectangle (1.24,0.79);
+    \draw[sheetBlue] (0.53,0)--(0.53,0.8) (0,0.4)--(0.53,0.4);
+    \node[lay] at (0.625,-0.05) {\ct{M-7} (3.5)\\main-vertical-mirrored};
+  \end{scope}
+  \node[l, anchor=north west, align=left] at (14.0,-0.82) {\ct{Space} next layout\\\ct{E} spread evenly\\\ct{select-layout -o} undo\\main pane: 80 cols / 24 rows};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Default keys — after the prefix \ct{C-b}}
+{\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.05}
+\begin{tabular}{@{}>{\ttfamily}p{13mm} L{64mm}@{}}
+\grp{split · close}
+\%          & split left | right — \ct{split-window -h} \\
+"           & split top / bottom — \ct{split-window} (\ct{-v} is the default) \\
+x           & kill the pane after \ct{y/n}; \ct{exit} in its shell does the same \\
+!           & break the pane out into a window of its own \\
+\grp{focus}
+arrows\rp   & pane above / below / left / right (\ct{select-pane -U -D -L -R}) \\
+o \ ;       & next pane · last active pane (\ct{l} last window, \ct{L} last \emph{session}) \\
+q           & number every pane (\ct{display-panes}); a digit jumps there \\
+\grp{size}
+C-arrows\rp & resize by 1 cell · \ct{M-}arrows\rp{} by 5 cells (\ct{resize-pane}) \\
+z           & zoom: the pane fills the window, \ct{Z} on its tab; again to undo \\
+\grp{rearrange}
+\{ \ \}     & swap with the previous / next pane (\ct{swap-pane -U / -D}) \\
+C-o \ M-o   & rotate every pane forwards / backwards (\ct{rotate-window}) \\
+Space       & next preset layout · \ct{M-1}…\ct{M-7} pick one · \ct{E} even out \\
+m \ M       & mark this pane (toggle) · clear the mark; one marked pane at a time \\
+\grp{more}
+T           & set the pane title (3.8) · \ct{>} pane menu · \ct{<} window menu \\
+{}*         & new floating pane (3.7) · \ct{g} then 1–4 or an arrow: move it (3.8) \\
+{}[ \ ]     & copy mode (\ct{PgUp}: enter + scroll) · paste the newest buffer \\
+: \ ?       & command prompt · list every binding \\
+C-b         & send a literal \ct{C-b} — reaches a nested, inner tmux \\
+d \ D       & detach this client · choose a client to detach \\
+Tab         & fuzzy window switcher; \ct{S-Tab} sessions (3.8) \\
+\end{tabular}}\par
+\rp{} = bound with \ct{bind -r}: repeats \emph{without} the prefix while presses come within
+\ct{repeat-time} (500\,ms). Copy keys: vi \ct{Space} begin, \ct{Enter} copy; emacs
+\ct{C-Space}, \ct{M-w}.
+
+\textbf{Mouse} (\ct{mouse on} — the default since 3.8): click selects a pane · drag a border
+resizes (\ct{resize-pane -M}) · drag in a pane selects in copy mode · wheel up enters copy mode
+unless the program is full-screen or wants the mouse · right-click: pane menu · double / triple
+click copies a word / line · Ctrl-drag: new floating pane (3.8).
+
+\section{Pane commands — the flags that matter}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}\renewcommand{\arraystretch}{1.05}
+\begin{tabular}{@{}>{\ttfamily\raggedright\arraybackslash}p{14mm} L{64mm}@{}}
+\toprule
+split-window  & \ct{-h} side by side · \ct{-v} stacked · \ct{-b} before · \ct{-f} full span · \ct{-l 20} or \ct{-l 30\%} · \ct{-c dir} · \ct{-d} keep focus · \ct{-Z} zoom it · \ct{-I} empty pane fed from stdin \\
+join-pane     & split \ct{-t} and move \ct{-s} into the gap; same \ct{-h -v -b -f -l -d}; the reverse of \ct{break-pane}; 3.8: tiles a floating pane \\
+move-pane     & = \ct{join-pane}; 3.8 adds moving floating panes \\
+break-pane    & \ct{-s} pane → own window · \ct{-d} stay here · \ct{-n name} · \ct{-a / -b} after / before this index; 3.8: floats a tiled pane \\
+resize-pane   & \ct{-U -D -L -R} $n$ relative · \ct{-x / -y} absolute, $n$ or $n$\% · \ct{-Z} zoom · \ct{-M} mouse drag · \ct{-T} trim lines below cursor \\
+swap-pane     & \ct{-s -t}, or \ct{-U / -D} neighbour · \ct{-d} keep the active pane · \ct{-Z} keep zoom \\
+rotate-window & \ct{-U} / \ct{-D} · \ct{-Z} keep zoom \\
+select-layout & a name, or \ct{-n / -p} · \ct{-E} spread this pane and its neighbours · \ct{-o} undo \\
+select-pane   & \ct{-L -R -U -D} · \ct{-m / -M} mark / clear · \ct{-T} title · \ct{-d / -e} block / allow input \\
+kill-pane     & \ct{-a} every pane except \ct{-t}; the last pane takes its window with it \\
+respawn-pane  & rerun a dead pane's command (\ct{-k} kills a live one first) \\
+capture-pane  & \ct{-p} to stdout · \ct{-S / -E} line range, negative = history · \ct{-J} join wrapped lines · \ct{-e} keep colours \\
+pipe-pane     & pipe a pane's output to a command; \ct{-o} opens only if none is open, so one key toggles \\
+\bottomrule
+\end{tabular}}
+
+\section{What changed recently}
+\begin{tikzpicture}[sheet]
+  \draw[thick, sheetGrey] (0,0) -- (7.95,0);
+  \foreach \x/\v/\d in {0.05/3.5/Sep 2024, 2.05/3.6/Nov 2025, 4.05/3.7/Jun 2026, 6.05/3.8/Sep 2026} {
+    \fill[sheetBlue] (\x,0) circle (1.4pt);
+    \node[font=\bfseries\scriptsize, text=sheetBlue, anchor=south west, inner sep=1pt] at (\x-0.05,0.04) {\v\ \textmd{\textcolor{black!60}{\d}}}; }
+  \node[l, anchor=north west, text width=18.5mm, align=left] at (0.0,-0.06) {mirrored main layouts on \ct{M-6 M-7} · \ct{escape-time} 500 → 10\,ms};
+  \node[l, anchor=north west, text width=18.5mm, align=left] at (2.0,-0.06) {pane scrollbars · \ct{initial-repeat-time} · \ct{tiled-layout-}\\\ct{max-columns}};
+  \node[l, anchor=north west, text width=18.5mm, align=left] at (4.0,-0.06) {\textbf{floating panes} (\ct{new-pane}, \ct{C-b *}) · \ct{focus-follows-mouse}};
+  \node[l, anchor=north west, text width=19mm, align=left] at (6.0,-0.06) {mouse on by default · \ct{Tab} switcher · \ct{C-b T} · JSON layout strings · break-pane floats, join-pane tiles};
+\end{tikzpicture}
+
+\columnbreak
+
+\section{Targets — \ct{-t} and \ct{-s}}
+\begin{tikzpicture}[sheet]
+  \node[anchor=west, font=\ttfamily\large, inner sep=0] (s) at (0,0) {\textcolor{sheetBlue}{work}:\textcolor{sheetGreen}{2}.\textcolor{sheetOrange}{1}};
+  \node[l, anchor=west, align=left, text=sheetBlue] at (2.0,0.25) {\textbf{session}: \ct{\$id} · name · name prefix · glob; \ct{=name} = exact only};
+  \node[l, anchor=west, align=left, text=sheetGreen!45!black] at (2.0,0.0) {\textbf{window}: token · index · \ct{@id} · name · prefix · glob};
+  \node[l, anchor=west, align=left, text=sheetOrange] at (2.0,-0.25) {\textbf{pane}: index · \ct{\%id} (in \ct{\$TMUX\_PANE}); omitted = the active pane};
+\end{tikzpicture}\par
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{9mm} L{68mm}@{}}
+\toprule
+window & \ct{\textasciicircum} lowest · \ct{\$} highest · \ct{!} previous current · \ct{+ / -} next / previous (\ct{+2}) \\
+pane   & \ct{!} last active · \ct{+ / -} · \ct{\{top\}} \ct{\{bottom\}} \ct{\{left\}} \ct{\{right\}} \ct{\{top-left\}}… · \ct{\{up-of\}} \ct{\{down-of\}} \ct{\{left-of\}} \ct{\{right-of\}} the active pane · \ct{\{marked\}} = \ct{\textasciitilde} · \ct{\{mouse\}} = \ct{=} \\
+short  & \ct{:1} window 1 here · \ct{:.2} pane 2 here · \ct{:1.0} · \ct{\%7} by id · \ct{work:} a session \\
+\bottomrule
+\end{tabular}}
+
+\section{Options that shape panes}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}\renewcommand{\arraystretch}{1.05}
+\begin{tabular}{@{}>{\ttfamily\raggedright\arraybackslash}p{25mm} >{\raggedright\arraybackslash}p{10mm} L{41mm}@{}}
+\toprule
+\textrm{\textbf{option}} & \textbf{default} & \textbf{values · note}\\
+\midrule
+base-index         & 0     & first window number; \ct{pane-base-index} 0: first pane \\
+synchronize-panes  & off   & input goes to every pane of the window not in a mode \\
+remain-on-exit     & off   & \ct{on} · \ct{failed} · \ct{key} (3.7) · \ct{failed-key} (3.8); then \ct{respawn-pane} \\
+display-panes-time & 1000\,ms & how long the \ct{C-b q} numbers stay \\
+repeat-time        & 500\,ms & \rp{} keys; \ct{initial-repeat-time} (3.6) 0 = the same \\
+escape-time        & 10\,ms & 500 before 3.5: a 0.5\,s wait after every \ct{Esc} \\
+history-limit      & 2000  & scrollback lines per pane \\
+main-pane-width    & 80    & \ct{main-pane-height} 24: the main pane of \ct{main-*} \\
+pane-border-status & off   & \ct{top} · \ct{bottom}: a title line on each border \\
+pane-border-lines  & single & \ct{double} · \ct{heavy} · \ct{simple} · \ct{number} · \ct{spaces} (3.6) \\
+pane-scrollbars    & off   & \ct{modal} · \ct{on} (3.6) · \ct{auto-hide} (3.8) \\
+mouse              & on    & \ct{off} before 3.8 \\
+focus-follows-mouse & off  & hover selects the pane (3.7; needs \ct{mouse}) \\
+mode-keys          & emacs & \ct{vi} if \ct{\$VISUAL} or \ct{\$EDITOR} contains ``vi'' \\
+renumber-windows   & off   & windows keep the gap a closed one leaves \\
+\bottomrule
+\end{tabular}}
+
+\section{Saving layouts: resurrect + continuum}
+Plugins via TPM: \ct{set -g @plugin 'tmux-plugins/tmux-resurrect'}, \ct{prefix I} installs.
+\textbf{resurrect}: \ct{prefix C-s} save · \ct{prefix C-r} restore sessions, windows, panes and
+their order, layouts, working directories, the active pane; reruns only \ct{vi vim nvim emacs
+man less more tail top htop irssi weechat mutt}; pane text with
+\ct{@resurrect-capture-pane-contents 'on'}; files in \ct{\textasciitilde/.tmux/resurrect};
+panes that exist are left alone. \textbf{continuum}: autosave every 15\,min
+(\ct{@continuum-save-interval}, \ct{0} = off), \ct{@continuum-restore 'on'} restores at server
+start. It hooks \ct{status-right}: status line on, plugin listed last — a theme that rewrites
+\ct{status-right} stops the autosave silently.
+
+\section{Recipes}
+\begin{lstlisting}[style=tmux]
+# terminal on the right, 30 %, same directory
+tmux split-window -h -l 30% -c '#{pane_current_path}'
+# type into every pane of this window (off to stop)
+tmux set -w synchronize-panes on
+# last 200 lines of pane %3 as text
+tmux capture-pane -p -S -200 -t %3
+# log a pane to a file; the same key stops it (man page)
+bind-key C-p pipe-pane -o 'cat >>~/output.#I-#P'
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\ct{-h} is side by side: tmux names the split by how the panes line up, Vim names the
+        same split \ct{:vsplit}.}
+  \trap{A forgotten mark: \ct{join-pane}, \ct{move-pane}, \ct{swap-pane} without \ct{-s}
+        take the \textbf{marked} pane — \ct{C-b M} clears it.}
+  \trap{\ct{M-}keys type symbols on a Mac until Option sends Meta: Terminal \emph{Use Option
+        as Meta key}; iTerm2 Option key \emph{Esc+}.}
+  \trap{With mouse on, the terminal's own selection needs \textbf{Shift} (many Linux
+        terminals) or \textbf{Option} (iTerm2).}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{vim-editing-grammar} ·
+\texttt{macos-power-user-cli} · \texttt{os-fundamentals} · \texttt{linux-security-permissions}}
+
+\end{document}

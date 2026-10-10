@@ -1,0 +1,99 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Post-quantum cryptography — ML-KEM, ML-DSA, hybrid TLS — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/crypto/post-quantum-crypto.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">310</span></a></li><li><a class="side-area" href="/folios.html?area=ai" data-area="ai">ai<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=ble" data-area="ble">ble<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=c" data-area="c">c<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cicd" data-area="cicd">cicd<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area current" href="/folios.html?area=crypto" data-area="crypto">crypto<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=dev-tools" data-area="dev-tools">dev-tools<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=iot" data-area="iot">iot<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=javascript" data-area="javascript">javascript<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=linux" data-area="linux">linux<span class="count">8</span></a></li><li><a class="side-area" href="/folios.html?area=macos" data-area="macos">macos<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=recall" data-area="recall">recall<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=runtime" data-area="runtime">runtime<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li><li><a class="side-area" href="/folios.html?area=typescript" data-area="typescript">typescript<span class="count">3</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Post-quantum cryptography — ML-KEM, ML-DSA, hybrid TLS</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">crypto · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A large quantum computer running <strong>Shor’s algorithm</strong> breaks <em>every</em>
+public-key primitive in use — RSA, (EC)DH, X25519, ECDSA, EdDSA — at any key size; symmetric
+ciphers and hashes stand. Traffic recorded <em>today</em> decrypts <em>then</em> (<strong>harvest now,
+decrypt later</strong>), so <strong>key exchange</strong> moved first: hybrid <strong>X25519MLKEM768</strong>, default in
+Chrome, Firefox, iOS 26, OpenSSL and OpenSSH. Since the 2026 estimates, <strong>signatures</strong> are
+urgent too: Google and Cloudflare now target 2029 for their whole migration.</p>
+<p class="sheet-tools"><a class="sheet-download" href="post-quantum-crypto.pdf" download>Download PDF</a> <a href="post-quantum-crypto.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/crypto/post-quantum-crypto.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="post-quantum-crypto-fig1.svg" width="618" height="172" class="wide" alt="Post-quantum cryptography — ML-KEM, ML-DSA, hybrid TLS — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="post-quantum-crypto-fig2.svg" width="635" height="132" class="wide" alt="Post-quantum cryptography — ML-KEM, ML-DSA, hybrid TLS — figure 2" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">What a quantum computer breaks</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>primitive</strong></th><th><strong>attack</strong></th><th><strong>consequence</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>RSA, (EC)DH, X25519, ECDSA, EdDSA</td><td>Shor (1994): factoring + discrete log in poly time</td><td><strong>broken at any key size</strong> <span class="math">→</span> replace with ML-KEM, ML-DSA, SLH-DSA</td></tr>
+<tr><td>AES-128</td><td>Grover (1996): <span class="math">O(√(N))</span> search</td><td>NIST: still category 1, no transition planned; Apple: “move to AES-256”</td></tr>
+<tr><td>AES-256, ChaCha20, SHA-2, SHA-3, HMAC</td><td>Grover</td><td>stand; SHA-256 collision = category 2</td></tr>
+</tbody>
+</table></p>
+<figure class="sheet-figure"><img src="post-quantum-crypto-fig3.svg" width="284" height="77" alt="Post-quantum cryptography — ML-KEM, ML-DSA, hybrid TLS — figure 3" loading="lazy"></figure>
+<p>Blue: superconducting, 0.1 % error (2019: 20 M); orange: neutral atoms. ECC-256: <span class="math">&lt;</span> 1 200 logical qubits, minutes; RSA-2048: a week — <strong>X25519 and P-256 fall first</strong>. Google proved its circuit by zero-knowledge proof and kept it secret.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Why key exchange first — and why hybrid</span></h3>
+<ul>
+<li>Harvested traffic is safe only if its key was agreed post-quantum <em>at the time</em>. A  signature need only hold when checked — but forged firmware and CA signatures work for  ever: after the 2026 estimates Google ranks authentication first (Android 17: ML-DSA).</li>
+<li>Web PKI: no post-quantum X.509 in Chrome’s root store — <strong>Merkle Tree
+ Certificates</strong>: a CA signs one tree head, a site sends a short inclusion proof.</li>
+<li><strong>Hybrid</strong>: secure if <em>either</em> part holds; new schemes do fall (SIKE, Rainbow).  NIST: hybrid is temporary, a second move to PQ-only follows. CNSA 2.0 (NSA) already wants  pure ML-KEM-1024 + ML-DSA-87, LMS/XMSS for firmware<span class="unverified">(unverified)</span>.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">The NIST algorithms (sizes in bytes)</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>standard</strong></th><th><strong>basis</strong></th><th><strong>sets <span class="math">→</span> category · sizes</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><strong>ML-KEM</strong> FIPS 203 (Kyber)</td><td>module lattice, <span class="math">q</span> = 3329</td><td>512 / <strong>768</strong> / 1024 <span class="math">→</span> 1 / 3 / 5; ek 800 / 1184 / 1568, ct 768 / 1088 / 1568, dk 1632 / 2400 / 3168, K 32. 768 = NIST default</td></tr>
+<tr><td><strong>ML-DSA</strong> FIPS 204 (Dilithium)</td><td>module lattice, <span class="math">q</span> = 8380417</td><td>44 / 65 / 87 <span class="math">→</span> 2 / 3 / 5; pk 1312 / 1952 / 2592, sig 2420 / 3309 / 4627; sk 2560–4896 or a 32-B seed</td></tr>
+<tr><td><strong>SLH-DSA</strong> FIPS 205 (SPHINCS+)</td><td>hashes only (SHA2 / SHAKE)</td><td>12 sets, 128 / 192 / 256 <span class="math">→</span> 1 / 3 / 5; pk 32 / 48 / 64; sig s 7856–29792, f (fast) 17088–49856; <span class="math">≤2<sup>64</sup></span> sigs per key</td></tr>
+<tr><td>LMS, XMSS (SP 800-208)</td><td>hashes, stateful</td><td>reuse a one-time key = broken: state must never roll back; firmware only</td></tr>
+<tr><td>FN-DSA · HQC</td><td>lattice · codes</td><td>Falcon: draft FIPS 206 not public; HQC (backup KEM): draft due 2026, not out</td></tr>
+</tbody>
+</table></p>
+<p>Categories: 1 = AES-128 key search · 2 = SHA-256 collision · 3 = AES-192 · 4 = SHA3-384 collision · 5 = AES-256. X25519 key 32, Ed25519 signature 64: ML-DSA-44’s is 38<span class="math">×</span> that. Backup signatures, round 3: FAEST, HAWK, MAYO, MQOM, QR-UOV, SDitH, SNOVA, SQIsign, UOV.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Who ships it — defaults and APIs</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>where</strong></th><th><strong>what</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>Chrome 131</td><td>X25519MLKEM768; Kyber draft codepoint 0x6399 dropped</td></tr>
+<tr><td>Firefox 132</td><td>mlkem768x25519 in TLS 1.3 (desktop)</td></tr>
+<tr><td>Apple 26</td><td>URLSession + Network.framework TLS; native VPN + IKEv2 API; SSH (macOS); iPhone <span class="math">↔</span> Watch</td></tr>
+<tr><td>OpenSSL 3.5</td><td>default keyshares X25519MLKEM768 + X25519; ML-KEM, ML-DSA, SLH-DSA</td></tr>
+<tr><td>Go 1.24 · JDK 24</td><td><code>crypto/tls</code> default + <code>crypto/mlkem</code> · ML-KEM KEM API (JEP 496)</td></tr>
+<tr><td>OpenSSH</td><td>9.0: sntrup761x25519 · 10.0: <code>mlkem768x25519-sha256</code> · 10.1: warns on non-PQ key
+ agreement · 10.6: <code>ssh-mldsa44-ed25519</code> signatures</td></tr>
+<tr><td>Signal</td><td>PQXDH (Sep 2023, Kyber in the handshake) <span class="math">→</span> SPQR (Oct 2025) + Double
+ Ratchet = “Triple Ratchet”</td></tr>
+<tr><td>iMessage PQ3</td><td>iOS 17.4 (2024); Kyber-1024 + ECC; PQ rekey <span class="math">∼</span>every 50 messages, <span class="math">≤</span> 7 days</td></tr>
+<tr><td>Cloudflare</td><td>Sep 2026: <span class="math">∼</span>70 % of browser traffic PQ, only <span class="math">∼</span>15 % of origins</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Apple platforms</span></h3>
+<ul>
+<li><strong>TLS</strong>: the ClientHello offers <code>X25519MLKEM768</code> + a key share; the <em>server</em>  chooses, else classical — nothing to code, the server/CDN must support it. Check with  <code>nscurl --tls-diagnostics &lt;url&gt;</code> (macOS 26). <strong>Secure Transport</strong> and own TLS  stacks do not get it.</li>
+<li><strong>CryptoKit</strong> 26: <code>MLKEM768</code>, <code>MLKEM1024</code>, <code>MLDSA65</code>, <code>MLDSA87</code>, their  <code>SecureEnclave</code> variants, HPKE <code>XWingMLKEM768X25519_SHA256_AES_GCM_256</code>; core  formally verified against FIPS 203; same API server-side in Swift Crypto. 27:  <code>MLKEM768.OneTimePrivateKey</code> — consumed by decapsulate, faster, not storable, not in  the Secure Enclave.</li>
+<li><strong>X-Wing</strong> = ML-KEM-768 + X25519 as one KEM: pk 1216, ct 1120, private key a 32-B seed;  <span class="math">K</span> = SHA3-256(<span class="math">K<sub>M</sub> ‖K<sub>X</sub> ‖ct<sub>X</sub> ‖pk<sub>X</sub> ‖</span> label).</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Migration — crypto agility</span></h3>
+<ol>
+<li><strong>Inventory</strong> every RSA/ECC use: TLS, VPN, SSH, custom protocols, wrapped keys,  tokens, signatures, pinned keys, firmware roots (a crypto bill of materials).</li>
+<li>Rank by <strong>secrecy lifetime</strong> (Mosca’s <span class="math">x</span>) and by <strong>unpatchable verifiers</strong>.</li>
+<li>Ride platform stacks that upgrade themselves (URLSession, OpenSSL, Go) — hand-rolled  protocols move to HPKE with X-Wing.</li>
+<li>Make algorithms <strong>negotiable</strong>: IDs on the wire, no hard-coded key or signature  lengths, rotation paths for keys and pins; budget kilobytes for keys, tokens, QR codes.</li>
+</ol>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">“No quantum computer yet, so no rush” — today’s traffic is the harvest; <span class="math">x + y &gt; z</span>.</li>
+<li class="trap">“Swap ECDH for ML-KEM” — deploy hybrid; and a bare KEM authenticates nobody.</li>
+<li class="trap">“Signatures can wait” — not for roots baked into hardware; estimates keep falling.</li>
+<li class="trap">Servers and middleboxes that cannot read a large ClientHello — test the fleet.</li>
+<li class="trap">A bad ciphertext raises no error — implicit rejection just yields a different key.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<h3 class="sheet-hd">Shor kills public key, Grover barely dents symmetric. Hybrid KEM now, PQ signatures
+next, deadlines 2029–2035 — and build for the next swap.</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> <code>public-key-maths</code> ·
+Cryptography with CryptoKit · TLS 1.3 &amp; PKI · TLS 1.3 in depth · Keychain &amp; Secure Enclave ·
+<code>secure-randomness</code> · <code>block-cipher-modes</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=crypto" title="area">crypto</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=general" title="platform">general</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=security" title="topic">security</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=networking" title="topic">networking</a></li><li class="sheet-tag"><a href="/folios.html?tag=post-quantum">post-quantum</a></li><li class="sheet-tag"><a href="/folios.html?tag=ml-kem">ml-kem</a></li><li class="sheet-tag"><a href="/folios.html?tag=ml-dsa">ml-dsa</a></li><li class="sheet-tag"><a href="/folios.html?tag=slh-dsa">slh-dsa</a></li><li class="sheet-tag"><a href="/folios.html?tag=x25519mlkem768">x25519mlkem768</a></li><li class="sheet-tag"><a href="/folios.html?tag=hybrid-key-exchange">hybrid-key-exchange</a></li><li class="sheet-tag"><a href="/folios.html?tag=harvest-now-decrypt-later">harvest-now-decrypt-later</a></li><li class="sheet-tag"><a href="/folios.html?tag=shor">shor</a></li><li class="sheet-tag"><a href="/folios.html?tag=grover">grover</a></li><li class="sheet-tag"><a href="/folios.html?tag=hpke">hpke</a></li><li class="sheet-tag"><a href="/folios.html?tag=x-wing">x-wing</a></li><li class="sheet-tag"><a href="/folios.html?tag=crypto-agility">crypto-agility</a></li><li class="sheet-tag"><a href="/folios.html?tag=tls13">tls13</a></li><li class="sheet-tag"><a href="/folios.html?tag=cryptokit">cryptokit</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=crypto%2Fpost-quantum-crypto.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/303">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

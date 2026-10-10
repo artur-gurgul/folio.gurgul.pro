@@ -1,0 +1,317 @@
+% linux-memory-oom.tex — Linux memory accounting and the OOM path: VSZ / RSS / PSS / USS,
+% /proc/meminfo and how MemAvailable is computed, watermarks + kswapd + direct reclaim, writeback,
+% MGLRU, overcommit modes, the OOM killer (badness, oom_score_adj, the kernel log lines, oom_reaper),
+% cgroup v2 memory.min/low/high/max and group kills, Kubernetes and systemd knobs, systemd-oomd +
+% PSI, swap vs zram vs zswap, swappiness, transparent huge pages, and when each piece landed.
+% Sources (checked 2026-10-09):
+%   docs.kernel.org/admin-guide/sysctl/vm (overcommit_memory 0/1/2, default 0; overcommit_ratio;
+%     swappiness 0-200, default 60, 100 = equal IO cost, 0 = swap only below high watermark;
+%     watermark_scale_factor 10 = 0.1 %, max 3000; watermark_boost_factor 15000; min_free_kbytes;
+%     drop_caches 1/2/3, non-destructive, sync first; panic_on_oom 0/1/2; oom_kill_allocating_task;
+%     page-cluster 3 = 8 pages)
+%   docs.kernel.org/mm/overcommit-accounting (mode 2 = swap + 50 % RAM; what is charged;
+%     MAP_NORESERVE ignored in mode 2) · github.com/torvalds/linux mm/util.c (__vm_enough_memory:
+%     GUESS refuses pages > RAM + swap; vm_commit_limit subtracts hugetlb; user reserve 128 MB,
+%     admin 8 MB) · mm/page-writeback.c (dirty_background_ratio 10, dirty_ratio 20, writeback
+%     every 5 s, expire 30 s)
+%   docs.kernel.org/mm/physical_memory (per-zone min/low/high watermarks; below low wakes kswapd,
+%     above high it stops; below min direct reclaim + compaction; one kswapd + kcompactd per node)
+%     · admin-guide/mm/concepts (page cache, anon memory, reclaim, compaction)
+%   docs.kernel.org/filesystems/proc (meminfo fields; Cached includes tmpfs + shmem, excludes
+%     SwapCached; PSS definition + 1000/1000 -> 1500 example; smaps_rollup sums; oom_score_adj
+%     -1000..1000, badness 0..1000 as share of allowed memory; oom_score effectively 0..2000)
+%     · github.com/torvalds/linux mm/show_mem.c (si_mem_available) · include/linux/mm_inline.h
+%     (tmpfs folios sit on the anon LRU) · mm/oom_kill.c (oom_badness = rss + swapents +
+%     pgtables, adj * totalpages / 1000; skips -1000, MMF_OOM_SKIP, vfork; "invoked oom-killer",
+%     "oom-kill:constraint=", "Out of memory" / "Memory cgroup out of memory: Killed process ..."
+%     format; OOM_REAPER_DELAY 2*HZ; oom group kill)
+%   man7.org proc_pid_oom_score_adj(5) (2.6.36; CAP_SYS_RESOURCE to lower) · proc_pid_smaps(5)
+%     · smem(8) (USS = unshared, PSS = USS + share of shared) · free(1) (used = total -
+%     available; buff/cache = Buffers + Cached + SReclaimable; shared = Shmem)
+%   docs.kernel.org/admin-guide/cgroup-v2 (memory.min/low/high/max/peak/reclaim/oom.group/events,
+%     high never OOM-kills, max invokes the cgroup OOM killer, -1000 tasks spared by group kills,
+%     swap.max, zswap.max, zswap.writeback, first-touch charging, page cache + kernel + sockets)
+%   docs.kernel.org/accounting/psi (some / full, total in us, triggers 500 ms - 10 s window,
+%     unprivileged multiples of 2 s, cgroup memory.pressure)
+%   man7.org oomd.conf(5) systemd 262~devel (SwapUsedLimit 90 %, RAM and swap both over it, >5 %
+%     of swap, biggest first; DefaultMemoryPressureLimit 60 % = share of a 10 s window all tasks
+%     stalled; 30 s; most reclaim activity first; PrekillHookTimeoutSec 260) · systemd-oomd.service(8)
+%     (cgroup v2 + PSI 4.20+, swap highly recommended) · systemd.resource-control(5) (ManagedOOM*,
+%     ManagedOOMPreference avoid/omit, Memory*=) · systemd.service(5) (OOMPolicy continue/stop/kill,
+%     kill sets memory.oom.group, 243) · systemd.exec(5) (OOMScoreAdjust)
+%   github.com/systemd/systemd NEWS (247 2020-11-26 adds systemd-oomd as preview; 258 2025-09-17
+%     removes cgroup v1; 260 2026-03-17 prekill hooks; 261 2026-06-19 OOMRule= rulesets) ·
+%     api.github.com/repos/systemd/systemd/releases (published_at v260 2026-03-17, v261
+%     2026-06-19; v262 2026-09-22 is current)
+%   docs.kernel.org/admin-guide/mm/zswap (LRU writeback when the pool is full, zsmalloc,
+%     same-filled pages, shrinker off by default) · admin-guide/blockdev/zram (disksize,
+%     comp_algorithm, mm_stat, backing_dev, recompression) · admin-guide/mm/transhuge
+%     (enabled / defrag values, defrag default madvise, khugepaged max_ptes_none 511, mTHP per-size
+%     enabled + inherit, MADV_COLLAPSE, PR_SET_THP_DISABLE) · admin-guide/mm/multigen_lru
+%     (lru_gen/enabled, min_ttl_ms) · admin-guide/sysrq (f = OOM killer)
+%   kernelnewbies.org Linux_3.11 (zswap) · 3.14 (MemAvailable; zram out of staging) · 4.5 (cgroup
+%     v2 stable, memory + io) · 4.6 (oom_reaper) · 4.14 (smaps_rollup) · 4.19 (memory.oom.group)
+%     · 4.20 (PSI) · 5.8 (swappiness to 200, IO-cost LRU balance) · 5.19 (memory.reclaim) · 6.1
+%     (MGLRU) · 6.8 (multi-size THP)
+%   kubernetes.io docs node-pressure-eviction (oom_score_adj per QoS; memory.available<100Mi) ·
+%     assign-memory-resource (OOMKilled, exit 137) · blog 2026-10-06 cgroup v2 shift
+%     (singleProcessOOMKill false -> memory.oom.group per container)
+%   redis.io docs admin (overcommit_memory = 1, THP never) · fedoraproject.org Changes/SwapOnZRAM
+%     (Fedora 33) · Changes/EnableSystemdOomd (Fedora 34) · man7.org bash(1) (128 + n on signal n)
+%   github.com/torvalds/linux mm/Kconfig (THP sysfs default chosen at build; Kconfig default
+%     TRANSPARENT_HUGEPAGE_ALWAYS) · filesystems/proc (oom_score_adj below the last value a
+%     CAP_SYS_RESOURCE task set needs CAP_SYS_RESOURCE)
+% Not repeated here: page tables, TLB, page faults, fork / CoW, mmap (os-fundamentals).
+% @labels: area=linux kind=concept platform=backend topic=memory,performance,debugging discussion=316
+% @tags: virtual-memory, page-cache, meminfo, rss-pss-uss, reclaim, overcommit, oom-killer, oom-score-adj, cgroup-v2, systemd-oomd, psi, swap, zram, zswap, transparent-huge-pages
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+% shell session listing — literate kills the mono font's ligatures
+\lstdefinelanguage{ShellSheet}{
+  sensitive=true, morecomment=[l]{\#},
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {>=}{{\hbox{>}\hbox{=}}}2 {<=}{{\hbox{<}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\tiny, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  lad/.style={box, font=\tiny, text width=21mm, inner sep=2pt, align=left, anchor=north},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  cg/.style={box, font=\tiny, text width=42mm, inner sep=2pt, align=left},
+  chip/.style={rounded corners=1pt, draw=#1, fill=#1!8, font=\tiny, text width=14.4mm,
+               align=center, inner sep=1pt, minimum height=4.4mm},
+}
+
+\begin{document}
+
+\sheettitle{Linux memory — accounting, reclaim, swap, OOM}{linux · folio}
+
+\oneliner{Idle RAM is lent to the \textbf{page cache}, so ``free'' is always small; the number that
+matters is \textbf{MemAvailable}. Under pressure the kernel \textbf{reclaims} — drops clean file
+pages, writes dirty ones, swaps anonymous ones — first in the background (\textbf{kswapd}), then
+inside the allocating task (\textbf{direct reclaim}, a stall); when reclaim stops making progress it
+\textbf{OOM-kills} the task with the highest \ct{oom\_score}, system-wide or inside the
+\textbf{cgroup} that hit \ct{memory.max}.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (-0.1,3.45) {The pressure ladder — watermarks per zone, one kswapd per NUMA node};
+  \node[lad, draw=sheetGreen!60!black, fill=sheetGreen!10] (s1) at (1.0,3.1) {\textbf{1 above \ct{high}}\\served from the free\\lists; idle RAM is\\page cache};
+  \node[lad] (s2) at (3.4,2.85) {\textbf{2 below \ct{low}}\\\textbf{kswapd} reclaims in\\the background up to\\\ct{high}: drops clean,\\writes dirty, swaps anon};
+  \node[lad, draw=sheetOrange, fill=sheetOrange!8] (s3) at (5.8,2.6) {\textbf{3 below \ct{min}}\\\textbf{direct reclaim} and\\compaction \emph{inside}\\\emph{the allocating task}:\\it stalls, PSI \ct{some} $\uparrow$};
+  \node[lad, draw=sheetOrange, fill=sheetOrange!15] (s4) at (8.2,2.35) {\textbf{4 thrashing}\\evicted pages refault\\at once, PSI \ct{full} $\uparrow$;\\userspace killers\\(systemd-oomd) act};
+  \node[lad, draw=sheetRed, fill=sheetRed!10] (s5) at (10.6,2.1) {\textbf{5 OOM killer}\\no reclaim progress:\\SIGKILL the top\\\ct{oom\_score}; oom\_reaper\\frees its anon memory};
+  \draw[flow] (s1.east) -- (s1.east -| s2.west);
+  \draw[flow] (s2.east) -- (s2.east -| s3.west);
+  \draw[flow] (s3.east) -- (s3.east -| s4.west);
+  \draw[flow, draw=sheetRed] (s4.east) -- (s4.east -| s5.west);
+  \node[lbl, anchor=north west, align=left] at (-0.1,1.55) {each step right: less free memory,\\more latency; steps 3--5 happen in\\whichever task faults a page in};
+  % free-memory gauge
+  \shade[left color=sheetGreen!40, right color=sheetRed!45] (0.0,0.15) rectangle (11.65,0.35);
+  \node[lbl, anchor=south west] at (0.0,0.38) {free pages in a zone decrease $\to$};
+  \foreach \x/\t in {2.1/high, 2.8/low, 4.7/min} {
+    \draw[thick, sheetGrey] (\x,0.1) -- (\x,0.4);
+    \node[lbl, anchor=north] at (\x,0.1) {\ct{\t}};
+  }
+  \node[lbl, anchor=north west, align=left] at (5.0,0.1) {\ct{min} $\leftarrow$ \ct{vm.min\_free\_kbytes}; gaps $\leftarrow$ \ct{watermark\_scale\_factor} 10 = 0.1\% of RAM;\\boost 15000: after a fragmentation event, reclaim up to 150\% of \ct{high}};
+  \draw[sheetGrey!50] (11.85,3.5) -- (11.85,-0.4);
+  % cgroup lane
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (11.95,3.45) {Per cgroup v2 — what containers hit};
+  \node[cg, draw=sheetGreen!60!black, fill=sheetGreen!8] (c1) at (14.25,2.95) {\ct{memory.min} / \ct{memory.low}: protected\\from reclaim (hard / best-effort)};
+  \node[cg, draw=sheetOrange, fill=sheetOrange!8] (c2) at (14.25,2.2) {\ct{memory.high}: over it $\to$ \textbf{throttle} and\\heavy reclaim; \textbf{never} calls the OOM killer};
+  \node[cg, draw=sheetRed, fill=sheetRed!8] (c3) at (14.25,1.3) {\ct{memory.max}: cannot reclaim below it $\to$\\\textbf{cgroup OOM}, victims only \emph{inside}: ``Memory\\cgroup out of memory: Killed process'';\\\ct{memory.oom.group=1}: all of them together};
+  \draw[flow] (c1) -- (c2); \draw[flow, draw=sheetRed] (c2) -- (c3);
+  \node[cg, draw=sheetBlue, fill=sheetBlue!6] (c4) at (14.25,0.1) {\textbf{systemd-oomd} (userspace, acts earlier):\\\ct{full} PSI $>$60\% for 30\,s, or RAM \emph{and} swap\\both $>$90\% $\to$ SIGKILL a whole cgroup};
+  \draw[flow, dashed] (c4.north) -- (c3.south);
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\footnotesize\setstretch{1.0}
+
+\hd{Per process: VSZ, RSS, PSS, USS}
+{\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\ttfamily}p{6mm}>{\raggedright\arraybackslash}p{70mm}@{}}
+\toprule
+VSZ & all mapped virtual memory, touched or not — nearly meaningless \\
+RSS & resident pages; \textbf{shared pages counted in full} in every process \\
+PSS & each shared page divided by its number of sharers — sums to the real total \\
+USS & unshared pages only (\ct{smem}'s term) $\approx$ what its exit frees \\
+\bottomrule
+\end{tabular}}\par
+1000 private pages + 1000 shared with one other process: RSS 2000, PSS 1500, USS 1000.
+\ct{/proc/PID/smaps\_rollup} sums all mappings: \ct{Rss}, \ct{Pss}, \ct{Pss\_Anon/File/Shmem},
+\ct{Private\_*}, \ct{Swap}, \ct{SwapPss}.
+
+\hd{\ct{/proc/meminfo} — the lines that matter}
+{\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\ttfamily}p{16mm}>{\raggedright\arraybackslash}p{60mm}@{}}
+\toprule
+MemFree & truly unused — low is normal \\
+MemAvailable & estimate for new programs \emph{without swapping}: \textbf{alert on this} \\
+Buffers & raw disk-block cache (small) \\
+Cached & page cache \emph{plus} tmpfs and shmem; not \ct{SwapCached} \\
+Shmem & tmpfs, \ct{/dev/shm}, shared anon: swap-backed, on the \textbf{anon} LRU \\
+SwapCached & swapped in, copy still in swap: dropped without a write \\
+Dirty & waiting for writeback (\ct{Writeback}: being written) \\
+AnonPages & heap, stacks — reclaimable only by swapping \\
+SReclaimable & slab caches (dentries, inodes) that can be shrunk \\
+Unevictable & \ct{mlock()}, ramfs — never reclaimed \\
+Committed\_AS & memory promised; \ct{CommitLimit} binds in mode 2 \\
+Zswapped & original size held in zswap (\ct{Zswap}: compressed) \\
+\bottomrule
+\end{tabular}}\par
+\textbf{MemAvailable} = MemFree $-$ reserves + file LRU $-$ min(file/2, $\Sigma$\ct{low}) +
+reclaimable slab $-$ min(slab/2, $\Sigma$\ct{low}): half the cache is assumed to stay, and
+\textbf{Shmem never counts}. \ct{free}(1): \ct{used} = total $-$ available, \ct{buff/cache} =
+Buffers + Cached + SReclaimable, \ct{shared} = Shmem.
+
+\hd{Evidence — read it in this order}
+\begin{lstlisting}[language=ShellSheet]
+$ free -m
+       total   used   free  shared  buff/cache  available
+Mem:   15890  10410    310    1450        6460       5480
+$ cat /proc/pressure/memory
+some avg10=12.40 avg60=8.10 avg300=2.30 total=91234567
+full avg10=4.02 avg60=2.55 avg300=0.61 total=30123456
+$ journalctl -k -g oom            # or dmesg -T
+nginx invoked oom-killer: gfp_mask=..., order=0, oom_score_adj=0
+oom-kill:constraint=CONSTRAINT_NONE,...,task=java,pid=4242,uid=1000
+Out of memory: Killed process 4242 (java) total-vm:9123456kB,
+ anon-rss:6012345kB, file-rss:1024kB, shmem-rss:0kB,
+ UID:1000 pgtables:12800kB oom_score_adj:0
+$ cat /proc/4242/oom_score              # 0..2000, top dies
+$ echo -500 > /proc/4242/oom_score_adj  # -1000 = exempt
+\end{lstlisting}
+\ct{nginx} allocated, \ct{java} died; a victim cannot log its own SIGKILL — only the kernel log
+and \ct{memory.events} record it. \textbf{PSI}: \ct{some} = share of time $\ge$1 task stalled on
+memory, \ct{full} = all non-idle tasks at once (lost work); \ct{total} in $\mu$s; per cgroup
+\ct{memory.pressure}. Trigger: write \ct{some 150000 1000000} (150\,ms per 1\,s) and \ct{poll()}.
+
+\hd{Overcommit — \ct{vm.overcommit\_memory}}
+\begin{itemize}
+  \item \textbf{0} (default): refuse only a single request larger than RAM + swap.
+        \textbf{1}: never refuse. \textbf{2} strict: \ct{Committed\_AS} $\le$ \ct{CommitLimit} =
+        (RAM $-$ hugetlb) $\times$ \ct{overcommit\_ratio} (50)\,\% + swap; \ct{malloc}, \ct{mmap},
+        \ct{fork} get \ct{ENOMEM} instead of a later kill. Charged: private writable and shared
+        anon mappings; read-only and shared file maps are free.
+  \item In 0/1 memory is promised, not given: \ct{malloc(1~GB)} succeeds, pages arrive on first
+        touch — the OOM kill happens at a page fault, far from the allocation.
+\end{itemize}
+
+\hd{Page cache, writeback, reclaim}
+\begin{itemize}
+  \item Flusher threads start at \ct{dirty\_background\_ratio} 10\,\%; the writer itself is
+        throttled at \ct{dirty\_ratio} 20\,\% (of free + reclaimable); data dirty $>$30\,s is
+        written on the 5\,s wakeup.
+  \item LRU lists: active/inactive $\times$ file/anon; a \textbf{refault} = an evicted page
+        needed again. \textbf{MGLRU} (\ct{/sys/kernel/mm/lru\_gen/enabled}): generations instead
+        of two lists; \ct{min\_ttl\_ms}=N protects the last N\,ms of working set — OOM instead of
+        thrashing.
+  \item \ct{drop\_caches} 1 page cache · 2 slab · 3 both; skips dirty pages (\ct{sync} first). A
+        benchmark tool, never a fix.
+\end{itemize}
+
+\columnbreak
+
+\hd{The OOM killer}
+\begin{itemize}
+  \item \textbf{Badness} = RSS + swap entries + page-table pages, + \ct{oom\_score\_adj}
+        $\times$ allowed/1000 — so \ct{oom\_score} spans 0--2000. ``Allowed'' = RAM + swap, or the
+        cpuset / mempolicy nodes, or the memcg limit (\ct{constraint=} in the log).
+  \item Skipped: \ct{oom\_score\_adj} \pdfonly{\textminus}\htmlonly{−}1000, tasks already reaped, tasks mid-\ct{vfork}.
+        One victim, SIGKILL; after a 2\,s grace the \textbf{oom\_reaper} frees its anon memory even
+        if it is stuck. Going below the last value a \ct{CAP\_SYS\_RESOURCE} task set needs it too.
+  \item \ct{vm.panic\_on\_oom}: 0 kill · 1 panic unless cpuset/mempolicy/memcg-constrained · 2
+        always. \ct{oom\_kill\_allocating\_task}=1: kill the caller, no scan. SysRq-\ct{f}: run
+        the OOM killer now. Exit status \textbf{137} = 128 + SIGKILL (9).
+\end{itemize}
+
+\hd{cgroups, Kubernetes, systemd}
+\begin{itemize}
+  \item \ct{memory.events}: \ct{high} (throttled), \ct{max}, \ct{oom}, \ct{oom\_kill},
+        \ct{oom\_group\_kill}; also \ct{memory.peak}, \ct{memory.reclaim} (proactive). Charged:
+        anon, page cache, tmpfs, kernel objects, socket buffers — to the cgroup that \emph{first
+        touched} the page, even after the task moves. Group kills spare \pdfonly{\textminus}\htmlonly{−}1000 tasks.
+  \item \textbf{Kubernetes}: limit = the container's \ct{memory.max}; over it $\to$
+        \ct{OOMKilled}, exit 137, restart per \ct{restartPolicy}. On cgroup v2 the kubelet sets
+        \ct{memory.oom.group} per container (\ct{singleProcessOOMKill: false}).
+        \ct{oom\_score\_adj}: Guaranteed \pdfonly{\textminus}\htmlonly{−}997, BestEffort 1000, Burstable
+        min(max(2, 1000 $-$ 1000·request/node RAM), 999).
+  \item \textbf{systemd}: \ct{MemoryMin/Low/High/Max/SwapMax/ZSwapMax=}, \ct{OOMScoreAdjust=},
+        \ct{OOMPolicy=} \ct{continue} · \ct{stop} · \ct{kill} (= group kill).
+        \textbf{systemd-oomd} (default on since Fedora 34) watches only units with
+        \ct{ManagedOOMSwap=kill} / \ct{ManagedOOMMemoryPressure=kill}: it kills cgroups holding
+        $>$5\% of swap, largest first, or the most reclaim activity first;
+        \ct{ManagedOOMPreference=avoid|omit}.
+\end{itemize}
+
+\hd{Swap, zram, zswap}
+{\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{8mm}>{\raggedright\arraybackslash}p{37mm}>{\raggedright\arraybackslash}p{30mm}@{}}
+\toprule
+\textbf{what} & \textbf{how} & \textbf{when full}\\
+\midrule
+swap & partition or file on disk; cold \emph{anon} pages leave RAM & OOM once RAM is gone too\\
+zram & \ct{/dev/zramN}, a compressed RAM disk used \emph{as} swap (Fedora 33+) & \ct{backing\_dev}: idle or incompressible pages to disk\\
+zswap & compressed cache \emph{in front of} disk swap, zsmalloc pool & LRU writeback to the swap device\\
+\bottomrule
+\end{tabular}}\par
+\ct{vm.swappiness} 0--200, default 60: relative I/O cost of swap vs file paging; 100 = equal,
+$>$100 suits zram/zswap; \textbf{0 does not disable swap} (it swaps once free + file $<$
+\ct{high}). \ct{page-cluster} 3 = 8-page swap readahead. Without swap, anon memory is pinned: only
+file cache — code pages too — can go, so the box thrashes, then OOMs.
+
+\hd{Transparent huge pages}
+\ct{enabled}: \ct{always} · \ct{madvise} (only \ct{MADV\_HUGEPAGE} ranges) · \ct{never}; build
+default (Kconfig: \ct{always}). \ct{defrag}: \ct{always} · \ct{defer} · \ct{defer+madvise} · \ct{madvise} (default) ·
+\ct{never}. 2\,MB pages cut TLB misses; cost compaction stalls, \textbf{khugepaged} work, bloat.
+\textbf{mTHP}: \ct{hugepages-<size>kB/enabled}, PMD size \ct{inherit}, others \ct{never}. Redis:
+\ct{never}, and \ct{overcommit\_memory=1} for \ct{fork()} snapshots.
+
+\hd{When it landed — kernel \textcolor{sheetBlue}{\rule{5pt}{5pt}} · systemd \textcolor{sheetOrange}{\rule{5pt}{5pt}}}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \r in {0,1,2} \draw[flow, thin] (-0.7,-\r*0.5) -- (7.1,-\r*0.5);
+  \foreach \i/\cl/\v/\t in {
+      0/sheetBlue/{2013 · 3.11}/{zswap},
+      1/sheetBlue/{2014 · 3.14}/{MemAvailable},
+      2/sheetBlue/{2016 · 4.5}/{cgroup v2 stable},
+      3/sheetBlue/{2016 · 4.6}/{oom\_reaper},
+      4/sheetBlue/{2017 · 4.14}/{smaps\_rollup},
+      5/sheetBlue/{2018 · 4.19}/{memory.oom.group},
+      6/sheetBlue/{2018 · 4.20}/{PSI},
+      7/sheetBlue/{2020 · 5.8}/{swappiness$\to$200},
+      8/sheetOrange/{2020 · 247}/{systemd-oomd},
+      9/sheetBlue/{2022 · 5.19}/{memory.reclaim},
+      10/sheetBlue/{2022 · 6.1}/{MGLRU},
+      11/sheetBlue/{2024 · 6.8}/{multi-size THP},
+      12/sheetOrange/{2025 · 258}/{drops cgroup v1},
+      13/sheetOrange/{2026 · 260}/{prekill hooks},
+      14/sheetOrange/{2026 · 261}/{\ct{OOMRule=}}} {
+    \pgfmathtruncatemacro\row{int(\i/5)}
+    \pgfmathtruncatemacro\col{mod(\i,5)}
+    \node[chip=\cl] at (\col*1.6, -\row*0.5) {\textbf{\v}\\\t};
+  }
+\end{tikzpicture}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{A full tmpfs or \ct{/dev/shm} shows as \ct{Cached} yet is not reclaimable — only swap or
+        \ct{rm} frees it.}
+  \trap{\ct{memory.high} alone never kills: a leaking task is throttled forever unless an agent
+        (systemd-oomd, kubelet) acts on PSI or \ct{memory.events}.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Read available, not free. Reclaim $\to$ thrash $\to$ kill; \ct{high} throttles, \ct{max} kills.}
+
+\end{multicols}
+
+\noindent{\raggedright\footnotesize\color{sheetGrey}\textit{Related:} \texttt{os-fundamentals} (page
+faults, CoW) · \texttt{namespaces-cgroups-containers} · \texttt{systemd-deep} ·
+\texttt{linux-performance-observability} · \texttt{linux-filesystems-storage}\par}
+
+\end{document}

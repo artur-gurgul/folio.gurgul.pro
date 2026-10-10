@@ -1,0 +1,113 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>CI pipeline design — fast feedback, safe merges, one artifact — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/cicd/ci-pipeline-design.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">310</span></a></li><li><a class="side-area" href="/folios.html?area=ai" data-area="ai">ai<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=ble" data-area="ble">ble<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=c" data-area="c">c<span class="count">5</span></a></li><li><a class="side-area current" href="/folios.html?area=cicd" data-area="cicd">cicd<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=crypto" data-area="crypto">crypto<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=dev-tools" data-area="dev-tools">dev-tools<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=iot" data-area="iot">iot<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=javascript" data-area="javascript">javascript<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=linux" data-area="linux">linux<span class="count">8</span></a></li><li><a class="side-area" href="/folios.html?area=macos" data-area="macos">macos<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=recall" data-area="recall">recall<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=runtime" data-area="runtime">runtime<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li><li><a class="side-area" href="/folios.html?area=typescript" data-area="typescript">typescript<span class="count">3</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">CI pipeline design — fast feedback, safe merges, one artifact</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">cicd · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A pipeline is a <strong>DAG of gates</strong> ordered so the <strong>cheapest check most likely to fail runs first</strong>;
+its <strong>critical path</strong> is the developer’s wait. Speed comes from <strong>content-keyed caches</strong> only CI writes and
+<strong>duration-balanced shards</strong>; <code>main</code> stays green because a <strong>merge queue</strong> tests the merge
+<em>before</em> it lands; the release <strong>artifact is built once</strong>, attested, and <strong>promoted</strong>; the whole
+system is judged by the <strong>DORA</strong> metrics — not by how many jobs it has.</p>
+<p class="sheet-tools"><a class="sheet-download" href="ci-pipeline-design.pdf" download>Download PDF</a> <a href="ci-pipeline-design.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/cicd/ci-pipeline-design.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="ci-pipeline-design-fig1.svg" width="535" height="159" class="wide" alt="CI pipeline design — fast feedback, safe merges, one artifact — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">Order and speed</span></h3>
+<ul>
+<li><strong>Cheap and likely-to-fail first</strong>: lint (seconds) <span class="math">→</span> compile <span class="math">→</span> unit <span class="math">→</span>  snapshot <span class="math">→</span> UI/E2E. Commit stage within XP’s <strong>ten-minute build</strong>; slow suites in a  second stage that “might take a couple of hours” (Fowler, rev. 2024).</li>
+<li><strong>Critical path, not CPU</strong>: wall clock = the longest chain. Build <strong>once</strong>, fan out:  <code>build-for-testing -testProductsPath T.xctestproducts</code> <span class="math">→</span> artifact (jobs share no disk)  <span class="math">→</span> <code>test-without-building</code> per shard.</li>
+<li><strong>Skip what cannot change</strong>: path filters (see the trap); Nx <code>affected</code> (git diff + project  graph); Tuist selective testing (hash per test target + its dependencies — target, not test, granularity).</li>
+<li><strong>Cancel superseded PR runs</strong>, never deploys: GitHub <code>concurrency</code> (+ <code>cancel-in-progress</code>)  · GitLab <code>interruptible</code> · Buildkite <em>Cancel Intermediate Builds</em> · Xcode Cloud  <em>Auto-cancel Builds</em> (on by default).</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Sharding — split by duration, not by count</span></h3>
+<figure class="sheet-figure"><img src="ci-pipeline-design-fig2.svg" width="280" height="54" alt="CI pipeline design — fast feedback, safe merges, one artifact — figure 2" loading="lazy"></figure>
+<p>Wall clock <span class="math">≈</span> build + slowest shard + per-shard setup (boot, download): past a point more shards only add setup and cost. Timing data: Buildkite <code>bktec</code> (history), CircleCI <code>tests split --split-by=timings</code> (previous run; with none, by name).</p>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>CI</strong></th><th><strong>fan-out</strong></th><th><strong>each copy learns its slot</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>GitHub</td><td><code>strategy.matrix</code> <span class="math">≤</span> 256 jobs/run</td><td><code>${{ matrix.shard }}</code></td></tr>
+<tr><td>GitLab</td><td><code>parallel: 1..200</code></td><td><code>CI_NODE_INDEX</code>, <code>CI_NODE_TOTAL</code></td></tr>
+<tr><td>Buildkite</td><td>step <code>parallelism:</code></td><td><code>BUILDKITE_PARALLEL_JOB</code>, <code>_COUNT</code></td></tr>
+<tr><td>Bitrise</td><td>pipeline <code>parallel:</code> <span class="math">≤</span> 200</td><td><code>BITRISE_IO_PARALLEL_INDEX</code> (0-based), <code>_TOTAL</code></td></tr>
+<tr><td>CircleCI</td><td>job <code>parallelism:</code></td><td><code>CIRCLE_NODE_INDEX</code>, <code>_TOTAL</code></td></tr>
+<tr><td>Jest</td><td><code>--shard=2/4</code></td><td>1-based index / count</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Caching — what, key, who writes</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>cache</strong></th><th><strong>key</strong></th><th><strong>trap</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>downloads: SPM, Pods, npm, Gradle deps</td><td>OS + tool version + <strong>hash(lockfile)</strong></td><td>a key without the lockfile hash restores stale deps</td></tr>
+<tr><td>outputs: ccache, DerivedData</td><td>inputs + compiler (ccache: size + mtime)</td><td>absolute paths miss across checkouts; <code>base_dir</code>: “a brittle hack”</td></tr>
+<tr><td>remote: Bazel (action cache + CAS), Gradle</td><td>hash of every declared input</td><td>hermetic or wrong: an undeclared input is not in the key</td></tr>
+<tr><td>Xcode 26 compilation cache</td><td>per compile inputs</td><td>opt-in, Swift + C; wins on branch switches and clean builds</td></tr>
+</tbody>
+</table></p>
+<p><strong>GitHub restore</strong>: exact key <span class="math">→</span> key as prefix <span class="math">→</span> each <code>restore-keys</code> prefix, newest wins. Entries are <strong>immutable</strong> (new lockfile = new key), 10 GB/repo by default, gone after 7 days unused. Visible: own branch, default branch, PR base; PR caches sit on <code>refs/pull/…/merge</code>. <strong>GitLab</strong>: <code>cache:key:files</code> (<span class="math">≤</span> 10 files <span class="math">→</span> SHA of contents), <code>fallback_keys</code>, <code>policy: pull</code> for readers. <strong>Poisoning</strong> = an untrusted job writes what a trusted job restores and runs. One rule everywhere: <strong>only trusted CI writes</strong> — GitHub makes <code>pull_request_target</code>/<code>workflow_run</code> read-only; Bazel: <code>--remote_upload_local_results=false</code> off CI; Gradle: <code>isPush = isCiServer</code>.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Keeping main green</span></h3>
+<ul>
+<li><strong>Not Rocket Science Rule</strong> (Hoare 2014; the <em>bors</em> bot): automatically keep a  repository that never fails its tests — test the <em>merge</em>, then advance <code>main</code>:  two PRs green against an old <code>main</code> can be red together.</li>
+<li><strong>GitHub merge queue</strong>: workflows need the <code>merge_group</code> trigger, else checks never report. Branch  <code>gh-readonly-queue/main/…</code> = main + PRs ahead + this PR; 1–100 groups at once, 1–100 PRs per merge.  Failure or timeout <span class="math">→</span> PR out, groups behind rebuilt; jumping rebuilds all in flight.</li>
+<li><strong>GitLab merge trains</strong> (Premium+): <span class="math">≤</span> <strong>20</strong> pipelines in parallel by default; a failure drops  the MR and restarts all behind it.</li>
+<li><strong>Required checks</strong> match <strong>by name</strong>: renaming a job silently un-requires it.</li>
+<li><strong>Trunk</strong> (DORA): <span class="math">≤</span> 3 active branches, merged daily, no freezes. Fowler: commit to mainline  every day; fix a red build first — usually by <strong>revert</strong>.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Five CI systems side by side</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th><strong>config · DAG</strong></th><th><strong>runs on</strong></th><th><strong>secrets on PRs</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>GitHub Actions</td><td><code>.github/workflows/*.yml</code> · <code>needs:</code></td><td>hosted (Linux, Windows, macOS) or yours</td><td>fork PR: none, read-only token</td></tr>
+<tr><td>GitLab CI</td><td><code>.gitlab-ci.yml</code> · stages <code>.pre build test deploy .post</code> + <code>needs:</code> (<span class="math">≤</span> 50)</td><td>SaaS or your runners</td><td>protected vars on protected refs only; forks: none</td></tr>
+<tr><td>Buildkite</td><td><code>pipeline.yml</code> + steps generated at run time (<code>pipeline upload</code>)</td><td>“hybrid”: SaaS control plane, <strong>your</strong> agents; or hosted</td><td>code + secrets never reach Buildkite</td></tr>
+<tr><td>Bitrise</td><td><code>bitrise.yml</code>: pipelines <span class="math">→</span> workflows (<code>depends_on</code>) <span class="math">→</span> steps</td><td>hosted macOS/Linux</td><td>none unless “Expose for Pull Requests”</td></tr>
+<tr><td>Xcode Cloud</td><td>no YAML: Xcode / App Store Connect; <code>ci_scripts/</code></td><td>Apple only; 25 compute h/month included</td><td>secret env vars masked in logs</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Build once, promote</span></h3>
+<p>The first stage “will do any compilation and provide binaries for later stages” (Fowler 2013, after Humble &amp; Farley); a rebuild per environment ships a binary nobody tested.</p>
+<ul>
+<li><strong>App Store</strong>: each upload needs a new <strong>build string</strong> (<code>CFBundleVersion</code> “uniquely  identifies the build”); a version takes <strong>one</strong> build, swappable until submitted — the TestFlight  build <em>is</em> the reviewed one. Since <strong>28 Apr 2026</strong>: Xcode 26+ and a 26 SDK.</li>
+<li><strong>Google Play</strong>: <code>versionCode</code> must grow, never reused, <span class="math">≤</span> 2 100 000 000. Promote via  “Add from library” or <code>Edits.tracks: update</code> with the existing <code>versionCode</code>; staged = <code>inProgress</code>  + <code>userFraction</code> (not on a first release). You sign with the <strong>upload key</strong>; Play re-signs with  the app signing key (required for apps created since Aug 2021).</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Provenance — prove which build it is</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>SLSA</strong></th><th><strong>Build track requirement</strong></th><th><strong>stops</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>L1</td><td>provenance shows how it was built</td><td>mistakes; documents</td></tr>
+<tr><td>L2</td><td><strong>signed</strong> provenance from a <strong>hosted</strong> platform</td><td>tampering <em>after</em> the build</td></tr>
+<tr><td>L3</td><td>hardened: runs isolated, signing key unreachable from build steps</td><td>tampering <em>during</em> the build</td></tr>
+</tbody>
+</table></p>
+<p>SLSA <strong>v1.2</strong> (24 Nov 2025) adds a <strong>Source track</strong>: L1 version control <span class="math">→</span> L2 history + source provenance <span class="math">→</span> L3 enforced controls <span class="math">→</span> L4 code review. GitHub <code>actions/attest</code> (<code>id-token</code> + <code>attestations: write</code>) = Build L2; L3 via a shared reusable workflow. Keyless <strong>Sigstore</strong>: Fulcio certifies the job’s OIDC identity for <strong>10 minutes</strong>; public repos log to Rekor. Gate deploys on <code>gh attestation verify app.ipa -R org/app</code> — it proves <em>where from</em>, not <em>safe</em>.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">DORA — measure the system</span></h3>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><span class="c-sheetgreen"><strong>T</strong></span></td><td>change lead time</td><td>commit <span class="math">→</span> deployed in production</td></tr>
+<tr><td><span class="c-sheetgreen"><strong>T</strong></span></td><td>deployment frequency</td><td>deploys per period, or time between them</td></tr>
+<tr><td><span class="c-sheetgreen"><strong>T</strong></span></td><td>failed deploy. recovery time</td><td>was MTTR; deploy-caused failures only (2023)</td></tr>
+<tr><td><span class="c-sheetred"><strong>I</strong></span></td><td>change fail rate</td><td>share of deploys needing immediate intervention</td></tr>
+<tr><td><span class="c-sheetred"><strong>I</strong></span></td><td>deployment rework rate</td><td>share that are unplanned, caused by an incident (2024)</td></tr>
+</tbody>
+</table></p>
+<p><strong>T</strong>hroughput / <strong>I</strong>nstability grouping since 2024. 2024 elite: on-demand deploys, lead time <span class="math">&lt;</span> 1 day, <span class="math">∼</span>5 % fail rate, recovery <span class="math">&lt;</span> 1 h<span class="unverified">(unverified)</span>. 2025 report (<span class="math">∼</span>5 000 people): AI adoption <span class="math">→</span> <em>more</em> throughput, still <em>less</em> stability; <strong>seven team profiles</strong>.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap">Required check + path filter: a skipped <em>workflow</em> stays “Pending” forever and blocks the PR; a job  skipped by <code>if:</code> reports Success. Fix: one always-run gate job (<code>if: always()</code>) that <code>needs:</code> the rest.</li>
+<li class="trap">Secrets mask only verbatim: a base64 or derived copy prints in clear — register it as a secret too.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Remember</span></h3>
+<h3 class="sheet-hd">“Cheap first, shard by time, cache by content, queue the merge, build once, attest, measure DORA.”</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> <code>github-actions-deep</code> · <code>xcodebuild-simctl-cli</code> ·
+<code>fastlane-deep</code> · signing-and-cicd · rn-ci-and-signing · flaky-tests-ci-tdd · supply-chain-security ·
+release-engineering</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=cicd" title="area">cicd</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=process" title="kind">process</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=general" title="platform">general</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=build" title="topic">build</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=testing" title="topic">testing</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=tooling" title="topic">tooling</a></li><li class="sheet-tag"><a href="/folios.html?tag=ci-cd">ci-cd</a></li><li class="sheet-tag"><a href="/folios.html?tag=pipeline-design">pipeline-design</a></li><li class="sheet-tag"><a href="/folios.html?tag=build-caching">build-caching</a></li><li class="sheet-tag"><a href="/folios.html?tag=cache-poisoning">cache-poisoning</a></li><li class="sheet-tag"><a href="/folios.html?tag=test-sharding">test-sharding</a></li><li class="sheet-tag"><a href="/folios.html?tag=merge-queue">merge-queue</a></li><li class="sheet-tag"><a href="/folios.html?tag=required-checks">required-checks</a></li><li class="sheet-tag"><a href="/folios.html?tag=trunk-based-development">trunk-based-development</a></li><li class="sheet-tag"><a href="/folios.html?tag=build-once-promote">build-once-promote</a></li><li class="sheet-tag"><a href="/folios.html?tag=slsa">slsa</a></li><li class="sheet-tag"><a href="/folios.html?tag=sigstore">sigstore</a></li><li class="sheet-tag"><a href="/folios.html?tag=provenance">provenance</a></li><li class="sheet-tag"><a href="/folios.html?tag=dora-metrics">dora-metrics</a></li><li class="sheet-tag"><a href="/folios.html?tag=github-actions">github-actions</a></li><li class="sheet-tag"><a href="/folios.html?tag=gitlab-ci">gitlab-ci</a></li><li class="sheet-tag"><a href="/folios.html?tag=xcode-cloud">xcode-cloud</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=cicd%2Fci-pipeline-design.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/297">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

@@ -1,0 +1,324 @@
+% ai-coding-agents-at-work.tex — coding agents as a working tool: the loop inside the harness
+% (context → model → tool call → permission gate → sandbox → result), the work loop that keeps a
+% diff verifiable, rules files (AGENTS.md, CLAUDE.md, Copilot, Codex) and how each is found, the
+% context budget, permission modes + sandboxes, Xcode 26 → 26.3 → 27, MCP up to 2026-07-28, prompt
+% injection + hallucinated packages, and what the measurements (SWE-bench, METR) do and do not show.
+% Sources (checked 2026-10-09):
+%   developer.apple.com/documentation/xcode-release-notes: xcode-26-release-notes (ChatGPT + Claude
+%     accounts, any Chat Completions provider by API key, local model on Apple silicon, Coding Tools,
+%     predictive completion runs locally) · xcode-26_3-release-notes (agentic coding: Claude Agent +
+%     Codex, Xcode capabilities over MCP, permissions system for external agents) ·
+%     xcode-27-release-notes (Swift 6.4; Gemini, Antigravity; plans = editable Markdown artifacts,
+%     approved before the agent proceeds; agents boot simulators, tap, screenshot; MCP tools for
+%     debugger, schemes, build settings, entitlements, Info.plist; String Catalog translation;
+%     Organizer "Generate Recommendations"; plug-ins = skills + MCP servers + ACP agents; Agent
+%     Client Protocol; filesystem security layer over agents and spawned processes; lldb-mcp; beta 5
+%     `xcrun mcp-server enable`; natural-language documentation search; Apple silicon only)
+%   developer.apple.com/news/releases (Xcode 27 27A266a, 2026-09-14) · apple.com/newsroom 2026/02
+%     (26.3 RC 2026-02-03) and 2026/06 (Xcode 27 betas 2026-06-08; Anthropic, Google, OpenAI)
+%   developer.apple.com/documentation/xcode/giving-external-agents-access-to-xcode (Settings >
+%     Intelligence > "Allow external agents to use Xcode tools"; claude / codex mcp add … xcrun
+%     mcpbridge; hints in AGENTS.md / CLAUDE.md; the project must be open in Xcode)
+%   agents.md (open format; Agentic AI Foundation, Linux Foundation; 20+ tools; closest file wins,
+%     chat prompt overrides) · aaif.io news 2025-12-09 (AAIF founded with MCP, goose, AGENTS.md)
+%   code.claude.com/docs/en: memory (managed → user → project → local; ancestors at launch,
+%     subdirectories on demand; concatenated, not overriding; @import max 4 hops; < 200 lines;
+%     AGENTS.md read when no CLAUDE.md; .claude/rules paths:; "context, not enforced
+%     configuration") · permissions (deny → ask → allow, first match wins; enforced by Claude Code,
+%     not the model) · permission-modes (default = Manual, acceptEdits, plan, auto = classifier,
+%     dontAsk, bypassPermissions = containers / VMs only; deny rules hold in every mode) ·
+%     sandboxing (off by default; Seatbelt; bubblewrap + socat; writes = working dir + temp; reads
+%     incl. ~/.ssh; env inherited; network via a proxy whose allow-list starts empty; file tools, MCP
+%     servers, hooks run outside; unsandboxed if it cannot start unless failIfUnavailable) · hooks
+%     (PreToolUse exit 2 blocks even over a JSON "allow") · best-practices (performance degrades as
+%     context fills; give it a check it can run; explore → plan → implement → commit; skip the plan
+%     if the diff fits one sentence; after two failed corrections /clear; subagents in their own
+%     window; fresh-context reviewer; checkpoints do not capture Bash changes; "If you can't verify
+%     it, don't ship it")
+%   learn.chatgpt.com/docs (Codex: ~/.codex then repo root → cwd, AGENTS.override.md before
+%     AGENTS.md, concatenated, 32 KiB project_doc_max_bytes; sandbox read-only / workspace-write /
+%     danger-full-access; approvals on-request / never / granular, untrusted retired; network off in
+%     workspace-write; Seatbelt; bwrap + seccomp; treat web results as untrusted)
+%   docs.github.com copilot add-repository-instructions (.github/copilot-instructions.md,
+%     .github/instructions/*.instructions.md applyTo, nearest AGENTS.md wins, or one root CLAUDE.md /
+%     GEMINI.md) · copilot/reference/custom-instructions-support (agent instructions read by the
+%     cloud agent, code review and Copilot CLI)
+%   modelcontextprotocol.io/specification/2026-07-28 + changelogs 2025-03-26 (OAuth 2.1, Streamable
+%     HTTP replaces HTTP+SSE, tool annotations), 2025-06-18 (batching removed, structured tool output,
+%     elicitation), 2025-11-25 (experimental tasks), 2026-07-28 (stateless: no initialize, no
+%     sessions, server/discover, multi round-trip requests, tasks → extension, Roots / Sampling /
+%     Logging deprecated with a 12-month minimum) — each changelog names the previous revision;
+%     JSON-RPC 2.0; host / client / server; tools, resources, prompts; elicitation; tools = arbitrary
+%     code execution, annotations untrusted, consent before invoking · specification/versioning
+%     (YYYY-MM-DD = last backwards-incompatible change) · 2026-07-28/architecture (each client 1:1
+%     with one server, the host runs many clients)
+%   genai.owasp.org/llmrisk/llm01-prompt-injection (LLM01:2025; direct / indirect; RAG and
+%     fine-tuning do not fully mitigate; least privilege, human approval, segregate external content,
+%     adversarial testing) · simonwillison.net/2025/Jun/16/the-lethal-trifecta (private data,
+%     untrusted content, external communication; "95% is very much a failing grade") ·
+%     arxiv.org/abs/2406.10279 (USENIX Security 2025: 16 LLMs, 576 000 samples, at least 5.2 % /
+%     21.7 % hallucinated packages, 205 474 unique names)
+%   trychroma.com/research/context-rot (2025-07-14; 18 models; worse with input length)
+%   arxiv.org/abs/2310.06770 (SWE-bench, ICLR 2024: 2 294 issues, 12 Python repos, Claude 2 1.96 %)
+%     · swebench.com/verified (500 human-validated instances) ·
+%     openai.com/index/why-we-no-longer-evaluate-swe-bench-verified (2026-02-23: 138 audited, 59.4 %
+%     flawed tests or descriptions; models reproduce gold patches) — read through the search index,
+%     the page refuses direct fetches
+%   metr.org/blog: 2025-07-10 (16 developers, 246 issues, Cursor + Claude 3.5/3.7; +19 % time, CI +2
+%     to +39; expected -24 %, believed -20 %) · 2026-02-24 (57 developers, 143 repos, 800+ tasks;
+%     -18 % [-38, +9] returning, -4 % [-15, +9] new; negative = faster; unreliable: selection)
+%   anthropic.com/engineering/building-effective-agents (2024-12-19: agents = LLMs using tools based
+%     on environmental feedback in a loop; workflows = predefined code paths)
+% @labels: area=ai kind=process platform=general topic=ai,tooling,security discussion=287
+% @tags: coding-agents, agentic-coding, claude-code, codex, xcode, mcp, agents-md, rules-file, prompt-injection, permissions, sandbox, context-window, llm, supply-chain, swe-bench, verification
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{RulesSheet}{
+  morekeywords={Build,Test,Stack,Rules,Done,Never},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]',
+  literate={->}{{\hbox{-}\hbox{>}}}2 {--}{{\hbox{-}\hbox{-}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\tld{\textasciitilde}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt},
+  hz/.style={box, font=\tiny, inner sep=2pt, align=left},
+  you/.style={box, font=\tiny, minimum height=8.5mm, minimum width=19mm, inner sep=1.5pt, align=center},
+  agt/.style={you, draw=sheetOrange, fill=sheetOrange!10},
+  gate/.style={draw=sheetGreen, thick, fill=sheetGreen!8, rounded corners=2pt, font=\tiny,
+               inner sep=2pt, align=left},
+  hd/.style={font=\bfseries\scriptsize, text=sheetBlue, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{AI coding agents at work — loop, context, permissions, proof}{ai · folio}
+
+\oneliner{A coding agent is a model calling tools \textbf{in a loop} inside a \textbf{harness} that
+decides what each call may touch. You control the \textbf{context} it sees, the \textbf{permissions
+and sandbox} around it and the \textbf{check} it must pass: rules files advise; permission rules,
+hooks and sandboxes enforce; a test, build or screenshot proves.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ===== row 1: the agent loop inside the harness
+  \node[hd] at (-0.05,1.45) {The agent loop — what runs where};
+  \node[hz, text width=31mm] (ctx) at (1.6,0.2) {\textbf{Context window}\\{\color{sheetGrey}\itshape advisory: the model reads it}\\system prompt\\rules file:
+    \ct{AGENTS.md} / \ct{CLAUDE.md}\\tool schemas: built-in + MCP\\your prompt, the conversation\\every file read, every command output};
+  \node[hz, align=center, minimum width=15mm, minimum height=10mm, draw=sheetOrange, fill=sheetOrange!10] (mdl) at (4.3,0.2) {\textbf{Model}\\next step:\\text or a tool call};
+  \node[hz, text width=27mm, draw=sheetRed, fill=sheetRed!6] (gt) at (6.95,0.2) {\textbf{Permission gate}\\1 deny rules\\2 ask rules\\3 allow rules + mode\\\ct{PreToolUse} hook: exit 2 blocks};
+  \node[hz, text width=31mm, draw=sheetGreen, fill=sheetGreen!8] (tl) at (10.7,0.2) {\textbf{Tools}\\Read · Grep · Edit · Write\\Bash $\to$ \textbf{OS sandbox} (if on)\\MCP servers, e.g. Xcode via\\\ct{xcrun mcpbridge}\\subagent = a fresh window};
+  \draw[flow] (ctx.east) -- (mdl.west);
+  \draw[flow] (mdl.east) -- node[lbl, above]{call} (gt.west);
+  \draw[flow] (gt.east) -- node[lbl, above]{allow} (tl.west);
+  \draw[hot, sheetRed] (gt.south) |- (5.6,-0.82) node[lbl, below, text=sheetRed]{deny: the reason goes back} -| (mdl.south);
+  \draw[flow, sheetBlue] (tl.south) |- (8.6,-1.3) node[lbl, below, text=sheetBlue]{result appended — the window fills $\to$ compaction (summary) or \ct{/clear}} -| (ctx.south);
+  \draw[decorate, decoration={brace, amplitude=3pt}, sheetGrey] (5.55,1.12) -- (12.25,1.12) node[lbl, midway, above=2pt]{\textbf{enforced} by the harness, whatever the model decides};
+  \node[lbl, anchor=west, text width=38mm, align=left] at (12.45,0.2) {\textbf{The loop ends} when the model
+    stops calling tools; a Stop hook or goal check can refuse the stop until it passes. With no check it can run,
+    ``looks done'' is the only signal and \textbf{you} become the loop.\\[2pt]
+    Agent = ``LLMs using tools based on environmental feedback in a loop''; a workflow = predefined code paths.};
+  % ===== row 2: the work loop
+  \node[hd] at (-0.05,-1.72) {The work loop — small, checked steps};
+  \node[you] (sp) at (0.95,-2.5) {\textbf{1 Explore + spec}\\goal, files, out of scope,\\how ``done'' is proven};
+  \node[agt] (pl) at (3.3,-2.5) {\textbf{2 Plan}\\agent drafts, \textbf{you}\\approve (plan mode)};
+  \node[you] (te) at (5.65,-2.5) {\textbf{3 Failing test}\\makes ``done''\\checkable};
+  \node[agt] (df) at (8.0,-2.5) {\textbf{4 Small diff}\\one concern,\\readable in one go};
+  \node[gate] (g) at (10.45,-2.5) {\textbf{5 Checks} (machine)\\$\square$ builds, 0 warnings\\$\square$ tests green\\$\square$ app runs: screenshot};
+  \node[agt] (rv) at (12.95,-2.5) {\textbf{6 Review}\\fresh context: subagent\\or 2nd session, + you};
+  \node[you, draw=sheetGreen, fill=sheetGreen!10] (cm) at (15.35,-2.5) {\textbf{7 Commit}\\git is the undo;\\next task: new session};
+  \foreach \a/\b in {sp/pl,pl/te,te/df,df/g,g/rv,rv/cm} \draw[flow] (\a) -- (\b);
+  \draw[hot, sheetRed] (g.south) |- (9.2,-3.17) node[lbl, below=1pt, text=sheetRed, anchor=north]{check red: paste the \emph{exact} error back} -| (df.south);
+  \draw[hot, sheetRed] (rv.south) |- (4.6,-3.52) node[lbl, below=1pt, text=sheetRed, anchor=north]{wrong approach, or corrected twice: \ct{/clear}, re-plan with what you learned} -| (pl.south);
+  \node[lbl, anchor=north west, text=sheetRed, align=left] at (13.15,-3.02) {skip step 2 when the diff fits\\one sentence; split a diff that\\outgrows your review};
+  \node[lbl, anchor=west] at (-0.05,-3.3) {\textcolor{sheetBlue}{\rule{2mm}{2mm}} you \ \textcolor{sheetOrange}{\rule{2mm}{2mm}} agent \ \textcolor{sheetGreen}{\rule{2mm}{2mm}} tools};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Rules files — who reads what}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{65mm}@{}}
+\toprule
+\textbf{file} & \textbf{read by · how it is found}\\
+\midrule
+\ct{AGENTS.md} & open format; Agentic AI Foundation (Linux Foundation) with MCP and goose since
+  9 Dec 2025; Codex, Copilot, Cursor, Gemini CLI, Jules, Zed … 20+ tools. \textbf{Nearest file
+  wins}; the chat prompt overrides.\\
+Codex & \ct{\tld/.codex}, then repo root $\to$ cwd; \ct{AGENTS.override.md} first; concatenated,
+  closer = later; stops at 32\,KiB.\\
+\ct{CLAUDE.md} & Claude Code: managed $\to$ user $\to$ project $\to$ \ct{CLAUDE.local.md}; ancestors
+  at launch, subdirs on demand; \textbf{concatenated, none overrides}; \ct{@import} $\le$4 hops; aim
+  $<$200 lines; \ct{.claude/rules/} by \ct{paths:}; \ct{AGENTS.md} only without \ct{CLAUDE.md}.\\
+Copilot & \ct{.github/copilot-instructions.md}, \ct{*.instructions.md} (\ct{applyTo}); agent,
+  review, CLI: nearest \ct{AGENTS.md} or root \ct{CLAUDE.md}/\ct{GEMINI.md}.\\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item \textbf{Context, not configuration}: ``never push'' is a request — enforce it with a deny
+        rule, a hook or the sandbox. A rule it keeps ignoring: the file is too long.
+\end{itemize}
+\begin{lstlisting}[language=RulesSheet]
+# AGENTS.md (Claude Code reads it when there is no CLAUDE.md)
+Build: xcodebuild -scheme App build      # warnings = errors
+Test:  xcodebuild test -scheme App -only-testing:AppTests
+Stack: Swift 6 language mode; iOS 18+; SwiftUI
+Rules: @MainActor view models; no force unwraps; no new deps
+Done:  clean build, tests green, screenshot of the screen
+Never: edit .pbxproj by hand, read Secrets.xcconfig, push
+\end{lstlisting}
+
+\section{Context is the budget}
+\begin{itemize}
+  \item The window holds system prompt, rules, tool schemas and \emph{every} message, file read and
+        command output; quality degrades as it fills. Chroma's ``context rot'' (Jul 2025, 18
+        models): accuracy falls with input length even on simple tasks.
+  \item \textbf{One task per session}, \ct{/clear} between; after two failed corrections, clear and
+        re-prompt with what you learned. Give exact paths, the full error, a screenshot.
+  \item Keep exploration out: a \textbf{subagent} reads in its own window and returns a summary;
+        skills and path-scoped rules load on demand. APIs newer than the training data (iOS 27
+        SDK, Swift 6.4): hand it the docs page.
+\end{itemize}
+
+\section{Permissions \& sandboxes}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{59mm}@{}}
+\toprule
+\textbf{Claude Code mode} & \textbf{runs without asking}\\
+\midrule
+\ct{default} (Manual) & reads only\\
+\ct{acceptEdits} & + edits, \ct{mkdir} \ct{touch} \ct{mv} \ct{cp} in the working dirs\\
+\ct{plan} & reads; no source edits until the plan is approved\\
+\ct{auto} & everything; a classifier model reviews risky actions\\
+\ct{dontAsk} & only pre-approved tools, the rest denied — CI, scripts\\
+\ct{bypassPermissions} & everything — isolated containers / VMs only\\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item Rules: \textbf{deny $\to$ ask $\to$ allow, first match wins}, specificity ignored:
+        \ct{Bash(aws *)} denied beats \ct{Bash(aws s3 ls)} allowed; deny holds in every mode.
+        Enforced by the client, not the model.
+  \item \textbf{Sandbox} (shell only, off by default; Seatbelt, bubblewrap): writes = working dir +
+        temp; reads include \ct{\tld/.ssh}, \ct{\tld/.aws} until denied; network via a proxy,
+        allow-list starts empty. File tools, MCP servers, hooks run \textbf{outside} it.
+  \item \textbf{Codex}: sandbox \ct{read-only} · \ct{workspace-write} (no network) ·
+        \ct{danger-full-access} × approvals \ct{on-request} · \ct{never} · granular.
+\end{itemize}
+
+\section{Failure modes $\to$ the check}
+\begin{itemize}
+  \item \textbf{Stale or invented API}, worst past the cutoff — compile, read the docs.
+  \item \textbf{Silenced symptom}: \ct{@unchecked Sendable}, \ct{nonisolated(unsafe)}, \ct{try!},
+        a weakened test — read the \emph{test} diff first.
+  \item \textbf{Plausible, unverified}: demand evidence (test output, command + result,
+        screenshot). ``If you can't verify it, don't ship it.''
+  \item \textbf{Lost undo}: checkpoints miss changes made through Bash — commit often.
+  \trap{A ``Never'' line in \ct{CLAUDE.md} as a security control; \ct{bypassPermissions} outside a
+        VM; an unread MCP server — full access, outside the sandbox.}
+\end{itemize}
+
+\columnbreak
+
+\section{Xcode's agents, release by release}
+\begin{tikzpicture}[sheet]
+  \draw[thick, sheetGrey] (0,0.05) -- (0,-2.3);
+  \foreach \y/\c in {0/sheetGrey, -0.62/sheetOrange, -1.35/sheetBlue} \fill[\c] (0,\y) circle (1.3pt);
+  \node[lbl, anchor=north west, text width=76mm, align=left, font=\scriptsize] at (0.12,0.12) {\textbf{26}
+    (2025): ChatGPT and Claude accounts, any Chat Completions provider by API key, or a
+    \textbf{local model} on Apple silicon; Coding Tools; predictive completion runs locally.};
+  \node[lbl, anchor=north west, text width=76mm, align=left, font=\scriptsize] at (0.12,-0.5) {\textbf{26.3}
+    (RC 3 Feb 2026): \textbf{agentic coding} — Claude Agent + Codex; a permissions system; Xcode's
+    tools over \textbf{MCP} to any agent, project open:
+    \ct{claude mcp add --transport stdio xcode -- xcrun mcpbridge}.};
+  \node[lbl, anchor=north west, text width=76mm, align=left, font=\scriptsize] at (0.12,-1.23) {\textbf{27}
+    (14 Sep 2026; Swift 6.4; Apple silicon only): \textbf{plan} = editable Markdown, approved before
+    it proceeds; + Gemini, Antigravity; agents boot simulators, tap and screenshot, drive the
+    debugger, schemes, build settings, entitlements over MCP; translate String Catalogs; Organizer
+    recommendations; \textbf{plug-ins} = skills + MCP servers + Agent Client Protocol agents;
+    \ct{lldb-mcp}; a filesystem security layer over agents and every process they spawn.};
+\end{tikzpicture}
+
+\section{MCP — how tools plug in}
+\begin{tikzpicture}[sheet]
+  \draw[thick, sheetGrey] (0,0) -- (7.8,0);
+  \foreach \x/\d/\t in {0.4/2024-11-05/launch, 2.0/2025-03-26/{OAuth 2.1,\\Streamable HTTP}, 3.75/2025-06-18/{structured output,\\elicitation}, 5.45/2025-11-25/{tasks\\(experimental)}, 7.2/2026-07-28/{\textbf{stateless}\\(current)}} {
+    \fill[sheetBlue] (\x,0) circle (1.4pt);
+    \node[lbl, above=1pt, font=\tiny\bfseries] at (\x,0) {\d};
+    \node[lbl, below=1pt, align=center] at (\x,0) {\t}; }
+\end{tikzpicture}
+\begin{itemize}
+  \item JSON-RPC 2.0: \textbf{host} $\to$ a \textbf{client} per server $\to$ \textbf{server}:
+        \textbf{tools}, \textbf{resources}, \textbf{prompts}; stdio or Streamable HTTP; dated by
+        the last breaking change.
+  \item \textbf{2026-07-28}: no \ct{initialize}, no sessions — each request carries version +
+        capabilities; tasks, MCP Apps = extensions; Roots, Sampling, Logging deprecated.
+  \item Tools are \textbf{arbitrary code execution}; their descriptions are untrusted unless the
+        server is; consent before every call.
+\end{itemize}
+
+\section{Security — the agent is an attack surface}
+\begin{tikzpicture}[sheet]
+  \fill[sheetRed!12] (0,0) circle (0.55); \fill[sheetOrange!12] (0.75,0) circle (0.55);
+  \fill[sheetBlue!12] (0.375,0.62) circle (0.55);
+  \draw[sheetRed] (0,0) circle (0.55); \draw[sheetOrange] (0.75,0) circle (0.55);
+  \draw[sheetBlue] (0.375,0.62) circle (0.55);
+  \node[lbl, align=center] at (-0.18,-0.2) {private\\data};
+  \node[lbl, align=center] at (0.93,-0.2) {egress};
+  \node[lbl, align=center] at (0.375,0.86) {untrusted\\content};
+  \node[lbl, text=sheetRed, font=\tiny\bfseries] at (0.375,0.2) {leak};
+  \node[lbl, anchor=west, text width=55mm, align=left, font=\scriptsize] at (1.45,0.3) {\textbf{Lethal
+    trifecta} (Willison, Jun 2025): an agent with all three can be told, by text it reads, to send
+    your data out. Remove a leg: no secrets in reach, no untrusted input, or no egress. Filters
+    that stop ``95\,\%'' are ``a failing grade''.};
+\end{tikzpicture}
+\begin{itemize}
+  \item \textbf{Prompt injection} (OWASP LLM01:2025): orders hidden in a page, issue, README,
+        dependency or tool result; RAG and fine-tuning do not fully mitigate it.
+  \item \textbf{Hallucinated packages} (USENIX Sec.\ 2025; 16 models, 576\,000 samples): $\ge$5.2\,\%
+        (commercial) / 21.7\,\% (open) of package names do not exist — 205\,474 an attacker can
+        register. Check and pin each new dependency.
+\end{itemize}
+
+\section{What the measurements say}
+\begin{tikzpicture}[sheet]
+  \foreach \v in {-40,-20,0,20,40} {
+    \draw[sheetGrey!40] ({5.6+0.05*\v},0.25) -- ({5.6+0.05*\v},-1.25);
+    \node[lbl] at ({5.6+0.05*\v},-1.4) {\v\,\%}; }
+  \draw[sheetGrey, thick] (5.6,0.25) -- (5.6,-1.25);
+  \node[lbl, anchor=east] at (3.5,0.05) {2025 RCT: 16 devs, 246 issues, early-2025 tools};
+  \node[lbl, anchor=east] at (3.5,-0.33) {same devs: expected $\circ$ · felt afterwards $\square$};
+  \node[lbl, anchor=east] at (3.5,-0.71) {2026 follow-up, late-2025 tools: returning devs};
+  \node[lbl, anchor=east] at (3.5,-1.05) {new devs (57 devs, 800+ tasks in all)};
+  \draw[thick, sheetRed] ({5.6+0.05*2},0.05) -- ({5.6+0.05*39},0.05); \fill[sheetRed] ({5.6+0.05*19},0.05) circle (1.6pt);
+  \draw[sheetBlue, thick] ({5.6+0.05*(-24)},-0.33) circle (1.6pt);
+  \draw[sheetBlue, thick] ({5.6+0.05*(-20)-0.05},-0.38) rectangle ++(0.1,0.1);
+  \draw[thick, sheetGreen] ({5.6+0.05*(-38)},-0.71) -- ({5.6+0.05*9},-0.71); \fill[sheetGreen] ({5.6+0.05*(-18)},-0.71) circle (1.6pt);
+  \draw[thick, sheetGreen] ({5.6+0.05*(-15)},-1.05) -- ({5.6+0.05*9},-1.05); \fill[sheetGreen] ({5.6+0.05*(-4)},-1.05) circle (1.6pt);
+  \node[lbl, anchor=west] at (3.6,0.38) {$\leftarrow$ faster};
+  \node[lbl, anchor=east] at (7.65,0.38) {slower $\rightarrow$};
+  \node[lbl, anchor=west, font=\tiny\bfseries] at (-0.05,0.38) {METR: task time with AI, 95\,\% CI};
+\end{tikzpicture}
+\begin{itemize}
+  \item 2025: \textbf{+19\,\%} time, felt 20\,\% faster; the 2026 follow-up leans faster, but METR
+        calls it unreliable (developers declined no-AI tasks). \textbf{Felt $\neq$ measured.}
+  \item \textbf{SWE-bench} (ICLR 2024): 2\,294 GitHub issues, 12 Python repos; solved = hidden tests
+        pass; Claude 2: 1.96\,\%. \textbf{Verified}: 500 human-checked. OpenAI dropped it (23 Feb
+        2026): 59.4\,\% of 138 audited unsolved tasks flawed, models reproduce the fixes\unverified{}
+        — public benchmarks leak into training.
+\end{itemize}
+
+\textbf{Remember: context in, permissions around, checks out — the agent types, you sign.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{llm-features-in-apps} ·
+\texttt{xcodebuild-simctl-cli} · \texttt{ci-pipeline-design} · Supply-chain security · Threat
+modelling a mobile feature · XCTest \& Swift Testing · Git in depth}
+
+\end{document}
