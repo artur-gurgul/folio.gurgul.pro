@@ -1,7 +1,8 @@
 //- memos.pug — the list of folios (.tex pages), grouped by area.
 //-
-//- The list is the page's CONTENT, so it is in the HTML (frame.pug): every folio
-//- with its title and one-liner, readable with JavaScript off and by a crawler.
+//- The list is the page's CONTENT, so it is in the HTML, in plain <main>: every
+//- folio with its title and one-liner, readable with JavaScript off and by a
+//- crawler.
 //- What only serves the filter is not in the HTML: static/js/memos.js reads it
 //- from the index Sajt writes at build (context.memos.index) — each folio's
 //- area, labels and tags (the tag links under each folio come from there) — and
@@ -28,24 +29,22 @@ html(lang="en")
     include head.pug
     script(src="/static/js/memos.js" defer)
   body(data-nav=context.generate && context.generate.nav)
-    include frame.pug
-    +frame
-      .content
-        h1.title= page.title
-        #post
-          != page.file.html
-          .memos(data-index=context.memos.index data-search=context.memos.search data-list=context.memos.list)
-            p.memos-status
-              span.memos-count #{sheets.length} #{sheets.length === 1 ? "folio" : "folios"}
-              span.memos-active
-            each a in areas
-              section.memos-area(data-area=a.key)
-                h2= a.key
-                ul.memos-list
-                  each s in a.sheets
-                    li
-                      a.memos-title(href=s.url)= s.title
-                      if s.oneliner
-                        p.memos-oneliner= s.oneliner
-        .footer
-          include footer.pug
+    main.content
+      h1.title= page.title
+      #post
+        != page.file.html
+        .memos(data-index=context.memos.index data-search=context.memos.search data-list=context.memos.list)
+          p.memos-status
+            span.memos-count #{sheets.length} #{sheets.length === 1 ? "folio" : "folios"}
+            span.memos-active
+          each a in areas
+            section.memos-area(data-area=a.key)
+              h2= a.key
+              ul.memos-list
+                each s in a.sheets
+                  li
+                    a.memos-title(href=s.url)= s.title
+                    if s.oneliner
+                      p.memos-oneliner= s.oneliner
+      .footer
+        include footer.pug
