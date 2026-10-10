@@ -184,7 +184,7 @@ says no. \ct{class} wires the same chain and adds real semantics: \ct{new}-only,
 \ct{structuredClone(o)} & — & — & — & deep, plain\\
 \ct{getOwnPropertyNames} & — & ✓ & — & \\
 \ct{Reflect.ownKeys} & — & ✓ & ✓ & \\ \bottomrule
-\end{tabular}}\\[1pt]
+\end{tabular}}\pdfonly{\\[1pt]}
 Own key order: array indices ascending, then strings, then symbols, by creation —
 \ct{Object.keys(\{b:1, 2:1, a:1, 1:1\})} is \ct{["1","2","b","a"]}.
 
@@ -194,7 +194,7 @@ configurable\}}. Literal, assignment, class field: all \ct{true}; a \emph{new} k
 \ct{defineProperty}: omitted $\to$ \ct{false} / \ct{undefined}; class methods: non-enumerable;
 a class's \ct{C.prototype} is read-only. \ct{configurable:false}: no delete, no
 data$\leftrightarrow$accessor switch; only \ct{writable} true$\to$false and (while writable)
-\ct{value} may change.\\[2pt]
+\ct{value} may change.\pdfonly{\\[2pt]}\htmlonly{\\}
 {\scriptsize\setlength{\tabcolsep}{3pt}
 \begin{tabular}{@{}lcccl@{}}
 \toprule
@@ -202,7 +202,7 @@ data$\leftrightarrow$accessor switch; only \ct{writable} true$\to$false and (whi
 \ct{preventExtensions} & — & ✓ & ✓ & —\\
 \ct{seal} & — & — & ✓ & \ct{configurable:false}\\
 \ct{freeze} & — & — & — & + \ct{writable:false} (data)\\ \bottomrule
-\end{tabular}}\\[1pt]
+\end{tabular}}\pdfonly{\\[1pt]}
 All \textbf{shallow}; setters still run; \ct{\#private} untouched. A failed assignment is silent
 in sloppy code, TypeError in strict; array methods throw in both:
 \ct{Object.freeze([]).push(1)} $\to$ TypeError. Faithful shallow copy (prototype, accessors, attributes, symbols):
@@ -291,7 +291,7 @@ PreventExtensions & preventExtensions & Delete & deleteProperty\\
 GetOwnProperty & getOwnPropertyDescriptor & Call\textsuperscript{*} & apply\\
 DefineOwnProperty & defineProperty & Construct\textsuperscript{*} & construct\\
 OwnPropertyKeys & ownKeys & \multicolumn{2}{l}{\normalfont\textsuperscript{*}functions only}\\ \bottomrule
-\end{tabular}}\\[1pt]
+\end{tabular}}\pdfonly{\\[1pt]}
 \ct{Reflect.x} = trap \ct{x}'s default; \ct{false} where \ct{Object.x} throws. \ct{r} =
 receiver: inherited getters see the proxy as \ct{this}; a \ct{set} trap's \ct{false} throws in
 strict code. \textbf{Invariants}: no lying about a non-configurable property or a

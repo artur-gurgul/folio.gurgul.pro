@@ -34,7 +34,7 @@ last JavaScript-based release.</p>
 <ul>
 <li><code><strong>strict</strong></code> = <code>alwaysStrict</code>, <code>strictNullChecks</code>, <code>strictFunctionTypes</code>,  <code>strictBindCallApply</code>, <code>strictPropertyInitialization</code>, <code>noImplicitAny</code>,  <code>noImplicitThis</code>, <code>useUnknownInCatchVariables</code> (4.4: <code>catch (e)</code> is  <code>unknown</code>), <code>strictBuiltinIteratorReturn</code> (5.6: built-in iterators return  <code>undefined</code>, not <code>any</code>). New members join on upgrade — pin the TS version.</li>
 <li><strong>Not in strict</strong>: <code>noUncheckedIndexedAccess</code> (4.1, <code>a[i]</code>: <code>T|undefined</code>),  <code>exactOptionalPropertyTypes</code> (4.4), <code>noImplicitOverride</code> (4.3),  <code>noPropertyAccessFromIndexSignature</code> (4.2), <code>noImplicitReturns</code>,  <code>noFallthroughCasesInSwitch</code>, <code>noUnusedLocals</code>/<code>Parameters</code>.</li>
-<li><strong>5.9 <code>tsc -0pt-init</code></strong> turns on the first two above, plus <code>nodenext</code>,  <code>verbatimModuleSyntax</code>, <code>isolatedModules</code>, <code>moduleDetection: force</code>,  <code>skipLibCheck</code>, <code>declaration</code>, <code>types: []</code>.</li>
+<li><strong>5.9 <code>tsc --init</code></strong> turns on the first two above, plus <code>nodenext</code>,  <code>verbatimModuleSyntax</code>, <code>isolatedModules</code>, <code>moduleDetection: force</code>,  <code>skipLibCheck</code>, <code>declaration</code>, <code>types: []</code>.</li>
 <li><code>extends</code> takes an array (5.0; later wins); <code>${configDir}</code> in path options (5.5)  = the directory of the config that is compiled, not of the shared base.</li>
 <li><strong>JS in the program</strong>: <code>allowJs</code> mixes <code>.js</code> in; <code>checkJs</code> or a per-file  <code>// @ts-check</code> checks it from JSDoc, <code>// @ts-nocheck</code> opts a file out.</li>
 </ul>
@@ -68,7 +68,7 @@ last JavaScript-based release.</p>
 <section class="sheet-section">
 <h2>TypeScript 7 — the native compiler</h2>
 <ul>
-<li><code>npm i -D typescript</code> = 7.0.2, still <code>tsc</code>: VS Code 125.7 s <span class="math">→</span> 10.6 s  (11.9<span class="math">×</span>), memory <span class="math">-</span>6 to <span class="math">-</span>26 %; <code>-0pt-checkers N</code> (4), <code>-0pt-builders N</code>,  <code>-0pt-singleThreaded</code>.</li>
+<li><code>npm i -D typescript</code> = 7.0.2, still <code>tsc</code>: VS Code 125.7 s <span class="math">→</span> 10.6 s  (11.9<span class="math">×</span>), memory <span class="math">-</span>6 to <span class="math">-</span>26 %; <code>--checkers N</code> (4), <code>--builders N</code>,  <code>--singleThreaded</code>.</li>
 <li><strong>No API in 7.0</strong> (7.1: a new, different one): typed lint rules, webpack loaders,  Vue / Svelte / Astro / MDX, Angular templates stay on 6 — <code>@typescript/typescript6</code>  ships <code>tsc6</code> + the 6.0 API.</li>
 <li>Clean on 6.0 with <code>stableTypeOrdering</code>, no <code>ignoreDeprecations</code> <span class="math">⇒</span>  should compile identically on 7.0. JSDoc: <code>@enum</code> ignored, values not usable as types.</li>
 </ul>
@@ -76,9 +76,9 @@ last JavaScript-based release.</p>
 <section class="sheet-section">
 <h2>References, declarations, speed</h2>
 <ul>
-<li><code><strong>composite</strong></code>: <code>declaration</code> on, <code>rootDir</code> = its dir, every file in  <code>include</code>; importers read its <code>.d.ts</code>. <code>tsc -b</code> builds stale projects in  order (<code>.tsbuildinfo</code>); since 5.6 past errors (<code>-0pt-stopOnBuildErrors</code>).</li>
-<li><code><strong>isolatedDeclarations</strong></code> (5.5): exports fully annotated, so any tool emits  <code>.d.ts</code> per file, in parallel; <code>-0pt-noCheck</code> (5.6) emits without checking.</li>
-<li><strong>Cost</strong>: interfaces over big <code>&amp;</code> (cached); annotated returns; unions past a  dozen members compare pairwise. Measure: <code>-0pt-extendedDiagnostics</code>,  <code>-0pt-explainFiles</code>, <code>-0pt-generateTrace</code> + <code>@typescript/analyze-trace</code>.</li>
+<li><code><strong>composite</strong></code>: <code>declaration</code> on, <code>rootDir</code> = its dir, every file in  <code>include</code>; importers read its <code>.d.ts</code>. <code>tsc -b</code> builds stale projects in  order (<code>.tsbuildinfo</code>); since 5.6 past errors (<code>--stopOnBuildErrors</code>).</li>
+<li><code><strong>isolatedDeclarations</strong></code> (5.5): exports fully annotated, so any tool emits  <code>.d.ts</code> per file, in parallel; <code>--noCheck</code> (5.6) emits without checking.</li>
+<li><strong>Cost</strong>: interfaces over big <code>&amp;</code> (cached); annotated returns; unions past a  dozen members compare pairwise. Measure: <code>--extendedDiagnostics</code>,  <code>--explainFiles</code>, <code>--generateTrace</code> + <code>@typescript/analyze-trace</code>.</li>
 </ul>
 </section>
 <section class="sheet-section">

@@ -1,21 +1,53 @@
-% storekit2.tex — StoreKit 2: products, purchase results, verification, finish,
-% Transaction.updates, currentEntitlements, subscriptions, restore, server side,
-% testing.
-% Sources (checked 2026-10-05):
-%   developer.apple.com/documentation/storekit/in-app-purchase (StoreKit 2, iOS 15: Product,
-%     purchase(options:), PurchaseResult, VerificationResult, Transaction.updates,
-%     currentEntitlements, finish(), AppStore.sync(), subscription status / renewalInfo)
-%   developer.apple.com/documentation/appstoreservernotifications (V2, signedPayload)
-%   developer.apple.com/documentation/appstoreserverapi
+% storekit2.tex — StoreKit 2: why a purchase became a signed JWS, how it flows (purchase, updates,
+% finish, entitlements), what a failed renewal does, refunds, server side, testing.
+% Sources (checked 2026-10-10):
+%   developer.apple.com/documentation/storekit/in-app-purchase (StoreKit 2, iOS 15) · .../transaction/updates
+%     (unfinished transactions re-emitted once, right after launch) · .../transaction/currententitlements
+%     (non-consumable, sub subscribed or in grace, non-renewing; no consumables, no refunded/revoked) ·
+%     .../transaction/deviceverification (SHA-384 of nonce + AppStore.deviceVerificationID) ·
+%     .../verificationresult · .../appstore/sync() (sign-in prompt, explicit user action only) ·
+%     .../product/purchaseresult/pending · .../skpaymentqueue (deprecated iOS 18.0 / macOS 15.0)
+%   WWDC21 10114 "Meet StoreKit 2" (ECDSA; x5c = whole chain inside the JWS, no network to verify;
+%     appAccountToken = any UUID, stays in the transaction forever, across devices; listener at launch)
+%   WWDC21 10175 "Support customers and handle refunds" (beginRefundRequest; CONSUMPTION_REQUEST, 12 h)
+%   developer.apple.com/documentation/appstoreserverapi/send-consumption-information (12 h; all product types)
+%   developer.apple.com/documentation/appstoreserverapi/jwsdecodedheader (x5c: leaf, WWDR intermediate, root)
+%     · .../jwstransactiondecodedpayload (environment; price = price x 1000; revocationDate; not for revenue)
+%   github.com/apple/app-store-server-library-python, signed_data_verifier.py (alg must be ES256; 3 certs)
+%   andrealeopardi.com/posts/verifying-apple-jwts/ (root = AppleRootCA-G3)
+%   developer.apple.com/documentation/appstoreservernotifications (V2; V1 deprecated) · .../appstoreserverapi
+%   developer.apple.com/forums/thread/731550 (Apple: verifyReceipt and ASSN V1 deprecated, June 2023)
+%   developer.apple.com/documentation/appstorereceipts/validating-receipts-on-the-device
+%     (receipt = PKCS #7 + ASN.1, one file in the bundle; deprecated for AppTransaction / Transaction)
+%   developer.apple.com/library/archive/releasenotes/StoreKit/IAP_ReceiptValidation/
+%     (iOS 5.1 and earlier: DNS redirect + user-installed CA = fake "valid"; addressed in iOS 6)
+%   thenextweb.com/news/how-a-flaw-in-apples-in-app-purchase-process-enabled-more-than-30000-illegal-virtual-transactions
+%     (13 Jul 2012: 30,000+ purchases; generic receipts, one reusable)
+%   theregister.com/2009/10/16/apple_in_app_purchases_for_free_iphone_apps/ (IAP came with iPhone OS 3.0,
+%     paid apps only; free apps from Oct 2009, "eliminating the need to create Lite versions")
+%   developer.apple.com/library/archive/technotes/tn2413/_index.html (App Review buys in the sandbox; 21007)
+%     · developer.apple.com/documentation/storekit/validating-receipts-with-the-app-store (production URL
+%     first, sandbox on 21007, one build "in testing, in review by App Review, or live")
+%   developer.apple.com/documentation/storekit/reducing-involuntary-subscriber-churn (billing retry up to
+%     60 days; grace 3 or 6 days weekly, 3/16/28 monthly+, applied at the billing error)
+%   developer.apple.com/help/app-store-connect/manage-subscriptions/enable-billing-grace-period-for-auto-renewable-subscriptions
+%   developer.apple.com/help/app-store-connect/manage-subscriptions/offer-auto-renewable-subscriptions
+%     (70% first year, 85% after one year of paid service in a group; recovered within 60 days continues)
+%   support.apple.com/en-us/105055 (Ask to Buy: not approved within 24 hours = ask again)
 %   developer.apple.com/help/app-store-connect/test-in-app-purchases/manage-sandbox-apple-account-settings
 %     (renewal-rate table; up to 12 renewals)
-%   developer.apple.com/documentation/xcode/setting-up-storekit-testing-in-xcode (.storekit file)
-%   developer.apple.com/documentation/storekit/apptransaction (iOS 16) · .../storeview (iOS 17) ·
+%   developer.apple.com/documentation/xcode/setting-up-storekit-testing-in-xcode (.storekit file) ·
+%     WWDC20 10659 "Introducing StoreKit Testing in Xcode" (2020)
+%   developer.apple.com/documentation/storekit/apptransaction (iOS 16) ·
 %     WWDC24 10061 "What's new in StoreKit and In-App Purchase" (win-back offers, iOS 18)
 % @labels: area=ios-platform kind=api platform=apple topic=platform-apis,security discussion=48
 % @tags: storekit2, in-app-purchase, subscriptions, transaction-updates, currententitlements, verificationresult, jws, finish-transaction, appstore-sync, app-store-server-notifications, storekit-config-file
 \documentclass[8pt]{extarticle}
 \usepackage{printup-sheet}
+
+% Linked text: the website links it, paper prints the text only (paper holds no links).
+% Defined here, not in the style: the website's renderer reads macros from the folio itself.
+\newcommand\link[2]{\pdfonly{#1}\htmlonly{\href{#2}{#1}}}
 
 \lstdefinelanguage{SwiftSheet}{
   morekeywords={protocol,class,final,struct,enum,func,var,let,static,some,init,
@@ -35,74 +67,107 @@
 
 \sheettitle{StoreKit 2 · in-app purchases \& subscriptions}{ios-platform · folio}
 
-\oneliner{StoreKit 2 (iOS 15+) is \textbf{async/await}: fetch \texttt{Product}s,
-\texttt{await product.purchase()}, get back a \textbf{JWS-signed}
-\texttt{Transaction} wrapped in \texttt{VerificationResult} —
-\textbf{verify $\to$ grant $\to$ \texttt{finish()}}. Everything that happens
-\emph{outside} your purchase call (renewals, refunds, Ask to Buy, other devices)
-arrives on \texttt{Transaction.updates}, which you listen to \textbf{from launch}.}
+\oneliner{A StoreKit 2 purchase ends in a \textbf{signed letter}, not a callback:
+each \texttt{Transaction} is a \textbf{JWS} the App Store signs and StoreKit
+checks \emph{on the device}, against the certificate chain packed inside it.
+Your part is \textbf{verify $\to$ grant $\to$ \texttt{finish()}} — with an ear
+open from launch (\texttt{Transaction.updates}) for all that is bought, renewed
+or refunded while you are not looking.}
 
 \begin{multicols}{2}
 \raggedright
 
-\section{How it works}
+\section{Why it looks like this}
+\begin{tikzpicture}[sheet]
+  \tikzset{yr/.style={font=\bfseries\scriptsize, text=sheetBlue, inner sep=1pt},
+           ev/.style={font=\scriptsize, align=center, text=black!85, text width=25mm, inner sep=1pt}}
+  \draw[thick, sheetGrey, ->] (0,0) -- (7.85,0);
+  \foreach \x/\y/\t in {
+      1.3/2009/{in-app purchase, iPhone OS 3.0;\\paid apps only till Oct.},
+      4.0/2021/{StoreKit 2, iOS 15:\\one JWS per purchase},
+      6.7/2024/{iOS 18 deprecates\\StoreKit 1; win-back offers}}{
+    \fill[sheetBlue] (\x,0) circle (0.6mm);
+    \node[yr, below=1.5pt] at (\x,0) {\y};
+    \node[ev, anchor=south] at (\x,0.12) {\t};
+  }
+  \foreach \x/\y/\t in {
+      2.65/2012/{fake App Store says\\``valid'': 30,000+ free buys},
+      5.35/2023/{\texttt{verifyReceipt}\\deprecated}}{
+    \fill[sheetRed] (\x,0) circle (0.6mm);
+    \node[yr, above=1.5pt, text=sheetRed] at (\x,0) {\y};
+    \node[ev, anchor=north] at (\x,-0.12) {\t};
+  }
+\end{tikzpicture}
 \begin{itemize}
-  \item \textbf{Fetch}: \texttt{try await Product.products(for: ids)} $\to$
-        \texttt{[Product]} (\texttt{displayName}, localized
-        \texttt{displayPrice}, \texttt{type}). Empty array, no error =
-        App Store Connect config (IDs, Paid Apps agreement).
-  \item \textbf{Types}: consumable · non-consumable · auto-renewable sub ·
-        non-renewing sub (you track expiry).
-  \item \textbf{Purchase}: \texttt{try await product.purchase(options:)} $\to$
-        \texttt{Product.PurchaseResult}: \texttt{.success(VerificationResult)} ·
-        \texttt{.userCancelled} · \texttt{.pending} (Ask to Buy, SCA —
-        \emph{grant nothing}; the outcome arrives later on \texttt{updates}).
-        Option \texttt{.appAccountToken(UUID)} ties it to your user.
-  \item \textbf{Verify}: \texttt{VerificationResult<T>} = \texttt{.verified(T)}
-        or \texttt{.unverified(T, error)}. StoreKit checked the JWS signature
-        on device; never unlock on \texttt{.unverified}. Send
-        \texttt{jwsRepresentation} to your server.
-  \item \textbf{Finish}: \texttt{await t.finish()} only \emph{after} the
-        entitlement is durably recorded; unfinished ones are re-delivered.
-  \item \textbf{Entitlements}: \texttt{Transaction.currentEntitlements} =
-        latest transaction per non-consumable, active auto-renewable and
-        non-renewing sub. \textbf{No consumables}, no refunded (revoked).
-  \item \textbf{Subscriptions}: a \textbf{subscription group} allows one
-        active plan. Upgrade = immediate, downgrade = next renewal.
-        \texttt{product.subscription?.status} $\to$ \texttt{state}
-        (\texttt{.subscribed .expired .inGracePeriod .inBillingRetryPeriod
-        .revoked}) + \texttt{renewalInfo} (\texttt{willAutoRenew},
-        \texttt{autoRenewPreference}). Promo offers need a server signature.
-  \item \textbf{Restore}: entitlements sync by themselves on the same Apple
-        Account; the Restore button calls \texttt{try await AppStore.sync()}
-        (prompts sign-in — only on user tap).
-  \item \textbf{Server}: \textbf{App Store Server Notifications V2} POST a
-        signed JWS (\texttt{signedPayload}; \texttt{DID\_RENEW},
-        \texttt{EXPIRED}, \texttt{REFUND}, \texttt{DID\_FAIL\_TO\_RENEW}\ldots)
-        to your URL; \textbf{App Store Server API} (JWT from your in-app
-        purchase key) pulls transaction history / subscription statuses.
-        Device decides UX, server decides truth.
-  \item \textbf{Test}: \texttt{.storekit} \textbf{config file} (set in the
-        scheme) — offline, refunds, fast renewals, \texttt{SKTestSession}.
-        \textbf{Sandbox}: sandbox accounts, real server, compressed time (table).
+  \item \textbf{2012}: on iOS $\le$ 5.1 an app asked Apple's server ``is this
+        receipt valid?'' itself. A DNS redirect plus a user-installed CA put
+        an impostor there that said yes, and generic receipts could be
+        replayed. Fix: ask from \emph{your} server; iOS 6 closed it.
+  \item \textbf{StoreKit 2 asks nobody}: the chain to Apple's root travels
+        \emph{inside} each JWS, so the check runs offline, and
+        \link{\texttt{deviceVerification}}{https://developer.apple.com/documentation/storekit/transaction/deviceverification}
+        = SHA-384(nonce + this device's ID) ties it to one device.
+  \item The old PKCS\#7/ASN.1 receipt file is deprecated: \texttt{Transaction}
+        and \texttt{AppTransaction} (iOS 16, the app's own purchase) replace it.
 \end{itemize}
 
-\section{Example}
+\section{What a transaction really is}
+\begin{tikzpicture}[sheet]
+  \tikzset{fld/.style={font=\ttfamily\scriptsize, anchor=north west, align=left, inner sep=1pt}}
+  \node[cell, fill=sheetBlue!10, minimum width=24mm] (H) at (1.2,0) {header};
+  \node at (2.55,0) {\textbf{.}};
+  \node[cell, fill=sheetGreen!12, minimum width=30mm] (P) at (4.2,0) {payload};
+  \node at (5.85,0) {\textbf{.}};
+  \node[cell, fill=sheetOrange!12, minimum width=19mm] (S) at (6.97,0) {signature};
+  \tikzset{ch/.style={cell, font=\scriptsize, minimum width=24mm, minimum height=4mm}}
+  \node[fld] at (0,-0.35) {alg: ES256};
+  \node[lbl, anchor=north west] at (0,-0.68) {x5c = the whole chain:};
+  \node[ch] (root) at (1.2,-1.2) {Apple Root CA – G3};
+  \node[ch] (mid) at (1.2,-1.9) {Apple intermediate};
+  \node[ch, draw=sheetOrange, fill=sheetOrange!12] (leaf) at (1.2,-2.6) {leaf: App Store key};
+  \draw[flow] (root) -- node[right, lbl]{signs} (mid);
+  \draw[flow] (mid) -- node[right, lbl]{signs} (leaf);
+  \node[fld] at (2.75,-0.35) {transactionId\\originalTransactionId\\productId\\appAccountToken\ \textrm{your UUID}\\environment\ \textrm{Sandbox | Production}\\price: 4990\ \textrm{= 4.99, ×1000}\\revocationDate\ \textrm{after a refund}\\deviceVerification};
+  \node[lbl, anchor=north west, text width=18mm, align=left] at (6.05,-0.35)
+       {ECDSA P-256 over \texttt{header.payload}, made with the \textcolor{sheetOrange}{leaf's key}};
+\end{tikzpicture}
+
+\section{How it flows}
+\begin{itemize}
+  \item \textbf{Products live in the store}: \texttt{Product.products(for:)}
+        answers an \emph{empty array, not an error}, when IDs or the Paid
+        Apps agreement in App Store Connect are wrong.
+  \item \textbf{Owning}:
+        \link{\texttt{currentEntitlements}}{https://developer.apple.com/documentation/storekit/transaction/currententitlements}
+        = latest transaction per non-consumable, live subscription
+        (subscribed or in grace) and non-renewing sub; refunded ones vanish.
+  \item \textbf{One plan per subscription group}: upgrade bites now,
+        downgrade at the next renewal.
+  \item \textbf{Refunds}: asked for in-app since iOS 15
+        (\texttt{beginRefundRequest}). Apple sends \texttt{CONSUMPTION\_REQUEST}
+        and weighs your ``how much was used'' if it comes within
+        \link{12 hours}{https://developer.apple.com/documentation/appstoreserverapi/send-consumption-information};
+        then \texttt{REFUND} and a \texttt{revocationDate}.
+  \item \textbf{Tests}: a \link{\texttt{.storekit} file}{https://developer.apple.com/documentation/xcode/setting-up-storekit-testing-in-xcode}
+        (2020) runs offline; the sandbox is real servers on fast time.
+        \link{App Review buys in the sandbox}{https://developer.apple.com/library/archive/technotes/tn2413/_index.html}
+        with your \emph{production} build: old servers retried on status
+        21007, a JWS just says \texttt{environment}.
+\end{itemize}
+
+\section{Example: both roads, one handler}
 \begin{lstlisting}[language=SwiftSheet]
+// App init: one listener for the app's lifetime
+let ear = Task.detached {
+  for await r in Transaction.updates { await handle(r) } }
 func buy(_ p: Product) async throws {
-  switch try await p.purchase() {
-  case .success(let r):
-    guard case .verified(let t) = r else { return } // reject
-    await grant(t); await t.finish()   // record THEN finish
-  case .pending, .userCancelled: break // pending -> updates
-  @unknown default: break
-  }
+  if case .success(let r) = try await p.purchase() {
+    await handle(r) }       // .pending -> arrives on updates
 }
-// App init: start once, keep for the app's lifetime
-let listener = Task.detached {
-  for await r in Transaction.updates {
-    guard case .verified(let t) = r else { continue }
-    await grant(t); await t.finish() }
+func handle(_ r: VerificationResult<Transaction>) async {
+  guard case .verified(let t) = r else { return } // reject
+  await grant(t)            // durable first ...
+  await t.finish()          // ... then "delivered"
 }
 \end{lstlisting}
 
@@ -110,8 +175,8 @@ let listener = Task.detached {
 
 \section{One purchase, two roads in}
 \begin{tikzpicture}[sheet]
-  \node[st] (fetch) at (0,0) {\texttt{products(for:)}};
-  \node[st] (buy) at (2.35,0) {\texttt{purchase()}};
+  \node[st] (fetch) at (0.45,0) {\texttt{products(for:)}};
+  \node[st] (buy) at (2.55,0) {\texttt{purchase()}};
   \node[ok] (succ) at (4.7,0.75) {\texttt{.success}};
   \node[side] (pend) at (4.7,0) {\texttt{.pending}};
   \node[st, draw=sheetGrey, fill=black!4] (canc) at (4.7,-0.75) {\texttt{.userCancelled}};
@@ -135,55 +200,60 @@ let listener = Task.detached {
        {\texttt{Transaction.updates}\\[-1pt]\tiny renew · refund · Ask to Buy\\[-2pt]\tiny other device · family};
   \draw[hot] (upd.north) |- (grant.west);
   \draw[flow, dashed] (pend.north west) -- node[lbl, sloped, below, pos=0.55]{approved later} (upd.south east);
+  % never finished: replayed
+  \draw[flow, dashed, sheetBlue] (fin.north) -- ++(0,0.3) -| node[lbl, pos=0.25, above]{not finished $\to$ replayed once after every launch} (-0.1,1.98);
   % server
-  \node[st, draw=sheetGrey, fill=black!4, minimum width=74mm, align=center] (srv) at (3.25,-1.75)
-       {\textbf{your server} \scriptsize$\leftarrow$ ASSN V2 (JWS webhook) · App Store Server API (pull) · \texttt{jwsRepresentation} from app};
+  \node[st, draw=sheetGrey, fill=black!4, minimum width=72mm, align=center] (srv) at (3.3,-1.75)
+       {\textbf{your server} \scriptsize$\leftarrow$ ASSN V2 (webhook) · Server API (pull) · \texttt{jwsRepresentation} from app};
   \draw[flow, dashed] (canc.south) -- ++(0,-0.45);
   \node[lbl, text=sheetGrey] at (5.6,-1.2) {\textit{nothing to do}};
 \end{tikzpicture}
+{\small \link{Ask to Buy}{https://support.apple.com/en-us/105055} expires:
+not approved in 24 h, the child asks again.
+\link{Server notifications}{https://developer.apple.com/documentation/appstoreservernotifications}
+carry the same JWS. Device decides UX, server decides truth.}
 
-\section{Which API answers what}
-\begin{tikzpicture}[sheet]
-  \tikzset{q/.style={font=\scriptsize, anchor=west, inner sep=1pt},
-           a/.style={font=\ttfamily\scriptsize, anchor=west, inner sep=1pt, text=sheetBlue}}
-  \foreach \y/\qq/\aa in {
-     0/What does the user own now?/Transaction.currentEntitlements,
-    -0.38/Something changed while I wasn't looking?/Transaction.updates,
-    -0.76/Will the sub renew? In grace?/subscription?.status,
-    -1.14/User taps Restore/AppStore.sync(),
-    -1.52/Did the coin purchase happen?/your own ledger (+server)}{
-    \node[q] at (0,\y) {\qq};
-    \node[a] at (3.85,\y) {\aa};
+\section{When a renewal charge fails}
+\begin{tikzpicture}[sheet, x=1.05mm]
+  \fill[sheetBrown!14] (0,0.5) rectangle (60,0.9);
+  \node[lbl] at (30,0.7) {App Store retries the charge for up to 60 days};
+  \fill[sheetGreen!28] (0,0) rectangle (16,0.4);
+  \node[lbl] at (8,0.2) {grace: access};
+  \fill[sheetRed!12] (16,0) rectangle (60,0.4);
+  \node[lbl] at (38,0.2) {billing retry: no access};
+  \draw[sheetGreen, thick, dashed] (28,-0.05) -- (28,0.45);
+  \draw[sheetGrey] (0,-0.08) -- (60,-0.08);
+  \foreach \d in {0,3,16,28,60} {
+    \draw[sheetGrey] (\d,-0.08) -- (\d,-0.16);
+    \node[lbl, below=1pt] at (\d,-0.12) {\d};
   }
-  \draw[sheetGrey!50] (3.75,0.2) -- (3.75,-1.7);
+  \node[lbl, anchor=west] at (61,0.2) {\texttt{.expired}};
+  \node[lbl, anchor=west] at (61,-0.3) {days};
 \end{tikzpicture}
+\begin{itemize}
+  \item \link{Grace}{https://developer.apple.com/help/app-store-connect/manage-subscriptions/enable-billing-grace-period-for-auto-renewable-subscriptions}
+        lasts 3, 16 or 28 days (weekly: 3 or 6), the sub still in
+        \texttt{currentEntitlements}; in billing retry it drops out.
+  \item Grace is money too: recovered in it, the \emph{days of paid service}
+        never break — a year of them in one group lifts your share from
+        \link{70\% to 85\%}{https://developer.apple.com/help/app-store-connect/manage-subscriptions/offer-auto-renewable-subscriptions/}.
+        Back within 60 days the count goes on; later, it restarts.
+\end{itemize}
 
 \section{Traps}
 \begin{itemize}
   \trap{Trusting \texttt{.unverified} — \emph{the} StoreKit security bug.}
-  \trap{No \texttt{finish()} $\to$ redelivered, double grants; finishing
-        \emph{before} recording $\to$ lost purchase.}
-  \trap{No \texttt{updates} listener at launch $\to$ missed renewals, refunds, approvals.}
-  \trap{Counting coins via \texttt{currentEntitlements} — consumables never appear.}
-  \trap{Granting on \texttt{.pending}. Sandbox timing $\neq$ production.}
-  \trap{\texttt{AppStore.sync()} at launch — shows a sign-in prompt.}
+  \trap{No \texttt{finish()} $\to$ double grants; finishing \emph{before}
+        recording $\to$ a lost purchase.}
+  \trap{No \texttt{updates} listener from launch $\to$ missed renewals, refunds, approvals.}
+  \trap{Counting coins in \texttt{currentEntitlements} — consumables never
+        appear there. Coins are your own ledger.}
+  \trap{Granting on \texttt{.pending}. Trusting sandbox timing.}
+  \trap{\texttt{AppStore.sync()} at launch — a sign-in prompt. Entitlements
+        sync by themselves; \texttt{sync()} is for the Restore button.}
+  \trap{Booking revenue from the JWS \texttt{price} — App Store Connect
+        reports are the record.}
 \end{itemize}
-
-\section{Timeline}
-\begin{tikzpicture}[sheet]
-  \tikzset{yr/.style={font=\bfseries\scriptsize, text=sheetBlue},
-           ev/.style={font=\tiny, align=center, text=black!85, text width=17mm, anchor=north}}
-  \draw[thick, sheetGrey, ->] (0,0) -- (8.3,0);
-  \foreach \x/\y/\t in {
-      1.0/iOS 15/{StoreKit 2: async\\JWS transactions\\\texttt{beginRefundRequest}},
-      3.1/iOS 16/{\texttt{AppTransaction}\\(the app's own\\purchase)},
-      5.2/iOS 17/{SwiftUI \texttt{StoreView}\\\texttt{SubscriptionStore-}\\\texttt{View}},
-      7.3/iOS 18/{win-back\\offers}}{
-    \fill[sheetBlue] (\x,0) circle (0.6mm);
-    \node[yr, above=1pt] at (\x,0) {\y};
-    \node[ev] at (\x,-0.12) {\t};
-  }
-\end{tikzpicture}
 
 \section{Sandbox time (default rate)}
 {\footnotesize
@@ -192,15 +262,24 @@ let listener = Task.detached {
 1 week & 1 month & 2 months & 3 months & 6 months & 1 year \\ \midrule
 3 min & 5 min & 10 min & 15 min & 30 min & 1 h \\
 \bottomrule
-\end{tabular}}\\[1pt]
+\end{tabular}}\\
 {\scriptsize Renews up to \textbf{12} times, then stops. Billing retry 10 min, grace
 period 3–5 min. Rate is per sandbox account (3 min · 5 · 30 · 1 h) in App Store Connect.}
 
 \section{Remember}
 \textbf{``V-G-F, and keep ears open''}: \textbf{V}erify, \textbf{G}rant,
 \textbf{F}inish — and \texttt{Transaction.updates} runs from launch.
-Consumables are \emph{yours} to count.
 
+\begin{htmlonly}
+\section{Further reading}
+\begin{itemize}
+  \item \href{https://developer.apple.com/videos/play/wwdc2021/10114/}{Meet StoreKit 2 (WWDC21)} — the design from the people who built it: why JWS, why the chain rides inside, and device verification done by hand
+  \item \href{https://developer.apple.com/library/archive/releasenotes/StoreKit/IAP_ReceiptValidation/}{In-App Purchase Receipt Validation for iOS 5.1 and Earlier} — Apple's own retired note on the 2012 fake-App-Store hole, still online
+  \item \href{https://andrealeopardi.com/posts/verifying-apple-jwts/}{Verifying JWTs from Apple's App Store} — walking the x5c chain by hand, without Apple's library: what ``verified'' actually checks
+  \item \href{https://developer.apple.com/videos/play/wwdc2021/10175/}{Support customers and handle refunds (WWDC21)} — the refund flow from the inside: the in-app request sheet and the 12-hour consumption window
+  \item \href{https://developer.apple.com/documentation/storekit/reducing-involuntary-subscriber-churn}{Reducing involuntary subscriber churn} — grace period vs billing retry, and what to show the user in each
+\end{itemize}
+\end{htmlonly}
 
 \end{multicols}
 

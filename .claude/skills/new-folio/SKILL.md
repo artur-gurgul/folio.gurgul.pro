@@ -6,7 +6,9 @@ description: Writing, adapting or densifying a folio page (src/<subject>/<name>.
 # Writing a folio
 
 A folio = one subject, one A4 page, dense facts + pictures, no noise, not
-interview prep. The rules are in `CLAUDE.md`; this is the procedure.
+interview prep — and **not documentation**: it is for learning ideas,
+remembering and seeing them, with the interesting, hard-to-find facts a manual
+leaves out. The rules are in `CLAUDE.md`; this is the procedure.
 
 ## 1. Decide before writing
 
@@ -35,6 +37,8 @@ pictures where possible.
 | `Example` | the smallest code or case that shows it |
 | `Traps` | misconceptions stated as facts (never "interview" anything) |
 | `Remember` | the bold takeaway — only if the one-liner does not already say it |
+| `\link{text}{url}` | linked text: the website links it, paper prints the text only (define it in the preamble — the template has it) |
+| `Further reading` in `\begin{htmlonly}` | web-only, last before Related: a few links worth reading, one line each on why |
 | `Related:` line | neighbouring folios / subjects |
 
 Adapting older notes: drop Q&A lists and "Likely questions", rename
@@ -42,6 +46,12 @@ Adapting older notes: drop Q&A lists and "Likely questions", rename
 
 ## 3. Density checklist — every line must pass
 
+- Does it read like **documentation** — a list of options, "X is used to Y", the
+  reference's API surface? Red flag: rewrite it as the idea, the mechanism or a
+  picture, or cut it and `\link` the manual instead.
+- Is there something here a reader would **not easily find** — the surprising
+  number, the history behind a quirk, the trick nobody writes down? A folio
+  without one is a summary of the manual.
 - Is it a **fact** (checkable), not narrative, encouragement or a wordy explanation?
 - Is it said **once**? A fact repeated in the one-liner, a diagram and a list is noise.
 - Would a reader **lose something** if it went? If not, cut it.
@@ -57,8 +67,9 @@ python3 tools/build.py --sajt "$SAJT"     # fails if any folio PDF is not ONE pa
 
 Then **open the result** — `docs/<subject>/<name>.html` (web page) and
 `docs/<subject>/<name>.pdf` (the printed sheet) — and check: one page, nothing
-clipped, figures readable, the table fits. No Sajt available? Say so; do not
-edit `docs/` by hand.
+clipped, figures readable, the table fits; on the web page the linked text
+links and Further reading is there, on the PDF neither shows. No Sajt
+available? Say so; do not edit `docs/` by hand.
 
 ## 5. Before committing
 
