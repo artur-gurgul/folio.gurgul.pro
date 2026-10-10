@@ -1,0 +1,345 @@
+% namespaces-cgroups-containers.tex — a container is a process: the 8 namespaces (kernel versions,
+% handles, the setns/unshare traps), user namespaces + rootless uid maps + idmapped mounts, mount
+% propagation + pivot_root, the cgroup v2 files and the cgroup v1 sunset, capabilities / seccomp /
+% LSM / no_new_privs, OCI image layers → overlayfs, the OCI lifecycle, the runtime stack (Docker,
+% containerd + shim, runc / crun, Podman + conmon, CRI), PID 1, and the runc escapes.
+% Sources (checked 2026-10-09):
+%   man7.org namespaces(7) (8 types; /proc/pid/ns handles; an open fd or bind mount keeps a
+%     namespace alive; /proc/sys/user/max_*_namespaces) · clone(2) (CLONE_NEWNS 2.4.19, NEWUTS +
+%     NEWIPC 2.6.19, NEWPID + NEWNET 2.6.24 (net completed 2.6.29), NEWUSER unprivileged 3.8,
+%     NEWCGROUP 4.6) · setns(2) (pidfd since 5.8: several namespaces at once; PID ns: descendants only)
+%     · pid_namespaces(7) (init gets only signals it handles, SIGKILL/SIGSTOP forced from an ancestor;
+%     init exits → SIGKILL to all, later fork ENOMEM; unshare/setns move only children; nesting 32)
+%     · user_namespaces(7) (3.8; full capability set inside, none in the parent; other namespaces then
+%     need CAP_SYS_ADMIN only in it; uid_map inside/outside/count; unprivileged: own id only, setgroups
+%     deny; unmapped → 65534; 32 levels) · time_namespaces(7) (MONOTONIC + BOOTTIME, not REALTIME;
+%     for migration, checkpoint/restore) · network_namespaces(7) (devices, stacks, routes, firewall,
+%     ports, abstract sockets; physical device returns to the initial ns, veth destroyed) ·
+%     cgroup_namespaces(7) (/proc/pid/cgroup + mountinfo; hides ancestor paths) · mount_namespaces(7)
+%     (shared / slave / private / unbindable; systemd remounts all MS_SHARED; less privileged: shared →
+%     slave, locked; shared:N master:N) · pivot_root(2) · chroot(2) ("not intended to be used for any
+%     kind of security purpose"; the mkdir/chroot/cd .. escape) · unshare(1) (--fork, --mount-proc
+%     implies --mount, -r, propagation default private) · mount_setattr(2) (MOUNT_ATTR_IDMAP, 5.12;
+%     ext4, XFS, btrfs, tmpfs, overlayfs …) · wait(2) (zombie keeps its PID)
+%   lwn.net/Articles/580893 (new netns: only lo, and it is down) — secondary; the ip-netns(8)
+%     example (ip link set lo up) agrees
+%   docs.kernel.org admin-guide/cgroup-v2 (no internal processes, root exempt; memory.max → OOM killer
+%     in the cgroup; memory.high never OOMs, may be breached; charged: page cache, anon, dentries +
+%     inodes, TCP buffers; cpu.max "max 100000"; cpu.weight 1–10000, 100; pids.max → EAGAIN; io.max
+%     keys; cpu/memory/io/irq.pressure; cgroup.freeze, cgroup.kill; delegation; migration needs the
+%     common ancestor's cgroup.procs) · man7.org cgroups(7) (2.6.24; v2 official 4.5; a controller in
+%     v1 or v2, not both) · kernelnewbies.org Linux_4.5 (unified hierarchy stable, 2016-03-13),
+%     Linux_5.11 (unprivileged overlayfs, userxattr), LinuxVersions (release dates)
+%   docs.kernel.org filesystems/overlayfs (workdir on upper's fs; leftmost lower on top; copy-up on
+%     write access incl. metadata; metacopy unsafe with untrusted layers; no redirect_dir → EXDEV on
+%     dir rename; changing layers while mounted: undefined; whiteout = char device 0/0)
+%   github.com/opencontainers: image-spec layer.md (.wh. whiteouts, .wh..wh..opq, same-layer rule,
+%     gzip / zstd) · manifest.md (config + layers by digest, base at index 0) · image-index.md (one
+%     or more platforms) · runtime-spec bundle.md (config.json + root.path) · runtime.md (create
+%     MUST NOT run the program; then start, kill, delete)
+%   docs.docker.com engine/containers/run (14 default capabilities) · reference/cli/docker/container/
+%     run (--privileged list; --init = docker-init backed by tini; no-new-privileges; --stop-timeout
+%     10 s) · container/stop · engine/security/seccomp (allowlist, SCMP_ACT_ERRNO, ~44 of 300+; ptrace
+%     blocked only before 4.8; io_uring; keyctl; open_by_handle_at; clock_settime) ·
+%     engine/security/apparmor (docker-default) · engine/security (only trusted users may control
+%     the daemon; /host = /; user namespaces not on by default) · engine/security/rootless (65 536
+%     subordinate ids, newuidmap) · engine/containers/resource_constraints (--cpus 1.5 = 150000 /
+%     100000) · engine/daemon/live-restore · reference/dockerfile (shell form = /bin/sh -c, passes no
+%     signals; exec) · engine/release-notes/29 (29.0.0 2025-11-10: containerd image store default on
+%     new installs; cgroup v1 deprecated, supported until at least May 2029)
+%   api.github.com releases: moby/moby (docker-v29.9.0 2026-10-08) · containerd/containerd (2.0.0
+%     2024-11-05; 2.3.0 2026-04-30 "first annual LTS"; 2.4.0 2026-09-16) · opencontainers/runc (1.4.0
+%     2025-11-27 "Deprecate cgroup v1"; 1.5.0 2026-06-19; security-advisories: CVE-2024-21626,
+%     CVE-2025-31133 / 52565 / 52881) · containers/podman (5.0.0 2024-03-19: pasta default, cgroup v1
+%     deprecated; 6.0.0 2026-06-24: cgroup v1, slirp4netns, CNI, iptables removed) · systemd/systemd
+%     (v258 2025-09-17: cgroup v1 removed) · kubernetes/kubernetes (v1.35.0 2025-12-17, v1.36.0
+%     2026-04-22)
+%   cveawg.mitre.org CVE-2019-5736 (runc ≤ 1.0-rc6, Docker < 18.09.2, /proc/self/exe, 2019-02-11)
+%   github.com/containerd/containerd docs/runtime-v2.md (shim per container, grouped per pod via the
+%     sandbox-id label; publishes the exit events; fork/execs the runtime per operation) ·
+%     github.com/containers/conmon README · github.com/containers/crun README (written in C) ·
+%     github.com/containers/container-libs common/docs/containers.conf.5.md (11 default caps,
+%     pids_limit 1024, pasta, crun first in runtime order) · github.com/google/gvisor README (runsc,
+%     application kernel in Go) · github.com/kata-containers/kata-containers README
+%   kubernetes.io docs/concepts/architecture/cgroups (v1 deprecated 1.35, failCgroupV1) ·
+%     workloads/pods/user-namespaces (hostUsers: false stable 1.36; kernel ≥ 6.3; 65 536 ids) ·
+%     pod-lifecycle (TERM to PID 1, grace 30 s) · blog 2022-02-17 dockershim FAQ (removed in 1.24)
+%     · docs.podman.io podman-stop (10 s)
+%   go.dev/doc/go1.25 (GOMAXPROCS follows the cgroup CPU limit) · bugs.openjdk.org JDK-8146115 (JDK
+%     10, UseContainerSupport) · documentation.ubuntu.com release-notes/24.04 (unprivileged userns
+%     restricted through AppArmor)
+% NOT repeated: fork/CoW/signals basics (os-fundamentals); OOM killer internals (linux-memory-oom);
+% systemd slices/scopes and Delegate= (systemd-deep); veth, bridges, netfilter (linux-networking-stack);
+% capability sets and LSM internals (linux-security-permissions).
+% @labels: area=linux kind=concept platform=backend topic=platform-apis,security,tooling discussion=320
+% @tags: containers, namespaces, cgroup-v2, overlayfs, copy-on-write, user-namespace, rootless, unshare, nsenter, capabilities, seccomp, apparmor, selinux, sandboxing, psi, oci, runc, containerd, podman, docker, kubernetes, pid-1, tini
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinestyle{ShSheet}{style=printup, language=bash,
+  morekeywords={sudo,echo,cat,mkdir,unshare,nsenter,docker,hostname,ps,id},
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {&&}{{\hbox{\&}\hbox{\&}}}2 {||}{{\hbox{|}\hbox{|}}}2}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\small\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\sheettitle{Containers = namespaces + cgroups + overlayfs}{linux · folio}
+
+\oneliner{A container is \textbf{an ordinary Linux process} on the \textbf{shared host kernel}:
+\textbf{namespaces} limit what it can \emph{see}, \textbf{cgroups} limit what it can \emph{use},
+\textbf{capabilities + seccomp + an LSM} limit what it may \emph{do}, and an \textbf{overlayfs} root built
+from read-only image layers is what it stands on. No hypervisor, no guest kernel — a kernel bug is an escape.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet,
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    ns/.style={draw=sheetBlue, fill=white, font=\tiny\ttfamily, inner sep=1pt, minimum width=6.2mm, minimum height=3mm},
+    ly/.style={draw=sheetGrey, font=\tiny, minimum width=39mm, minimum height=3.6mm, inner sep=1pt, align=center},
+    rt/.style={box, font=\tiny, text width=27mm, inner sep=1.2pt}]
+  % ---------- panel a: one process, wrapped ----------
+  \node[font=\bfseries\scriptsize, text=sheetBlue, anchor=west] at (0,3.75) {One process, four wrappers};
+  \fill[sheetGrey!25] (0,0) rectangle (6.4,0.35);
+  \node[l, font=\tiny\bfseries] at (3.2,0.175) {ONE host kernel — shared by every container (syscalls go straight to it)};
+  \draw[sheetOrange, very thick, rounded corners=3pt, fill=sheetOrange!6] (0.05,0.45) rectangle (6.35,3.5);
+  \node[l, anchor=north west, text=sheetOrange!70!black, align=left] at (0.1,3.47)
+     {\textbf{cgroup v2} — how much it uses: \ct{memory.max} · \ct{cpu.max} · \ct{pids.max} · \ct{io.max}};
+  \draw[sheetBlue, very thick, rounded corners=3pt, fill=sheetBlue!6] (0.25,0.55) rectangle (6.15,3.02);
+  \node[l, anchor=north west, text=sheetBlue, align=left] at (0.3,3.0) {\textbf{namespaces} — what it sees (\ct{/proc/<pid>/ns/*}):};
+  \foreach \n [count=\i] in {mnt,pid,net,ipc,uts,user,cgroup,time}
+    \node[ns] at ({0.1+0.69*\i},2.53) {\n};
+  \draw[sheetRed, very thick, rounded corners=3pt, fill=sheetRed!5] (0.45,0.65) rectangle (5.95,2.28);
+  \node[l, anchor=north west, text=sheetRed, align=left] at (0.5,2.26)
+     {\textbf{what it may do}: 14 caps kept (no \ct{SYS\_ADMIN}) · seccomp allowlist\\(\~{}44 syscalls denied) · AppArmor/SELinux · \ct{no\_new\_privs}: opt-in};
+  \node[box, fill=white, text width=40mm, font=\tiny, inner sep=1.5pt] (proc) at (2.65,1.12)
+     {\textbf{nginx} — PID \textbf{1} inside, PID 48213 on the host\\uid 0 inside $\to$ host 100000 (remap) or you (rootless)\\\ct{/} = overlay \textbf{merged} dir $\to$};
+  \node[l, anchor=west, align=left, text=sheetGrey] at (4.95,1.12) {\ct{ps} on the\\host sees it};
+  % ---------- panel b: overlayfs ----------
+  \draw[sheetGrey!40] (6.6,3.8) -- (6.6,-0.05);
+  \node[font=\bfseries\scriptsize, text=sheetBlue, anchor=west] at (6.7,3.75) {overlayfs root};
+  \node[ly, fill=sheetGreen!12, draw=sheetGreen] (mg) at (8.85,3.28) {\textbf{merged} — the container's \ct{/} (union view)};
+  \node[ly, fill=sheetOrange!10, draw=sheetOrange] (up) at (8.85,2.6) {\textbf{upperdir} (rw, per container, dies with it)};
+  \node[ly, fill=black!6] (l3) at (8.85,1.8) {lower 3: \ct{COPY app/} (ro, leftmost)};
+  \node[ly, fill=black!6] (l2) at (8.85,1.4) {lower 2: \ct{RUN apt-get install} (ro)};
+  \node[ly, fill=black!6] (l1) at (8.85,1.0) {lower 1: \ct{debian:13} base (ro), layer index 0};
+  \draw[hot] ([xshift=8mm]l3.north) -- node[l, right, text=sheetOrange!80!black]{copy-up} ([xshift=8mm]up.south);
+  \draw[->, thick, sheetRed] ([xshift=-12mm]up.south) -- node[l, right, text=sheetRed]{rm: whiteout masks} ([xshift=-14mm]l3.north);
+  \node[l, anchor=north west, align=left] at (6.7,0.75)
+     {1st write $\to$ \textbf{whole file} copied up\\
+      \quad (\ct{metacopy=on}: metadata only)\\
+      delete $\to$ \textbf{whiteout} = char device 0/0 in upper\\
+      \ct{workdir}: same fs as upper (atomic moves)};
+  % ---------- panel c: runtime chain ----------
+  \draw[sheetGrey!40] (11.15,3.8) -- (11.15,-0.05);
+  \node[font=\bfseries\scriptsize, text=sheetBlue, anchor=west] at (11.25,3.75) {Who starts it};
+  \node[rt] (cli) at (12.7,3.35) {\ct{docker run} (CLI) $\to$ REST};
+  \node[rt] (dd) at (12.7,2.85) {\textbf{dockerd} 29: API, build, networks};
+  \node[rt] (cd) at (12.7,2.3) {\textbf{containerd} 2.x: images,\\snapshots, tasks, CRI plugin};
+  \node[rt] (sh) at (12.7,1.65) {\textbf{containerd-shim-runc-v2}\\1 per ctr or pod; exit events};
+  \node[rt, draw=sheetRed, fill=sheetRed!6] (rc) at (12.7,1.0) {\textbf{runc} / crun (OCI runtime)\\sets it all up, then \textbf{exits}};
+  \node[rt, draw=sheetGreen, fill=sheetGreen!8] (pr) at (12.7,0.4) {container process};
+  \foreach \a/\b in {cli/dd, dd/cd, cd/sh, sh/rc, rc/pr} \draw[flow] (\a) -- (\b);
+  \node[l, anchor=north west, align=left] at (14.2,3.5)
+     {\textbf{Podman}: no daemon —\\\ct{podman} $\to$ \textbf{conmon}\\\quad $\to$ crun (first) / runc\\[2pt]
+      \textbf{Kubernetes}: kubelet\\\quad $\to$ CRI (gRPC) $\to$\\\quad containerd or CRI-O\\\quad (dockershim gone: 1.24)\\[2pt]
+      \textbf{OCI bundle}: \ct{config.json}\\+ rootfs dir\\[2pt]
+      containerd restarts: shims\\keep ctrs; dockerd: only\\with \ct{live-restore}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\hd{The 8 namespaces}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}>{\ttfamily}L{7.5mm}L{7.5mm}L{30mm}L{31mm}@{}}
+\toprule
+\textrm{\textbf{ns}} & \textbf{since} & \textbf{isolates} & \textbf{what bites}\\
+\midrule
+mnt & 2.4.19 & the mount list; \ct{pivot\_root} to the rootfs & systemd makes \ct{/} shared — set private\\
+uts & 2.6.19 & hostname, NIS domain & —\\
+ipc & 2.6.19 & SysV IPC, POSIX message queues & SysV shm between ctrs needs one ns\\
+pid & 2.6.24 & PID numbers; 1st child $=$ PID 1 & the host still sees the real PID\\
+net & 2.6.24 & devices, stacks, routes, firewall, ports, abstract sockets & a new one has only \ct{lo}, and it is down\\
+user & 3.8 & uid/gid maps, capabilities & root inside $\neq$ root outside\\
+cgroup & 4.6 & cgroup root in \ct{/proc/self/cgroup} & hides the host's cgroup path\\
+time & 5.6 & MONOTONIC + BOOTTIME offsets & not REALTIME; for checkpoint/restore\\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item \ct{/proc/<pid>/ns/<type>} is a handle: an open fd or a bind mount keeps the namespace
+        alive with no process (\ct{ip netns add}). \ct{setns(fd)} joins; since 5.8 \ct{fd} may be
+        a \textbf{pidfd} $\to$ several namespaces at once. \ct{nsenter -t PID -n}, \ct{lsns};
+        per-user quotas in \ct{/proc/sys/user/max\_*\_namespaces}.
+  \item \textbf{PID, time}: \ct{unshare}/\ct{setns} move only \emph{future children}
+        (\ct{pid\_for\_children}, \ct{time\_for\_children}) $\to$ \ct{unshare \dd pid \dd fork}.
+        PID and user namespaces nest $\le$32 deep.
+  \item Init exits $\to$ the kernel SIGKILLs the whole PID namespace; a later \ct{fork} into it
+        fails \ct{ENOMEM}. A dying net ns hands physical NICs back to the initial ns and destroys
+        its veths.
+\end{itemize}
+
+\hd{User namespaces and rootless}
+\noindent\begin{tikzpicture}[sheet,
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=left},
+    u/.style={draw=sheetGrey, minimum height=3.4mm, inner sep=0pt, font=\tiny\ttfamily, anchor=west}]
+  \node[l, anchor=east] at (1.15,0.75) {container uid};
+  \node[l, anchor=east] at (1.15,0) {host uid};
+  \node[u, fill=sheetRed!15, minimum width=6mm] (c0) at (1.2,0.75) {0};
+  \node[u, fill=sheetBlue!12, minimum width=26mm] (c1) at (1.85,0.75) {1 … 65536};
+  \node[u, fill=black!6, minimum width=9mm] (h0) at (1.2,0) {0 root};
+  \node[u, fill=sheetRed!15, minimum width=7mm] (h1) at (2.15,0) {1000};
+  \node[u, fill=sheetBlue!12, minimum width=26mm] (h2) at (3.0,0) {100000 … 165535};
+  \draw[->, thick, sheetRed] (c0.south) -- (h1.north);
+  \draw[->, thick, sheetBlue] (c1.south) -- (h2.north);
+  \node[l, anchor=west] at (5.75,0.38) {\ct{/proc/self/uid\_map}:\\\ct{0 1000 1}\\\ct{1 100000 65536}\\(inside outside count)};
+\end{tikzpicture}
+\begin{itemize}
+  \item Unprivileged since \textbf{3.8}: the creator gets the \textbf{full capability set inside}
+        its user ns and none in the parent; mount, PID, net \dots\ then need \ct{CAP\_SYS\_ADMIN}
+        only \emph{there} — the basis of rootless. Unmapped ids show as 65534.
+  \item Unprivileged, you may map only your own uid (and write \ct{deny} to \ct{setgroups} before
+        \ct{gid\_map}); ranges come from setuid \ct{newuidmap}/\ct{newgidmap} reading
+        \ct{/etc/subuid} (\ct{alice:100000:65536}; Docker rootless wants $\ge$65\,536). Container uid
+        33 = host 100032.
+  \item Rootless network: \textbf{pasta} (Podman 5.0 default; slirp4netns removed in 6.0).
+        Overlay mounts inside a user ns: 5.11 (\ct{userxattr}).
+  \item \textbf{Idmapped mounts} (\ct{mount\_setattr}, 5.12): one mount shows files with shifted
+        owners — no recursive \ct{chown} of an image; ext4, XFS, btrfs, tmpfs, overlayfs \dots
+  \item Docker: no user ns unless \ct{userns-remap} — container root \emph{is} host uid 0, held
+        back only by caps, seccomp, LSM. Kubernetes \ct{hostUsers: false}: stable in 1.36 (kernel
+        $\ge$6.3), 65\,536 ids per pod.
+\end{itemize}
+
+\hd{Root switch and mount propagation}
+\begin{itemize}
+  \item Runtime: new mount ns $\to$ mount the rootfs $\to$ \ct{pivot\_root(new, put\_old)} $\to$
+        unmount the old root (\ct{MNT\_DETACH}): the host tree is gone, not hidden. \ct{chroot}
+        only moves path lookup — \ct{mkdir foo; chroot foo; cd ..} escapes it; ``not intended
+        \dots\ for any kind of security purpose''.
+  \item \textbf{shared} (peer group, both ways) · \textbf{slave} (receives only) ·
+        \textbf{private} · \textbf{unbindable}. systemd remounts all as shared at boot, so a
+        runtime marks the container's tree private/slave or its mounts leak back; \ct{unshare(1)}
+        defaults to private; a less privileged ns gets slave, locked mounts. Read
+        \ct{shared:N master:N} in \ct{/proc/self/mountinfo}.
+\end{itemize}
+
+\hd{Example — a container by hand}
+\begin{lstlisting}[style=ShSheet, basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt]
+# new pid+mnt+uts+net ns, fresh /proc: bash becomes PID 1
+sudo unshare --pid --fork --mount-proc --uts --net bash
+hostname box; ps ax; ip link     # 2 procs; only lo (down)
+unshare --user --map-root-user id   # no sudo: uid=0(root)
+# host tools inside a running container's net ns
+PID=$(docker inspect -f '{{.State.Pid}}' web)
+sudo nsenter -t "$PID" -n ss -tlnp
+# a cgroup by hand
+mkdir /sys/fs/cgroup/demo
+echo 512M          > /sys/fs/cgroup/demo/memory.max
+echo "50000 100000" > /sys/fs/cgroup/demo/cpu.max
+echo $$            > /sys/fs/cgroup/demo/cgroup.procs
+\end{lstlisting}
+
+\columnbreak
+
+\hd{cgroup v2 — one tree at \ct{/sys/fs/cgroup}}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}L{19mm}L{59mm}@{}}
+\toprule
+\ct{cgroup.procs} & write a PID to move it (needs write on the common ancestor's too)\\
+\ct{\ldots subtree\_control} & \ct{+memory +cpu +io +pids} for the children; \textbf{no internal
+  processes}: a non-root cgroup that feeds children holds none\\
+\ct{memory.max} & hard: reclaim fails $\to$ OOM kill \emph{inside} the cgroup (exit 137 = 128 + 9)\\
+\ct{memory.high} & throttle + reclaim; never OOM-kills, may be breached\\
+\ct{memory.min}, \ct{low} & reclaim protection · \ct{oom.group}: kill all as one · \ct{events}\\
+\ct{cpu.max} & \ct{"\$MAX \$PERIOD"}, default \ct{max 100000}: a \textbf{quota};
+  \ct{\dd cpus=1.5} = \ct{150000 100000}; \ct{nr\_throttled} in \ct{cpu.stat}\\
+\ct{cpu.weight} & 1–10\,000, default 100: a \textbf{share}, only under contention\\
+\ct{pids.max} & \ct{fork}/\ct{clone} $\to$ \ct{EAGAIN} (Podman default 1024)\\
+\ct{io.max} & per \ct{MAJ:MIN}: \ct{rbps wbps riops wiops}; PSI in \ct{*.pressure}\\
+\ct{cgroup.freeze} · \ct{kill} & stop / SIGKILL the whole subtree\\
+\bottomrule
+\end{tabular}}\par
+Charged memory: page cache + anon + dentries, inodes + TCP buffers. \ct{free}, \ct{top},
+\ct{/proc/meminfo} show the \emph{host}: JDK 10+ (\ct{UseContainerSupport}) and Go 1.25
+(\ct{GOMAXPROCS} = the \ct{cpu.max} limit, not requests) read the cgroup instead.
+
+\hd{cgroup v1 sunset}
+\noindent\begin{tikzpicture}[sheet, ev/.style={font=\tiny, align=center, inner sep=0.5pt}]
+  \draw[thick, sheetGrey] (0,0) -- (0.85,0); \draw[thick, sheetGrey] (1.05,0) -- (7.95,0);
+  \node[font=\tiny, text=sheetGrey] at (0.95,0) {//};
+  \foreach \x/\c in {0.4/sheetGreen,1.75/sheetOrange,3.05/sheetRed,4.35/sheetOrange,5.75/sheetRed,7.2/sheetRed}
+    \fill[\c] (\x,0) circle (0.6mm);
+  \node[ev, anchor=south west] at (0,0.08) {\textbf{2016-03}\\Linux 4.5: v2 stable};
+  \node[ev, anchor=north] at (1.75,-0.08) {\textbf{2024-03}\\Podman 5.0: v1 deprecated};
+  \node[ev, anchor=south] at (3.05,0.08) {\textbf{2025-09}\\systemd 258: v1 \textbf{removed}};
+  \node[ev, anchor=north] at (4.35,-0.08) {\textbf{2025-11}\\Docker 29, runc 1.4: deprecated\\(Docker: works to $\ge$ May 2029)};
+  \node[ev, anchor=south] at (5.75,0.08) {\textbf{2025-12}\\K8s 1.35: kubelet refuses v1};
+  \node[ev, anchor=north] at (7.2,-0.08) {\textbf{2026-06}\\Podman 6.0:\\v1 \textbf{removed}};
+\end{tikzpicture}
+
+\hd{What it may do: capabilities, seccomp, LSM}
+\begin{itemize}
+  \item Docker keeps \textbf{14 caps}: AUDIT\_WRITE, CHOWN, DAC\_OVERRIDE, FOWNER, FSETID, KILL,
+        MKNOD, NET\_BIND\_SERVICE, NET\_RAW, SETFCAP, SETGID, SETPCAP, SETUID, SYS\_CHROOT;
+        Podman \textbf{11} (no AUDIT\_WRITE, MKNOD, NET\_RAW). Best: \ct{\dd cap-drop=ALL} + add back.
+  \item \textbf{Default seccomp}: allowlist, the rest \ct{SCMP\_ACT\_ERRNO}; \~{}44 of 300+ denied:
+        \ct{mount}, new namespaces (not user), \ct{keyctl} (keyring not namespaced), \ct{bpf},
+        \ct{io\_uring\_*} + \ct{open\_by\_handle\_at} (breakouts), \ct{clock\_settime}.
+  \item LSM: AppArmor \ct{docker-default} or an SELinux label. \ct{no\_new\_privs} is opt-in
+        (\ct{\dd security-opt no-new-privileges}): setuid and \ct{sudo} stop raising privilege.
+  \item \ct{\dd privileged}: all caps, no seccomp, no AppArmor, no SELinux label, every host
+        device, \ct{/sys} + cgroup mounts rw — ``not a securely sandboxed process''.
+\end{itemize}
+
+\hd{Image $\to$ rootfs $\to$ process (OCI)}
+Index (per platform) $\to$ \textbf{manifest}: \ct{config} + \ct{layers} by sha256, base at index 0;
+layer = tar (gzip, zstd); delete = \ct{.wh.<name>}, emptied dir = \ct{.wh..wh..opq} — hides only
+\emph{lower} layers. Copy-up on \emph{any} write access, \ct{chmod} too; dir rename without
+\ct{redirect\_dir} $\to$ \ct{EXDEV}; editing a lower under a live mount: undefined.
+\ct{create} sets it all up but \emph{must not} run the program $\to$ \ct{start} $\to$ \ct{kill}
+$\to$ \ct{delete}.
+
+\hd{PID 1 in a container}
+\begin{itemize}
+  \item Init gets only signals it has a \textbf{handler} for (SIGKILL/SIGSTOP from an ancestor ns
+        are forced): SIGTERM unhandled $\to$ grace (Docker, Podman \textbf{10\,s}; Kubernetes
+        \textbf{30\,s}) $\to$ SIGKILL. \ct{STOPSIGNAL} picks the first signal.
+  \item \textbf{Shell form} \ct{CMD npm start} makes \ct{/bin/sh -c} PID 1, which passes no
+        signals: use exec form \ct{CMD ["node","app.js"]}, \ct{exec "\$@"} in entrypoints.
+  \item Orphans re-parent to PID 1; unreaped \textbf{zombies} keep their PIDs. Fix:
+        \ct{docker run \dd init} (\ct{docker-init} = tini).
+\end{itemize}
+
+\hd{runc escapes (all fixed)}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}L{9mm}L{17mm}L{52mm}@{}}
+2019-02 & CVE-2019-5736 & overwrite host runc via \ct{/proc/self/exe} (runc $\le$1.0-rc6)\\
+2024-01 & CVE-2024-21626 & leaked fd to host cgroupfs: \ct{WORKDIR /proc/self/fd/7}\\
+2025-11 & CVE-2025-31133, 52565, 52881 & masked-path, \ct{/dev/console}, procfs-write races (fixed
+  in 1.2.8, 1.3.3, 1.4.0-rc.3)\\
+\end{tabular}}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``A light VM'' — same kernel. Hostile tenants: gVisor (\ct{runsc}, a user-space kernel in
+        Go) or Kata Containers (lightweight VMs).}
+  \trap{Mounting \ct{docker.sock} = root on the host: the daemon will bind-mount \ct{/} for you.}
+  \trap{A secret deleted in a later layer is only whited out — it is still in the image.}
+  \trap{Ubuntu 24.04: unprivileged user namespaces get no capabilities without an AppArmor profile
+        (\ct{kernel.apparmor\_restrict\_unprivileged\_userns}).}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\raggedright\footnotesize\color{sheetGrey}\textit{Related:} \texttt{os-fundamentals} ·
+\texttt{linux-networking-stack} (netns, veth) · \texttt{linux-security-permissions} (caps, LSMs) ·
+\texttt{linux-memory-oom} (cgroup OOM) · \texttt{systemd-deep} (slices, delegation) ·
+\texttt{linux-filesystems-storage} · \texttt{linux-performance-observability} (PSI) · Supply-chain
+security — from a maintainer's laptop to your app\par}
+
+\end{document}

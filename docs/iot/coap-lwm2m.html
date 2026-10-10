@@ -1,0 +1,115 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>CoAP &amp; LwM2M — REST and device management for constrained devices — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/iot/coap-lwm2m.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">310</span></a></li><li><a class="side-area" href="/folios.html?area=ai" data-area="ai">ai<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=ble" data-area="ble">ble<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=c" data-area="c">c<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cicd" data-area="cicd">cicd<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=crypto" data-area="crypto">crypto<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=dev-tools" data-area="dev-tools">dev-tools<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area current" href="/folios.html?area=iot" data-area="iot">iot<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=javascript" data-area="javascript">javascript<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=linux" data-area="linux">linux<span class="count">8</span></a></li><li><a class="side-area" href="/folios.html?area=macos" data-area="macos">macos<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=recall" data-area="recall">recall<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=runtime" data-area="runtime">runtime<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li><li><a class="side-area" href="/folios.html?area=typescript" data-area="typescript">typescript<span class="count">3</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">CoAP &amp; LwM2M — REST and device management for constrained devices</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">iot · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> <strong>CoAP</strong> (RFC 7252, 2014) is <strong>REST over UDP</strong>: methods and HTTP-like codes in
+a <strong>4-byte binary header</strong>, per-message reliability (<strong>CON</strong> + ACK, back-off), push by
+<strong>Observe</strong>, big bodies <strong>block-wise</strong>, security by <strong>DTLS</strong> (per hop) or
+<strong>OSCORE</strong> (end to end). <strong>LwM2M</strong> (OMA SpecWorks) is <strong>device management on CoAP</strong>:
+a numbered <strong>Object / Instance / Resource</strong> tree on the device (<code>/3/0/3</code> = firmware version)
+plus bootstrap, registration, management and reporting.</p>
+<p class="sheet-tools"><a class="sheet-download" href="coap-lwm2m.pdf" download>Download PDF</a> <a href="coap-lwm2m.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/iot/coap-lwm2m.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="coap-lwm2m-fig1.svg" width="636" height="120" class="wide" alt="CoAP &amp; LwM2M — REST and device management for constrained devices — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Messages, timers, codes</h2>
+<ul>
+<li><strong>CON</strong> is resent until an ACK or RST with its Message ID arrives; <strong>NON</strong> is  never ACKed. Empty CON (0.00) → RST = “CoAP ping”. <strong>NSTART 1</strong>: one open  interaction per server.</li>
+<li><strong>Message ID</strong> pairs CON with ACK and deduplicates: not reused towards a peer within  EXCHANGE_LIFETIME 247 s (2<sup>16</sup> / 247 s ≈ 265 CON/s per peer); a duplicate  gets the same ACK and is processed once. <strong>Token</strong> (0–8 B, the client’s choice)  matches responses and notifications to the request: ≥ 32 random bits on the Internet, or a  per-session counter (RFC 9175).</li>
+<li><strong>Multicast</strong>: NON only; replies spread over the 5 s leisure. <strong>Size</strong>: unknown  MTU → assume 1280 B: message ≤ 1152 B, payload ≤ 1024 B (802.15.4 frame: 127 B).</li>
+<li><strong>Timers</strong>: ACK_TIMEOUT 2 s, ACK_RANDOM_FACTOR 1.5, MAX_RETRANSMIT 4, PROBING_RATE  1 B/s ⇒ MAX_LATENCY 100 s, PROCESSING_DELAY 2 s, MAX_RTT 202 s, NON_LIFETIME 145 s.</li>
+</ul>
+<p><table class="sheet-table">
+<tbody>
+<tr><td class="b">0.xx</td><td>0.01 GET · 0.02 POST · 0.03 PUT · 0.04 DELETE · 0.05 FETCH · 0.06 PATCH · 0.07 iPATCH</td></tr>
+<tr><td class="b">2.xx</td><td>2.01 Created · 2.02 Deleted · 2.03 Valid (ETag) · 2.04 Changed · 2.05 Content · 2.31 Continue</td></tr>
+<tr><td class="b">4.xx</td><td>4.00 Bad Request · 4.01 Unauthorized · 4.02 Bad Option · 4.03 Forbidden · 4.04 Not Found ·
+ 4.05 Method Not Allowed · 4.06 Not Acceptable · 4.08 Request Entity Incomplete · 4.09 Conflict ·
+ 4.12 Precondition Failed · 4.13 Request Entity Too Large · 4.15 Unsupported Content-Format ·
+ 4.22 Unprocessable Entity · 4.29 Too Many Requests</td></tr>
+<tr><td class="b">5.xx</td><td>5.00 Internal Server Error · 5.01 Not Implemented · 5.02 Bad Gateway · 5.03 Service
+ Unavailable · 5.04 Gateway Timeout · 5.05 Proxying Not Supported · 5.08 Hop Limit Reached</td></tr>
+<tr><td class="b">7.xx</td><td>TCP / WS only: 7.01 CSM · 7.02 Ping · 7.03 Pong · 7.04 Release · 7.05 Abort</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Options and formats</h2>
+<p>Odd number = <strong>critical</strong>: unknown in a CON request → 4.02 Bad Option (even = elective, ignored). Bit 1 set = <strong>unsafe</strong> for a proxy that does not know it; <code>(n &amp; 0x1e) == 0x1c</code> = not part of the cache key. Max-Age defaults to 60 s.</p>
+<p><table class="sheet-table">
+<tbody>
+<tr><td class="right">1</td><td>If-Match</td><td class="right">9</td><td>OSCORE</td><td class="right">19</td><td>Q-Block1</td><td class="right">35</td><td>Proxy-Uri</td></tr>
+<tr><td class="right">3</td><td>Uri-Host</td><td class="right">11</td><td>Uri-Path</td><td class="right">20</td><td>Location-Query</td><td class="right">39</td><td>Proxy-Scheme</td></tr>
+<tr><td class="right">4</td><td>ETag</td><td class="right">12</td><td>Content-Format</td><td class="right">21</td><td>EDHOC</td><td class="right">60</td><td>Size1</td></tr>
+<tr><td class="right">5</td><td>If-None-Match</td><td class="right">14</td><td>Max-Age</td><td class="right">23</td><td>Block2</td><td class="right">252</td><td>Echo</td></tr>
+<tr><td class="right">6</td><td>Observe</td><td class="right">15</td><td>Uri-Query</td><td class="right">27</td><td>Block1</td><td class="right">258</td><td>No-Response</td></tr>
+<tr><td class="right">7</td><td>Uri-Port</td><td class="right">16</td><td>Hop-Limit</td><td class="right">28</td><td>Size2</td><td class="right">292</td><td>Request-Tag</td></tr>
+<tr><td class="right">8</td><td>Location-Path</td><td class="right">17</td><td>Accept</td><td class="right">31</td><td>Q-Block2</td><td class="right"></td><td></td></tr>
+</tbody>
+</table></p>
+<p><strong>Content-Format</strong>: 0 text · 40 link-format · 50 JSON · 60 CBOR · 61 CWT · 110 / 112 SenML JSON / CBOR · 10001 OSCORE · 11542–4 LwM2M TLV / JSON / CBOR.</p>
+</section>
+<section class="sheet-section">
+<h2>Observe · block-wise · discovery · TCP</h2>
+<p><strong>Observe</strong> (6): GET + Observe 0 registers endpoint + token; notifications are 2.05 on that token with a 24-bit counter; cancel by GET + Observe 1, RST, or forgetting. <em>Eventually
+consistent</em>: states may be skipped; V2 is newer if 0 &lt; (V2 <span class="math">-</span> V1) mod 2<sup>24</sup> &lt; 2<sup>23</sup> or it came &gt; 128 s later. RST or a timed-out CON drops the observer.</p>
+<p><strong>Block-wise</strong>: Block2 (23) = response body, Block1 (27) = request body; NUM | M | SZX in 1–3 B (NUM 4 / 12 / 20 bit), size 2<sup>SZX+4</sup> = 16…1024 B; SZX 7 reserved on UDP, <strong>BERT</strong> on TCP (n × 1024 B). Atomic upload: 2.31 Continue per block, gap → 4.08, too large → 4.13 + Size1. <strong>Request-Tag</strong> keeps two bodies apart; <strong>Q-Block1/2</strong> (RFC 9177): NON bursts, all gaps re-asked at once (DOTS, lossy links).</p>
+<p><strong>Discovery</strong>: <code>GET /.well-known/core</code> → link format, e.g. <code>&lt;/sensors/temp&gt;;if=&quot;sensor&quot;</code>: <code>rt</code> type (noun), <code>if</code> interface (verbs), <code>sz</code> max size, <code>ct</code> format; <code>?rt=temp*</code> filters by prefix. <strong>Resource Directory</strong> (RFC 9176): <code>POST &lt;rd&gt;?ep=…&amp;lt=…</code> + links, default lifetime 90 000 s; found via <code>?rt=core.rd*</code>.</p>
+<p><strong>TCP · TLS · WebSockets</strong> (RFC 8323): <code>coap+tcp</code> 5683, <code>coaps+tcp</code> 5684 (ALPN <code>coap</code>), <code>coap(s)+ws</code> 80 / 443 at <code>/.well-known/coap</code>; Len + TKL byte, no Type, no MID; 7.01 CSM states the max message size. RFC 8974 tokens (≤ 65 804 B) hold a stateless proxy’s state. <strong>vs MQTT</strong> (TCP 1883 / 8883, ≥ 2 B header, QoS 0–2): pub / sub via a broker on the device’s own TCP; CoAP has no broker — the device is a server.</p>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">Matching responses by Message ID — a separate one has a new MID.</li>
+<li class="trap">Observe as an event log — it skips states; Send or <code>hqmax</code> keep history.</li>
+<li class="trap">Idle UDP to a device behind NAT — the mapping may expire after 2 min (RFC 4787 floor, 5 min  recommended), silently; DTLS 1.2 without CID then re-handshakes.</li>
+<li class="trap">CoAP over TCP has no CON / NON / RST — cancel an Observe with GET Observe 1.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Security — the hop or the message</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th class="b"></th><th><strong>DTLS</strong> 1.2 RFC 6347 · 1.3 RFC 9147</th><th><strong>OSCORE</strong> RFC 8613 (2019)</th></tr>
+</thead>
+<tbody>
+<tr><td class="b">protects</td><td>one hop, the whole datagram</td><td>end to end: payload + class-E options</td></tr>
+<tr><td class="b">proxy</td><td>ends it, reads everything</td><td>forwards; reads Uri-Host, Proxy-Uri, outer Observe</td></tr>
+<tr><td class="b">keys</td><td>PSK, raw public key or X.509 (else NoSec)</td><td>Master Secret + IDs → HKDF-SHA-256, or EDHOC</td></tr>
+<tr><td class="b">must have</td><td>PSK and ECDHE-ECDSA, AES-128-CCM-8</td><td>AES-CCM-16-64-128</td></tr>
+<tr><td class="b">new address</td><td>1.2 re-handshakes unless CID (RFC 9146); 1.3 has CID</td><td>no effect; replay window of 32</td></tr>
+</tbody>
+</table></p>
+<p><strong>DTLS 1.3</strong>: short header, ACK record, HelloRetryRequest cookie checks the address, timer 1 s doubling. <strong>OSCORE</strong>’s outer POST → 2.04 (FETCH → 2.05 when observing) hides the method. <strong>EDHOC</strong> (RFC 9528, 2024): 3 messages of ephemeral DH over COSE → OSCORE keys; option 21 (RFC 9668) adds message_3 to the first OSCORE request. <strong>Echo</strong> (252) proves freshness and address; until then ≤ 3× amplification.</p>
+</section>
+<section class="sheet-section">
+<h2>LwM2M — roles, model, operations</h2>
+<figure class="sheet-figure"><img src="coap-lwm2m-fig2.svg" width="313" height="87" alt="CoAP &amp; LwM2M — REST and device management for constrained devices — figure 2" loading="lazy"></figure>
+<p>Path <code>/Object/Instance/Resource/Resource-Instance</code> (4th level since 1.1), 16-bit IDs, 65535 reserved: <code>/3303/0/5700</code> = Temperature, instance 0, Sensor Value. <strong>Objects</strong>: 0 Security · 1 Server (1 Lifetime = <code>lt</code>) · 2 Access Control · 3 Device (0 Manufacturer, 3 FW Version, 4 Reboot = E) · 4 Connectivity Monitoring · 5 Firmware Update · 6 Location · 9 Software Management · 21 OSCORE · 25 Gateway.</p>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>operation</strong></th><th><strong>on CoAP</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>Read · Discover · Write</td><td>GET · GET Accept 40 · PUT replaces, POST updates part</td></tr>
+<tr><td>Write-Attributes</td><td>PUT /3303/0/5700?pmin=10&amp;pmax=60&amp;gt=30</td></tr>
+<tr><td>Execute · Create · Delete</td><td>POST /3/0/4 · POST /3303 · DELETE /3303/1</td></tr>
+<tr><td>Composite (1.1)</td><td>Read = FETCH (a GET with a body), Write = iPATCH; body = paths (+ values)</td></tr>
+</tbody>
+</table></p>
+<p><strong>Attributes</strong> (Write-Attributes; in the Observe since 1.2): <code>pmin</code> / <code>pmax</code> = min / max seconds between notifications; <code>gt</code> / <code>lt</code> / <code>st</code> = threshold / step, held back by pmin; <code>epmin</code> / <code>epmax</code> = evaluation periods; 1.2: <code>edge</code>, <code>con</code> (CON notifications), <code>hqmax</code> (history kept offline). <strong>Bindings</strong> <code>b=</code>: U UDP (default) · T TCP · S SMS · N Non-IP (3GPP CIoT, LoRaWAN) · M MQTT · H HTTP (M, H since 1.2). <strong>Queue mode</strong> (<code>Q</code>): the server holds requests until the sleeping device speaks; it should stay up ≥ MAX_TRANSMIT_WAIT (93 s) after its last message. <strong>Security Mode</strong> /0/x/2: 0 PSK · 1 RPK · 2 Certificate · 3 NoSec · 4 Certificate + EST; DTLS 1.2 mandatory, (D)TLS 1.3 + CID optional (1.2). <strong>Formats</strong>: MUST plain text, opaque, CoRE link; SHOULD SenML or LwM2M CBOR.</p>
+<h3 class="sheet-hd">Firmware update — Object 5</h3>
+<figure class="sheet-figure"><img src="coap-lwm2m-fig3.svg" width="298" height="67" alt="CoAP &amp; LwM2M — REST and device management for constrained devices — figure 3" loading="lazy"></figure>
+<p>Update Result: 2 no flash · 3 no RAM · 4 link lost · 5 integrity (→ Idle) · 6 package type · 7 URI · 9 protocol · 10 cancelled · 11 deferred.</p>
+<h3 class="sheet-hd">Versions</h3>
+<figure class="sheet-figure"><img src="coap-lwm2m-fig4.svg" width="305" height="31" alt="CoAP &amp; LwM2M — REST and device management for constrained devices — figure 4" loading="lazy"></figure>
+<p>LwM2M <strong>1.1</strong> (Jul 2018): TCP / TLS, OSCORE, LPWAN, Resource Instances, composite, SenML, Send. <strong>1.2</strong> (Nov 2020): MQTT + HTTP, Bootstrap-Pack, Gateway, LwM2M CBOR, edge / con / hqmax, (D)TLS 1.3. Latest approved <strong>1.2.2</strong> (13 Jun 2024); no 2.0 in OMA’s release directory on 9 Oct 2026. <strong>Leshan</strong> (Java): 1.x = LwM2M 1.0, 2.0.0-M18 (Dec 2025) = 1.1; <strong>Wakaama</strong> (C): repository archived 15 Sep 2026.</p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> TCP · UDP · QUIC · TLS 1.3 in depth ·
+NAT, IPv4 &amp; IPv6 · HTTP/1.1 · HTTP/2 · HTTP/3 · WebSockets &amp; realtime on iOS · API design ·
+<code>ble-mesh-matter-thread</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=iot" title="area">iot</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=general" title="platform">general</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=protocols" title="topic">protocols</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=networking" title="topic">networking</a></li><li class="sheet-tag"><a href="/folios.html?tag=coap">coap</a></li><li class="sheet-tag"><a href="/folios.html?tag=lwm2m">lwm2m</a></li><li class="sheet-tag"><a href="/folios.html?tag=udp">udp</a></li><li class="sheet-tag"><a href="/folios.html?tag=rest">rest</a></li><li class="sheet-tag"><a href="/folios.html?tag=confirmable-message">confirmable-message</a></li><li class="sheet-tag"><a href="/folios.html?tag=message-id-vs-token">message-id-vs-token</a></li><li class="sheet-tag"><a href="/folios.html?tag=coap-observe">coap-observe</a></li><li class="sheet-tag"><a href="/folios.html?tag=block-wise-transfer">block-wise-transfer</a></li><li class="sheet-tag"><a href="/folios.html?tag=well-known-core">well-known-core</a></li><li class="sheet-tag"><a href="/folios.html?tag=dtls">dtls</a></li><li class="sheet-tag"><a href="/folios.html?tag=oscore">oscore</a></li><li class="sheet-tag"><a href="/folios.html?tag=edhoc">edhoc</a></li><li class="sheet-tag"><a href="/folios.html?tag=6lowpan">6lowpan</a></li><li class="sheet-tag"><a href="/folios.html?tag=object-instance-resource">object-instance-resource</a></li><li class="sheet-tag"><a href="/folios.html?tag=queue-mode">queue-mode</a></li><li class="sheet-tag"><a href="/folios.html?tag=firmware-update-object">firmware-update-object</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=iot%2Fcoap-lwm2m.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/308">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

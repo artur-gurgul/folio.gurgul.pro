@@ -1,0 +1,346 @@
+% coap-lwm2m.tex — CoAP (RFC 7252 message layer, timers, codes, options, Observe, block-wise,
+% discovery, TCP / WebSocket binding, DTLS / OSCORE / EDHOC) and OMA LwM2M on top of it (roles,
+% object model, operations → CoAP, attributes, bindings, queue mode, firmware update, versions).
+% Sources (checked 2026-10-09):
+%   rfc-editor.org RFC 7252 (header fields; TKL 9-15 reserved; option nibbles 13 / 14 / 15; 0xFF
+%     marker; Table 2 + 3 timers; Table 4 options; option-number bit rule; Max-Age 60 s; 1280 / 1152 /
+%     1024 B; ports 5683 / 5684; NoSec / PSK / RPK / Certificate + CCM_8 suites; empty CON = ping;
+%     NSTART; token >= 32 random bits; separate response; multicast NON + leisure)
+%   iana.org/assignments/core-parameters (option numbers 1…292, methods 0.01-0.07, response codes incl.
+%     2.31 4.08 4.09 4.22 4.29 5.08, signalling 7.01-7.05, Content-Formats 0 40 50 60 61 110 112
+%     10001 11542 11543 11544)
+%   RFC 7641 (option 6, 0 / 1, 24-bit sequence, 2^23 + 128 s rule, CON at least every 24 h, RST or
+%     CON timeout removes the observer, eventual consistency, Max-Age) · RFC 7959 (Block2 23, Block1
+%     27, Size2 28, Size1 60; NUM 4 / 12 / 20 bits; 2^(SZX+4); SZX 7 reserved; 2.31, 4.08, 4.13;
+%     server uses the indicated size or smaller)
+%   RFC 8323 (no Type / Message ID; Len + TKL; 7.01-7.05; coap+tcp 5683, coaps+tcp 5684, ALPN
+%     "coap", coap(s)+ws 80 / 443 at /.well-known/coap; BERT; Observe over TCP) · RFC 8132 (FETCH
+%     safe + idempotent, PATCH not idempotent, iPATCH idempotent, 4.09, 4.22, FETCH + Observe) ·
+%     RFC 8974 (TKL 13 / 14, tokens up to 65 804 B, stateless clients) · RFC 9175 (Echo 252,
+%     amplification factor 3, Request-Tag 292, token as sequence number) · RFC 9177 (Q-Block1 / 2 =
+%     19 / 31, NON bursts, one request for all missing blocks, DOTS)
+%   RFC 6690 (/.well-known/core, rt / if / sz, prefix * filter) · RFC 9176 (Resource Directory, ep /
+%     lt, default lt 90000 s, rt=core.rd*, simple registration /.well-known/rd) · RFC 4944 (802.15.4:
+%     127 B PHY packet, 102 B MAC frame, 81 B with AES-CCM-128) · RFC 4787 REQ-5 (UDP mapping
+%     >= 2 min, >= 5 min recommended)
+%   RFC 8613 (OSCORE, July 2019: AES-CCM-16-64-128, HKDF-SHA-256, contexts, outer POST / 2.04 and
+%     FETCH / 2.05 with Observe, class E / U options, option 9, replay window 32) · RFC 9147 (DTLS 1.3,
+%     April 2022: unified header, ACK, Connection ID, HRR cookie, 1 s timer doubling) · RFC 9146
+%     (DTLS 1.2 Connection ID, March 2022) · RFC 9528 (EDHOC, March 2024: 3 messages + optional 4th,
+%     methods 0-3) · RFC 9668 (EDHOC + OSCORE request, option 21, November 2024)
+%   openmobilealliance.org/release/lightweightm2m/ (1.0 2017-02-08 A, 1.1 2018-07-10 A, 1.1.1
+%     2019-06-17, 1.2 2020-11-10 A, 1.2.1 2022-12-09, 1.2.2 2024-06-13; no 2.0 entry on 2026-10-09)
+%   OMA-TS-LightweightM2M_Core-V1_2_2-20240613-A (4 interfaces + operations; v1.1 and v1.2 feature
+%     lists; bindings U T S N M H; Q; 16-bit IDs, 65535 reserved; security modes 0-4; Object 1
+%     resources 0-9; pmin pmax gt lt st epmin epmax edge con hqmax; MUST plain text / opaque / CoRE
+%     link; Object 5 State reset and failure rules) · OMA-TS-LightweightM2M_Transport-V1_2_2 (POST /rd
+%     → 2.01, /rd/{id} → 2.04, DELETE → 2.02, /bs, /bspack, /dp; DTLS 1.2 + CCM_8 suites mandatory,
+%     (D)TLS 1.3 optional, Connection ID; queue mode: stay >= MAX_TRANSMIT_WAIT) · Core V1_1_1 (Send)
+%   github.com/OpenMobileAlliance/lwm2m-registry 3.xml, 5.xml, 3303.xml, DDF.xml (object names;
+%     resources; FW State 0-3, Update Result 0-11, protocol support 0-5, delivery method 0-2)
+%   docs.oasis-open.org/mqtt/mqtt/v5.0 (1-byte type + 1-4 byte length, 1883 / 8883, QoS 0 / 1 / 2) ·
+%     github.com/eclipse-leshan/leshan + releases API (Java, Californium, 1.x stable = LwM2M 1.0, 2.x
+%     = 1.1, 2.0.0-M18 2025-12-12) · github.com/eclipse-wakaama/wakaama + repos API (C, BSD-3,
+%     tinydtls; archived 2026-09-15)
+% @labels: area=iot kind=concept platform=general topic=protocols,networking discussion=308
+% @tags: coap, lwm2m, udp, rest, confirmable-message, message-id-vs-token, coap-observe, block-wise-transfer, well-known-core, dtls, oscore, edhoc, 6lowpan, object-instance-resource, queue-mode, firmware-update-object
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\tikzset{
+  hd/.style={font=\bfseries\scriptsize, text=sheetBlue, anchor=west, inner sep=0pt},
+  l/.style={font=\tiny, text=black!80, inner sep=0.6pt},
+  ml/.style={font=\tiny, text=black!85, inner sep=0.4pt, fill=white},
+  who/.style={font=\tiny\bfseries, text=sheetGrey},
+  lnv/.style={draw=sheetGrey!60},
+  msg/.style={->, thick, draw=sheetBlue},
+  rsp/.style={->, thick, draw=sheetGreen!70!black},
+  lost/.style={->, thick, draw=sheetRed, dashed},
+  st/.style={draw=sheetBlue, fill=sheetBlue!8, rounded corners=2pt, font=\tiny, inner sep=1.5pt,
+             align=center, minimum height=4.5mm},
+}
+% one header field: [style]{x1}{x2}{y}{label}
+\newcommand\fld[5][]{%
+  \draw[draw=sheetBlue, fill=sheetBlue!8, #1] (#2,#4) rectangle (#3,{#4+0.3});
+  \node[font=\tiny, inner sep=0pt] at ({(#2+#3)/2},{#4+0.15}) {#5};}
+
+\begin{document}
+
+\sheettitle{CoAP \& LwM2M — REST and device management for constrained devices}{iot · folio}
+
+\oneliner{\textbf{CoAP} (RFC 7252, 2014) is \textbf{REST over UDP}: methods and HTTP-like codes in
+a \textbf{4-byte binary header}, per-message reliability (\textbf{CON} + ACK, back-off), push by
+\textbf{Observe}, big bodies \textbf{block-wise}, security by \textbf{DTLS} (per hop) or
+\textbf{OSCORE} (end to end). \textbf{LwM2M} (OMA SpecWorks) is \textbf{device management on CoAP}:
+a numbered \textbf{Object / Instance / Resource} tree on the device (\ct{/3/0/3} = firmware version)
+plus bootstrap, registration, management and reporting.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ================= A: message format
+  \node[hd] at (0,3.3) {CoAP over UDP — the message};
+  \foreach \b/\x in {0/0.07, 8/1.19, 16/2.31, 31/4.41} \node[l, text=sheetGrey] at (\x,3.07) {\b};
+  \fld{0}{0.28}{2.7}{V}
+  \fld{0.28}{0.56}{2.7}{T}
+  \fld{0.56}{1.12}{2.7}{TKL}
+  \fld{1.12}{2.24}{2.7}{Code \ct{c.dd}}
+  \fld{2.24}{4.48}{2.7}{Message ID (16 bit)}
+  \fld[draw=sheetOrange, fill=sheetOrange!10]{0}{4.48}{2.33}{Token: 0–8 B, length = TKL (9–15 reserved)}
+  \fld[draw=sheetGrey, fill=sheetGrey!8]{0}{0.42}{1.96}{$\Delta$}
+  \fld[draw=sheetGrey, fill=sheetGrey!8]{0.42}{0.84}{1.96}{len}
+  \fld[draw=sheetGrey, fill=sheetGrey!8]{0.84}{1.96}{1.96}{$\Delta$+ 0–2 B}
+  \fld[draw=sheetGrey, fill=sheetGrey!8]{1.96}{3.08}{1.96}{len+ 0–2 B}
+  \fld[draw=sheetGrey, fill=sheetGrey!8]{3.08}{4.48}{1.96}{value; next option}
+  \fld[draw=sheetRed, fill=sheetRed!10]{0}{0.84}{1.59}{\ct{0xFF}}
+  \fld[draw=sheetGreen, fill=sheetGreen!10]{0.84}{4.48}{1.59}{payload, to the end of the datagram}
+  \node[l, anchor=north west, align=left] at (-0.05,1.5) {%
+    Ver = 1 · T: 0 CON · 1 NON · 2 ACK · 3 RST\\
+    Code = class (3 bit) . detail (5 bit); 0.00 = Empty\\
+    options ascend by number, each stores the delta;\\
+    nibble 13 → +1 B (value $-$13) · 14 → +2 B ($-$269)\\
+    15 is reserved: the byte \ct{0xFF} ends the options};
+  \draw[sheetGrey!50] (4.68,3.4) -- (4.68,0.5);
+  % ================= B: CON retransmission
+  \node[hd] at (4.8,3.3) {CON retransmission — default timers};
+  \draw[->, sheetGrey] (4.95,2.8) -- (9.95,2.8);
+  \foreach \a/\b/\n in {2/3/\#1, 6/9/\#2, 14/21/\#3, 30/45/\#4} {
+    \fill[sheetOrange!70] ({4.95+0.0516*\a},2.8) rectangle ({4.95+0.0516*\b},2.97);
+    \node[l] at ({4.95+0.0516*(\a+\b)/2},3.09) {\n}; }
+  \fill[sheetRed!60] ({4.95+0.0516*62},2.8) rectangle ({4.95+0.0516*93},2.97);
+  \node[l, text=sheetRed] at ({4.95+0.0516*77.5},3.09) {give up};
+  \fill[sheetBlue] (4.95,2.8) rectangle (4.99,2.97);
+  \foreach \t in {9,21,45,93} \node[l, text=sheetGrey] at ({4.95+0.0516*\t},2.69) {\t};
+  \node[l, text=sheetGrey] at (4.97,2.69) {0 s};
+  \node[l, anchor=north west, align=left] at (4.8,2.61) {first timeout random in 2–3 s, doubled per retry, 4 retries:\\
+    last send ≤ 45 s (MAX\_TRANSMIT\_SPAN), failure ≤ 93 s};
+  \node[l, text=sheetBrown] at (5.85,2.06) {piggybacked: answer in ACK};
+  \node[l, text=sheetBrown] at (8.6,2.06) {separate: new MID, same token};
+  \draw[sheetGrey!40, densely dotted] (7.05,2.1) -- (7.05,0.6);
+  \node[who] at (4.95,1.9) {client}; \node[who] at (6.75,1.9) {server};
+  \draw[lnv] (4.95,1.8) -- (4.95,0.65); \draw[lnv] (6.75,1.8) -- (6.75,0.65);
+  \draw[msg] (4.95,1.64) -- node[ml]{CON [7d34] GET} (6.75,1.48);
+  \draw[rsp] (6.75,1.28) -- node[ml]{ACK [7d34] 2.05} (4.95,1.12);
+  \node[l, text=sheetGrey] at (5.85,0.82) {[Message ID] · t: token};
+  \node[who] at (7.35,1.9) {client}; \node[who] at (9.85,1.9) {server};
+  \draw[lnv] (7.35,1.8) -- (7.35,0.65); \draw[lnv] (9.85,1.8) -- (9.85,0.65);
+  \draw[msg] (7.35,1.68) -- node[ml]{CON [7d35] GET t:72} (9.85,1.56);
+  \draw[rsp] (9.85,1.43) -- node[ml]{ACK [7d35] empty} (7.35,1.31);
+  \draw[rsp] (9.85,1.08) -- node[ml]{CON [23bb] 2.05 t:72} (7.35,0.96);
+  \draw[msg] (7.35,0.84) -- node[ml]{ACK [23bb]} (9.85,0.72);
+  \draw[sheetGrey!50] (10.12,3.4) -- (10.12,0.5);
+  % ================= C: Observe
+  \node[hd] at (10.22,3.3) {Observe (RFC 7641)};
+  \node[who] at (10.35,3.07) {client}; \node[who, anchor=east] at (13.08,3.07) {server};
+  \draw[lnv] (10.35,2.98) -- (10.35,0.95); \draw[lnv] (12.95,2.98) -- (12.95,0.95);
+  \draw[msg] (10.35,2.88) -- node[ml]{GET Obs:0 t:4a} (12.95,2.75);
+  \draw[rsp] (12.95,2.6) -- node[ml]{ACK 2.05 Obs:12 22.5} (10.35,2.47);
+  \draw[rsp] (12.95,2.32) -- node[ml]{NON 2.05 Obs:13 22.9} (10.35,2.19);
+  \draw[lost] (12.95,2.04) -- node[ml, pos=0.45]{NON Obs:14} (11.65,1.97);
+  \node[l, text=sheetRed] at (11.42,1.95) {lost};
+  \draw[rsp] (12.95,1.76) -- node[ml]{NON 2.05 Obs:15 23.6} (10.35,1.63);
+  \draw[rsp] (12.95,1.48) -- node[ml]{CON Obs:16 (≥ 1 / 24 h)} (10.35,1.35);
+  \draw[->, thick, sheetRed] (10.35,1.2) -- node[ml, text=sheetRed]{RST: observer removed} (12.95,1.07);
+  \node[l, text=sheetBrown, align=center] at (11.65,0.74) {same token in every notification;\\newest Obs wins, 14 is never resent};
+  \draw[sheetGrey!50] (13.22,3.4) -- (13.22,0.5);
+  % ================= D: block-wise
+  \node[hd] at (13.32,3.3) {Block-wise GET (RFC 7959)};
+  \node[who, anchor=west] at (13.32,3.07) {client}; \node[who] at (16.3,3.07) {server};
+  \draw[lnv] (13.45,2.98) -- (13.45,0.95); \draw[lnv] (16.3,2.98) -- (16.3,0.95);
+  \draw[msg] (13.45,2.88) -- node[ml]{GET /fw B2:0/0/1024} (16.3,2.75);
+  \draw[rsp] (16.3,2.6) -- node[ml]{2.05 B2:0/1/512} (13.45,2.47);
+  \draw[msg] (13.45,2.32) -- node[ml]{GET /fw B2:1/0/512} (16.3,2.19);
+  \draw[rsp] (16.3,2.04) -- node[ml]{2.05 B2:1/1/512} (13.45,1.91);
+  \node[l] at (14.88,1.8) {$\vdots$};
+  \draw[msg] (13.45,1.6) -- node[ml]{GET /fw B2:3/0/512} (16.3,1.47);
+  \draw[rsp] (16.3,1.32) -- node[ml]{2.05 B2:3/0/512 (last)} (13.45,1.19);
+  \node[l, text=sheetBrown, align=center] at (14.88,0.74) {B2 = NUM / More / size; the server\\may shrink the size, never grow it};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Messages, timers, codes}
+\begin{itemize}
+  \item \textbf{CON} is resent until an ACK or RST with its Message ID arrives; \textbf{NON} is
+        never ACKed. Empty CON (0.00) → RST = ``CoAP ping''. \textbf{NSTART 1}: one open
+        interaction per server.
+  \item \textbf{Message ID} pairs CON with ACK and deduplicates: not reused towards a peer within
+        EXCHANGE\_LIFETIME 247 s (2\textsuperscript{16}\,/\,247 s ≈ 265 CON/s per peer); a duplicate
+        gets the same ACK and is processed once. \textbf{Token} (0–8 B, the client's choice)
+        matches responses and notifications to the request: ≥ 32 random bits on the Internet, or a
+        per-session counter (RFC 9175).
+  \item \textbf{Multicast}: NON only; replies spread over the 5 s leisure. \textbf{Size}: unknown
+        MTU → assume 1280 B: message ≤ 1152 B, payload ≤ 1024 B (802.15.4 frame: 127 B).
+  \item \textbf{Timers}: ACK\_TIMEOUT 2 s, ACK\_RANDOM\_FACTOR 1.5, MAX\_RETRANSMIT 4, PROBING\_RATE
+        1 B/s ⇒ MAX\_LATENCY 100 s, PROCESSING\_DELAY 2 s, MAX\_RTT 202 s, NON\_LIFETIME 145 s.
+\end{itemize}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\bfseries}l>{\raggedright\arraybackslash}p{72mm}@{}}
+0.xx & 0.01 GET · 0.02 POST · 0.03 PUT · 0.04 DELETE · 0.05 FETCH · 0.06 PATCH · 0.07 iPATCH\\
+2.xx & 2.01 Created · 2.02 Deleted · 2.03 Valid (ETag) · 2.04 Changed · 2.05 Content · 2.31 Continue\\
+4.xx & 4.00 Bad Request · 4.01 Unauthorized · 4.02 Bad Option · 4.03 Forbidden · 4.04 Not Found ·
+       4.05 Method Not Allowed · 4.06 Not Acceptable · 4.08 Request Entity Incomplete · 4.09 Conflict ·
+       4.12 Precondition Failed · 4.13 Request Entity Too Large · 4.15 Unsupported Content-Format ·
+       4.22 Unprocessable Entity · 4.29 Too Many Requests\\
+5.xx & 5.00 Internal Server Error · 5.01 Not Implemented · 5.02 Bad Gateway · 5.03 Service
+       Unavailable · 5.04 Gateway Timeout · 5.05 Proxying Not Supported · 5.08 Hop Limit Reached\\
+7.xx & TCP / WS only: 7.01 CSM · 7.02 Ping · 7.03 Pong · 7.04 Release · 7.05 Abort\\
+\end{tabular}}
+
+\section{Options and formats}
+Odd number = \textbf{critical}: unknown in a CON request → 4.02 Bad Option (even = elective,
+ignored). Bit 1 set = \textbf{unsafe} for a proxy that does not know it; \ct{(n \& 0x1e) == 0x1c}
+= not part of the cache key. Max-Age defaults to 60 s.\par
+{\scriptsize\setlength{\tabcolsep}{1.2pt}
+\begin{tabular}{@{}rl@{\hspace{4pt}}rl@{\hspace{4pt}}rl@{\hspace{4pt}}rl@{}}
+1 & If-Match & 9 & OSCORE & 19 & Q-Block1 & 35 & Proxy-Uri\\
+3 & Uri-Host & 11 & Uri-Path & 20 & Location-Query & 39 & Proxy-Scheme\\
+4 & ETag & 12 & Content-Format & 21 & EDHOC & 60 & Size1\\
+5 & If-None-Match & 14 & Max-Age & 23 & Block2 & 252 & Echo\\
+6 & Observe & 15 & Uri-Query & 27 & Block1 & 258 & No-Response\\
+7 & Uri-Port & 16 & Hop-Limit & 28 & Size2 & 292 & Request-Tag\\
+8 & Location-Path & 17 & Accept & 31 & Q-Block2 & & \\
+\end{tabular}}\par
+\textbf{Content-Format}: 0 text · 40 link-format · 50 JSON · 60 CBOR · 61 CWT · 110 / 112 SenML
+JSON / CBOR · 10001 OSCORE · 11542–4 LwM2M TLV / JSON / CBOR.
+
+\section{Observe · block-wise · discovery · TCP}
+\textbf{Observe} (6): GET + Observe 0 registers endpoint + token; notifications are 2.05 on that
+token with a 24-bit counter; cancel by GET + Observe 1, RST, or forgetting. \emph{Eventually
+consistent}: states may be skipped; V2 is newer if 0 < (V2 $-$ V1) mod 2\textsuperscript{24} <
+2\textsuperscript{23} or it came > 128 s later. RST or a timed-out CON drops the observer.
+
+\textbf{Block-wise}: Block2 (23) = response body, Block1 (27) = request body; NUM | M | SZX in
+1–3 B (NUM 4 / 12 / 20 bit), size 2\textsuperscript{SZX+4} = 16…1024 B; SZX 7 reserved on UDP,
+\textbf{BERT} on TCP (n × 1024 B). Atomic upload: 2.31 Continue per block, gap → 4.08, too large →
+4.13 + Size1. \textbf{Request-Tag} keeps two bodies apart; \textbf{Q-Block1/2} (RFC 9177): NON
+bursts, all gaps re-asked at once (DOTS, lossy links).
+
+\textbf{Discovery}: \ct{GET /.well-known/core} → link format, e.g.
+\ct{</sensors/temp>;if="sensor"}: \ct{rt} type (noun), \ct{if} interface (verbs), \ct{sz} max size,
+\ct{ct} format; \ct{?rt=temp*} filters by prefix. \textbf{Resource Directory} (RFC 9176):
+\ct{POST <rd>?ep=…\&lt=…} + links, default lifetime 90\,000 s; found via \ct{?rt=core.rd*}.
+
+\textbf{TCP · TLS · WebSockets} (RFC 8323): \ct{coap+tcp} 5683, \ct{coaps+tcp} 5684 (ALPN
+\ct{coap}), \ct{coap(s)+ws} 80 / 443 at \ct{/.well-known/coap}; Len + TKL byte, no Type, no MID;
+7.01 CSM states the max message size. RFC 8974 tokens (≤ 65\,804 B) hold a stateless proxy's state.
+\textbf{vs MQTT} (TCP 1883 / 8883, ≥ 2 B header, QoS 0–2): pub / sub via a broker on the device's
+own TCP; CoAP has no broker — the device is a server.
+
+\section{Traps}
+\begin{itemize}
+  \trap{Matching responses by Message ID — a separate one has a new MID.}
+  \trap{Observe as an event log — it skips states; Send or \ct{hqmax} keep history.}
+  \trap{Idle UDP to a device behind NAT — the mapping may expire after 2 min (RFC 4787 floor, 5 min
+        recommended), silently; DTLS 1.2 without CID then re-handshakes.}
+  \trap{CoAP over TCP has no CON / NON / RST — cancel an Observe with GET Observe 1.}
+\end{itemize}
+
+\columnbreak
+
+\section{Security — the hop or the message}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\bfseries\raggedright\arraybackslash}p{10mm}>{\raggedright\arraybackslash}p{32mm}>{\raggedright\arraybackslash}p{34mm}@{}}
+\toprule
+ & \textbf{DTLS} 1.2 RFC 6347 · 1.3 RFC 9147 & \textbf{OSCORE} RFC 8613 (2019)\\
+\midrule
+protects & one hop, the whole datagram & end to end: payload + class-E options\\
+proxy & ends it, reads everything & forwards; reads Uri-Host, Proxy-Uri, outer Observe\\
+keys & PSK, raw public key or X.509 (else NoSec) & Master Secret + IDs → HKDF-SHA-256, or EDHOC\\
+must have & PSK and ECDHE-ECDSA, AES-128-CCM-8 & AES-CCM-16-64-128\\
+new address & 1.2 re-handshakes unless CID (RFC 9146); 1.3 has CID & no effect; replay window of 32\\
+\bottomrule
+\end{tabular}}\par
+\textbf{DTLS 1.3}: short header, ACK record, HelloRetryRequest cookie checks the address, timer 1 s
+doubling. \textbf{OSCORE}'s outer POST → 2.04 (FETCH → 2.05 when observing) hides the method.
+\textbf{EDHOC} (RFC 9528, 2024): 3 messages of ephemeral DH over COSE → OSCORE keys; option 21
+(RFC 9668) adds message\_3 to the first OSCORE request. \textbf{Echo} (252) proves freshness and
+address; until then ≤ 3× amplification.
+
+\section{LwM2M — roles, model, operations}
+\noindent\begin{tikzpicture}[sheet]
+  \node[who, text=sheetBrown] at (0.6,2.03) {Bootstrap-Server};
+  \node[who, text=sheetOrange] at (2.75,2.03) {Client = device};
+  \node[who, text=sheetGreen!60!black] at (7.3,2.03) {LwM2M Server};
+  \draw[lnv] (0.3,1.95) -- (0.3,0.03); \draw[lnv] (2.75,1.95) -- (2.75,0.03); \draw[lnv] (7.75,1.95) -- (7.75,0.03);
+  \draw[msg] (2.75,1.86) -- node[ml]{POST /bs?ep=dev42} (0.3,1.76);
+  \draw[rsp] (0.3,1.64) -- node[ml]{PUT /0/1, /1/0 …} (2.75,1.54);
+  \draw[rsp] (0.3,1.42) -- node[ml]{POST /bs = Finish} (2.75,1.32);
+  \draw[msg] (2.75,1.2) -- node[ml]{POST /rd?ep=dev42\&lt=300\&lwm2m=1.2\&b=U\&Q + \ct{</3/0>,…}} (7.75,1.1);
+  \draw[rsp] (7.75,0.98) -- node[ml]{2.01 Location /rd/5a3f} (2.75,0.88);
+  \draw[rsp] (7.75,0.76) -- node[ml]{GET /3/0/3 · PUT · POST /3/0/4 · GET Observe 0} (2.75,0.66);
+  \draw[msg, dashed] (2.75,0.54) -- node[ml]{2.05 notifications · POST /dp (Send)} (7.75,0.44);
+  \draw[msg] (2.75,0.32) -- node[ml]{POST /rd/5a3f (Update) → 2.04 · DELETE → 2.02} (7.75,0.22);
+  \node[l, text=sheetBrown, align=left, anchor=west] at (0.35,0.6) {device = CoAP\\client for /bs /rd\\/dp, CoAP server\\for its tree};
+\end{tikzpicture}\par
+Path \ct{/Object/Instance/Resource/Resource-Instance} (4th level since 1.1), 16-bit IDs, 65535
+reserved: \ct{/3303/0/5700} = Temperature, instance 0, Sensor Value. \textbf{Objects}: 0 Security ·
+1 Server (1 Lifetime = \ct{lt}) · 2 Access Control · 3 Device (0 Manufacturer, 3 FW Version, 4
+Reboot = E) · 4 Connectivity Monitoring · 5 Firmware Update · 6 Location · 9 Software Management ·
+21 OSCORE · 25 Gateway.\par
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{58mm}@{}}
+\toprule
+\textbf{operation} & \textbf{on CoAP}\\
+\midrule
+Read · Discover · Write & GET · GET Accept 40 · PUT replaces, POST updates part\\
+Write-Attributes & PUT /3303/0/5700?pmin=10\&pmax=60\&gt=30\\
+Execute · Create · Delete & POST /3/0/4 · POST /3303 · DELETE /3303/1\\
+Composite (1.1) & Read = FETCH (a GET with a body), Write = iPATCH; body = paths (+ values)\\
+\bottomrule
+\end{tabular}}\par
+\textbf{Attributes} (Write-Attributes; in the Observe since 1.2): \ct{pmin} / \ct{pmax} = min /
+max seconds between notifications; \ct{gt} / \ct{lt} / \ct{st} = threshold / step, held back by
+pmin; \ct{epmin} / \ct{epmax} = evaluation periods; 1.2: \ct{edge}, \ct{con} (CON notifications),
+\ct{hqmax} (history kept offline). \textbf{Bindings} \ct{b=}: U UDP (default) · T TCP · S SMS · N
+Non-IP (3GPP CIoT, LoRaWAN) · M MQTT · H HTTP (M, H since 1.2). \textbf{Queue mode} (\ct{Q}): the
+server holds requests until the sleeping device speaks; it should stay up ≥ MAX\_TRANSMIT\_WAIT
+(93 s) after its last message. \textbf{Security Mode} /0/x/2: 0 PSK · 1 RPK · 2 Certificate · 3 NoSec · 4 Certificate +
+EST; DTLS 1.2 mandatory, (D)TLS 1.3 + CID optional (1.2). \textbf{Formats}: MUST plain text,
+opaque, CoRE link; SHOULD SenML or LwM2M CBOR.
+
+\textbf{Firmware update — Object 5}\par
+\noindent\begin{tikzpicture}[sheet]
+  \node[st] (s0) at (0.35,0) {0 Idle};
+  \node[st] (s1) at (2.8,0) {1 Downloading};
+  \node[st] (s2) at (5.05,0) {2 Downloaded};
+  \node[st] (s3) at (7.3,0) {3 Updating};
+  \draw[msg] (s0) -- node[ml, above=1pt, align=center]{write /5/0/1 URI\\or /5/0/0 package} (s1);
+  \draw[msg] (s1) -- node[ml, above=1pt]{complete} (s2);
+  \draw[msg] (s2) -- node[ml, above=1pt, align=center]{Execute\\/5/0/2} (s3);
+  \draw[rsp] (s3.north) .. controls (6.2,0.95) and (1.5,0.95) .. node[ml, pos=0.5]{success: Update Result 1} (s0.north);
+  \draw[->, thick, sheetGrey, dashed] (s1.south) to[bend left=26] node[ml]{empty URI: reset from any state} (s0.south);
+  \draw[lost] (s3.south) to[bend left=26] node[ml]{fail: 8, or to Idle} (s2.south);
+\end{tikzpicture}\par
+Update Result: 2 no flash · 3 no RAM · 4 link lost · 5 integrity (→ Idle) · 6 package type · 7 URI
+· 9 protocol · 10 cancelled · 11 deferred.
+
+\textbf{Versions}\par
+\noindent\begin{tikzpicture}[sheet]
+  \draw[->, sheetGrey] (0.1,0) -- (7.9,0);
+  \foreach \y in {2014,...,2026} \draw[sheetGrey] ({0.2+(\y-2014)*0.6},-0.05) -- ({0.2+(\y-2014)*0.6},0.05);
+  \foreach \y/\t in {2014/7252\\CoAP, 2015/7641\\Observe, 2016/7959\\Block, 2017/8132\\FETCH,
+      2018/8323\\TCP, 2019/8613\\OSCORE, 2020.9/8974\\tokens, 2022.3/9147\\DTLS 1.3, 2024.2/9528\\EDHOC}
+    \node[l, text=sheetBlue, align=center, anchor=south] at ({0.2+(\y-2014)*0.6},0.07) {\t};
+  \foreach \y/\t in {2017.1/1.0, 2018.5/1.1, 2020.85/1.2, 2022.95/1.2.1, 2024.45/1.2.2}
+    \node[l, text=sheetGreen!60!black, anchor=north, font=\tiny\bfseries] at ({0.2+(\y-2014)*0.6},-0.07) {\t};
+  \node[l, anchor=north, text=sheetGrey] at (0.2,-0.07) {2014};
+  \node[l, anchor=north, text=sheetGrey] at (7.4,-0.07) {2026};
+  \node[l, anchor=north, text=sheetGreen!60!black] at (1.1,-0.07) {LwM2M:};
+\end{tikzpicture}\par
+LwM2M \textbf{1.1} (Jul 2018): TCP / TLS, OSCORE, LPWAN, Resource Instances, composite, SenML,
+Send. \textbf{1.2} (Nov 2020): MQTT + HTTP, Bootstrap-Pack, Gateway, LwM2M CBOR, edge / con /
+hqmax, (D)TLS 1.3. Latest approved \textbf{1.2.2} (13 Jun 2024); no 2.0 in OMA's release
+directory on 9 Oct 2026. \textbf{Leshan} (Java): 1.x = LwM2M 1.0, 2.0.0-M18 (Dec 2025) = 1.1;
+\textbf{Wakaama} (C): repository archived 15 Sep 2026.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} TCP · UDP · QUIC · TLS 1.3 in depth ·
+NAT, IPv4 \& IPv6 · HTTP/1.1 · HTTP/2 · HTTP/3 · WebSockets \& realtime on iOS · API design ·
+\texttt{ble-mesh-matter-thread}}
+
+\end{document}

@@ -1,0 +1,114 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>JS engines — JIT tiers, shapes, inline caches, GC — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/runtime/js-engines-performance.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">310</span></a></li><li><a class="side-area" href="/folios.html?area=ai" data-area="ai">ai<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=ble" data-area="ble">ble<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=c" data-area="c">c<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cicd" data-area="cicd">cicd<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=crypto" data-area="crypto">crypto<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=dev-tools" data-area="dev-tools">dev-tools<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=iot" data-area="iot">iot<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=javascript" data-area="javascript">javascript<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=linux" data-area="linux">linux<span class="count">8</span></a></li><li><a class="side-area" href="/folios.html?area=macos" data-area="macos">macos<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=recall" data-area="recall">recall<span class="count">1</span></a></li><li><a class="side-area current" href="/folios.html?area=runtime" data-area="runtime">runtime<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li><li><a class="side-area" href="/folios.html?area=typescript" data-area="typescript">typescript<span class="count">3</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">JS engines — JIT tiers, shapes, inline caches, GC</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">runtime · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> An engine turns source into <strong>bytecode</strong>, <strong>interprets</strong> it while recording
+<strong>feedback</strong> (maps, types, call targets) and compiles hot functions in <strong>tiers</strong> that
+<strong>speculate</strong> on that feedback — a failed guard <strong>deoptimises</strong> to the bottom tier.
+Objects share <strong>hidden classes</strong>, so an <strong>inline cache</strong> turns <code>o.x</code> into one compare
+and one load. Memory is a <strong>tracing, generational GC</strong>: what is reachable lives.</p>
+<p class="sheet-tools"><a class="sheet-download" href="js-engines-performance.pdf" download>Download PDF</a> <a href="js-engines-performance.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/runtime/js-engines-performance.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="js-engines-performance-fig1.svg" width="608" height="175" class="wide" alt="JS engines — JIT tiers, shapes, inline caches, GC — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>From source to machine code (V8)</h2>
+<ul>
+<li><strong>Lazy parsing</strong>: inner functions are only <em>pre-parsed</em> and compiled on first  call; <code>(function(){…})</code> is assumed called and compiled eagerly. Chrome 136:  <code>//# allFunctionsCalledOnLoad</code> atop a file compiles it all eagerly, off the main  thread — 17 of 20 pages faster, <span class="math">-</span>630 ms foreground on average; “use sparingly”.</li>
+<li><strong>Ignition</strong>: register machine + accumulator; bytecode 25–50 % the size of the  old baseline machine code (2016). Each function’s <strong>feedback vector</strong> records the  maps, types and call targets every site has seen — the input to every higher tier.</li>
+<li><strong>Sparkplug</strong> (2021): one linear pass bytecode <span class="math">→</span> machine code, no IR,  interpreter-shaped frames, no optimisation; Speedometer +5–10 %.</li>
+<li><strong>Maglev</strong> (2023): SSA + CFG, compiles <span class="math">∼</span>10<span class="math">×</span> slower than Sparkplug and  <span class="math">∼</span>10<span class="math">×</span> faster than TurboFan; on in Node from 22 (V8 12.4).</li>
+<li><strong>TurboFan</strong>: inlines (callee <span class="math">≤</span> 460 bytes of bytecode, 920 cumulative),  removes checks, unboxes numbers. Its backend is <strong>Turboshaft</strong>, a CFG IR that halved  compile time against Sea of Nodes (2025); the frontend is being replaced by Maglev —  <code>--turbolev</code> (Maglev + Turboshaft as the 4th tier) exists, off by default.</li>
+<li><strong>OSR</strong> (on-stack replacement): a long loop tiers up mid-run (flags: OSR 500,  Maglev OSR 100); a tier-up waits <span class="math">≥</span> 500 invocations after the last IC change.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Speculation and deoptimisation</h2>
+<ul>
+<li>Optimised code guards each assumption (map check, “is Smi”, bounds). <strong>Eager</strong>  deopt: a guard fails, exit now. <strong>Lazy</strong>: an assumption the code depends on was  broken elsewhere — the code is marked and exits when it next runs. The frame is  rebuilt as an interpreter frame and execution continues there.</li>
+<li><strong>JSC</strong>: an OSR exit returns to Baseline / LLInt; after <span class="math">100 ·2<sup>R</sup></span> exits (<span class="math">R</span> =  reoptimisations so far) the code is <strong>jettisoned</strong> and recompiled with the new  profile. <strong>Watchpoints</strong> drop a check entirely: the runtime invalidates the code  when the watched fact changes. Compile cost: DFG 4<span class="math">×</span> Baseline, FTL 6<span class="math">×</span> DFG.</li>
+<li>See it: <code>node --trace-opt --trace-deopt</code>; <code>--allow-natives-syntax</code> adds  <code>%OptimizeFunctionOnNextCall</code>, <code>%GetOptimizationStatus</code>.</li>
+<li><code>--jitless</code> (V8 7.4) allocates no executable memory: Ignition only, regexps  interpreted — for iOS, TVs, consoles. Cost (2019): Speedometer 2 <span class="math">∼</span>40 % slower, Web  Tooling <span class="math">∼</span>80 %.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Hidden classes</h2>
+<ul>
+<li>Properties live <strong>in-object</strong> (fastest), in a <strong>fast</strong> out-of-object array  (slot from the descriptor array), or in a <strong>dictionary</strong> — a per-object hash  table, used once many properties are added and deleted.</li>
+<li><strong>Slack tracking</strong>: a constructor’s objects start with the expected properties  + 8 spare in-object slots; after 7 constructions the size is fixed and spare slack cut.</li>
+<li><strong>Field representation</strong> is in the map: a field of small ints is <em>Smi</em>, one  holding other numbers <em>Double</em>. A double stored into a Smi field  <strong>deprecates</strong> the map; objects migrate lazily on next access. React (2019):  <code>Object.preventExtensions</code> + a later Smi <span class="math">→</span> Double change orphaned shapes (V8 7.4  fixed it); init timestamps with <code>NaN</code>, not <code>0</code>.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Elements kinds — downhill only</h2>
+<figure class="sheet-figure"><img src="js-engines-performance-fig2.svg" width="313" height="60" alt="JS engines — JIT tiers, shapes, inline caches, GC — figure 2" loading="lazy"></figure>
+<p>21 kinds (2017), plus kinds for typed arrays — the choice for numeric work. <code>new Array(n)</code> or a write past the end makes holes; holes, and reads past <code>length</code>, cost prototype-chain lookups.</p>
+<pre class="sheet-code"><code class="hljs language-javascript"><span class="hljs-comment">// node --allow-natives-syntax</span>
+<span class="hljs-keyword">const</span> a = { <span class="hljs-attr">x</span>: <span class="hljs-number">1</span>, <span class="hljs-attr">y</span>: <span class="hljs-number">2</span> }, b = { <span class="hljs-attr">y</span>: <span class="hljs-number">2</span>, <span class="hljs-attr">x</span>: <span class="hljs-number">1</span> };
+%<span class="hljs-title class_">HaveSameMap</span>(a, b);    <span class="hljs-comment">// false: other transition path</span>
+<span class="hljs-keyword">const</span> arr = [<span class="hljs-number">1</span>, <span class="hljs-number">2</span>, <span class="hljs-number">3</span>]; <span class="hljs-comment">// PACKED_SMI_ELEMENTS</span>
+arr.<span class="hljs-title function_">push</span>(<span class="hljs-number">4.56</span>);        <span class="hljs-comment">// PACKED_DOUBLE_ELEMENTS</span>
+arr.<span class="hljs-title function_">push</span>(<span class="hljs-string">&#x27;x&#x27;</span>);         <span class="hljs-comment">// PACKED_ELEMENTS</span>
+arr[<span class="hljs-number">9</span>] = <span class="hljs-number">1</span>;            <span class="hljs-comment">// HOLEY_ELEMENTS, for good</span></code></pre>
+</section>
+<section class="sheet-section">
+<h2>Smis and pointer compression</h2>
+<ul>
+<li>Tagged slot: low bit <code>0</code> = <strong>Smi</strong> (integer in the slot), <code>1</code> = pointer.  Other numbers are boxed <em>HeapNumbers</em>; a Double field updates its box in place.</li>
+<li><strong>Pointer compression</strong> (V8 8.0, Dec 2019; Chrome): slots are 32-bit offsets into a  4 GB cage, Smis 31-bit; V8 heap up to 43 % smaller.</li>
+<li><strong>Off in official Node builds</strong>: the configure flag  <code>--experimental-enable-pointer-compression</code> caps the heap at 4 GB and breaks the  addon ABI — Node keeps 64-bit slots and 32-bit Smis.</li>
+<li>Node <span class="math">→</span> V8: 22 <span class="math">→</span> 12.4 · 24 (May 2025) <span class="math">→</span> 13.6 · 25 (Oct 2025) <span class="math">→</span> 14.1 ·  26 (May 2026, LTS due Oct) <span class="math">→</span> 14.6.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Garbage collection — tracing, generational</h2>
+<p>Live = reachable from roots; a cycle with no path from a root dies whole — no <code>weak</code> needed, unlike ARC. Most objects die young, so all four split the heap (V8 shown):</p>
+<figure class="sheet-figure"><img src="js-engines-performance-fig3.svg" width="294" height="48" alt="JS engines — JIT tiers, shapes, inline caches, GC — figure 3" loading="lazy"></figure>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>GC</strong></th><th><strong>young</strong></th><th><strong>old</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>V8 <strong>Orinoco</strong></td><td>semi-spaces; parallel scavenger (6.2): <span class="math">-</span>20–50 % time</td><td>concurrent marking (write barriers), concurrent sweeping, parallel compaction</td></tr>
+<tr><td>JSC <strong>Riptide</strong> (2017)</td><td>sticky mark bits — generational without moving</td><td>concurrent + parallel mark-sweep, non-copying, retreating-wavefront barrier; pauses mostly <span class="math">≤</span> 1 ms</td></tr>
+<tr><td>SpiderMonkey</td><td>nursery = minor GC</td><td>tenured: incremental slices, zones; compaction rare, or under memory pressure</td></tr>
+<tr><td>Hermes <strong>Hades</strong></td><td>copying, as the old GenGC</td><td>concurrent snapshot-at-the-beginning mark-sweep, free lists, one segment compacted per cycle; incremental on 32-bit</td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Weak references</h2>
+<ul>
+<li><code>WeakMap</code> / <code>WeakSet</code> (ES2015): keys (objects, non-registered symbols) held  weakly — the value lives only while its key does; not iterable. Per-object side tables.</li>
+<li><code>WeakRef</code> + <code>FinalizationRegistry</code> (ES2021): <code>deref()</code> may give  <code>undefined</code>; a target read in a job survives to that job’s end; cleanup callbacks  may run late or <strong>never</strong> — hints, not program logic.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Finding leaks</h2>
+<ul>
+<li>A leak is <strong>unwanted reachability</strong>: listeners never removed, live timers,  unbounded <code>Map</code> caches, globals, <strong>detached DOM</strong> held by JS, closure contexts.  DevTools tells a <em>leak</em> (grows) from <em>bloat</em> (too big) and <em>frequent GC</em>.</li>
+<li><strong>Heap snapshot</strong>: shallow size (the object) vs <strong>retained</strong> size (freed with  it); the <strong>Retainers</strong> path and distance from the root say who keeps it.  Snapshot, repeat the action, snapshot, <strong>Comparison</strong> view; filter detached nodes.</li>
+<li>Node: <code>--inspect</code> + DevTools, <code>--heapsnapshot-signal=SIGUSR2</code>,  <code>v8.writeHeapSnapshot()</code> — synchronous, blocks the event loop, needs <span class="math">∼</span>2<span class="math">×</span>  the heap; <code>v8.queryObjects(Ctor)</code> (22.0) counts live instances for leak tests.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">“<code>try/catch</code> blocks optimisation” — true of Crankshaft, retired 2017; TurboFan  optimises it.</li>
+<li class="trap">Synthetic benchmarks: Warp lost on Octane and Kraken and won 20 % on Google Docs load;  a cold loop times the interpreter.</li>
+<li class="trap"><code>delete</code>-churn objects end in dictionary mode — dynamic keys belong in a <code>Map</code>.</li>
+<li class="trap">One <code>-0</code>, <code>NaN</code> or hole in an int array changes its kind for good.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Remember</h2>
+<h3 class="sheet-hd">Same keys, same order, same types — and reachability, not use, keeps memory.</h3>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> <code>js-event-loop</code> ·
+<code>node-runtime</code> · <code>js-prototypes-objects-classes</code> · <code>js-scope-closures-this</code>
+· <code>hermes-v1</code> · <code>rn-memory-leaks</code> · <code>rn-performance</code> ·
+<code>arc-ownership</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=runtime" title="area">runtime</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=web" title="platform">web</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=performance" title="topic">performance</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=memory" title="topic">memory</a></li><li class="sheet-tag"><a href="/folios.html?tag=v8">v8</a></li><li class="sheet-tag"><a href="/folios.html?tag=javascriptcore">javascriptcore</a></li><li class="sheet-tag"><a href="/folios.html?tag=spidermonkey">spidermonkey</a></li><li class="sheet-tag"><a href="/folios.html?tag=hermes">hermes</a></li><li class="sheet-tag"><a href="/folios.html?tag=jit-tiers">jit-tiers</a></li><li class="sheet-tag"><a href="/folios.html?tag=turbofan">turbofan</a></li><li class="sheet-tag"><a href="/folios.html?tag=maglev">maglev</a></li><li class="sheet-tag"><a href="/folios.html?tag=deoptimization">deoptimization</a></li><li class="sheet-tag"><a href="/folios.html?tag=hidden-classes">hidden-classes</a></li><li class="sheet-tag"><a href="/folios.html?tag=inline-caches">inline-caches</a></li><li class="sheet-tag"><a href="/folios.html?tag=elements-kinds">elements-kinds</a></li><li class="sheet-tag"><a href="/folios.html?tag=pointer-compression">pointer-compression</a></li><li class="sheet-tag"><a href="/folios.html?tag=generational-gc">generational-gc</a></li><li class="sheet-tag"><a href="/folios.html?tag=weakref">weakref</a></li><li class="sheet-tag"><a href="/folios.html?tag=heap-snapshot">heap-snapshot</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=runtime%2Fjs-engines-performance.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/329">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

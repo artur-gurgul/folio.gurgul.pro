@@ -1,0 +1,336 @@
+% linux-networking-stack.tex — the Linux packet path from NIC to socket and back: NAPI, GRO,
+% XDP, RSS/RPS/RFS/XPS, taps and tc, the netfilter hooks and nftables priorities, conntrack and
+% NAT, policy routing, bridges/veth/namespaces, the listening socket's two queues, socket
+% buffers and qdiscs, the tools and the sysctls that change behaviour.
+% Picture: the hook graph with both routing decisions, the RX device layer in its real order
+% (XDP → GRO → RPS → taps → tc → nft ingress), the TX device layer, and the two listen queues.
+% Sources (checked 2026-10-09):
+%   docs.kernel.org/networking/napi (IRQ masked while polled; NAPI_POLL_WEIGHT 64; threaded
+%     NAPI via /sys/class/net/<dev>/threaded; SO_BUSY_POLL, busy_poll; napi_defer_hard_irqs,
+%     gro_flush_timeout) · /networking/segmentation-offloads (TSO, GSO, GRO = complement of
+%     GSO) · /networking/scaling (RSS Toeplitz + indirection table ≥ 4× queues; RPS off until
+%     configured; RFS rps_sock_flow_entries 65536 + rps_flow_cnt; aRFS needs ntuple; XPS
+%     driver-dependent; xps_cpus / xps_rxqs) · /networking/af_xdp (XSKMAP, UMEM, FILL /
+%     COMPLETION / RX / TX rings, copy vs zero-copy)
+%   github.com/torvalds/linux master: net/core/hotdata.c (netdev_budget 300, netdev_budget_usecs
+%     2*USEC_PER_SEC/HZ, max_backlog 1000, dev_rx_weight 64) · net/core/net-procfs.c
+%     softnet_seq_show (hex row per CPU: processed, dropped, time_squeeze) · net/core/dev.c
+%     (__netif_receive_skb_core: generic XDP, ptype_all taps, tc ingress, nf_ingress, vlan,
+%     rx_handler, ptype_base; __dev_queue_xmit: nf egress then tc egress; xmit_one: taps then
+%     driver) · net/ipv4/tcp_input.c tcp_conn_request + include/net/inet_connection_sock.h +
+%     include/net/sock.h (SYN queue > max_ack_backlog → cookie or drop; accept queue full → SYN
+%     dropped, LISTENOVERFLOWS) · net/ipv4/tcp_diag.c (LISTEN: Recv-Q = sk_ack_backlog, Send-Q =
+%     sk_max_ack_backlog) · net/ipv4/Kconfig (default congestion control DEFAULT_CUBIC)
+%   docs.kernel.org/networking/ip-sysctl (ip_forward 0, a write resets conf; ip_local_port_range
+%     32768–60999; tcp_tw_reuse 0/1/2, default 2; tcp_syncookies 1; tcp_max_syn_backlog ≥ 128 by
+%     RAM; tcp_abort_on_overflow off; tcp_rmem 4K / 131072 / ≤ 32MB and SO_RCVBUF disables
+%     autotuning — v6.12 docs say ≤ 6MB; tcp_wmem 4K / 16K / ≤ 4MB; rp_filter 0/1/2, default 0,
+%     max of all + interface; accept_ra 2; bridge-nf-call-iptables 1; somaxconn 4096, 128
+%     before 5.4) · /admin-guide/sysctl/net (dev_weight 64; default_qdisc pfifo_fast, mq leaves,
+%     lo / veth noqueue; rmem_max / wmem_max 4194304) · /networking/nf_conntrack-sysctl (buckets
+%     = RAM / 16384, 1024–262144; max = buckets; entry hashed twice; TCP established 432000 s;
+%     UDP 30 s, stream 120 s)
+%   netfilter.org/projects/nftables/manpage (families; standard priorities incl. bridge; chain
+%     types; policy accept default; accept ends the base chain, drop is final; netdev ingress
+%     after taps + tc ingress, egress before tc egress; inet ingress 5.10; flowtables;
+%     masquerade postrouting only; notrack at raw) · wiki.nftables.org: Netfilter hooks
+%     (NF_IP_PRI_* incl. defrag -400, conntrack -200, confirm INT_MAX; ingress 4.2, egress 5.16),
+%     Performing NAT (first packet sets the binding; masquerade; redirect; inet NAT 5.2;
+%     iptables + nft NAT coexist 4.18), Atomic rule replacement (nft -f swaps in one operation)
+%   man7.org: iptables(8) (tables and built-in chains) · listen(2) (backlog = completed queue
+%     since 2.2; capped at somaxconn; syncookies make tcp_max_syn_backlog moot) · socket(7)
+%     (SO_RCVBUF / SO_SNDBUF doubled; SO_REUSEPORT) · ss(8) · ip-rule(8) (RPDB 0 / 32766 / 32767,
+%     tables 255 / 254 / 253, selectors) · ip-route(8) (route types; longest match; route get)
+%     · ip-link(8) (xdp / xdpgeneric / xdpdrv / xdpoffload; vlan; veth) · ip-netns(8)
+%     (/var/run/netns/NAME) · network_namespaces(7) · netlink(7) · sock_diag(7)
+%   docs.ebpf.io BPF_PROG_TYPE_XDP (XDP_ABORTED/DROP/PASS/TX/REDIRECT; drv / skb / hw modes) ·
+%     BPF_PROG_TYPE_SCHED_CLS (tc classifier on __sk_buff; direct-action verdicts) ·
+%     netdevconf.info/1.1 Borkmann cls_bpf slides (clsact: ingress + egress hooks)
+%   kernelnewbies.org Linux_4.8 (XDP; "not kernel bypass") · Linux_4.12 (tcp_tw_recycle
+%     removed; netdev_budget_usecs) · Linux_4.18 (AF_XDP) · Linux_6.6 (tcx) · Linux_6.7 (netkit)
+%     · github.com/torvalds/linux commit 4396e46187ca (tw_recycle broken behind NAT)
+%   debian.org/News/2019/20190706 (buster: nftables by default, iptables-nft / -legacy) ·
+%     docs.redhat.com RHEL 8 networking (iptables uses the nf_tables API) · firewalld.org
+%     2018/07/nftables-backend (default from 0.6.0) · manpages.debian.org iptables-nft(8)
+%     (rule changes atomic; iptables -V shows nf_tables) · bugzilla.redhat.com 1668007
+%     ("iptables-legacy tables present" warning)
+%   docs.docker.com/engine/network: packet-filtering-firewalls (published ports routed in the nat
+%     table, before ufw's INPUT/OUTPUT) · firewall-iptables (DOCKER-USER first; FORWARD policy
+%     DROP when Docker enables forwarding)
+%   github.com/systemd/systemd sysctl.d/50-default.conf (rp_filter 2; default_qdisc fq_codel)
+%   access.redhat.com/solutions/8721 ("nf_conntrack: table full, dropping packet")
+% NOT repeated here: TCP states, TIME_WAIT, congestion control internals (tcp-udp-quic); NAT
+% types, CGNAT, IPv6 addressing (nat-ipv4-ipv6); container runtimes (namespaces-cgroups-containers).
+% @labels: area=linux kind=concept platform=backend topic=networking,platform-apis,debugging discussion=317
+% @tags: netfilter, nftables, iptables, conntrack, nat, masquerade, napi, gro, xdp, ebpf, rss, rps, policy-routing, veth, bridge, network-namespace, ss, tcpdump, somaxconn, accept-queue, cubic
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinestyle{ShSheet}{style=printup, language=bash,
+  morekeywords={ip,nft,sysctl,table,chain,type,hook,priority,policy,accept,drop,masquerade},
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2
+           {!=}{{\hbox{!}\hbox{=}}}2 {&&}{{\hbox{\&}\hbox{\&}}}2 {||}{{\hbox{|}\hbox{|}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\begin{document}
+
+\sheettitle{Linux networking stack — packet path, netfilter, routing}{linux · folio}
+
+\oneliner{A frame is DMA'd into a \textbf{ring}, polled by \textbf{NAPI} in softirq, offered to
+\textbf{XDP}, merged by \textbf{GRO}, copied to \textbf{taps}, run through \textbf{tc} and the
+\textbf{netfilter} hooks; a \textbf{routing decision} sends it \emph{up} to a socket (INPUT) or
+\emph{across} (FORWARD). \textbf{conntrack} remembers every flow, so NAT is decided on the
+\textbf{first} packet and replies are reversed for free. \textbf{DNAT before routing, SNAT after.}}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet,
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    hk/.style={box, font=\scriptsize\bfseries, minimum width=15mm, minimum height=6mm, inner sep=1pt},
+    pr/.style={font=\tiny, text=sheetBrown, align=center, inner sep=0.5pt},
+    dv/.style={box, draw=sheetGrey, fill=black!5, font=\tiny, text width=12.4mm, inner sep=1pt},
+    tx/.style={box, draw=sheetGrey, fill=black!5, font=\tiny, text width=14mm, inner sep=1pt},
+    rd/.style={diamond, draw=sheetOrange, fill=sheetOrange!12, aspect=2, font=\tiny, inner sep=0.5pt, align=center},
+    q/.style={draw=sheetGrey, minimum height=5mm, font=\tiny, inner sep=1pt, align=center}]
+  % ---------- RX device layer, in kernel order ----------
+  \node[l, anchor=west, font=\tiny\bfseries, text=sheetBlue] at (-0.05,4.15) {RX: driver + device layer};
+  \node[dv] (nic) at (0.62,3.3) {\textbf{NIC}: RSS hash $\to$ RX queue, DMA into ring};
+  \node[dv] (napi) at (2.12,3.3) {IRQ $\to$ \textbf{NAPI} poll in softirq, IRQ masked};
+  \node[dv, draw=sheetRed, fill=sheetRed!6] (xdp) at (3.62,3.3) {\textbf{XDP} native: verdict on the raw buffer};
+  \node[dv] (gro) at (5.12,3.3) {skb built $\to$ \textbf{GRO} merges $\to$ RPS};
+  \node[dv] (tap) at (6.62,3.3) {\textbf{taps} (tcpdump) $\to$ \textbf{tc} ingress $\to$ nft ingress};
+  \node[l, anchor=north] at (nic.south) {\ct{ethtool}\\\ct{-S -l -X}};
+  \node[l, anchor=north] at (napi.south) {64 a poll; 300\\or 2 jiffies};
+  \node[l, anchor=north, text=sheetRed] at (xdp.south) {DROP · PASS · TX\\REDIRECT · ABORTED};
+  \node[l, anchor=north] at (gro.south) {generic XDP\\after this};
+  \node[l, anchor=north] at (tap.south) {then bridge / bond\\rx\_handler, or IP};
+  \draw[->, thick, sheetRed] (xdp.north) -- ++(0,0.25) node[l, anchor=west, text=sheetRed]{XDP\_DROP: no skb, tcpdump never sees it};
+  % ---------- IP layer: netfilter hooks ----------
+  \node[hk] (pre) at (8.3,3.3) {PREROUTING};
+  \node[pr, below=0.5mm of pre] {raw · \textbf{conntrack}\\mangle · \textbf{dstnat}};
+  \node[rd] (r1) at (9.88,3.3) {route:\\for me?};
+  \node[hk] (fwd) at (11.65,3.3) {FORWARD};
+  \node[pr, below=0.5mm of fwd] {mangle · filter · security\\needs \ct{ip\_forward=1}};
+  \node[hk] (post) at (13.35,3.3) {POSTROUTING};
+  \node[pr, above=0.5mm of post] {mangle · \textbf{srcnat}\\conntrack confirm};
+  \foreach \a/\b in {nic/napi, napi/xdp, xdp/gro, gro/tap, tap/pre, pre/r1} \draw[flow] (\a) -- (\b);
+  \draw[flow] (r1) -- (fwd);
+  \node[l, anchor=south west] at (r1.east) {no};
+  \draw[flow] (fwd) -- (post);
+  % ---------- local delivery ----------
+  \node[hk, draw=sheetGreen, fill=sheetGreen!8] (inp) at (9.88,1.95) {INPUT};
+  \node[pr, left=0.6mm of inp, align=right] {mangle · \textbf{filter} · security\\srcnat · conntrack confirm};
+  \draw[flow] (r1) -- node[l, right, pos=0.35]{yes} (inp);
+  \node[box, draw=sheetGreen, fill=sheetGreen!8, text width=34mm, font=\tiny, inner sep=1.5pt] (sock) at (10.75,0.72)
+     {\textbf{socket}: demux by 4-tuple $\to$ receive buffer $\to$ \ct{recv()}; \ct{send()} goes back down};
+  \draw[flow] (inp) -- (inp |- sock.north);
+  % ---------- local output ----------
+  \node[rd] (r2) at (13.35,0.72) {route\\out};
+  \node[hk] (out) at (13.35,1.95) {OUTPUT};
+  \node[pr, left=0.6mm of out, align=right] {raw · conntrack\\mangle · dstnat\\filter · security};
+  \draw[flow] (sock.east) -- (r2);
+  \draw[flow] (r2) -- (out);
+  \draw[flow] (out) -- (post);
+  % ---------- TX device layer ----------
+  \node[l, anchor=east, font=\tiny\bfseries, text=sheetBlue] at (16.38,4.15) {TX: device layer};
+  \node[tx] (eg) at (15.62,3.3) {\textbf{nft egress} (5.16) $\to$ \textbf{tc} egress};
+  \node[tx] (qd) at (15.62,2.42) {\textbf{qdisc}: queue, schedule, drop; veth, lo: noqueue};
+  \node[tx] (tt) at (15.62,1.55) {\textbf{taps} (tcpdump) $\to$ driver};
+  \node[tx] (wire) at (15.62,0.72) {NIC: TSO cuts super-packets};
+  \draw[flow] (post) -- (eg);
+  \foreach \a/\b in {eg/qd, qd/tt, tt/wire} \draw[flow] (\a) -- (\b);
+  % ---------- listening socket ----------
+  \node[l, anchor=west, font=\tiny\bfseries, text=sheetBlue] at (-0.05,1.72) {A listening TCP socket has two queues};
+  \node[q, fill=sheetOrange!10, text width=22mm] (sq) at (1.45,1.0) {\textbf{SYN queue}: SYN\_RECV\\request socks};
+  \node[q, fill=sheetGreen!10, text width=25mm] (aq) at (4.85,1.0) {\textbf{accept queue}: ESTABLISHED,\\not yet \ct{accept()}ed};
+  \draw[flow] (-0.1,1.0) node[l, above right]{SYN} -- (sq.west);
+  \draw[flow] (sq) -- node[l, above]{ACK} (aq);
+  \draw[flow] (aq.east) -- node[l, above]{\ct{accept()}} (7.55,1.0);
+  \node[l, anchor=north, text=sheetOrange!80!black] at (sq.south) {over backlog $\to$ SYN cookie\\(cookies off: drop)};
+  \node[l, anchor=north, text=sheetRed] at (aq.south) {max = min(backlog, somaxconn);\\full: SYNs dropped, ACK ignored};
+  \node[l, anchor=west, align=left] at (6.35,0.42) {\ct{ss -lnt}: Recv-Q = queued\\Send-Q = max};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\footnotesize\setstretch{1.0}
+
+\hd{Receive: NAPI, offloads, softirq}
+\begin{itemize}
+  \item One IRQ schedules \textbf{NAPI}; the IRQ stays masked while the driver is polled. Caps:
+        \ct{dev\_weight}, \ct{netdev\_budget}, \ct{netdev\_budget\_usecs} (sysctl since 4.12).
+  \item \ct{/proc/net/softnet\_stat}: one hex row per CPU — col 1 processed, col 2
+        \textbf{dropped} (backlog above \ct{netdev\_max\_backlog} 1000), col 3
+        \textbf{time\_squeeze} (budget ran out with work left).
+  \item \textbf{GRO} merges a flow's segments into one big skb; \textbf{TSO} (NIC) and
+        \textbf{GSO} (software) cut it again on the way out — GRO is GSO's inverse.
+        \ct{ethtool -k} lists offloads.
+  \item Threaded NAPI: \ct{echo 1 > /sys/class/net/<dev>/threaded}. Busy polling:
+        \ct{SO\_BUSY\_POLL}, \ct{net.core.busy\_poll}; \ct{napi\_defer\_hard\_irqs} +
+        \ct{gro\_flush\_timeout} keep the IRQ off longer.
+\end{itemize}
+
+\hd{Spreading over CPUs}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{6mm}>{\raggedright\arraybackslash}p{40mm}>{\raggedright\arraybackslash}p{28mm}@{}}
+\toprule
+\textbf{RSS} & NIC hashes headers (usually Toeplitz) into an indirection table ($\ge$4$\times$ queues) $\to$ RX queue + IRQ & \ct{ethtool -X}, IRQ affinity\\
+\textbf{RPS} & software RSS: \ct{skb->hash} picks the CPU whose backlog gets it; off until set & \ct{rx-<n>/rps\_cpus}\\
+\textbf{RFS} & RPS aimed at the CPU where the reading thread runs & \ct{rps\_sock\_flow\_entries} (65536) + \ct{rps\_flow\_cnt}\\
+\textbf{aRFS} & the NIC itself steers to that CPU & driver + ntuple filters\\
+\textbf{XPS} & TX queue chosen per CPU or per RX queue; driver may set it & \ct{tx-<n>/xps\_cpus}, \ct{xps\_rxqs}\\
+\bottomrule
+\end{tabular}}
+
+\hd{eBPF in the data path}
+\begin{itemize}
+  \item \textbf{XDP} (4.8; ``not kernel bypass'' — PASS continues into the stack): native in
+        the driver (\ct{ip link set dev eth0 xdpdrv obj p.o}), \ct{xdpgeneric} on an skb after
+        allocation (any NIC, slower), \ct{xdpoffload} on the NIC. \ct{TX} = back out the same
+        port; \ct{REDIRECT} = another NIC, a CPU or an AF\_XDP socket.
+  \item \textbf{AF\_XDP} (4.18): \ct{REDIRECT} through an XSKMAP into a socket whose
+        \textbf{UMEM} userspace shares via FILL, COMPLETION, RX and TX rings; zero-copy if the
+        driver supports it, else copy mode.
+  \item \textbf{tc}: \ct{clsact} ingress/egress classifiers see an skb, return verdicts in
+        direct-action mode; \textbf{tcx} (6.6) attaches them as BPF links; \textbf{netkit} (6.7) is
+        a device with BPF in its transmit path, for containers.
+\end{itemize}
+
+\hd{nftables vs iptables}
+\begin{itemize}
+  \item \textbf{iptables}: fixed tables with built-in chains — \ct{filter} (INPUT FORWARD
+        OUTPUT), \ct{nat} (PRE INPUT OUTPUT POST), \ct{mangle} (all five), \ct{raw} (PRE OUTPUT),
+        \ct{security} (INPUT FORWARD OUTPUT); one tool per family; legacy \ct{-A} fetches, edits
+        and reloads the whole table.
+  \item \textbf{nftables}: nothing predefined. Tables per family (\ct{ip ip6 inet arp bridge
+        netdev}); base chains name \ct{type} (\ct{filter} anywhere; \ct{nat} at
+        pre/input/output/post; \ct{route} at output), \ct{hook}, \ct{priority}, \ct{policy}
+        (default accept). Sets, maps, verdict maps, concatenations; \ct{nft -f} swaps the
+        ruleset in one atomic operation.
+  \item Debian 10 (2019) and RHEL 8 ship \ct{iptables} as \textbf{iptables-nft}: old syntax,
+        nf\_tables backend, \ct{iptables -V} says \ct{(nf\_tables)}; firewalld defaults to nftables
+        since 0.6.0. Legacy rules loaded beside it are invisible to \ct{nft list ruleset} — only
+        a ``iptables-legacy tables present'' warning.
+\end{itemize}
+
+\hd{Hook priorities — lower runs first}
+\begin{tikzpicture}[sheet, l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center}]
+  \draw[->, thick, sheetGrey] (0,0) -- (7.75,0);
+  \foreach \i/\v/\n in {0/$-$400/defrag:\\reassemble, 1/$-$300/\textbf{raw}\\\ct{notrack}, 2/$-$200/conntrack\\lookup,
+      3/$-$150/\textbf{mangle}, 4/$-$100/\textbf{dstnat}\\prerouting, 5/0/\textbf{filter}, 6/50/\textbf{security}\\SELinux,
+      7/100/\textbf{srcnat}\\postrouting, 8/INT\_MAX/conntrack\\confirm} {
+    \draw[sheetGrey] (0.45+0.885*\i,-0.07) -- ++(0,0.14);
+    \node[l, above, text=sheetBrown] at (0.45+0.885*\i,0.06) {\v};
+    \node[l, below] at (0.45+0.885*\i,-0.06) {\n}; }
+  \node[l, text=sheetGrey, fill=white] at (7.09,0) {//};
+\end{tikzpicture}\par
+Bridge family: dstnat $-$300, filter $-$200, out 100, srcnat 300. Every base chain on a hook
+runs, in priority order, whatever its table: \textbf{accept} ends only the current chain — the
+next chain and later hooks still judge; \textbf{drop} ends everything.
+
+\hd{Sysctls}
+{\scriptsize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{29mm}>{\raggedright\arraybackslash}p{45mm}@{}}
+\toprule
+\ct{core.somaxconn} 4096 & caps \ct{listen()} backlog (128 before 5.4)\\
+\ct{tcp\_syncookies} 1 & cookies when the SYN queue overflows\\
+\ct{tcp\_max\_syn\_backlog} & $\ge$128, by RAM; only used with cookies off\\
+\ct{tcp\_abort\_on\_overflow} 0 & 1 = RST when the accept queue is full\\
+\ct{tcp\_tw\_reuse} 2 & 0 off · 1 outgoing · 2 loopback only\\
+\ct{ip\_forward} 0 & a write \textbf{resets} every IPv4 \ct{conf/*} value\\
+\ct{ipv6.conf.all.forwarding} & 1 ignores RAs unless \ct{accept\_ra=2}\\
+\ct{ip\_local\_port\_range} & 32768–60999\\
+\bottomrule
+\end{tabular}}
+
+\columnbreak
+
+\hd{conntrack and NAT}
+\begin{itemize}
+  \item One entry per flow, hashed twice (original + reply tuple). \ct{ct state}: \ct{new},
+        \ct{established} (reply seen), \ct{related} (ICMP error, FTP data), \ct{invalid},
+        \ct{untracked}. Rule 1 of a stateful ruleset: \ct{ct state established,related accept}.
+  \item NAT rules are looked up for the \textbf{first} packet only; the binding is stored in
+        the entry and replies are reversed. \textbf{masquerade} = SNAT to the outgoing
+        interface's current address (postrouting only); \textbf{redirect} = DNAT to this host.
+        NAT in \ct{inet} tables since 5.2; iptables and nft NAT coexist since 4.18.
+  \item Size: buckets = RAM / 16\,384 (1\,024–262\,144), \ct{nf\_conntrack\_max} = buckets.
+        Full $\to$ ``nf\_conntrack: table full, dropping packet'': new flows die. Timeouts: TCP
+        established 432\,000\,s (5 days), UDP 30\,s, UDP stream 120\,s. \ct{conntrack -L -E -S}.
+  \item A \textbf{flowtable} lets established forwarded flows skip the hooks from ingress.
+\end{itemize}
+
+\hd{Example — a namespace behind NAT (what runtimes do)}
+\begin{lstlisting}[style=ShSheet]
+ip netns add blue                  # /var/run/netns/blue: only lo
+ip link add veth0 type veth peer name veth1    # 1 cable, 2 ends
+ip link set veth1 netns blue
+ip addr add 198.51.100.1/24 dev veth0; ip link set veth0 up
+ip -n blue addr add 198.51.100.2/24 dev veth1
+ip -n blue link set veth1 up
+ip -n blue route add default via 198.51.100.1
+sysctl -w net.ipv4.ip_forward=1    # else nothing is forwarded
+table ip nat { chain post {        # loaded by nft -f
+  type nat hook postrouting priority srcnat; policy accept;
+  ip saddr 198.51.100.0/24 oifname "eth0" masquerade } }
+\end{lstlisting}
+
+\hd{Routing}
+\begin{itemize}
+  \item \ct{ip rule} first: priority 0 \ct{local} (table 255) · 32766 \ct{main} (254) · 32767
+        \ct{default} (253); selectors \ct{from to iif oif fwmark uidrange ipproto sport dport}.
+        Then longest prefix in the table; \ct{ip route get <dst>} shows the kernel's pick.
+  \item Types: \ct{unreachable} (ICMP host unreachable), \ct{prohibit} (admin.\ prohibited),
+        \ct{blackhole} (silent), \ct{throw} (leave this table, try the next rule).
+  \item \textbf{rp\_filter}: 0 off (kernel default), 1 strict, 2 loose (RFC 3704); the
+        \emph{max} of \ct{all} and the interface applies; systemd ships 2. Strict +
+        asymmetric routing = silent drops.
+\end{itemize}
+
+\hd{Layer 2 and namespaces}
+\textbf{veth} = a linked pair, the netns$\leftrightarrow$host cable; \textbf{bridge} = a software
+switch (\ct{bridge fdb}); \textbf{VLAN}: \ct{ip link add link eth0 name eth0.10 type vlan id 10};
+\textbf{macvlan/ipvlan}: own address on the parent's LAN. A netns owns devices, routes, rules,
+sockets, \ct{/proc/net}; when it dies, physical NICs return to the initial netns.
+\ct{br\_netfilter} loaded: \ct{bridge-nf-call-iptables} (default 1) sends bridged IPv4 through
+iptables.
+
+\hd{Sockets, buffers, queues}
+\ct{SO\_RCVBUF}/\ct{SO\_SNDBUF}: the request is capped at \ct{rmem\_max}/\ct{wmem\_max} (4\,MiB
+in current docs), then \textbf{doubled} for bookkeeping — and that socket \textbf{stops
+autotuning}. TCP autotunes in \ct{tcp\_rmem} 4K / 128K / up to 32\,MB by RAM (6\,MB in the 6.12
+docs) and \ct{tcp\_wmem} 4K / 16K / up to 4\,MB. \ct{SO\_REUSEPORT}: many sockets, one port,
+kernel spreads the load. qdisc default \ct{pfifo\_fast}; multiqueue NICs get \ct{mq} with it as
+leaves; systemd sets \ct{fq\_codel}. Congestion control default: \textbf{CUBIC}; \ct{bbr} per
+sysctl or \ct{TCP\_CONGESTION}.
+
+\hd{Tools}
+{\scriptsize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{29mm}>{\raggedright\arraybackslash}p{45mm}@{}}
+\toprule
+\ct{ip -br a} · \ct{ip -s link} & addresses · per-link drops (rtnetlink)\\
+\ct{ss -tlnp} · \ct{ss -tni} & listeners + process · rtt, cwnd, retrans (sock\_diag)\\
+\ct{nstat -az TcpExtListen*} & ListenOverflows, ListenDrops\\
+\ct{tcpdump -ni any port 443} & \ct{any} = every link; \ct{-w f.pcap} to save\\
+\ct{nft list ruleset} · \ct{conntrack -S} & what is enforced · drop, early\_drop\\
+\bottomrule
+\end{tabular}}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``tcpdump saw it, so the firewall passed it'' — RX taps run before tc, nft ingress and
+        every IP hook; TX taps after the qdisc. 64\,KB ``packets'' are GRO/TSO, not the wire.}
+  \trap{Docker \ct{-p} is DNAT: traffic goes FORWARD, never INPUT, so ufw misses it — filter in
+        \ct{DOCKER-USER}. Docker that enables forwarding sets the FORWARD policy to DROP.}
+  \trap{\ct{tcp\_tw\_reuse} does nothing for a server's TIME\_WAITs; \ct{tcp\_tw\_recycle}
+        broke NAT'd clients and was removed in 4.12.}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\raggedright\color{sheetGrey}\textit{Related:} tcp-udp-quic · nat-ipv4-ipv6 ·
+\texttt{namespaces-cgroups-containers} ·
+\texttt{linux-performance-observability} · \texttt{linux-security-permissions}\par}
+
+\end{document}

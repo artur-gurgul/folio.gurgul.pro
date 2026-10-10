@@ -1,0 +1,124 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Vim — the editing language: verbs, nouns, registers, undo — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/dev-tools/vim-editing-grammar.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">310</span></a></li><li><a class="side-area" href="/folios.html?area=ai" data-area="ai">ai<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=ble" data-area="ble">ble<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=c" data-area="c">c<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cicd" data-area="cicd">cicd<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=crypto" data-area="crypto">crypto<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area current" href="/folios.html?area=dev-tools" data-area="dev-tools">dev-tools<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=iot" data-area="iot">iot<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=javascript" data-area="javascript">javascript<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=linux" data-area="linux">linux<span class="count">8</span></a></li><li><a class="side-area" href="/folios.html?area=macos" data-area="macos">macos<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=recall" data-area="recall">recall<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=runtime" data-area="runtime">runtime<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li><li><a class="side-area" href="/folios.html?area=typescript" data-area="typescript">typescript<span class="count">3</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">Vim — the editing language: verbs, nouns, registers, undo</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">dev-tools · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Normal mode is a <strong>language</strong>: <code>[&quot;x][count] operator [count] motion|text-object</code>
+(<code>&quot;a2yy</code>, <code>ci&quot;</code>, <code>gUiw</code>). An operator typed twice acts on the line
+(<code>dd</code>, <code>&gt;&gt;</code>); <code>.</code> repeats the last change; every motion is
+<strong>exclusive</strong>, <strong>inclusive</strong> or <strong>linewise</strong>. Registers are text, a macro is a
+register, undo is a tree. Same grammar in Vim 9.2 and Neovim 0.12.</p>
+<p class="sheet-tools"><a class="sheet-download" href="vim-editing-grammar.pdf" download>Download PDF</a> <a href="vim-editing-grammar.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/dev-tools/vim-editing-grammar.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="vim-editing-grammar-fig1.svg" width="605" height="154" class="wide" alt="Vim — the editing language: verbs, nouns, registers, undo — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Operators — the verbs</h2>
+<p><table class="sheet-table">
+<tbody>
+<tr><td>c</td><td>change = delete, then Insert</td><td>gq gw</td><td>format (<code>gw</code>: cursor stays)</td><td></td><td></td></tr>
+<tr><td>d</td><td>delete (into a register)</td><td>g~ gu gU</td><td>swap · lower · upper case</td><td></td><td></td></tr>
+<tr><td>y</td><td>yank = copy</td><td>g?</td><td>ROT13</td><td></td><td></td></tr>
+<tr><td>&gt; &lt;</td><td>shift by <code>&#39;shiftwidth&#39;</code></td><td>!</td><td>filter through a program</td><td></td><td></td></tr>
+<tr><td>=</td><td>re-indent (<code>&#39;equalprg&#39;</code>)</td><td>zf</td><td>create a fold</td><td></td><td></td></tr>
+<tr><td>gc</td><td>comment: Nvim 0.10+; Vim <code>packadd! comment</code></td><td>g@</td><td>your own: calls <code>&#39;operatorfunc&#39;</code></td><td></td><td></td></tr>
+</tbody>
+</table></p>
+<p>Shorthands: <code>x</code>=<code>dl</code> · <code>X</code>=<code>dh</code> · <code>D</code>=<code>d$</code> · <code>C</code>=<code>c$</code> · <code>s</code>=<code>cl</code> · <code>S</code>=<code>cc</code> · <code>Y</code>=<code>yy</code> (Nvim maps it to <code>y$</code>) · <code>~</code> swaps one char · <code>J</code> / <code>gJ</code> join with / without a space · <code>r</code>x replaces one char · <code>xp</code> swaps two chars, <code>ddp</code> two lines.</p>
+</section>
+<section class="sheet-section">
+<h2>Motions — exclusive, inclusive, linewise</h2>
+<p><strong>Exclusive</strong> leaves the end char out, <strong>inclusive</strong> keeps it, <strong>linewise</strong> takes whole lines: <code>dw</code> · <code>de</code> · <code>dj</code>.</p>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>keys</strong></th><th><strong>to</strong></th><th><strong>type</strong></th><th></th></tr>
+</thead>
+<tbody>
+<tr><td>h l · j k</td><td>char · line</td><td>exc · line</td><td></td></tr>
+<tr><td>w b · e ge</td><td>word start · word end (<code>W B E gE</code>: WORD)</td><td>exc · inc</td><td></td></tr>
+<tr><td>0 ^ · $ g_</td><td>col 1 · first non-blank · end · last non-blank</td><td>exc · inc</td><td></td></tr>
+<tr><td>f t · F T</td><td>onto / till a char → · ← ; <code>;</code> <code>,</code> repeat / reverse</td><td>inc · exc</td><td></td></tr>
+<tr><td>%</td><td>the bracket matching the next <code>( [ {</code> on the line</td><td>inc</td><td></td></tr>
+<tr><td>( ) { }</td><td>sentence · paragraph</td><td>exc</td><td></td></tr>
+<tr><td>[( [{ ]) ]}</td><td>enclosing unmatched bracket</td><td>exc</td><td></td></tr>
+<tr><td>gg G · 50%</td><td>first · last (or <em>N</em>th) line · 50 % down</td><td>line</td><td></td></tr>
+<tr><td>H M L</td><td>top · middle · bottom of the window</td><td>line</td><td></td></tr>
+<tr><td>/ ? n N * #</td><td>search; <code>* #</code> = word under cursor</td><td>exc</td><td></td></tr>
+<tr><td>`a · ’a</td><td>mark: exact spot · its line</td><td>exc · line</td><td></td></tr>
+<tr><td>gj gk</td><td>display line (wrapped text)</td><td>exc</td><td></td></tr>
+</tbody>
+</table></p>
+<p><strong>word</strong> = letters, digits, <code>_</code> (<code>&#39;iskeyword&#39;</code>) or a run of other non-blanks; <strong>WORD</strong> = any non-blank run: <code>foo.bar(x)</code> is 6 words, 1 WORD. <strong>Force</strong>: <code>v</code> charwise (flips inc/exc), <code>V</code> linewise, <code>CTRL-V</code> blockwise. <strong>Special</strong>: <code>cw</code> acts as <code>ce</code> on a non-blank (the space survives); <code>dw</code> on a line’s last word stops at the line end, not on the next line.</p>
+</section>
+<section class="sheet-section">
+<h2>Text objects — the nouns</h2>
+<p>Only after an operator or in Visual: <code>iw aw iW</code> · <code>is ip</code> · <code>i( i{ i[ i&lt;</code> (= <code>ib</code>, <code>iB</code>) · <code>it at</code> tags · <code>i&quot; i&#39; i`</code>. Quote objects stay <strong>within one line</strong>. A count reaches outer levels: <code>d2i(</code> empties the second enclosing <code>( )</code>. In Visual a repeated <code>aw</code> / <code>ip</code> extends by one object, a repeated <code>it</code> takes the tags. Nvim 0.12: Visual <code>an</code> / <code>in</code> grow / shrink it by LSP selection range.</p>
+</section>
+<section class="sheet-section">
+<h2>Insert and Visual</h2>
+<p><strong>Insert</strong>: <code>CTRL-W</code> word back · <code>CTRL-U</code> what was typed on the line · <code>CTRL-R</code><em>r</em> put a register · <code>CTRL-A</code> the last insert again · <code>CTRL-O</code> one Normal command · <code>CTRL-T</code> / <code>CTRL-D</code> indent ± · <code>CTRL-V</code> next key literally · <code>CTRL-K e:</code> → ë · <code>CTRL-N</code> / <code>CTRL-P</code> complete · <code>CTRL-X CTRL-L</code> line, <code>CTRL-X CTRL-F</code> file name · <code>CTRL-G u</code> new undo step · <code>gi</code> resume the last insert. Vim 9.2: fuzzy completion, <code>CTRL-X CTRL-R</code> words from registers; Nvim 0.12: <code>&#39;autocomplete&#39;</code>.</p>
+<p><strong>Visual</strong>: <code>gv</code> reselect · <code>o</code> other end · <code>:</code> pre-types <code>:&#39;&lt;,&#39;&gt;</code> · <code>.</code> redoes it on the same amount of text · <code>p</code> puts over it (old text → <code>&quot;&quot;</code>), <code>P</code> keeps registers · block <code>I</code>, <code>A</code>, <code>$A</code> + text + <code>Esc</code> → every line; <code>c</code> and <code>r</code>x likewise · <code>gn</code> = next match: <code>cgn</code><em>new</em><code>Esc</code>, then <code>. .</code> · Nvim: Visual <code>* #</code> search the selection; in linewise Visual <code>@a</code> / <code>Q</code> run on each line.</p>
+</section>
+<section class="sheet-section">
+<h2>Vim 9.2 vs Neovim 0.12 (2026)</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th><strong>Vim 9.2</strong> (14 Feb)</th><th><strong>Neovim 0.12</strong> (29 Mar)</th></tr>
+</thead>
+<tbody>
+<tr><td>config</td><td><code>~/.vimrc</code>, <code>~/.vim/vimrc</code>, then <code>~/.config/vim/vimrc</code> (new); none: defaults.vim</td><td><code>~/.config/nvim/init.lua</code> or <code>init.vim</code></td></tr>
+<tr><td>defaults</td><td><code>&#39;hlsearch&#39; &#39;incsearch&#39;</code> off</td><td>on, + <code>&#39;autoindent&#39;</code>; ShaDa, not viminfo</td></tr>
+<tr><td><code>Y &amp; Q</code></td><td><code>yy</code> · <code>:s</code> · Ex mode</td><td><code>y$</code> · <code>:&amp;&amp;</code> · replay last macro</td></tr>
+<tr><td>LSP</td><td>plugins</td><td><code>grn</code> rename <code>grr</code> refs <code>gri</code> <code>gra</code> (0.11) <code>grt</code> (0.12) <code>gO</code> <code>K</code></td></tr>
+</tbody>
+</table></p>
+</section>
+<section class="sheet-section">
+<h2>Registers and macros</h2>
+<p><table class="sheet-table">
+<tbody>
+<tr><td>&quot;&quot;</td><td>unnamed: every <code>d c s x y</code> fills it, named or not; <code>p</code> reads it</td><td></td></tr>
+<tr><td>&quot;0</td><td>last <strong>yank</strong> (no register named) — deletes leave it alone</td><td></td></tr>
+<tr><td>&quot;1 … &quot;9</td><td>deletes <span class="math">≥</span>1 line, or by <code>% ( ) ` / ? n N { }</code>; each shifts 1 → 9</td><td></td></tr>
+<tr><td>&quot;-</td><td>small delete (<span class="math">&lt;</span>1 line)</td><td></td></tr>
+<tr><td>&quot;a … &quot;z</td><td>named; <strong><code>&quot;A</code></strong>…<strong><code>&quot;Z</code></strong> <strong>append</strong></td><td></td></tr>
+<tr><td>&quot;. &quot;: &quot;%</td><td>last insert · last command line · file name (read-only)</td><td></td></tr>
+<tr><td>&quot;# &quot;/</td><td>alternate file · last search pattern</td><td></td></tr>
+<tr><td>&quot;=</td><td>expression: <code>&quot;=6*7&lt;CR&gt;p</code>; <code>CTRL-R =</code> in Insert</td><td></td></tr>
+<tr><td>&quot;* &quot;+</td><td>PRIMARY · CLIPBOARD; Nvim only via a provider (pbcopy, wl-copy, OSC 52 …)</td><td></td></tr>
+<tr><td>&quot;_</td><td>black hole: delete without clobbering anything</td><td></td></tr>
+</tbody>
+</table></p>
+<p><code>&quot;ayiw</code> · <code>&quot;ap</code> · <code>CTRL-R a</code> in Insert and on the command line · <code>:reg</code> · lost a delete? <code>&quot;1P</code>, then <code>.</code> <code>.</code> pastes <code>&quot;2</code>, <code>&quot;3</code> …</p>
+<p><strong>Macros</strong>: <code>qa</code>…<code>q</code> records keys into <code>&quot;a</code> (<code>qA</code> appends) · <code>@a</code> · <code>3@a</code> · <code>@@</code> again · <code>@:</code> last Ex command · Nvim <code>Q</code> = last recorded register (Vim: Ex mode). A macro is register text: <code>&quot;ap</code>, edit, <code>0&quot;ay$</code> — or <code>:let @a=&#39;0f,D&#39;</code>. <code>:{range}norm[al][!] @a</code> runs it per line from column 1 (<code>!</code>: no mappings). <code>:g/pat/cmd</code> marks matching lines <em>first</em>, then runs <em>cmd</em> on each (a deleted line loses its mark) · <code>:v</code> = <code>:g!</code> · <code>:g/^$/d</code> · <code>:g/x/norm @a</code>.</p>
+</section>
+<section class="sheet-section">
+<h2>Search, substitute, filter</h2>
+<p><code>\v</code> very magic (all ASCII but letters, digits, <code>_</code> special: <code>\v(\d+)\s*=</code>) · <code>\m</code> default · <code>\V</code> literal · <code>\{-}</code> lazy · <code>\zs</code> / <code>\ze</code> set the match start / end · <code>\@=</code> <code>\@!</code> ahead, <code>\@&lt;=</code> <code>\@&lt;!</code> behind · <code>\c</code> <code>\C</code> case · <code>\&lt; \&gt;</code> word edges · <code>\_s</code> <code>\_.</code> span lines. <code>* #</code> search <code>\&lt;word\&gt;</code> (<code>&#39;ignorecase&#39;</code> yes, <code>&#39;smartcase&#39;</code> no); <code>g*</code> without the edges.</p>
+<p><code>:[range]s/pat/rep/[flags]</code> — range <code>% . $ &#39;&lt;,&#39;&gt; .,+3 &#39;a,&#39;b /x/,/y/</code> · flags <code>g</code> all (<code>&#39;gdefault&#39;</code> flips it), <code>c</code> confirm, <code>i I</code> case, <code>n</code> count only, <code>e</code> quiet, <code>&amp;</code> keep · <em>rep</em>: <code>&amp;</code> the match, <code>\1</code>…<code>\9</code>, <code>~</code> the last <em>rep</em>, <code>\u \U</code>…<code>\E</code> case, <code>\r</code> line break, <code>\=</code> expression. Empty pattern = the last used one: <code>*</code>, then <code>:%s//x/g</code>. <code>&amp;</code> repeats without the flags (Nvim maps it to <code>:&amp;&amp;</code>) · <code>g&amp;</code> = <code>:%s//~/&amp;</code> on every line. <strong>Filters</strong>: <code>!{motion}cmd</code> · <code>!!cmd</code> · <code>:%!sort</code> · <code>:r !cmd</code> output below · <code>:w !cmd</code> lines to stdin · built in <code>:sort u</code>; Nvim 0.12 <code>:uniq</code>.</p>
+</section>
+<section class="sheet-section">
+<h2>Undo is a tree</h2>
+<figure class="sheet-figure"><img src="vim-editing-grammar-fig2.svg" width="241" height="52" alt="Vim — the editing language: verbs, nouns, registers, undo — figure 2" loading="lazy"></figure>
+<p>One undo = one command or one Insert session (<code>CTRL-G u</code> splits it) · <code>U</code> (last changed line) is itself a change · <code>:earlier 10m</code> · <code>:later 30s</code> · <code>:earlier 2f</code> (file writes) · <code>:undo 3</code> · <code>:undolist</code> · Nvim 0.12: <code>:packadd nvim.undotree</code>, <code>:Undotree</code> · <code>&#39;undofile&#39;</code> (off by default) persists it; ignored if the file changed outside (hash check).</p>
+</section>
+<section class="sheet-section">
+<h2>Marks, jumps, windows</h2>
+<p><code>ma</code> · <code>`a</code> spot / <code>&#39;a</code> line · <code>a</code>–<code>z</code> per buffer, <code>A</code>–<code>Z</code> across files, <code>0</code>–<code>9</code> from viminfo / ShaDa · <code>`[ `]</code> last change or yank · <code>`&lt; `&gt;</code> last Visual · <code>``</code> before the last jump · <code>`&quot;</code> last exit · <code>`.</code> last change. <strong>Jumplist</strong> (100): <code>CTRL-O</code> / <code>CTRL-I</code>; jumps are <code>G / ?
+n N % ( ) { } H M L</code>, marks, <code>:s</code>, <code>:tag</code>, a new file — not <code>j k w</code>; Nvim <code>&#39;jumpoptions&#39;</code> default <code>clean</code>. <strong>Changelist</strong>: <code>g;</code> <code>g,</code>.</p>
+<p><strong>Buffer</strong> = text in memory · <strong>window</strong> = a viewport on a buffer · <strong>tab</strong> = a set of windows. <code>:ls</code> · <code>:b3</code> · <code>CTRL-^</code> alternate · <code>:sp</code> stacked, <code>:vs</code> side by side · <code>CTRL-W hjkl w p</code> go, <code>HJKL</code> move, <code>T</code> to a tab, <code>o</code> only, <code>=</code> equalise · <code>:bufdo :windo :cdo</code> · <code>ZZ</code> = <code>:x</code> (writes only if modified) · <code>ZQ</code> = <code>:q!</code>.</p>
+</section>
+<section class="sheet-section">
+<h2>Traps</h2>
+<ul>
+<li class="trap">A vimrc skips defaults.vim: <code>&#39;incsearch&#39;</code> stays off and <code>CTRL-A</code> turns  <code>007</code> into <code>010</code> (octal).</li>
+<li class="trap">A delete overwrites <code>&quot;&quot;</code>: paste the yank with <code>&quot;0p</code>, or delete into <code>&quot;_</code>.</li>
+<li class="trap"><code>\n</code> in a replacement inserts a NUL; <code>\r</code> breaks the line.</li>
+<li class="trap"><code>:sp</code> is the <em>horizontal</em> split (stacked); <code>:vs</code> the vertical one.</li>
+</ul>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> <code>tmux-panes</code> ·
+<code>macos-power-user-cli</code> · Git in depth · Swift Regex · Lint &amp; static analysis</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=dev-tools" title="area">dev-tools</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=tooling" title="kind">tooling</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=general" title="platform">general</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=tooling" title="topic">tooling</a></li><li class="sheet-tag"><a href="/folios.html?tag=vim">vim</a></li><li class="sheet-tag"><a href="/folios.html?tag=neovim">neovim</a></li><li class="sheet-tag"><a href="/folios.html?tag=modal-editing">modal-editing</a></li><li class="sheet-tag"><a href="/folios.html?tag=motions">motions</a></li><li class="sheet-tag"><a href="/folios.html?tag=text-objects">text-objects</a></li><li class="sheet-tag"><a href="/folios.html?tag=operators">operators</a></li><li class="sheet-tag"><a href="/folios.html?tag=registers">registers</a></li><li class="sheet-tag"><a href="/folios.html?tag=macros">macros</a></li><li class="sheet-tag"><a href="/folios.html?tag=marks">marks</a></li><li class="sheet-tag"><a href="/folios.html?tag=regex">regex</a></li><li class="sheet-tag"><a href="/folios.html?tag=search-replace">search-replace</a></li><li class="sheet-tag"><a href="/folios.html?tag=undo">undo</a></li><li class="sheet-tag"><a href="/folios.html?tag=splits">splits</a></li><li class="sheet-tag"><a href="/folios.html?tag=key-bindings">key-bindings</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=dev-tools%2Fvim-editing-grammar.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/307">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

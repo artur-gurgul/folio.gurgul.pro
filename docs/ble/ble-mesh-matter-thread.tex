@@ -1,0 +1,353 @@
+% ble-mesh-matter-thread.tex — Bluetooth Mesh (managed flooding + directed forwarding, network PDU,
+% addresses, features, keys, provisioning and its MITM table, SEQ / IV Index, key refresh, 1.1
+% additions), Thread (802.15.4, 6LoWPAN, roles, RLOC16, distance-vector routing, border router,
+% 1.3 / 1.4), Matter (layers, data + interaction model, PASE / CASE, onboarding payload, discovery,
+% the commissioning sequence, attestation, fabrics + multi-admin, releases 1.0 → 1.6), phones.
+% Sources (checked 2026-10-09):
+%   bluetooth.com/specifications/specs/mesh-protocol (Mesh Protocol 1.1 is current) · MshPRT_v1.1 HTML
+%     (TTL 0 not relayed, 1 relayed + not relayed again, 2–126, 127; unicast 0x0001–0x7FFF, virtual
+%     0x8000–0xBFFF, group 0xC000–0xFEFF, fixed 0xFFFB all-directed-forwarding-nodes, 0xFFFC proxies,
+%     0xFFFD friends, 0xFFFE relays, 0xFFFF all-nodes; NetMIC 32 bit if CTL = 0, 64 if CTL = 1; SEQ 24
+%     bit; Upper Transport Access PDU 40–120 bits unsegmented, 12-octet segments, ≤ 32 segments, 384
+%     octets; access message ≤ 380 / 376 octets with 32 / 64-bit TransMIC; PollTimeout
+%     0x00000A–0x34BBFF in 100 ms) · revision history (1.0 2017-07-13, 1.0.1 2019-01-21, 1.1 2023-09-12)
+%   bluetooth.com MeshSecurityOverview_INFO_v1.0 (2025-04-28: Mesh Profile 1.0 / 1.0.1 renamed Mesh
+%     Protocol in 1.1; NetKey / AppKey / DevKey; 4096 subnets, 4096 app keys; P-256 ECDH; MITM tables
+%     for 1.0 and 1.1; ≤ 256 bits auth in 1.1, capped at 128 in 1.0; 5 alnum ≈ 25 bit, 8 ≈ 41; DevKey
+%     never sent; AES-128-CCM twice, DST encrypted, header obfuscated with the privacy key, NID clear,
+%     relay decrypts / decrements TTL / re-encrypts; 2.66 years at 5 s, 19 days at 100 ms; IV Update up
+%     to 96 h, only primary-subnet nodes start it; replay list persisted; Key Refresh in 3 phases, e.g.
+%     weekly; private beacons; subnet bridge keeps a replay list; RPL exhaustion with SEQ 0xFFFFFF;
+%     trash-can attack; no fixed network keys; CVE-2020-26556 / 26557 / 26559 / 26560)
+%   bitbucket.org/bluetooth-SIG/public assigned_numbers: core/ad_types.yaml (0x29 PB-ADV, 0x2A Mesh
+%     Message, 0x2B Mesh Beacon) · uuids/service_uuids.yaml (0x1827 Mesh Provisioning, 0x1828 Mesh
+%     Proxy, 0x1859 Mesh Proxy Solicitation) · bluetooth.com mesh feature enhancements (1.1: directed
+%     forwarding, remote provisioning, certificate-based provisioning, private beacons, subnet bridge,
+%     DFU over BLOB transfer)
+%   threadgroup.org Thread Network Fundamentals v3 (2020: 802.15.4-2006 / -2015, 250 kbps, 2.4 GHz,
+%     CSMA-CA, MAC acks; Router / Leader / REED / FED / MED / SED / SSED; RLOC16 = router ID 6 bits +
+%     child ID 9 bits; 32 active routers, 64 router addresses; distance-vector like RIPng; link quality
+%     0–3 → cost ∞ / 4 / 2 / 1; attach = Parent Request / Response + Child ID Request / Response; DTLS
+%     commissioning; 6LoWPAN RFC 4944 / 6282; MLE instead of neighbour discovery; BR prefixes in
+%     Network Data) · Thread 1.3.0 press release 2022-07-19 + white paper (standard border routers,
+%     SRP / DNS-SD, enables Matter) · Thread_1.4_Features_White_Paper (2024-09-04: credentials sharing,
+%     9-digit one-time passcode → ePSKc → DTLS → Active / Pending Dataset, required in 1.4 BRs; NAT64 /
+%     DNS64, DHCPv6-PD; diagnostics; TREL = 802.15.4 frames in UDP/IPv6 found by DNS-SD; TCAT over BLE,
+%     X.509, TLS 1.2 / 1.3; "Mesh Extender" naming)
+%   openthread.io: reference/group/radio-types (127-byte frame, channels 11–26, 250 000 bit/s, 16 µs
+%     symbol) · thread-primer node-roles-and-types (≤ 32 Mesh Extenders, ≤ 511 end devices each, kept
+%     between 16 and 23) · ipv6-addressing (ML-EID, RLOC, ALOC) · network-discovery (PAN ID 2 B, XPAN
+%     ID 8 B) · guides/border-router (IPv6 both ways, SRP + mDNS, NAT64, DHCPv6-PD, Border Agent)
+%   csa-iot.org newsroom: matter-arrives (2022-10-04) · 1.2 (2023-10-23, nine device types) · 1.3
+%     (2024-05-08) · 1.4 (2024-11-07: HRAP, enhanced multi-admin, LIT + Check-In) · 1.4.1 (2025-05-07:
+%     multi-device QR, NFC tag) · 1.4.2 (2025-08-11: Wi-Fi USD commissioning, CRLs, VID verification,
+%     border routers ≥ 150 devices + Thread 1.4) · 1.5 (2025-11-20: cameras over WebRTC, closures, soil
+%     sensors, tariffs, TCP) · 1.5.1 (2026-03-31: camera multi-stream) · 1.6 (2026-06-17: NFC
+%     commissioning, Joint Fabric, thermostat suggestions, partitioned CRLs)
+%   github.com/project-chip/connectedhomeip: src/setup_payload/SetupPayload.h + .cpp ("MT:", field bits
+%     3 / 16 / 16 / 2 / 8 / 12 / 27 / 4, 4-bit short discriminator, passcode 1–99999998 minus ten
+%     trivial values) · src/lib/core/CHIPConfig.h (port 5540; spec minimum 5 fabrics, SDK default 16)
+%     · src/ble/BleUUID.h (service 0xFFF6) · secure_channel/PASESession.h (SPAKE2+) · CASESession.h
+%     (Sigma1 / 2 / 3, resumption, NOC / ICAC / RCAC, P-256) · src/messaging/
+%     ReliableMessageProtocolConfig.h (reliable messaging, 4 retransmissions, Thread intervals 2 s)
+%     · examples/bridge-app/linux/README.md (bridged devices = dynamic endpoints with Bridged Device
+%     Basic Information)
+%   developers.home.google.com/matter/primer: device-data-model · interaction-model (Read, Write,
+%     Invoke, Subscribe; timed; groups = IPv6 multicast) · commissionable-and-operational-discovery
+%     (BLE 20–60 ms for 30 s, then 150–1500 ms; MATTER-ddd-vvvv-pppp; _matterc._udp; _matter._tcp)
+%     · fabric (root CA + 64-bit fabric ID; 64-bit node ID; multi-admin) · commissioning (the steps)
+%     · attestation (DAC / PAI / PAA, DCL, CD) · /apis/android/commissioning · /thread (Thread Network
+%     SDK, Android 8.0+, 8.1+ to reach end devices) · primer index (bridges for Zigbee, Z-Wave, Mesh)
+%   developer.apple.com/documentation/mattersupport (iOS 16.1+) · /threadnetwork (iOS 15+, THClient)
+%     · support.apple.com/102557 (home hub required; Thread hubs) · apple.com/homepod-2nd-generation/specs
+%   rfc-editor.org RFC 8200 (IPv6 minimum link MTU 1280)
+% @labels: area=ble kind=concept platform=general topic=protocols,networking discussion=291
+% @tags: bluetooth-mesh, managed-flooding, directed-forwarding, friend-node, low-power-node, mesh-provisioning, thread, ieee-802-15-4, 6lowpan, border-router, srp, matter, matter-commissioning, matter-fabric, device-attestation, mattersupport, dtls
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usepackage{tabularx}
+
+\newcommand\ct[1]{\texttt{#1}}
+\tikzset{
+  nd/.style={circle, draw=sheetBlue, fill=sheetBlue!8, thick, minimum size=5.5mm, inner sep=0pt, font=\tiny\bfseries},
+  rl/.style={nd, draw=sheetOrange, fill=sheetOrange!12},
+  lp/.style={nd, draw=sheetGrey, fill=sheetGrey!10, dashed},
+  gw/.style={box, font=\tiny, inner sep=1.2pt, minimum height=4.5mm},
+  ly/.style={box, font=\tiny, inner sep=1pt, minimum height=4.3mm, minimum width=50mm},
+  adv/.style={->, draw=sheetOrange, thick},
+  lk/.style={draw=sheetBlue!70, thick},
+  poll/.style={<->, draw=sheetGrey, dashed},
+  lbl/.style={font=\tiny, text=black!75, inner sep=0.8pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, anchor=west},
+  fd/.style={draw=sheetGrey, minimum height=6mm, inner sep=0pt, font=\tiny, align=center, anchor=west},
+  st/.style={box, font=\tiny, inner sep=1pt, minimum height=8mm, text width=17mm},
+  ev/.style={circle, fill=#1, inner sep=0pt, minimum size=1.4mm},
+}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+% field box: \fld{x}{y}{width-cm}{fill}{label}
+\newcommand\fld[5]{\node[fd, minimum width=#3cm, fill=#4] at (#1,#2) {#5};}
+
+\begin{document}
+
+\sheettitle{Bluetooth Mesh · Thread · Matter}{ble · folio}
+
+\oneliner{\textbf{Bluetooth Mesh} floods tiny double-encrypted messages over BLE
+\emph{advertising} — no IP, no connections; \textbf{Thread} is a \textbf{routed IPv6} mesh on
+802.15.4 that reaches the LAN through \textbf{border routers}; \textbf{Matter} is the
+\textbf{application layer} — data model, PASE / CASE, attestation, fabrics — over Thread, Wi-Fi or
+Ethernet, set up over BLE (or Wi-Fi USD, NFC).}
+
+\noindent\begin{tikzpicture}[sheet]
+  % ================= Bluetooth Mesh =================
+  \node[hd] at (-0.2,3.05) {BT Mesh — managed flooding};
+  \node[nd] (sw) at (0.2,1.9) {SW};
+  \node[rl] (r1) at (1.45,2.45) {R};
+  \node[rl] (r2) at (1.45,1.25) {R};
+  \node[nd] (l1) at (2.8,2.55) {L1};
+  \node[rl] (r3) at (2.8,1.65) {R};
+  \node[nd] (l2) at (4.1,1.95) {L2};
+  \node[nd, draw=sheetGreen, fill=sheetGreen!12] (fr) at (4.1,0.95) {F};
+  \node[lp] (lpn) at (5.2,0.95) {LPN};
+  \node[nd, draw=sheetGreen, fill=sheetGreen!12] (px) at (0.2,0.55) {P};
+  \node[gw] (ph) at (1.6,0.2) {phone app};
+  \draw[adv] (sw) -- node[lbl, above left]{TTL 3} (r1);
+  \draw[adv] (sw) -- (r2);
+  \draw[adv] (r1) -- (l1); \draw[adv] (r1) -- node[lbl, right]{2} (r3);
+  \draw[adv] (r2) -- (r3);
+  \draw[adv] (r3) -- node[lbl, above]{1} (l2); \draw[adv] (r3) -- (fr);
+  \draw[poll] (fr) -- node[lbl, above]{poll} (lpn);
+  \draw[lk] (px) -- node[lbl, below left]{GATT} (ph);
+  \draw[adv, dashed] (r2) -- (px);
+  \node[lbl, text=sheetRed] at (2.75,0.85) {2nd copy: in message\\cache $\to$ dropped};
+  \node[lbl, text=sheetBlue] at (3.95,3.05) {SW publishes to group \ct{0xC001};\\L1, L2 subscribe};
+  \node[lbl, text=sheetBlue, align=left, anchor=west] at (4.45,1.95) {TTL 1:\\not relayed};
+  \node[lbl, text=sheetBrown, align=left, anchor=west] at (2.45,0.2) {R relay: decrypt, TTL$-$1, re-encrypt\\P proxy · F friend queues for the LPN};
+  % ================= Thread =================
+  \node[hd] at (5.85,3.05) {Thread — routed IPv6 mesh};
+  \node[gw, draw=sheetGreen, fill=sheetGreen!10] (br) at (6.75,2.45) {Border router};
+  \node[gw, draw=sheetGrey, fill=sheetGrey!8] (lan) at (6.75,0.35) {Wi-Fi / Ethernet};
+  \node[rl, minimum size=6.5mm] (ld) at (8.3,2.05) {Lead};
+  \node[rl] (t1) at (9.65,2.5) {R};
+  \node[rl] (t2) at (9.65,1.35) {R};
+  \node[nd] (re) at (8.35,0.95) {REED};
+  \node[nd] (me) at (10.85,2.3) {MED};
+  \node[lp] (se) at (10.85,1.0) {SED};
+  \draw[lk] (br) -- (ld); \draw[lk] (ld) -- (t1); \draw[lk] (ld) -- (t2); \draw[lk] (t1) -- (t2);
+  \draw[lk] (br) -- (t2); \draw[lk, sheetGrey] (re) -- (t2);
+  \draw[lk, sheetGrey] (me) -- (t1); \draw[poll] (se) -- node[lbl, above, sloped]{polls} (t2);
+  \draw[flow, <->, draw=sheetGreen] (br) -- node[lbl, right, align=left]{IPv6\\SRP$\to$\\mDNS} (lan);
+  \node[lbl, text=sheetBrown] at (9.55,0.3) {802.15.4 · ch 11–26 · 250 kbps · 127 B\\R = router (``Mesh Extender'')};
+  % ================= Matter stack =================
+  \node[hd] at (11.2,3.05) {Matter — layers};
+  \node[ly, draw=sheetGreen, fill=sheetGreen!10] at (13.75,2.6) {\textbf{Data model}: node · endpoint · cluster · attr / command / event};
+  \node[ly] at (13.75,2.12) {\textbf{Interaction}: Read · Subscribe · Write · Invoke (+ Timed)};
+  \node[ly] at (13.75,1.64) {\textbf{Session}: PASE (SPAKE2+) to set up · CASE (SIGMA) to run};
+  \node[ly] at (13.75,1.16) {\textbf{Messages}: UDP 5540 + MRP retries · TCP (1.5) · IPv6};
+  \node[ly, draw=sheetOrange, fill=sheetOrange!10, minimum width=16mm] at (12.0,0.62) {Thread};
+  \node[ly, draw=sheetOrange, fill=sheetOrange!10, minimum width=16mm] at (13.75,0.62) {Wi-Fi};
+  \node[ly, draw=sheetOrange, fill=sheetOrange!10, minimum width=16mm] at (15.5,0.62) {Ethernet};
+  \node[lbl, text=sheetBlue] at (13.75,0.1) {setup only: BLE (BTP, \ct{0xFFF6}) · Wi-Fi USD (1.4.2) · NFC (1.6)};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Bluetooth Mesh — SIG Mesh Protocol 1.1}
+\noindent\begin{tikzpicture}[sheet]
+  \fld{0}{0}{0.42}{sheetGrey!15}{IVI\\1}
+  \fld{0.42}{0}{0.62}{sheetGrey!15}{NID\\7}
+  \fld{1.04}{0}{0.42}{sheetOrange!18}{CTL\\1}
+  \fld{1.46}{0}{0.62}{sheetOrange!18}{TTL\\7}
+  \fld{2.08}{0}{1.25}{sheetOrange!18}{SEQ\\24}
+  \fld{3.33}{0}{0.95}{sheetOrange!18}{SRC\\16}
+  \fld{4.28}{0}{0.95}{sheetGreen!18}{DST\\16}
+  \fld{5.23}{0}{1.6}{sheetGreen!18}{Transport PDU\\(AppKey-sealed)}
+  \fld{6.83}{0}{1.07}{sheetBlue!14}{NetMIC\\32 / 64}
+  \node[lbl, anchor=north west, align=left, text width=7.85cm] at (0,-0.33) {Network PDU, bits. \textcolor{sheetGrey}{grey} clear (NID picks the key) ·
+    \textcolor{sheetOrange}{orange} obfuscated (privacy key) · \textcolor{sheetGreen!60!black}{green} AES-CCM
+    encrypted under a NetKey-derived key · MIC 64 bit for control PDUs};
+  % address map
+  \fld{0}{-1.35}{3.5}{sheetBlue!10}{unicast \ct{0x0001–0x7FFF}\\one per element}
+  \fld{3.5}{-1.35}{1.75}{sheetGreen!14}{virtual \ct{0x8000–}\\hash of Label UUID}
+  \fld{5.25}{-1.35}{1.7}{sheetOrange!16}{group \ct{0xC000–}\\\ct{0xFEFF}}
+  \fld{6.95}{-1.35}{0.95}{sheetRed!12}{fixed\\\ct{0xFF00–}}
+  \node[lbl, anchor=north west, align=left, text width=7.85cm] at (0,-1.68) {fixed groups: \ct{FFFB} directed-forwarding nodes · \ct{FFFC} proxies
+    · \ct{FFFD} friends · \ct{FFFE} relays · \ct{FFFF} all};
+\end{tikzpicture}
+\begin{itemize}
+  \item \textbf{Bearer}: non-connectable adverts — AD \ct{0x2A} message · \ct{0x2B} beacon · \ct{0x29}
+        PB-ADV; nodes scan all the time. GATT only through a \textbf{Proxy}: service \ct{0x1828}
+        (provisioning \ct{0x1827}, solicitation \ct{0x1859}). No links, no LE pairing.
+  \item \textbf{Managed flooding}: TTL 7 bits — 0 never relayed, arriving as 1 not relayed again,
+        2–127 relayable; a message cache drops repeats. \textbf{Directed forwarding} (1.1) discovers
+        paths per subnet and mixes with flooding.
+  \item \textbf{Node $\to$ elements} (one unicast address each) $\to$ \textbf{models}: a client
+        \emph{publishes} to an address, servers \emph{subscribe} — a group is a topic.
+  \item \textbf{Features}: Relay · Proxy · Friend (queues for its LPN) · \textbf{Low Power} (sleeps,
+        polls its Friend; PollTimeout 1\,s … $\approx$96\,h in 100\,ms steps).
+  \item \textbf{Keys}, AES-128-CCM twice: \textbf{NetKey} (network layer, $\le$4096 subnets — relays
+        forward but cannot read) · \textbf{AppKey} (payload, bound per model, $\le$4096) ·
+        \textbf{DevKey} (per node, from the provisioning ECDH, never on air).
+  \item \textbf{Size}: unsegmented access message $\le$11\,B; segmented 12\,B $\times$ $\le$32 = 384\,B
+        upper transport $\to$ $\le$380\,B (32-bit TransMIC) / 376\,B. Control, not bulk.
+  \item \textbf{Replay}: SEQ 24 bits per element + 32-bit \textbf{IV Index}; a persisted replay list per
+        source. SEQ lasts 2.66 years at one message / 5\,s, 19 days at / 100\,ms, then IV Update via
+        beacons (up to 96\,h to spread; started only by primary-subnet nodes).
+  \item \textbf{Provisioning} (PB-ADV / PB-GATT, often a phone): beacon with 128-bit Device UUID $\to$
+        algorithm choice $\to$ P-256 ECDH (device key in band, or OOB / X.509) $\to$ OOB auth $\to$
+        NetKey + unicast address; both sides derive the DevKey.
+\end{itemize}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{16mm}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{14mm}@{}}
+\toprule
+\textbf{active MITM?} & \textbf{1.0, key in band} & \textbf{1.1, key in band} & \textbf{key OOB}\\
+\midrule
+no OOB auth & vulnerable & vulnerable & none known\\
+static / output / input & vulnerable & none known if enough entropy & none known\\
+\bottomrule
+\end{tabular}}\par
+Entropy: 5 alphanumerics $\approx$25 bits, 8 $\approx$41; static OOB up to 256 bits (1.0: 128; its
+flaws CVE-2020-26556/-57/-59/-60). \textbf{Key Refresh}: distribute (send old, accept both) $\to$ send
+new $\to$ revoke old; excluded nodes are cut off — do it before discarding a node (``trash-can
+attack''). \textbf{1.1 adds}: directed forwarding · remote provisioning (+ device-key refresh) ·
+certificate-based provisioning · private beacons · subnet bridge · firmware update (BLOB transfer).
+
+\section{Thread}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \i in {0,...,15} \node[lbl] at (0.25+0.42*\i,0.42) {\i};
+  \node[fd, minimum width=2.52cm, fill=sheetOrange!16] at (0.04,0) {Router ID · 6 bits};
+  \node[fd, minimum width=0.42cm, fill=sheetGrey!15] at (2.56,0) {R};
+  \node[fd, minimum width=3.78cm, fill=sheetBlue!12] at (2.98,0) {Child ID · 9 bits (0 = the router)};
+  \node[lbl, anchor=west, align=left] at (6.85,0) {RLOC16:\\route by\\top 6 bits};
+\end{tikzpicture}
+\begin{itemize}
+  \item \textbf{Radio}: IEEE 802.15.4 (2006 / 2015), 2.4\,GHz O-QPSK, channels 11–26, 250\,kbit/s,
+        $\le$127-byte frames, CSMA-CA, MAC acks + retries, MAC-layer encryption. \textbf{6LoWPAN} (RFC
+        4944 / 6282) compresses and fragments IPv6 (min MTU 1280); MLE replaces neighbour discovery.
+  \item \textbf{Roles}: Router (``Mesh Extender'' in 1.4) · \textbf{Leader} (one per partition, hands
+        out router IDs, re-elected) · REED (promotes below 16 routers) · FED · MED (radio on) ·
+        \textbf{SED} (polls its parent) · SSED (listens on a schedule) · Border Router (any FTD, several
+        allowed). All attach as a child first (MLE Parent / Child ID Request).
+  \item \textbf{Routing}: proactive distance-vector (like RIPng) in MLE adverts; $\le$32 active routers
+        (64 IDs, kept at 16–23), $\le$511 children each. Link quality 3 / 2 / 1 / 0 $\to$ cost 1 / 2 /
+        4 / $\infty$; path cost = minimum sum.
+  \item \textbf{Addresses}: mesh-local ULA /64 — \textbf{ML-EID} (stable, for apps) + \textbf{RLOC}
+        (moves with topology) + ALOC anycast; BR prefixes via SLAAC / DHCPv6. \textbf{Dataset}:
+        channel, PAN ID (2\,B), XPAN ID (8\,B), name, prefix, Network Key, PSKc; joining = DTLS
+        Joiner $\to$ Commissioner via a Joiner Router.
+  \item \textbf{Border router}: IPv6 both ways; devices register services by unicast \textbf{SRP},
+        the BR re-advertises them over \textbf{mDNS}; Border Agent for outside commissioners.
+  \item \textbf{1.3.0} (19 Jul 2022): standard BRs, SRP / DNS-SD — what Matter needs. \textbf{1.4}
+        (Sep 2024): \textbf{credential sharing} (BR shows a 9-digit one-time code $\to$ ePSKc $\to$
+        DTLS $\to$ dataset; required in 1.4 BRs) · NAT64 / DNS64 + DHCPv6-PD · diagnostics · TREL
+        (802.15.4 frames in UDP/IPv6 over Wi-Fi / Ethernet) · TCAT (TLS + X.509 over BLE, bulk setup).
+\end{itemize}
+
+\columnbreak
+
+\section{Matter — CSA application layer}
+1.0: 4 Oct 2022. Zigbee, Z-Wave, BT Mesh: only via a \textbf{bridge} (bridged devices = endpoints).
+
+\noindent\begin{tikzpicture}[sheet, node distance=1.5mm]
+  \node[st, draw=sheetGreen, fill=sheetGreen!8] (s1) at (0.92,0) {\textbf{1 discover}\\BLE · Soft-AP\\\ct{\_matterc.\_udp}};
+  \node[st, right=of s1] (s2) {\textbf{2 PASE}\\SPAKE2+ over\\the passcode};
+  \node[st, right=of s2] (s3) {\textbf{3 read info}\\descriptors · set\\regulatory config};
+  \node[st, right=of s3, draw=sheetRed, fill=sheetRed!6] (s4) {\textbf{4 attest}\\DAC$\to$PAI$\to$PAA\\+ CD, nonce};
+  \node[st, below=2.5mm of s4] (s5) {\textbf{5 CSR}\\new op. key $\to$\\root cert + NOC};
+  \node[st, left=of s5] (s6) {\textbf{6 network}\\Wi-Fi creds or\\Thread dataset};
+  \node[st, left=of s6] (s7) {\textbf{7 find it}\\on the network\\\ct{\_matter.\_tcp}};
+  \node[st, left=of s7, draw=sheetGreen, fill=sheetGreen!8] (s8) {\textbf{8 CASE}\\Commissioning-\\Complete};
+  \foreach \a/\b in {s1/s2,s2/s3,s3/s4,s5/s6,s6/s7,s7/s8} \draw[flow] (\a) -- (\b);
+  \draw[flow] (s4) -- (s5);
+\end{tikzpicture}
+\vspace{1pt}
+
+\noindent\begin{tikzpicture}[sheet]
+  \fld{0}{0}{0.55}{sheetGrey!15}{\ct{MT:}}
+  \fld{0.55}{0}{0.45}{sheetBlue!10}{ver\\3}
+  \fld{1.0}{0}{0.95}{sheetBlue!10}{VID\\16}
+  \fld{1.95}{0}{0.95}{sheetBlue!10}{PID\\16}
+  \fld{2.9}{0}{0.5}{sheetBlue!10}{flow\\2}
+  \fld{3.4}{0}{0.75}{sheetBlue!10}{caps\\8}
+  \fld{4.15}{0}{1.1}{sheetOrange!16}{discrimin.\\12}
+  \fld{5.25}{0}{2.2}{sheetRed!12}{setup passcode\\27}
+  \fld{7.45}{0}{0.45}{sheetGrey!15}{pad\\4}
+  \node[lbl, anchor=north west, align=left, text width=7.85cm] at (0,-0.33) {QR payload, bits, base-38 text. Manual code: \textbf{11 digits} = 4-bit
+    short discriminator + passcode + Verhoeff check (21 with VID / PID). Passcode 00000001–99999998,
+    never 11111111 … 88888888, 12345678, 87654321.};
+\end{tikzpicture}
+\begin{itemize}
+  \item \textbf{Data model}: \textbf{node} (64-bit node ID per fabric) $\to$ \textbf{endpoints} (0 =
+        root, utility clusters) $\to$ \textbf{clusters} (server holds state, client does not) $\to$
+        attributes · commands (RPC) · events (past changes); paths may use groups and wildcards.
+  \item \textbf{Interaction}: Read · Subscribe (reports) · Write · Invoke; \textbf{Timed} Write /
+        Invoke for locks and garage doors (anti-replay); groups = IPv6 multicast.
+  \item \textbf{Sessions}: PASE, commissioning only. CASE = SIGMA (Sigma1–3 or resumption), P-256
+        ECDH + ECDSA, chain NOC $\to$ ICAC $\to$ RCAC. MRP: 4 resends (SDK default).
+  \item \textbf{Discovery}: BLE service \ct{0xFFF6} (BTP), adverts every 20–60\,ms for 30\,s then
+        150–1500\,ms · Soft-AP SSID \ct{MATTER-ddd-vvvv-pppp} · DNS-SD \ct{\_matterc.\_udp} (Thread
+        via SRP). Operational: \ct{\_matter.\_tcp}, instance \ct{<compressed fabric ID>-<node ID>}.
+  \item \textbf{Attestation}: per-device DAC $\to$ PAI $\to$ PAA; PAAs trusted via the CSA's
+        \textbf{Distributed Compliance Ledger}; Certification Declaration signed by a CSA key (VID,
+        PID, development / provisional / official); signature over a nonce + the session's challenge.
+  \item \textbf{Fabric} = root CA + 64-bit fabric ID. \textbf{Multi-admin}: one node in several fabrics
+        sharing one data model; spec minimum 5 fabrics (SDK default 16).
+  \item \textbf{Releases}: 1.2 nine appliance types · 1.3 energy reporting, EV chargers · 1.4 HRAP
+        (router + Thread BR), enhanced multi-admin, long-idle devices + Check-In · 1.4.1 multi-device
+        QR, NFC tag · 1.4.2 Wi-Fi-only setup (USD), revocation lists, VID check, BRs $\ge$150 devices on
+        Thread 1.4 · 1.5 cameras (WebRTC), closures, soil sensors, tariffs, TCP · 1.5.1 camera
+        multi-stream · 1.6 NFC commissioning, \textbf{Joint Fabric}, thermostat suggestions.
+\end{itemize}
+
+\noindent\begin{tikzpicture}[sheet]
+  \node[lbl, anchor=west, text=sheetBlue] at (0,0.95) {Mesh};
+  \node[lbl, anchor=west, text=sheetGreen!60!black] at (0,0.6) {Thread};
+  \node[lbl, anchor=west, text=sheetOrange] at (0,0.25) {Matter};
+  % x: 2017–2022 compressed (0.35 per year), 2022–2026.8 at 1.25 per year; scaled into the column
+  \begin{scope}[xshift=0.75cm, xscale=0.92]
+  \draw[sheetGrey] (0,0) -- (7.85,0);
+  \foreach \y/\x in {2017/0,2019/0.7,2023/3.0,2024/4.25,2025/5.5,2026/6.75}
+    { \draw[sheetGrey] (\x,-0.06) -- (\x,0.06); \node[lbl, below] at (\x,-0.05) {\y}; }
+  \draw[sheetGrey] (1.75,-0.06) -- (1.75,0.06);
+  \node[lbl, below] at (1.75,-0.05) {2022};
+  \fill[white] (1.3,-0.1) rectangle (1.42,0.1);
+  \draw[sheetGrey] (1.26,-0.1) -- (1.34,0.1); \draw[sheetGrey] (1.38,-0.1) -- (1.46,0.1);
+  \foreach \x/\t in {0.19/1.0, 0.72/1.0.1, 3.88/1.1} { \node[ev=sheetBlue] at (\x,0.95) {}; \node[lbl, above] at (\x,0.97) {\t}; }
+  \foreach \x/\t in {2.44/1.3.0, 5.09/1.4} { \node[ev=sheetGreen] at (\x,0.6) {}; \node[lbl, above] at (\x,0.62) {\t}; }
+  \foreach \x/\t/\p in {2.7/1.0/above, 4.01/1.2/above, 4.69/1.3/below, 5.31/1.4/above, 5.94/1.4.1/below,
+      6.26/1.4.2/above, 6.61/1.5/below, 7.06/1.5.1/above, 7.33/1.6/below}
+    { \node[ev=sheetOrange] at (\x,0.25) {}; \node[lbl, \p] at (\x,0.25) {\t}; }
+  \end{scope}
+\end{tikzpicture}
+
+\section{On the phone}
+\begin{itemize}
+  \item \textbf{Apple}: Matter in Home needs a \textbf{home hub}; Thread accessories a Thread hub
+        (HomePod mini, HomePod 2nd gen, Apple TV 4K 3rd gen Wi-Fi + Ethernet) or a third-party BR.
+        \ct{MatterSupport} (iOS 16.1+): \ct{MatterAddDeviceRequest}; its extension commissions into
+        the app's own ecosystem. \ct{ThreadNetwork} (iOS 15+): \ct{THClient} shares Thread credentials.
+  \item \textbf{Android}: Play services \ct{CommissioningClient} — Google fabric and / or the app's
+        own (\ct{CommissioningService}); Thread Network SDK: \ct{preferredCredentials},
+        \ct{addCredentials} (Android 8.0+; reaching end devices needs 8.1+).
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``Matter = Thread'' — app layer vs one transport; no BR, no way off the mesh.}
+  \trap{A NetKey holder cannot forge app messages, but can flood, or fill replay lists with SEQ
+        \ct{0xFFFFFF} so nodes ignore everyone until the next IV Update.}
+  \trap{Mesh starter kit with a fixed NetKey — the owner can never rekey; ship a provisioning
+        database and unique keys instead.}
+  \trap{Mesh guests get their own NetKey + AppKey; a Key Refresh that skips them revokes them.}
+  \trap{A BR per vendor, each forming its own network: share Thread credentials.}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{ble-apple-ecosystem} ·
+\texttt{coap-lwm2m} · \texttt{public-key-maths} · Network.framework on the LAN · NAT, IPv4 \& IPv6
+· TLS 1.3 \& PKI}
+
+\end{document}

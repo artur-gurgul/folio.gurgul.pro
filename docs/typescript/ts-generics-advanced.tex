@@ -1,0 +1,311 @@
+% ts-generics-advanced.tex — generics and type-level programming in TypeScript: constraints,
+% defaults, inference and literal widening, const type parameters, NoInfer, instantiation
+% expressions, keyof / typeof / indexed access, conditional types (resolve vs defer,
+% distribution, infer and its co- / contra-variant candidates), mapped types and key remapping,
+% template literal types and how a pattern matches, recursion and the checker's limits,
+% variance annotations, the lib's utility types, and the release each piece arrived in.
+% Structural typing, narrowing, unions, unknown / never, satisfies: ts-type-system.
+% Sources (checked 2026-10-09):
+%   typescriptlang.org/docs/handbook/2/generics (constraints) · /2/functions (minimumLength error
+%     "could be instantiated with a different subtype of constraint"; combine([1,2,3], ["hello"]) →
+%     Type 'string' is not assignable to type 'number'; type parameters should appear twice; push
+%     them down: firstElement2<Type extends any[]> returns any) · /2/keyof-types (string index
+%     signature → string | number, number index → number) · /2/indexed-access-types (T[number]) ·
+%     /2/objects (a tuple declares length with a numeric literal type) · /2/conditional-types
+%     (ToArray<string | number> → string[] | number[]; [Type] extends [any] → (string | number)[];
+%     inference from an overloaded function uses the last signature) · /2/mapped-types (+/- readonly,
+%     +/- ?, as remapping, never drops a key, Getters with Capitalize<string & Property>) ·
+%     /2/template-literal-types (unions in holes are cross multiplied; Uppercase, Lowercase,
+%     Capitalize, Uncapitalize built into the compiler) · handbook/advanced-types (homomorphic
+%     mapped types copy modifiers; Readonly, Partial, Pick are, Record is not)
+%   typescriptlang.org/docs/handbook/release-notes: 2.1 (keyof, lookup T[K], mapped types; Partial,
+%     Readonly, Record, Pick) · 2.3 (type parameter defaults and their rules) · 2.8 (conditional
+%     types resolved / deferred; distributive = naked type parameter; infer only in the extends
+%     clause; co-variant candidates → union, contra-variant → intersection; Exclude, Extract,
+%     NonNullable, ReturnType, InstanceType; +/- modifiers) · 3.1 (mapped types over tuples and
+%     arrays) · 3.5 (Omit) · 3.7 (recursive type aliases, Json) · 4.0 (variadic tuple types) · 4.1
+%     (template literal types, key remapping, recursive conditional types "responsibly and
+%     sparingly", intrinsic string types) · 4.5 (tail-recursion elimination, accumulator GetChars,
+%     Awaited) · 4.7 (in / out: variance inferred as an optimisation, a too-loose annotation is an
+%     error, a stricter one is allowed, helps deeply recursive types; infer … extends; instantiation
+%     expressions) · 4.8 (NonNullable = T & {}; infer U extends number parses "100", "1.0" → number)
+%     · 5.0 (const type parameters; readonly constraint; only literals written in the call) · 5.4
+%     (NoInfer)
+%   raw.githubusercontent.com/microsoft/TypeScript/v6.0.3/src/lib/es5.d.ts (the definitions listed,
+%     whitespace condensed; Uppercase … and NoInfer = intrinsic; PropertyKey)
+%   github.com/microsoft/TypeScript: pull 10676 (literal widening rule; f5<T extends number>(1, 2) →
+%     (1 | 2)[]) · pull 40336 (template literal inference: up to the first occurrence of the next
+%     literal span, one character before another placeholder; unions limited to < 100,000
+%     constituents) · pull 45711 (depth limit 50 → 500 → 100; tail-recursive conditionals loop 1000
+%     times) · issue 44997 (instantiationCount 5,000,000; limits are implementation details, not
+%     configurable) · issue 23182 (never = empty union; [T] extends [never]) · issue 31501 (Omit not
+%     distributive, Working as Intended, 2019) · pulls 56941, 61136, 61359 (narrowing returns against
+%     a generic conditional return type: 5.8 beta, reverted, retry closed unmerged 2025-12-08) ·
+%     issue 45149 (TS2590 text) · issue 63703 (7.1 plan: Go checker keeps depth 100 / 5,000,000; team,
+%     2026-09-03: "no plans to change these limits")
+%   github.com/microsoft/typescript-go issue 522 (TS2589 text)
+%   api.github.com/repos/microsoft/TypeScript/releases (published_at: 2.1.4 2016-12-07 · 2.8.1
+%     2018-03-27 · 3.7.2 2019-11-06 · 4.0.2 2020-08-20 · 4.1.2 2020-11-19 · 4.5.2 2021-11-17 · 4.7.2
+%     2022-05-24 · 4.8.2 2022-08-26 · 5.0.2 2023-03-16 · 5.4.2 2024-03-06 · 6.0.2 2026-03-23 · 7.0.2
+%     2026-08-20, mirrored from microsoft/typescript-go)
+%   devblogs.microsoft.com/typescript: announcing-typescript-6-0 (2026-03-23; the last release on the
+%     JavaScript codebase; stableTypeOrdering) · announcing-typescript-7-0 (2026-07-08; native Go
+%     port; code that compiles cleanly on 6.0 with stableTypeOrdering compiles identically; template
+%     literal inference by code point)
+%   github.com/microsoft/TypeScript/pull/55229 (5.3: const T infers a mutable tuple under a mutable
+%     array constraint; issue #51931)
+%   Every type result and error on the page compiled with typescript 6.0.3 (strict): all match; the
+%     const-T fallback to string[] holds in 5.0.4 and 5.2.2 only, not from 5.3.3 — page corrected.
+% @labels: area=typescript kind=concept platform=web topic=language discussion=333
+% @tags: generics, variance, type-system, conditional-types, infer, distributive-conditional, mapped-types, key-remapping, template-literal-types, utility-types, keyof, const-type-parameters, noinfer, recursive-types
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+
+% literate = one \hbox per character, so the mono font's ligatures (=> ...) never form
+\lstdefinelanguage{TSSheet}{
+  morekeywords={const,let,type,interface,extends,function,return,true,false,null,undefined,
+    typeof,keyof,as,never,string,number,boolean,void,readonly,unknown,any,infer,in,out,object,
+    intrinsic},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`,
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {...}{{\hbox{.}\hbox{.}\hbox{.}}}3}
+\lstdefinestyle{ts}{style=printup, language=TSSheet, basicstyle=\ttfamily\scriptsize,
+  aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\fa{\hbox{=}\hbox{>}}% "=>" without the ligature
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, anchor=west},
+  tn/.style={font=\ttfamily\scriptsize, inner sep=1.2pt},
+  ver/.style={circle, fill=sheetBlue, inner sep=0pt, minimum size=1.6mm},
+  tl/.style={font=\tiny, text=black!80, align=center, text width=22mm, inner sep=1pt},
+}
+
+\begin{document}
+
+\sheettitle{TypeScript generics \& type-level programming}{typescript · folio}
+
+\oneliner{Type parameters are \textbf{solved by inference} at each call and bounded by
+\texttt{extends}. \textbf{Conditional}, \textbf{mapped} and \textbf{template-literal} types add a
+small pure functional language — if, pattern-bind, map over keys, recurse — that the checker runs
+at compile time and erases from the JavaScript, inside fixed depth and union-size limits.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {5.6,11.0} \draw[sheetGrey!40] (\x,3.0) -- (\x,-0.55);
+  % ── 1 distribution ──
+  \node[pt] at (0,2.85) {\textcolor{sheetBlue}{1} distributive conditional (2.8)};
+  \node[tn, anchor=west] at (0,2.4) {ToArray<T> = T extends any ? T[] : never};
+  \node[sb] (u) at (0.5,1.35) {\texttt{A|B|C}};
+  \foreach \n/\y in {A/1.95,B/1.35,C/0.75} {
+    \node[tn, draw=sheetGrey] (i\n) at (2.1,\y) {ToArray<\n>};
+    \draw[flow] (u.east) -- (i\n.west);
+    \node[tn] (o\n) at (3.35,\y) {\n[]};
+    \draw[flow] (i\n) -- (o\n);
+  }
+  \node[sb, draw=sheetGreen, fill=sheetGreen!10] (r) at (4.75,1.35) {\texttt{A[]|B[]|C[]}};
+  \foreach \n in {A,B,C} \draw[flow] (o\n.east) -- (r.west);
+  \node[lbl, text=sheetOrange, anchor=west] at (0,0.25) {\texttt{[T] extends [any]}: no fan-out $\to$ \texttt{(A|B|C)[]}};
+  \node[lbl, anchor=west] at (0,0.0) {only a \emph{naked} type parameter distributes};
+  \node[lbl, anchor=west] at (0,-0.25) {\texttt{never} = the empty union $\to$ result \texttt{never}};
+  % ── 2 variance ──
+  \node[pt] at (5.7,2.85) {\textcolor{sheetBlue}{2} variance: \texttt{out} / \texttt{in} (4.7)};
+  \node[tn] (d) at (6.4,2.25) {Dog}; \node[tn] (a) at (10.05,2.25) {Animal};
+  \draw[flow] (d) -- node[lbl, above]{assignable to} (a);
+  \node[tn] (pd) at (6.4,1.6) {Getter<Dog>}; \node[tn] (pa) at (10.05,1.6) {Getter<Animal>};
+  \draw[->, thick, sheetGreen] (pd) -- node[lbl, above=1pt]{\texttt{out T}: covariant (T returned)} (pa);
+  \node[tn] (cd) at (6.4,0.95) {Setter<Dog>}; \node[tn] (ca) at (10.05,0.95) {Setter<Animal>};
+  \draw[->, thick, sheetOrange] (ca) -- node[lbl, above=1pt]{\texttt{in T}: contravariant (T taken)} (cd);
+  \node[tn] (bd) at (6.4,0.3) {State<Dog>}; \node[tn] (ba) at (10.05,0.3) {State<Animal>};
+  \draw[thick, sheetRed, dashed] (bd) -- node[lbl, above=1pt]{\texttt{in out T}: invariant (both)} (ba);
+  \node[lbl, anchor=west] at (5.7,-0.05) {without them the checker \emph{infers} variance, as an optimisation;};
+  \node[lbl, anchor=west] at (5.7,-0.3) {an annotation looser than the use is an error, a stricter one passes};
+  % ── 3 mapped type pipeline ──
+  \node[pt] at (11.1,2.85) {\textcolor{sheetBlue}{3} a mapped type, step by step};
+  \node[sb, minimum width=50mm, anchor=west] (m1) at (11.15,2.3) {\texttt{keyof T} $\to$ \texttt{'id'|'name'|'age'}};
+  \node[sb, minimum width=50mm, anchor=west] (m2) at (11.15,1.65) {\texttt{[P in K]}: one member per key};
+  \node[sb, minimum width=50mm, anchor=west, draw=sheetOrange, fill=sheetOrange!8] (m3) at (11.15,1.0) {\texttt{as} (4.1): rename; a key mapped to \texttt{never} is dropped};
+  \node[sb, minimum width=50mm, anchor=west] (m4) at (11.15,0.35) {\texttt{+/-readonly}, \texttt{+/-?} (2.8) $\to$ value \texttt{T[P]}};
+  \draw[flow] (m1) -- (m2); \draw[flow] (m2) -- (m3); \draw[flow] (m3) -- (m4);
+  \node[lbl, anchor=west] at (11.1,-0.05) {\emph{homomorphic} \texttt{[P in keyof T]} copies \texttt{?} and \texttt{readonly};};
+  \node[lbl, anchor=west] at (11.1,-0.3) {\texttt{Record} is not · over a tuple / array it yields a tuple / array (3.1)};
+  % ── 4 timeline ──
+  \draw[sheetGrey!40] (0,-0.6) -- (16.55,-0.6);
+  \draw[thick, sheetGrey] (1.75,-1.5) -- (15.55,-1.5);
+  \node[pt, font=\bfseries\scriptsize, align=left] at (0,-1.5) {\textcolor{sheetBlue}{4} arrived in};
+  \foreach \i/\v/\w in {
+      1/{2.1 · Dec 2016}/{\texttt{keyof}, \texttt{T[K]}, mapped types, \texttt{Partial}, \texttt{Pick}, \texttt{Record}},
+      2/{2.8 · Mar 2018}/{conditional types, \texttt{infer}, \texttt{+/-} modifiers},
+      3/{3.7 · Nov 2019}/{recursion through \texttt{Json[]}},
+      4/{4.0 · Aug 2020}/{variadic tuples \texttt{[...T, ...U]}},
+      5/{4.1 · Nov 2020}/{template literals, \texttt{as}, recursive conditionals},
+      6/{4.5 · Nov 2021}/{tail recursion, \texttt{Awaited}, depth 50 $\to$ 100},
+      7/{4.7 · May 2022}/{\texttt{in}/\texttt{out}, \texttt{infer X extends C}},
+      8/{4.8 · Aug 2022}/{\texttt{NonNullable<T> = T \& \{\}}},
+      9/{5.0 · Mar 2023}/{\texttt{const} type parameters},
+      10/{5.4 · Mar 2024}/{\texttt{NoInfer<T>}},
+      11/{6.0 · Mar 2026}/{last release line on the JavaScript code},
+      12/{7.0 · Jul 2026}/{native Go port, checks like 6.0}} {
+    \pgfmathsetmacro\xx{2.05+1.2*(\i-1)}
+    \node[ver] at (\xx,-1.5) {};
+    \ifodd\i
+      \node[tl, anchor=south] at (\xx,-1.42) {\textbf{\v}\\\w};
+    \else
+      \node[tl, anchor=north] at (\xx,-1.58) {\textbf{\v}\\\w};
+    \fi
+  }
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Type parameters \& inference}
+\begin{itemize}
+  \item \textbf{Constraint} \ct{<T extends HasId>}: an upper bound, met by shape; in the body
+        only the constraint's members exist. \ct{K extends keyof T} ties one parameter to
+        another. \textbf{Default} \ct{<T = string>} (2.3): used when inference finds no
+        candidate; it must satisfy the constraint; no required parameter after a defaulted one.
+  \item \textbf{Inference} gathers candidates from every argument: \ct{combine<T>(a: T[], b: T[])}
+        on \ct{([1, 2, 3], ["hello"])} fails with \emph{Type 'string' is not assignable to type
+        'number'} — pass \ct{<string | number>} explicitly.
+  \item \textbf{Literal candidates} are kept, not widened (\ct{1} $\to$ \ct{number}), when the
+        constraint includes a primitive or literal type: \ct{f<T extends number>(x: T, y: T): T[]}
+        makes \ct{f(1, 2)} a \ct{(1 | 2)[]}; without the constraint \ct{number[]} (2.1, PR \#10676).
+  \item \ct{<const T>} (5.0): infers as if the argument were written \ct{as const}
+        (\ct{readonly ["a", "b"]}), but only for literals written in the call — a variable
+        stays \ct{string[]}. A mutable constraint gives a mutable tuple: \ct{const T extends
+        string[]} infers \ct{["a", "b"]} (5.3, PR \#55229; 5.0–5.2 fell back to \ct{string[]}).
+  \item \ct{NoInfer<T>} (5.4, \ct{= intrinsic}): the position is checked but yields no
+        candidates — the other arguments decide \ct{T}.
+  \item \textbf{Instantiation expression} (4.7): \ct{const ErrorMap = Map<string, Error>} fixes
+        the type arguments of a value; \ct{new ErrorMap()} is a \ct{Map<string, Error>}.
+  \item Handbook rules: a type parameter should \textbf{appear twice}, or it relates nothing;
+        \textbf{push it down} — \ct{<T extends any[]>(arr: T)} returning \ct{arr[0]} is inferred
+        as \ct{any}, \ct{<T>(arr: T[])} as \ct{T}; use as few as possible.
+\end{itemize}
+
+\section{Operators on types}
+\ct{keyof T}: the union of its keys — a \ct{string} index signature gives \ct{string | number}
+(\ct{obj[0]} is \ct{obj["0"]}), a \ct{number} one \ct{number}; \ct{keyof any} =
+\ct{string | number | symbol} (\ct{PropertyKey}). \ct{typeof v}: a value's type. \ct{T[K]}: indexed
+access; \ct{T[number]}: the element type of an array or tuple; a tuple declares \ct{length} as a
+literal (\ct{[string, number]["length"]} is \ct{2}). Variadic tuples (4.0): a spread may be generic
+and sit anywhere — \ct{concat(a: T, b: U): [...T, ...U]} keeps both tuples' elements. 7.0 sorts
+types by content, so a printed union lists its members in one fixed order (6.0:
+\ct{--stableTypeOrdering}).
+
+\section{Conditional types \& \texttt{infer} (2.8)}
+\begin{itemize}
+  \item \ct{T extends U ? X : Y} \textbf{resolves} to \ct{Y} when the most permissive \ct{T} is
+        not assignable to \ct{U}, to \ct{X} when it definitely is — otherwise it is
+        \textbf{deferred} and stays generic until \ct{T} is known.
+  \item \ct{infer R} binds a piece of the match, and is allowed only in the \ct{extends} clause.
+        One name in several \textbf{co}variant spots $\to$ a union; in \textbf{contra}variant
+        spots (parameters) $\to$ an intersection.
+  \item Inferring from an overloaded function uses its \textbf{last} signature only — for
+        \ct{ReturnType} too.
+  \item \ct{infer S extends string} (4.7) filters in place; 4.8 parses literals:
+        \ct{"100" extends `\$\{infer N extends number\}`} gives \ct{100}, but \ct{"1.0"} gives
+        \ct{number} (it does not round-trip).
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Returning a new object where \ct{T} was promised: \emph{'\{ length: number; \}' is
+        assignable to the constraint of type 'Type', but 'Type' could be instantiated with a
+        different subtype of constraint …} — the caller may hold a richer \ct{T}.}
+  \trap{\ct{Omit}/\ct{Pick} on a union: \ct{keyof (A | B)} has only the shared keys, so
+        branch-only members vanish. \ct{Omit} (3.5) does not distribute, by design (\#31501):
+        write \ct{T extends any ? Omit<T, K> : never}.}
+  \trap{\ct{T extends never ? …} on \ct{never} gives \ct{never} (\#23182): test
+        \ct{[T] extends [never]}.}
+  \trap{A \ct{return} under a declared \ct{T extends string ? A : B} does not narrow by the
+        branch taken — each needs a cast. A fix was in the 5.8 beta (\#56941), reverted
+        (\#61136); the retry (\#61359) closed unmerged in Dec 2025.}
+\end{itemize}
+
+\columnbreak
+
+\section{Mapped \& template literal types}
+\begin{itemize}
+  \item \ct{keyof T} may hold \ct{number}/\ct{symbol} keys: remap via \ct{Capitalize<string \& K>}.
+  \item \textbf{Template literal types} (4.1) cross-multiply the unions in their holes:
+        \ct{`\$\{"one" | "two" | "red" | "blue"\} fish`} has 4 members. A union must stay below
+        \textbf{100\,000} members, else TS2590 \emph{Expression produces a union type that is too
+        complex to represent}.
+  \item \textbf{Matching} \ct{S extends `…\$\{infer X\}…`}: a hole followed by literal text takes
+        characters up to that text's \textbf{first} occurrence; a hole followed by another hole
+        takes \textbf{one} character; the last takes the rest. 7.0 counts code points: an emoji
+        is one character, not two surrogate halves.
+  \item \ct{Uppercase}, \ct{Lowercase}, \ct{Capitalize}, \ct{Uncapitalize} are declared
+        \ct{intrinsic} in the lib: built into the compiler.
+\end{itemize}
+
+\section{Recursion \& limits}
+\begin{itemize}
+  \item 3.7 resolves type arguments lazily, so an alias may recurse through an array or
+        generic: \ct{type Json = string | number | boolean | null | Json[] | \{ [k: string]: Json \}}.
+        4.1: conditional types may recurse — ``responsibly and sparingly''.
+  \item \textbf{100} nested instantiations, or \textbf{5\,000\,000} in all, end in TS2589
+        \emph{Type instantiation is excessively deep and possibly infinite}. Depth was 50 until
+        4.5 (PR \#45711); not configurable; 7.0 keeps both (team, Sep 2026).
+  \item \textbf{Tail position} (4.5): a branch that \emph{is} another conditional is evaluated in
+        a loop, up to \textbf{1000} rounds. \ct{Char | GetChars<Rest>} is not tail; an
+        accumulator \ct{Helper<Rest, Char | Acc>} is.
+  \item \ct{in}/\ct{out} also speed up deeply recursive types: the checker compares type
+        arguments instead of whole structures.
+\end{itemize}
+
+\section{The lib (es5.d.ts), condensed}
+\begin{lstlisting}[style=ts]
+type Partial<T>  = { [P in keyof T]?: T[P] };
+type Required<T> = { [P in keyof T]-?: T[P] };
+type Readonly<T> = { readonly [P in keyof T]: T[P] };
+type Pick<T, K extends keyof T> = { [P in K]: T[P] };
+type Record<K extends keyof any, T> = { [P in K]: T };
+type Exclude<T, U> = T extends U ? never : T;
+type Extract<T, U> = T extends U ? T : never;
+type Omit<T, K extends keyof any> = Pick<T, Exclude<keyof T, K>>;
+type NonNullable<T> = T & {};        // 4.8; was a conditional
+type Parameters<T extends (...args: any) => any> =
+  T extends (...args: infer P) => any ? P : never;
+type ReturnType<T extends (...args: any) => any> =
+  T extends (...args: any) => infer R ? R : any;
+type Awaited<T> = T extends null | undefined ? T :
+  T extends object & { then(onfulfilled: infer F, ...args: infer _): any }
+    ? F extends ((value: infer V, ...args: infer _) => any) ? Awaited<V> : never
+    : T;
+type Uppercase<S extends string> = intrinsic;  // NoInfer<T> too
+\end{lstlisting}
+
+\section{Worked types}
+\begin{lstlisting}[style=ts]
+type Foo<T> = T extends { a: infer U; b: infer U } ? U : never;
+type F1 = Foo<{ a: string; b: number }>;      // string | number
+type Bar<T> = T extends { f: (x: infer U) => void;
+                          g: (x: infer U) => void } ? U : never;
+type B1 = Bar<{ f: (x: { a: 1 }) => void;
+                g: (x: { b: 2 }) => void }>;  // { a: 1 } & { b: 2 }
+type Handlers<E> = {
+  [K in keyof E as `on${Capitalize<string & K>}`]: (e: E[K]) => void };
+type H = Handlers<{ login: { id: string }; logout: undefined }>;
+// { onLogin: (e: { id: string }) => void; onLogout: (e: undefined) => void }
+type Params<S> = S extends `${string}:${infer P}/${infer R}`
+  ? P | Params<`/${R}`>
+  : S extends `${string}:${infer P}` ? P : never;
+type P1 = Params<"/u/:id/post/:pid">;          // "id" | "pid"
+function light<C extends string>(all: C[], start: NoInfer<C>) {}
+light(["red", "green"], "blue");  // error: Argument of type
+// '"blue"' is not assignable to parameter of type '"red" | "green"'.
+\end{lstlisting}
+
+\end{multicols}
+
+{\raggedright\noindent\footnotesize\color{sheetGrey}\textit{Related:} \texttt{ts-type-system} ·
+\texttt{ts-config-and-practice} · RN testing + TypeScript · Swift syntax tricks — generics,
+protocols \& \texttt{some}/\texttt{any} · Kotlin type system \& generics\par}
+
+\end{document}

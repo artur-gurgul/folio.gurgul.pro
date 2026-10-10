@@ -1,0 +1,327 @@
+% public-key-maths.tex — the maths under public-key cryptography: RSA key generation with
+% worked small numbers, encrypt / decrypt / sign, CRT, why padding (OAEP, PSS) and the attacks it
+% stops; Diffie-Hellman and the discrete log; square-and-multiply; the elliptic-curve group law
+% and a toy curve over F_17; the curves in use; security-level equivalences and NIST's retirement
+% dates; ECDSA vs Ed25519 and the nonce-reuse key leak; a timeline.
+% Applied API (ECDH -> HKDF, CryptoKit signing) lives in crypto-cryptokit — not repeated here.
+% Sources (checked 2026-10-09):
+%   rfc-editor.org RFC 8017 (lambda(n) = LCM(p-1, q-1), e*d = 1 mod lambda; private key quintuple
+%     p, q, dP, dQ, qInv and the RSADP CRT steps; OAEP mLen <= k - 2hLen - 2, v1.5 <= k - 11;
+%     OAEP and PSS REQUIRED for new applications, v1.5 kept for compatibility; Bleichenbacher)
+%   nvlpubs.nist.gov FIPS 186-5 (3 Feb 2023: RSA per RFC 8017, ECDSA + deterministic ECDSA per
+%     RFC 6979, EdDSA per RFC 8032; DSA only verifies old signatures; signature key pairs not for
+%     other purposes; App. A.1.1: nlen >= 2048, odd e with 2^16 < e < 2^256, |p - q| >
+%     2^(nlen/2 - 100), 2^(nlen/2) < d < LCM(p-1, q-1)) · csrc.nist.gov/pubs/fips/186-5/final
+%   rfc-editor.org RFC 7748 (Curve25519: p = 2^255 - 19, A = 486662, u = 9, order 2^252 + ...,
+%     cofactor 8; clamping 248 / 127 / 64; MAY reject the all-zero secret; ~128-bit, Curve448
+%     ~224-bit, cofactor 4) · RFC 8032 (Ed25519: -x^2 + y^2 = 1 + d x^2 y^2, d = -121665/121666,
+%     L = 2^252 + 2774...; r = SHA-512(prefix || M), R = [r]B, S = (r + k s) mod L, 64-byte
+%     signature, reject S >= L, cofactored verification)
+%   secg.org/sec2-v2.pdf (secp256r1 = P-256: p = 2^224(2^32 - 1) + 2^192 + 2^96 - 1, a = p - 3,
+%     h = 1, chosen verifiably at random from a seed per X9.62; secp256k1: a = 0, b = 7,
+%     p = 2^256 - 2^32 - 977, h = 1)
+%   nvlpubs.nist.gov SP 800-57 Pt 1 Rev 5 Table 2 (comparable strengths, f = bits of n) ·
+%     SP 800-131A Rev 2 (2019; PKCS#1 v1.5 key transport disallowed after 2023) ·
+%     csrc.nist.gov SP 800-131A Rev 3 ipd (Oct 2024, still a draft: 128-bit minimum after 2030) ·
+%     csrc.nist.gov/pubs/ir/8547/ipd (Nov 2024, still an initial public draft in Oct 2026:
+%     112-bit RSA / ECDSA / EdDSA / DH / ECDH deprecated after 2030, all disallowed after 2035)
+%   rfc-editor.org RFC 7919 (ffdhe2048...8192, safe primes, g = 2; ffdhe2048 ~103 bits,
+%     ffdhe3072 ~125 bits; peers MUST check 1 < Y < p - 1) · weakdh.org (Logjam, CCS 2015: NFS
+%     precomputation depends only on p; 8.4 % of top-1M domains downgradable; one 1024-bit prime
+%     -> 18 % of top-1M HTTPS)
+%   rfc-editor.org RFC 8446 §9.1, §4.2.3 (secp256r1 MUST, X25519 SHOULD; PKCS#1 v1.5 only for
+%     signatures in certificates) · RFC 7518 §3 (RS256 = PKCS1-v1_5, PS256 = PSS, ES256 = P-256;
+%     R || S, 64 octets; RSA keys >= 2048) · developer.apple.com APNs token docs (ES256 only, .p8)
+%     · openssh.org/txt/release-9.5 (2023-10-04: ssh-keygen makes Ed25519 by default)
+%   Bleichenbacher, CRYPTO '98, LNCS 1462 (1-bit PKCS #1 conformance oracle, SSL 3.0) · RFC 3218
+%     (about 2^20 messages) · robotattack.org (ROBOT 2017, USENIX Security 2018; 27 of the top
+%     100 domains) · people.redhat.com/~hkario/marvin (2023, timing only; stop using v1.5
+%     encryption) · Kocher, CRYPTO '96, LNCS 1109 (timing attacks on RSA / DH private-key ops)
+%   factorable.net (Heninger, Durumeric, Wustrow, Halderman, USENIX Security 2012: RSA keys of
+%     0.50 % of TLS and 0.03 % of SSH hosts, DSA keys of 1.03 % of SSH hosts)
+%   members.loria.fr/PZimmermann/records/factor.html (RSA-768 2009-12-12; RSA-250 2020-02-28) ·
+%     cognition.com/blog/factoring-rsa-260 (Sep 2026: 862 bits, ~4,900 GPU-days ~ $400k, modified
+%     CADO-NFS, "essentially no algorithmic advancements"; RSA-1024 ~ $30M; RSA-2048 ~10^9 x
+%     harder than RSA-1024) · arxiv.org/abs/2505.15917 (Gidney 2025: RSA-2048 in < 1 week on
+%     < 1 M noisy qubits, vs 20 M in 2019)
+%   github.com/bitcoin-core/secp256k1 README (secp256k1, developed for Bitcoin) · cr.yp.to Curve25519
+%     paper, PKC 2006 ("every 32-byte string is accepted as a Curve25519 public key")
+%   textbook maths, not re-fetched: Pollard, Math. Comp. 32, 1978 (rho, ~sqrt(n)) · Lenstra &
+%     Lenstra (eds.), The development of the number field sieve, LNM 1554, 1993 ((64/9)^(1/3)) ·
+%     Boneh & Venkatesan, EUROCRYPT '98 (breaking RSA may not be equivalent to factoring) · Hasse
+%   fahrplan.events.ccc.de 27C3 #4087 "Console Hacking 2010" slides (Sony signed with the same k)
+%     · eprint.iacr.org/2020/615 (LadderLeak, CCS 2020: OpenSSL ECDSA keys from < 1 bit of nonce
+%     leakage per signature) · Jager, Schwenk, Somorovsky, ESORICS 2015 (invalid-curve attacks:
+%     2 of 8 TLS libraries leaked the server key; origin Biehl, Meyer, Muller, CRYPTO 2000)
+%   originators: Diffie, Hellman, IEEE Trans. IT-22, Nov 1976 · Rivest, Shamir, Adleman, CACM 21(2),
+%     1978 · Miller, CRYPTO '85 and Koblitz, Math. Comp. 48, 1987 · Bernstein, PKC 2006
+%     (Curve25519: every 32-byte string is a public key) · Bernstein, Duif, Lange, Schwabe, Yang,
+%     CHES 2011 (Ed25519) · Shor, FOCS 1994 · RFC 6979 (Aug 2013)
+%   arithmetic recomputed by hand: RSA 61 x 53 (lambda 780, d 413; phi 3120, d 2753; c = 2790; CRT
+%     dP 53, dQ 49, qInv 38, m1 4, m2 12, h 1), gcd(3233, 3599) = 61, DH mod 23, the F_17 curve
+%     (18 points + O = 19, every kG; example as in Paar & Pelzl, Understanding Cryptography)
+% @labels: area=crypto kind=concept platform=general topic=security,algorithms discussion=304
+% @tags: rsa, oaep, pss, padding-oracle, chinese-remainder-theorem, diffie-hellman, discrete-log, square-and-multiply, elliptic-curves, ecdh, ecdsa, ed25519, x25519, nonce-reuse, digital-signature, security-levels, shor
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\tikzset{
+  ph/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  l/.style={font=\tiny, text=black!75, align=left, inner sep=1pt},
+  k/.style={font=\sffamily\fontsize{4.5}{4.5}\selectfont, text=black!70, inner sep=0.5pt},
+  v/.style={draw=sheetGrey, fill=white, rounded corners=1pt, font=\ttfamily\tiny, inner sep=1.5pt, minimum height=4mm},
+  pub/.style={v, draw=sheetGreen, fill=sheetGreen!12},
+  sec/.style={v, draw=sheetRed, fill=sheetRed!8},
+  pt/.style={circle, fill=#1, inner sep=0pt, minimum size=1.6mm},
+}
+
+\begin{document}
+
+\sheettitle{Public-key maths — RSA, Diffie–Hellman, elliptic curves}{crypto · folio}
+
+\oneliner{A \textbf{trapdoor}: cheap one way, infeasible back without a secret. \textbf{RSA}:
+\textbf{factoring} $n = pq$. \textbf{DH}: the \textbf{discrete log} of $g^a$ mod $p$. \textbf{ECC}:
+$k$ from $kG$; only \emph{generic} $\sqrt{n}$ attacks are known, so a 256-bit curve matches
+3072-bit RSA. Shor's algorithm breaks all three.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ================= RSA worked example
+  \node[ph] at (-0.1,3.6) {RSA with toy numbers};
+  \node[sec] (p) at (0.35,3.0) {p = 61};  \node[sec] (q) at (1.45,3.0) {q = 53};
+  \node[pub] (n) at (0.9,2.3) {n = pq = 3233};
+  \node[sec] (lam) at (3.05,2.3) {$\lambda$ = lcm(60, 52) = 780};
+  \draw[flow] (p) -- (n); \draw[flow] (q) -- (n);
+  \draw[flow] (q.east) -| (lam.north);
+  \node[pub] (e) at (0.9,1.6) {e = 17};
+  \node[sec] (d) at (3.05,1.6) {d = 413};
+  \draw[flow] (lam) -- node[l, left=3pt]{$e\,d \equiv 1$ mod $\lambda$} (d);
+  \draw[flow, dashed] (e) -- (d);
+  \node[l, text=sheetGreen!45!black] at (0.35,1.05) {public key (n, e)};
+  \node[l, text=sheetRed] at (2.95,1.05) {private key d (+ p, q)};
+  \node[l, align=center] at (1.75,0.55) {17·413 = 7021 = 9·780 + 1 \checkmark\\($\varphi$ = 3120 instead gives d = 2753: also works)};
+  \node[v, fill=sheetBlue!8] (m) at (0.2,-0.1) {m = 65};
+  \node[v, fill=sheetOrange!12, draw=sheetOrange] (c) at (2.1,-0.1) {c = 2790};
+  \node[v, fill=sheetBlue!8] (m2) at (4.0,-0.1) {65};
+  \draw[hot] (m) -- node[l, above]{$m^{e}$ mod $n$} (c);
+  \draw[hot] (c) -- node[l, above]{$c^{d}$ mod $n$} (m2);
+  \node[l, text=sheetGrey] at (1.95,-0.55) {$m^{ed} \equiv m$: Fermat mod $p$ and mod $q$, joined by the CRT};
+  % square-and-multiply ladder
+  \node[l, font=\tiny\bfseries, text=sheetBlue] at (5.2,3.45) {square-and-multiply:\\$65^{17}$, 17 = 10001$_2$};
+  \foreach \y/\val/\op in {2.85/65/start, 2.35/992/sq, 1.85/1232/sq, 1.35/1547/sq, 0.85/789/sq} {
+    \node[v, minimum width=9mm] at (5.0,\y) {\val};
+    \node[l] at (5.75,\y) {\op}; }
+  \foreach \ya/\yb in {2.85/2.35, 2.35/1.85, 1.85/1.35, 1.35/0.85} \draw[->, thin, sheetGrey] (4.55,\ya-0.12) -- (4.55,\yb+0.12);
+  \node[v, minimum width=9mm, draw=sheetOrange, fill=sheetOrange!12] at (5.0,0.35) {2790};
+  \node[l] at (5.8,0.35) {$\times$65};
+  \node[l, text=sheetGrey] at (5.3,-0.55) {5 products, not 16};
+  \draw[sheetGrey!50] (6.25,3.75) -- (6.25,-0.8);
+  % ================= Diffie-Hellman
+  \node[ph] at (6.3,3.6) {Diffie–Hellman (p = 23, g = 5)};
+  \node[box, font=\tiny, minimum width=15mm] (al) at (7.15,2.85) {Alice\\secret a = 6};
+  \node[box, font=\tiny, minimum width=15mm] (bo) at (10.0,2.85) {Bob\\secret b = 15};
+  \node[pub] (A) at (7.15,1.95) {A = 5$^6$ mod 23 = 8};
+  \node[pub] (B) at (10.0,1.95) {B = 5$^{15}$ mod 23 = 19};
+  \draw[flow] (al) -- (A); \draw[flow] (bo) -- (B);
+  \draw[hot] (A.east) -- ([yshift=2pt]B.west |- A.east) ;
+  \draw[hot] (B.south west) -- (A.south east);
+  \node[l, text=sheetBrown] at (8.6,2.4) {A, B sent in clear};
+  \node[sec] (sa) at (7.15,1.0) {B$^a$ = 19$^6$ mod 23 = 2};
+  \node[sec] (sb) at (10.0,1.0) {A$^b$ = 8$^{15}$ mod 23 = 2};
+  \draw[flow] (A) -- (sa); \draw[flow] (B) -- (sb);
+  \node[l] at (8.6,0.3) {both get $g^{ab}$ = 5$^{90}$ mod 23 = \textbf{2}; an eavesdropper\\sees p, g, A, B and must solve $5^x \equiv 8$ (mod 23),\\the \textbf{discrete log}. 23 = 2·11 + 1 is a safe prime;\\5 has order 22, so it generates the whole group};
+  \node[l, text=sheetRed] at (8.6,-0.55) {unauthenticated $\Rightarrow$ a MITM runs two DHs};
+  \draw[sheetGrey!50] (11.1,3.75) -- (11.1,-0.8);
+  % ================= EC point addition
+  \node[ph] at (11.15,3.6) {EC point addition (over $\mathbf{R}$)};
+  \begin{scope}[shift={(13.55,1.4)}, x=0.95cm, y=0.8cm]
+    \draw[->, sheetGrey!60] (-1.9,0) -- (2.0,0); \draw[->, sheetGrey!60] (0,-2.0) -- (0,2.1);
+    \draw[thick, sheetBlue, smooth, samples=60, domain=-1.3247:1.6] plot (\x, {sqrt(max(\x*\x*\x-\x+1,0))});
+    \draw[thick, sheetBlue, smooth, samples=60, domain=-1.3247:1.6] plot (\x, {-sqrt(max(\x*\x*\x-\x+1,0))});
+    \draw[sheetOrange, thick] (-1.7,1) -- (1.7,1);
+    \draw[dashed, sheetGrey] (1,1) -- (1,-1);
+    \node[pt=sheetGreen] at (-1,1) {}; \node[l, above left] at (-1,1) {P = ($-$1, 1)};
+    \node[pt=sheetGreen] at (0,1) {};  \node[l, above] at (0.1,1.2) {Q = (0, 1)};
+    \node[pt=sheetGrey] at (1,1) {};   \node[l, above right] at (1,1) {$-$R};
+    \node[pt=sheetRed] at (1,-1) {};   \node[l, right, text=sheetRed] at (1,-1) {\textbf{R = P + Q}\\= (1, $-$1)};
+    \node[l, text=sheetBlue] at (-1.15,-1.5) {$y^2 = x^3 - x + 1$};
+  \end{scope}
+  \node[l] at (13.75,-0.6) {chord through P, Q meets the curve a third time; reflect.\\P = Q: the tangent. Identity: the point at infinity O.};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\footnotesize\setstretch{1.0}\raggedright
+
+\hd{RSA — keys and operations}
+\begin{itemize}
+  \item \textbf{Keygen}: equal-size primes $p, q$ (1536 bits each for RSA-3072); $n = pq$;
+        $\lambda = \mathrm{lcm}(p{-}1, q{-}1)$ (RFC 8017; $\varphi$ also works, larger $d$);
+        $e$ = \textbf{65537} = 2$^{16}$+1; $d = e^{-1}$ mod $\lambda$ by extended Euclid.
+  \item \textbf{FIPS 186-5}: $n \ge 2048$; $e$ odd, $2^{16} < e < 2^{256}$ ($e = 3$ is out);
+        $|p - q| > 2^{nlen/2-100}$ (else Fermat's method factors $n$); $2^{nlen/2} < d < \lambda$.
+  \item \textbf{Encrypt} $c = m^e$, \textbf{decrypt} $m = c^d$; \textbf{sign} $s = \mathrm{EM}^d$,
+        \textbf{verify} $s^e$ = EM (all mod $n$; EM = padded $H(m)$). $e$ = 65537: 16 squarings + 1 product.
+  \item \textbf{CRT} (RFC 8017 key $p, q, dP, dQ, qInv$): two half-size powers, $\approx$4$\times$
+        faster. Toy: $dP$ = 53, $dQ$ = 49, $qInv$ = 38; $m_1$ = 45$^{53}$ mod 61 = 4, $m_2$ =
+        34$^{49}$ mod 53 = 12, $h = (m_1 - m_2)\,qInv$ mod $p$ = 1, $m = m_2 + qh$ = \textbf{65}.
+  \item Factoring gives $d$; ``breaking RSA $\Rightarrow$ factoring'' is unproven.
+\end{itemize}
+
+\hd{Padding — textbook RSA is broken}
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{60mm}@{}}
+\toprule
+deterministic & same $m$ $\to$ same $c$: guess, encrypt, compare\\
+malleable & $c \cdot 2^e$ mod $n$ decrypts to $2m$\\
+$e = 3$, $m^3 < n$ & $c$ is a plain cube: take the integer cube root\\
+v1.5 encryption & a 1-bit ``padding OK?'' oracle decrypts or signs in $\sim$2$^{20}$ queries
+(Bleichenbacher); ROBOT: 27 of the top 100 domains; Marvin: timing alone\\
+\bottomrule
+\end{tabular}}\par
+Fix: \textbf{OAEP} (encryption) and \textbf{PSS} (signatures), REQUIRED for new applications by
+RFC 8017. NIST disallowed v1.5 key transport after 2023; v1.5 \emph{signatures} survive in
+certificates and JWT \ct{RS256}. OAEP carries $\le k - 2h_{Len} - 2$ bytes: RSA-2048 + SHA-256
+= \textbf{190 B} $\to$ wrap a key (hybrid), never bulk data.
+
+\hd{Factoring cost — sub-exponential}
+GNFS $\approx \exp\big(1.923\,(\ln n)^{1/3}(\ln\ln n)^{2/3}\big)$ $\to$ 3072 bits for 128-bit
+security. Records: RSA-250 (829 bits, $\sim$2700 core-years); RSA-260 (862 bits, Sep 2026,
+$\sim$4900 GPU-days $\approx$ \$400k, ``essentially no algorithmic advancements''; RSA-1024 put at
+$\sim$\$30M, RSA-2048 $\sim$10$^9\times$ harder).
+
+\hd{Diffie–Hellman and the discrete log}
+\begin{itemize}
+  \item Each side sends $g^x$ mod $p$; both reach $g^{ab}$; unauthenticated, so sign the transcript.
+        The NFS solves the \textbf{DLP} in $\mathbf{Z}_p^*$ sub-exponentially too $\to$ RSA-like
+        sizes (3072-bit $p$, 256-bit subgroup).
+  \item RFC 7919 safe-prime groups ffdhe2048…8192, $g = 2$ (2048 rated $\approx$103 bits);
+        peers MUST check $1 < Y < p - 1$, else $Y = p - 1$ forces a 2-element subgroup.
+  \item \textbf{Logjam}: NFS precomputation depends only on $p$. 512-bit export DH fell per
+        connection (8.4\,\% of top-1M domains); breaking the commonest 1024-bit prime would expose
+        18\,\% of top-1M HTTPS.
+\end{itemize}
+
+\hd{Comparable strength — SP 800-57 Pt 1 Rev 5, Table 2}
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{6mm}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{10mm}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{7mm}>{\raggedright\arraybackslash}p{23mm}@{}}
+\toprule
+\textbf{bits} & \textbf{symmetric} & \textbf{RSA/DH} & \textbf{ECC (|n|)} & \textbf{ratio} & \textbf{NIST (IR 8547 draft)}\\ \midrule
+$\le$80 & 2TDEA & 1024 & 160–223 & — & insufficient\\
+112 & 3TDEA & 2048 & 224–255 & 9$\times$ & deprecated after 2030\\
+\textbf{128} & \textbf{AES-128} & \textbf{3072} & \textbf{256–383} & \textbf{12$\times$} & disallowed after 2035\\
+192 & AES-192 & 7680 & 384–511 & 20$\times$ & disallowed after 2035\\
+256 & AES-256 & 15360 & 512+ & 30$\times$ & disallowed after 2035\\
+\bottomrule
+\end{tabular}}\par
+IR 8547 treats RSA, ECDSA, EdDSA, DH, ECDH alike: Shor solves factoring and both discrete
+logs in polynomial time; Gidney 2025: RSA-2048 in $<$1 week on $<$1\,M noisy qubits.
+
+\columnbreak
+
+\hd{Elliptic curves — the group}
+Points on $y^2 = x^3 + ax + b$ over $\mathbf{F}_p$, plus $O$. Chord
+$\lambda = \frac{y_2 - y_1}{x_2 - x_1}$, tangent $\lambda = \frac{3x_1^2 + a}{2y_1}$;
+$x_3 = \lambda^2 - x_1 - x_2$, $y_3 = \lambda(x_1 - x_3) - y_1$; $-P = (x, -y)$; divide = multiply
+by the inverse mod $p$. $kG$ by \textbf{double-and-add}. \textbf{ECDLP} ($k$ from $kG$): best
+known for good curves is Pollard's rho, $\sim\sqrt{n}$ steps $\to$ 256-bit $n$ = 128-bit security.
+Hasse: $\#E \in p + 1 \pm 2\sqrt{p}$; cofactor $h = \#E/n$.
+
+\noindent\begin{tikzpicture}[sheet, x=0.205cm, y=0.205cm]
+  \draw[sheetGrey!20] (0,0) grid (16,16);
+  \draw[sheetGrey!70] (0,0) rectangle (16,16);
+  \foreach \t in {0,8,16} { \node[k, below] at (\t,-0.2) {\t}; \node[k, left] at (-0.2,\t) {\t}; }
+  \draw[dashed, sheetBlue!45] (0,8.5) -- (16,8.5);
+  \foreach \x/\y/\n in {6/3/2, 3/1/4, 9/16/5, 16/13/6, 0/6/7, 13/7/8, 7/6/9, 0/11/12, 16/4/13, 9/1/14, 3/16/15, 10/11/16, 6/14/17, 5/16/18}
+    { \node[pt=sheetBlue!70] at (\x,\y) {}; \node[k, anchor=south west] at (\x+0.1,\y+0.1) {\n}; }
+  \node[pt=sheetGreen] at (5,1) {};   \node[k, anchor=south west, text=sheetGreen!50!black] at (5.1,1.1) {\textbf{1 = G}};
+  \node[pt=sheetOrange] at (10,6) {}; \node[k, anchor=south west, text=sheetOrange] at (10.1,6.1) {\textbf{3 = A}};
+  \node[pt=sheetOrange] at (7,11) {}; \node[k, anchor=south west, text=sheetOrange] at (7.1,11.1) {\textbf{10 = B}};
+  \node[pt=sheetRed] at (13,10) {};   \node[k, anchor=south west, text=sheetRed] at (13.1,10.1) {\textbf{11}};
+  \node[l, anchor=north west, text width=40mm, font=\scriptsize] at (18.6,16.6) {%
+    \textbf{Toy curve} $y^2 = x^3 + 2x + 2$ over $\mathbf{F}_{17}$: 18 points + $O$ = \textbf{19},
+    a prime, so every point generates the group. Label = $k$ in $kG$, $G$ = (5, 1).\\[2pt]
+    2$G$: $\lambda$ = 77·2$^{-1}$ $\equiv$ 9·9 $\equiv$ 13;\\
+    $x$ = 13$^2$ $-$ 10 $\equiv$ 6, $y$ = 13(5 $-$ 6) $-$ 1 $\equiv$ 3.\\[2pt]
+    $kG$ and $(19{-}k)G$ mirror about $y$ = 8.5.\\[2pt]
+    \textbf{ECDH}: $a$ = 3 $\to$ $A$ = (10, 6); $b$ = 10 $\to$ $B$ = (7, 11);
+    both reach 30$G$ = \textbf{11$G$ = (13, 10)}.};
+\end{tikzpicture}
+
+\hd{Curves in use}
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{40mm}>{\raggedright\arraybackslash}p{2mm}>{\raggedright\arraybackslash}p{19mm}@{}}
+\toprule
+\textbf{curve} & \textbf{equation · field} & \textbf{h} & \textbf{used for}\\ \midrule
+P-256 & $y^2 = x^3 - 3x + b$, $p = 2^{256} - 2^{224} + 2^{192} + 2^{96} - 1$; $b$ from a seed & 1 & TLS 1.3 MUST; ES256, APNs\\
+secp256k1 & $y^2 = x^3 + 7$, $p = 2^{256} - 2^{32} - 977$ & 1 & Bitcoin\\
+Curve25519 & $v^2 = u^3 + 486662u^2 + u$, $p = 2^{255} - 19$, $u = 9$; clamp: low 3 bits 0, bit 255 = 0, bit 254 = 1 & 8 & X25519 (TLS SHOULD)\\
+Ed25519 & $-x^2 + y^2 = 1 + dx^2y^2$, $d = -\frac{121665}{121666}$: same curve, Edwards form & 8 & SSH default\\
+\bottomrule
+\end{tabular}}
+
+\hd{ECDSA vs Ed25519 — the nonce}
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{32mm}>{\raggedright\arraybackslash}p{35mm}@{}}
+\toprule
+& \textbf{ECDSA} (FIPS 186-5) & \textbf{Ed25519} (RFC 8032)\\ \midrule
+nonce & random $k$, or RFC 6979 (deterministic) & $r$ = SHA-512(prefix $\Vert$ M) mod $L$\\
+sign & $r = (kG)_x$, $s = k^{-1}(z + r\,d)$ mod $n$ & $R = rB$, $S = r + \mathrm{H}(R \Vert A \Vert M)\, s$ mod $L$\\
+bytes & $r \Vert s$ = 64 (JWS), DER $\le$ 72 & 64; reject $S \ge L$\\
+malleable & yes: $(r, n - s)$ verifies & no\\
+\bottomrule
+\end{tabular}}\par
+\textbf{Nonce reuse}: same $k$ $\Rightarrow$ same $r$; $k = \frac{z_1 - z_2}{s_1 - s_2}$,
+$d = \frac{s_1 k - z_1}{r}$ (mod $n$): the key from two signatures. Sony signed PS3 code with one
+fixed $k$; LadderLeak took OpenSSL ECDSA keys from $<$1 bit of nonce leak per signature.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``Signing = encrypting with the private key'' — only in textbook RSA.}
+  \trap{``256-bit ECC = 256-bit security'' — it is 128.}
+  \trap{A starved RNG at key generation repeats a prime: $\gcd(n_1, n_2) = p$ (gcd(3233, 61·59)
+        = 61). A batch GCD factored the RSA keys of 0.50\,\% of TLS and 0.03\,\% of SSH hosts.}
+  \trap{Square-and-multiply branches on secret bits; timing leaks the key (Kocher) $\to$
+        constant-time ladder, blinding.}
+  \trap{ECDH without an on-curve check: invalid points leaked keys from 2 of 8 TLS libraries.
+        X25519 accepts any 32 bytes by design.}
+\end{itemize}
+
+\end{multicols}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \draw[thick, sheetGrey] (0,0) -- (16.55,0);
+  \foreach \i/\yr/\txt [count=\c] in {
+    0/1976/{Diffie–Hellman,\\New Directions},
+    1/1978/{RSA (Rivest,\\Shamir, Adleman)},
+    2/1985/{ECC: Miller;\\Koblitz (1987)},
+    3/1994/{Shor: factoring\\+ DL, quantum},
+    4/1996/{Kocher:\\timing attacks},
+    5/1998/{Bleichenbacher:\\v1.5 oracle},
+    6/2006/{Curve25519\\(Bernstein)},
+    7/2010/{PS3: one fixed\\ECDSA $k$},
+    8/2011/{Ed25519},
+    9/2012/{batch GCD\\on Internet keys},
+    10/2015/{Logjam},
+    11/2017/{ROBOT},
+    12/2020/{RSA-250\\factored},
+    13/2023/{FIPS 186-5:\\+EdDSA, $-$DSA},
+    14/2024/{IR 8547\\draft},
+    15/2026/{RSA-260\\on GPUs},
+    16/2030/{draft: 112-bit\\deprecated},
+    17/2035/{draft: RSA,\\ECC disallowed}} {
+    \pgfmathsetmacro\xx{0.7+0.9*\i}
+    \fill[sheetBlue] (\xx,0) circle (1.2pt);
+    \node[l, font=\tiny\bfseries, text=sheetBlue, anchor=north] at (\xx,-0.04) {\yr};
+    \ifodd\c \node[l, anchor=south, align=center] at (\xx,0.04) {\txt};
+    \else    \node[l, anchor=north, align=center] at (\xx,-0.3) {\txt}; \fi }
+\end{tikzpicture}
+
+\noindent{\footnotesize\raggedright\color{sheetGrey}\textit{Related:} Cryptography with CryptoKit · TLS 1.3
+\& PKI · JWT attacks \& token hardening · \texttt{post-quantum-crypto} · \texttt{secure-randomness}
+· \texttt{block-cipher-modes}\par}
+
+\end{document}

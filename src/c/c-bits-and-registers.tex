@@ -1,0 +1,344 @@
+% c-bits-and-registers.tex — bits and hardware registers in C: masks and fields in three
+% vocabularies (CMSIS, ESP-IDF, Linux), the C23 shift rules, constants and promotion, the
+% lowest-set-bit tricks, <stdbit.h> vs the builtins, volatile register access, one-store bit
+% changes (SET/CLR registers, bit-banding), how status flags clear, C bit-fields vs hardware.
+% Sources (checked 2026-10-09):
+%   open-std.org/jtc1/sc22/wg14/www/docs/n3220.pdf (C23 working draft = ISO/IEC 9899:2024):
+%     6.2.6.2 (two's complement only, NOTE 2) · 6.3.1.1 (promotions: rank <= int -> int;
+%     bit-precise types not promoted; applied to unary + - ~ and both shift operands) · 6.4.4.2
+%     (0b constants, ' digit separator, hex/binary constants try unsigned types, decimal never) ·
+%     6.5.8 (shift: count < 0 or >= width UB; unsigned << wraps; signed << UB unless the result is
+%     representable; negative >> implementation-defined) · 6.5.9-6.5.13 grammar (precedence:
+%     shift > relational > equality > & > ^ > |) · 6.7.3.1 p7 (plain int bit-field signedness
+%     implementation-defined) · 6.7.3.2 p5, p13, p14, fn 132 (bit-field types; unit, order,
+%     straddling implementation-defined; :0 closes the unit; no &) · 6.7.4.1 p8 + EXAMPLE 1 (what
+%     is a volatile access is implementation-defined; const volatile) · 7.18 (<stdbit.h>: 14
+%     families x _uc/_us/_ui/_ul/_ull + generic; values at 0; bit_ceil -> 0 if unrepresentable;
+%     __STDC_ENDIAN_NATIVE__) · 7.22 (exact-width types optional, least required; UINTN_WIDTH;
+%     UINTN_C has the promoted type) · 7.23.6.1 (%b, # gives 0b, %B optional, wN length)
+%   en.cppreference.com/w/c/io/fprintf (cross-check %b, wN)
+%   gcc.gnu.org/onlinedocs/gcc: Integers-implementation (>> sign-extends; signed << defined as an
+%     extension, still reported by -fsanitize=shift; out-of-range conversion is modulo 2^N) ·
+%     Structures-unions-enumerations-and-bit-fields-implementation (plain int field signed,
+%     -funsigned-bitfields; long and enum fields allowed; order and straddling by ABI) · Volatiles
+%     (volatile bit-fields may be read when written or when a neighbour is accessed: unwise for
+%     hardware) · Code-Gen-Options (-fstrict-volatile-bitfields; default from the ABI) ·
+%     Bit-Operation-Builtins (clz/ctz undefined at 0; ffs; clzg/ctzg second argument) ·
+%     gcc-14.1.0 Other-Builtins (popcountg, clzg, __builtin_stdc_*) · gcc.gnu.org/gcc-14/changes
+%     (_BitInt on IA-32, x86-64, AArch64) · gcc.gnu.org/gcc-15/changes (gnu23 default;
+%     __builtin_stdc_rotate_left/right)
+%   sourceware.org/pipermail/libc-announce/2024/000038.html (glibc 2.39, 31 Jan 2024: <stdbit.h>)
+%     · savannah.gnu.org/forum/forum.php?forum_id=10111 (glibc 2.35: printf %b, %B)
+%   keil.com/dd/docs/datashts/arm/cortex_m3/r2p1/dui0552a_cortex_m3_dgug.pdf §2.2.5 (Arm DUI
+%     0552A: bit-band regions + 32 MB aliases, formula, 0x2200001C example, bit[0], write = RMW)
+%     · community.arm.com "Cortex-M for Beginners" (Arm, 2017: bit band optional on M3/M4; M0,
+%     M0+, M1 do not have it) · documentation-service.arm.com ARM DAI 0321A (M0/M0+ have no bit
+%     band; not supported on TrustZone for Armv8-M) · community.arm.com Yiu, "Software Development
+%     in ARMv8-M Architecture" (no bit band on Cortex-M33)
+%   arm-software.github.io/CMSIS_6/latest/Core/group__peripheral__gr.html (_Pos/_Msk, _VAL2FLD,
+%     _FLD2VAL) · github.com/torvalds/linux include/linux/bits.h, bitfield.h (GENMASK,
+%     FIELD_PREP/FIELD_GET compile-time checks, FIELD_MODIFY)
+%   github.com/espressif/esp-idf components/soc/esp32: include/soc/soc.h (REG_SET_BIT,
+%     REG_SET_FIELD are read-modify-write; _V/_S) · register/soc/gpio_reg.h (OUT_W1TS 0x08,
+%     OUT_W1TC 0x0C, STATUS_W1TC; _M = _V << _S) · register/soc/uart_reg.h (INT_RAW, INT_ST =
+%     raw when enabled, INT_ENA, INT_CLR) · register/soc/gpio_struct.h (volatile struct of
+%     bit-field unions) · docs.espressif.com esp-idf v5.0 migration-guides gcc (GCC 11:
+%     uint32_t is unsigned long on Xtensa and RISC-V; use PRIx32)
+%   STMicroelectronics RM0433 GPIO chapter (BSRR: atomic, "no risk of an IRQ occurring between
+%     the read and the modify access"; set wins) · RM0091, RM0490 register abbreviations
+%     (rc_w1, rc_w0, rc_r, t) · efton.sk/STM32/gotcha/gotchas.pdf (TIMx_SR rc_w0, EXTI_PR
+%     rc_w1 — secondary)
+%   graphics.stanford.edu/~seander/bithacks.html (x &= x - 1: Wegner, CACM 1960; K&R 2nd ed.
+%     exercise 2-9) — every identity on the page re-checked by hand arithmetic
+% @labels: area=c kind=concept platform=embedded topic=hardware,language discussion=292
+% @tags: bit-masks, bit-fields, popcount, stdbit, power-of-two, signed-shift, integer-promotion, undefined-behavior, volatile, mmio, read-modify-write, w1ts-w1tc, w1c, bit-banding
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\tikzset{
+  bit/.style={draw=sheetGrey, minimum width=4.9mm, minimum height=5mm, inner sep=0pt,
+              font=\ttfamily\scriptsize},
+  bno/.style={font=\ttfamily\tiny, text=sheetGrey, inner sep=0.5pt},
+  lbl/.style={font=\scriptsize, inner sep=1pt, align=center},
+  sb/.style={draw=sheetGrey, minimum width=3.2mm, minimum height=3mm, inner sep=0pt,
+             font=\ttfamily\tiny},
+  l/.style={font=\tiny, text=black!75, inner sep=1pt, align=left},
+  ins/.style={draw=sheetGrey, fill=white, rounded corners=1pt, font=\ttfamily\tiny,
+              inner sep=1.2pt, minimum height=3.4mm},
+  chip/.style={draw=sheetGrey, rounded corners=1pt, font=\ttfamily\tiny, inner sep=1.5pt,
+               minimum height=3.4mm},
+}
+% one row of 8 bits: \bitrow{x}{y}{macro holding a 0/1 list}{fill for the 1s}
+\newcommand\bitrow[4]{%
+  \foreach \bb [count=\j from 0] in #3 {%
+    \ifnum\bb=1 \node[sb, fill=#4] at (#1+\j*0.32, #2) {1};%
+    \else \node[sb] at (#1+\j*0.32, #2) {0};\fi}}
+
+\begin{document}
+
+\sheettitle{Bits, masks and hardware registers in C}{c · folio}
+
+\oneliner{A register is a fixed address reached through a \ct{volatile uint32\_t *}; a
+field is a \textbf{position + width} — read it \emph{shift, then mask}, write it
+\emph{clear, then OR}, in \textbf{unsigned} arithmetic with shift counts below the width.
+\ct{r |= m} is a load, an OR and a store: SET/CLR registers, bit-band aliases and
+write-1-to-clear flags exist so that one bit changes in \textbf{one store}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \i in {0,...,31} {
+    \pgfmathtruncatemacro{\b}{31-\i}
+    \node[bno] at (\i*0.49+0.245, 0.42) {\b};
+  }
+  % fields: 31..24 reserved, 23..16 DIV, 15..12 MODE, 11..8 res, 7 EN, 6 IE, 5..2 res, 1 ERR, 0 DONE
+  \foreach \i in {0,...,31} {
+    \pgfmathtruncatemacro{\b}{31-\i}
+    \ifnum\b>23 \def\f{black!6}\def\v{-}\fi
+    \ifnum\b<24 \ifnum\b>15 \def\f{sheetBlue!18}\def\v{0}\fi\fi
+    \ifnum\b<16 \ifnum\b>11 \def\f{sheetGreen!20}\def\v{0}\fi\fi
+    \ifnum\b<12 \ifnum\b>7 \def\f{black!6}\def\v{-}\fi\fi
+    \ifnum\b=7 \def\f{sheetOrange!25}\def\v{1}\fi
+    \ifnum\b=6 \def\f{sheetOrange!12}\def\v{0}\fi
+    \ifnum\b<6 \ifnum\b>1 \def\f{black!6}\def\v{-}\fi\fi
+    \ifnum\b<2 \def\f{sheetRed!18}\def\v{0}\fi
+    \node[bit, fill=\f] at (\i*0.49+0.245, 0) {\v};
+  }
+  % DIV = 0x2A = 0010 1010 in bits 23..16 -> bits 21, 19, 17 (i = 10, 12, 14)
+  \foreach \i/\v in {10/1,12/1,14/1} \node[bit, fill=sheetBlue!35] at (\i*0.49+0.245, 0) {\v};
+  % MODE = 0x3 in bits 15..12 -> bits 13, 12 (i = 18, 19)
+  \foreach \i/\v in {18/1,19/1} \node[bit, fill=sheetGreen!40] at (\i*0.49+0.245, 0) {\v};
+  \draw[decorate, decoration={brace, mirror, amplitude=3pt}, thick, sheetGrey] (0.02,-0.3) -- (3.9,-0.3)
+     node[midway, below=3pt, lbl, text=sheetGrey]{reserved: \textbf{write back what you read}};
+  \draw[decorate, decoration={brace, mirror, amplitude=3pt}, thick, sheetBlue] (3.94,-0.3) -- (7.82,-0.3)
+     node[midway, below=3pt, lbl, text=sheetBlue]{\textbf{DIV} [23:16] = 0x2A, \ct{\_Pos} 16\\\ct{\_Msk} = \ct{0xFFu << 16} = \ct{0x00FF0000}};
+  \draw[decorate, decoration={brace, mirror, amplitude=3pt}, thick, sheetGreen] (7.86,-0.3) -- (9.78,-0.3)
+     node[midway, below=3pt, lbl, text=sheetGreen]{\textbf{MODE} [15:12] = 3\\\ct{(r >> 12) \& 0xFu}};
+  \draw[decorate, decoration={brace, mirror, amplitude=3pt}, thick, sheetOrange] (11.78,-0.3) -- (12.72,-0.3)
+     node[midway, below=3pt, lbl, text=sheetOrange]{EN, IE\\read/write};
+  \draw[decorate, decoration={brace, mirror, amplitude=3pt}, thick, sheetRed] (14.72,-0.3) -- (15.66,-0.3)
+     node[midway, below=3pt, lbl, text=sheetRed]{ERR, DONE\\\textbf{W1C} flags};
+  \node[lbl, anchor=west, text=black!70] at (-0.05,0.85) {\textbf{CTRL} — an illustrative 32-bit
+    register holding \ct{0x002A3080}; bit 31 left, bit 0 right. Field = \emph{position} +
+    \emph{width}; a 1-bit flag is a field of width 1.};
+\end{tikzpicture}
+
+\vspace{-4pt}
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Six idioms}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{10mm}>{\ttfamily\raggedright\arraybackslash}p{40mm}>{\raggedright\arraybackslash}p{24mm}@{}}
+\toprule
+set $n$ & r |= 1u << n & OR forces a 1\\
+clear $n$ & r \&= \textasciitilde(1u << n) & AND with a hole\\
+toggle $n$ & r \^{}= 1u << n & XOR flips\\
+test $n$ & (r >> n) \& 1u & 0/1; \ct{!!(r \& m)} too\\
+get field & (r \& Msk) >> Pos & \ct{Msk} = shifted mask\\
+put field & r = (r \& \textasciitilde Msk) | ((v << Pos) \& Msk) & clear, OR; the last
+  \ct{\& Msk} stops a too-big \ct{v}\\
+\bottomrule
+\end{tabular}}\par
+Put \textbf{DIV = 0x15} into \ct{0x002A3080}: \ct{r \& \textasciitilde 0x00FF0000} =
+\ct{0x00003080}; \ct{(0x15 << 16) \& Msk} = \ct{0x00150000}; OR $\rightarrow$
+\ct{0x00153080}.
+
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{7mm}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{25mm}>{\raggedright\arraybackslash}p{22mm}@{}}
+\toprule
+ & \textbf{CMSIS} (Arm) & \textbf{ESP-IDF} \ct{soc/} & \textbf{Linux}\\
+\midrule
+where & \ct{X\_Pos} & \ct{X\_S} & inside the mask\\
+mask & \ct{X\_Msk} (shifted) & \ct{X\_V} plain, \ct{X\_M} shifted & \ct{GENMASK(h,l)}, \ct{BIT(n)}\\
+put & \ct{\_VAL2FLD(X,v)} & \ct{REG\_SET\_FIELD(r,X,v)} & \ct{FIELD\_PREP(m,v)}\\
+get & \ct{\_FLD2VAL(X,r)} & \ct{REG\_GET\_FIELD(r,X)} & \ct{FIELD\_GET(m,r)}\\
+\bottomrule
+\end{tabular}}\par
+\ct{FIELD\_PREP} rejects a non-constant mask, or a constant value too wide for it, at
+compile time.
+
+\section{Precedence — where bit tests break}
+\begin{tikzpicture}[sheet]
+  \coordinate (p0) at (0,0);
+  \foreach \t/\c [count=\k, remember=\k as \pk (initially 0)] in {{* / \%}/black!4,
+      {+ -}/black!4, {<< >>}/sheetOrange!20, {< <= > >=}/black!4, {== !=}/sheetRed!15,
+      {\&}/sheetOrange!20, {\^{}}/sheetOrange!20, {|}/sheetOrange!20, {\&\&}/black!4,
+      {||}/black!4, {?:}/black!4, {= |=}/black!4}
+    \node[chip, fill=\c, anchor=west] (p\k) at ([xshift=1.5pt]p\pk.east) {\t};
+  \node[l, anchor=north west] at (-0.05,-0.22) {$\leftarrow$ binds tighter.
+    \ct{r \& 1u << n == 0} parses as \ct{r \& ((1u << n) == 0)}:\\parenthesise every mask test.};
+\end{tikzpicture}
+
+\section{Shifts — C23 6.5.8}
+Operands promoted; result type = the promoted left one; a count $<0$ or $\ge$ its width
+is \textbf{UB for every type}. C23's mandatory two's complement (6.2.6.2) changed none of it.\par
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\ttfamily\raggedright\arraybackslash}p{23mm}>{\raggedright\arraybackslash}p{52mm}@{}}
+\toprule
+\multicolumn{1}{@{}l}{\textbf{32-bit \ct{int}}} & \textbf{result}\\
+\midrule
+1u << 31 & \ct{0x80000000}; unsigned \ct{<<} wraps mod $2^N$\\
+1 << 31 & \textbf{UB}: $2^{31}$ is not an \ct{int} value (GCC defines it as an extension;
+  \ct{-fsanitize=shift} still reports it)\\
+-1 << 1 & \textbf{UB}: negative left operand\\
+-8 >> 1 & implementation-defined; GCC sign-extends $\rightarrow$ $-4$\\
+x << 32, x >> 32 & \textbf{UB} for \ct{uint32\_t x}: \ct{(1u << w) - 1} fails at
+  $w = 32$; \ct{\textasciitilde 0u >> (32 - w)} works for $w$ 1..32\\
+uint64\_t m = 1 << 40; & \textbf{UB}: still an \ct{int} shift — \ct{1ULL << 40}\\
+(uint8\_t)0x80 << 24 & promoted to \ct{int}, $2^{31}$ $\rightarrow$ \textbf{UB}; cast to
+  \ct{uint32\_t} first\\
+\bottomrule
+\end{tabular}}
+
+\section{Constants, widths, printing}
+\begin{itemize}
+  \item Hex, octal, binary constants try \ct{int}, \ct{unsigned}, \ct{long}, \dots:
+        \ct{0x80000000} is \ct{unsigned int}; decimal \ct{2147483648} is a (long) \ct{long}.
+  \item C23: \ct{0b1011'0100} (binary + \ct{'} separator); \ct{printf("\%\#b")}
+        $\rightarrow$ \ct{0b10110100} (glibc $\ge$ 2.35); \ct{\%w32x} prints a
+        \ct{uint32\_t}; \ct{UINT32\_WIDTH} = 32.
+  \item \ct{uintN\_t} is \textbf{optional} (defined when such a type exists);
+        \ct{uint\_leastN\_t} is required. \ct{UINT8\_C(1)} has the promoted type, \ct{int}.
+  \item \ct{uint32\_t} may be \ct{unsigned long}: ESP-IDF $\ge$ 5.0 (GCC 11) on Xtensa and
+        RISC-V — \ct{"\%u"} warns, print with \ct{PRIx32}.
+  \item \textbf{Promotion}: \ct{uint8\_t x = 0xFF;} \ct{\textasciitilde x} is the
+        \ct{int} $-256$, never 0 — write \ct{(uint8\_t)\textasciitilde x}. C23
+        \ct{unsigned \_BitInt(N)} is \emph{not} promoted: \ct{\textasciitilde} stays $N$
+        bits (GCC 14+: x86, AArch64).
+\end{itemize}
+
+\section{The lowest set bit}
+\begin{tikzpicture}[sheet]
+  \foreach \e/\bits/\hx/\note [count=\r] in {
+      {x}/{0,1,0,1,1,0,0,0}/58/{},
+      {x - 1}/{0,1,0,1,0,1,1,1}/57/{lowest 1 $\rightarrow$ 0, 0s below $\rightarrow$ 1},
+      {x \& (x - 1)}/{0,1,0,1,0,0,0,0}/50/{\textbf{clears} the lowest 1},
+      {-x}/{1,0,1,0,1,0,0,0}/A8/{$2^8 - x$ (unsigned)},
+      {x \& -x}/{0,0,0,0,1,0,0,0}/08/{\textbf{isolates} it},
+      {x | (x - 1)}/{0,1,0,1,1,1,1,1}/5F/{fills the trailing 0s},
+      {x \^{} (x - 1)}/{0,0,0,0,1,1,1,1}/0F/{mask up to it}} {
+    \node[l, font=\ttfamily\tiny, anchor=east] at (1.45, -\r*0.31) {\e};
+    \bitrow{1.65}{-\r*0.31}{\bits}{sheetBlue!25}
+    \node[l, font=\ttfamily\tiny, anchor=west] at (4.15, -\r*0.31) {0x\hx};
+    \node[l, anchor=west] at (4.75, -\r*0.31) {\note};
+  }
+\end{tikzpicture}
+\begin{itemize}
+  \item Loop \ct{x \&= x - 1} to 0 = popcount in O(set bits) (Wegner 1960; K\&R ex. 2-9).
+        One bit set: \ct{x \&\& !(x \& (x - 1))} — forget \ct{x \&\&} and 0 passes.
+  \item $a = 2^k$, unsigned \ct{h}: \ct{h \& (a - 1)} = \ct{h \% a}; align up:
+        \ct{(x + a - 1) \& \textasciitilde(a - 1)}.
+  \item Sign-extend a $w$-bit field ($w \le 31$): \ct{m = 1u << (w - 1)},
+        \ct{(int32\_t)(x \^{} m) - (int32\_t)m} — no implementation-defined step.
+  \item Rotate, defined for \ct{n} 0..31: \ct{(x << n) | (x >> (-n \& 31))}
+        (\ct{x >> (32 - n)}: UB at 0). GCC 15: \ct{\_\_builtin\_stdc\_rotate\_left}.
+\end{itemize}
+
+\columnbreak
+
+\section{\texttt{<stdbit.h>} (C23 7.18) vs the builtins}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{14mm}>{\ttfamily\raggedright\arraybackslash}p{27mm}>{\ttfamily\raggedright\arraybackslash}p{23mm}>{\raggedright\arraybackslash}p{9mm}@{}}
+\toprule
+\textbf{need} & \textbf{\normalfont C23} & \textbf{\normalfont GCC / Clang} & \textbf{at 0}\\
+\midrule
+count 1s & stdc\_count\_ones & \_\_builtin\_popcount & 0\\
+trailing 0s & stdc\_trailing\_zeros & \_\_builtin\_ctz & 32 · \textbf{UB}\\
+leading 0s & stdc\_leading\_zeros & \_\_builtin\_clz & 32 · \textbf{UB}\\
+ffs: index+1 & stdc\_first\_trailing\_one & \_\_builtin\_ffs & 0 · 0\\
+one bit set? & stdc\_has\_single\_bit & x \&\& !(x\&(x-1)) & false\\
+bits needed & stdc\_bit\_width & 32 - clz & 0 · \textbf{UB}\\
+power of 2 & stdc\_bit\_floor / \_ceil & & 0 / 1\\
+\bottomrule
+\end{tabular}}\par
+Suffixes \ct{\_uc}\dots\ct{\_ull} + type-generic (unsigned only); \ct{bit\_ceil} $\rightarrow$
+0 if $2^k$ does not fit. Shipped by the \emph{C library} (glibc 2.39, Jan 2024); GCC 14:
+\ct{\_\_builtin\_stdc\_*}, \ct{\_\_builtin\_clzg(x, 32)} (2nd arg = result for 0). Byte
+order: \ct{\_\_STDC\_ENDIAN\_NATIVE\_\_}.
+
+\section{Register access}
+\begin{lstlisting}[language=C]
+#define REG32(a) (*(volatile uint32_t *)(a))
+#define CTRL     REG32(PERIPH_BASE + 0x10u)  // illustrative
+#define DIV_Pos  16u
+#define DIV_Msk  (0xFFu << DIV_Pos)
+uint32_t div = (CTRL & DIV_Msk) >> DIV_Pos;      // 1 load
+CTRL = (CTRL & ~DIV_Msk) | ((v << DIV_Pos) & DIV_Msk);
+STATUS = DONE;                       // W1C: write only that 1
+\end{lstlisting}
+\ct{volatile}: each access in the source happens; \emph{what} counts as one is
+implementation-defined (6.7.4.1). Read-only register: \ct{const volatile}. No atomicity.
+
+\section{One bit, one store}
+\begin{tikzpicture}[sheet]
+  \node[l, font=\ttfamily\tiny, anchor=east] at (1.75,0) {OUT |= 1u<<5};
+  \node[ins] (a1) at (2.1,0) {LDR}; \node[ins] (a2) at (3.0,0) {ORR}; \node[ins] (a3) at (3.9,0) {STR};
+  \draw[flow, thin] (a1) -- (a2); \draw[flow, thin] (a2) -- (a3);
+  \node[ins, draw=sheetRed, text=sheetRed, anchor=west] (isr) at (2.75,0.4) {ISR: OUT |= 1u<<3};
+  \draw[hot, sheetRed, thin] (isr.west) -| (2.55,0.06);
+  \node[l, text=sheetRed, anchor=west] at (4.25,0) {stores a stale copy: bit 3 \textbf{lost}};
+  \node[l, font=\ttfamily\tiny, anchor=east] at (1.75,-0.42) {OUT\_W1TS = 1u<<5};
+  \node[ins, draw=sheetGreen] at (2.1,-0.42) {STR};
+  \node[l, text=sheetGreen!50!black, anchor=west] at (2.45,-0.42) {only the 1-bits act; nothing is read};
+  \node[l, font=\ttfamily\tiny, anchor=east] at (1.75,-0.84) {*alias = 1};
+  \node[ins, draw=sheetGreen] at (2.1,-0.84) {STR};
+  \node[l, text=sheetGreen!50!black, anchor=west] at (2.45,-0.84) {bit-band: the bus does an atomic read-modify-write};
+\end{tikzpicture}
+\begin{itemize}
+  \item \textbf{ESP32} \ct{GPIO\_OUT\_W1TS} / \ct{\_W1TC} (offset \ct{0x08} / \ct{0x0C})
+        set / clear the 1-bits. ESP-IDF's \ct{REG\_SET\_BIT}, \ct{REG\_SET\_FIELD} are plain
+        C read-modify-writes.
+  \item \textbf{STM32} \ct{GPIOx\_BSRR}: bits 0–15 set, 16–31 reset \ct{ODR} — ``no risk of an
+        IRQ occurring between the read and the modify access''; both: set wins.
+  \item \textbf{Bit-band} (Cortex-M3/M4 option; not M0/M0+, ARMv8-M): alias = base +
+        byte\_offset$\times$32 + bit$\times$4; 1\,MB of SRAM \ct{0x2000\_0000} $\rightarrow$
+        \ct{0x2200\_0000}, of peripherals \ct{0x4000\_0000} $\rightarrow$ \ct{0x4200\_0000};
+        \ct{0x2200001C} = bit 7 of \ct{0x20000000}. Bit 0 of the written word is the bit.
+\end{itemize}
+
+\section{Status flags — how a bit is cleared}
+\begin{tikzpicture}[sheet]
+  \foreach \n/\bits/\c/\note [count=\r] in {RAW/{0,0,1,0,0,1,0,1}/sheetOrange!30/{event latched, enabled or not},
+      ENA/{0,0,0,0,0,1,1,1}/sheetBlue!20/{which events may interrupt},
+      ST/{0,0,0,0,0,1,0,1}/sheetRed!25/{= RAW \& ENA, read-only: what the ISR reads},
+      CLR/{0,0,0,0,0,1,0,0}/sheetGreen!30/{write 1 $\rightarrow$ that RAW bit clears (ESP32 \ct{*\_INT\_CLR})}} {
+    \node[l, font=\ttfamily\tiny, anchor=east] at (0.55, -\r*0.31) {\n};
+    \bitrow{0.75}{-\r*0.31}{\bits}{\c}
+    \node[l, anchor=west] at (3.3, -\r*0.31) {\note};
+  }
+\end{tikzpicture}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\ttfamily\raggedright\arraybackslash}p{7mm}>{\raggedright\arraybackslash}p{25mm}>{\raggedright\arraybackslash}p{45mm}@{}}
+\toprule
+\textbf{\normalfont kind} & \textbf{clears by} & \textbf{write}\\
+\midrule
+rc\_w1 & writing 1 (W1C): EXTI\_PR, ESP32 \ct{STATUS\_W1TC} & \ct{REG = F}; \ct{REG |= F}
+  writes back every pending 1 and clears flags never handled\\
+rc\_w0 & writing 0: STM32 \ct{TIMx\_SR} & \ct{SR = \textasciitilde F}; \ct{SR \&= \textasciitilde F}
+  zeroes flags raised between its load and store\\
+rc\_r & being read & any read is a side effect\\
+\bottomrule
+\end{tabular}}
+
+\section{C bit-fields vs hardware}
+Unit, order in it, straddling and a plain \ct{int} field's sign are
+\textbf{implementation-defined} (GCC: the ABI decides; \ct{int} fields signed); no
+\ct{\&} of a field; \ct{:0} closes the unit. GCC: volatile bit-fields ``may be
+implicitly read when written to, or when adjacent bit-fields are accessed'' —
+``unwise'' for hardware; \ct{-fstrict-volatile-bitfields} (default: the ABI's) forces
+one access of the declared width. ESP-IDF's \ct{soc/*\_struct.h} uses them anyway.
+
+\section{Remember}
+\textbf{OR sets, AND-NOT clears, XOR flips, shift-then-mask reads; one bit, one store.}
+
+\end{multicols}
+
+\noindent{\raggedright\footnotesize\color{sheetGrey}\textit{Related:} \texttt{c-memory-layout} ·
+\texttt{c-volatile-atomics-isr} · \texttt{c-undefined-behavior-and-build} ·
+\texttt{c-pointers-const-restrict} · \texttt{sanitizers-runtime-checkers} ·
+\texttt{swift-numerics-overflow} · \texttt{hashing-deep}\par}
+
+\end{document}

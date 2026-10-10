@@ -1,0 +1,316 @@
+% post-quantum-crypto.tex — what a quantum computer breaks (Shor vs Grover) and how cheap the
+% estimates have become, harvest now / decrypt later + Mosca, KEMs vs DH, the NIST PQC algorithms
+% and their sizes, hybrid X25519MLKEM768 in TLS (RFC 10024), who ships it by default, Apple
+% platforms, the policy deadlines, migration and crypto agility.
+% Sources (checked 2026-10-09):
+%   nvlpubs.nist.gov FIPS 203 (§6.3 decaps re-encrypts, implicit rejection K = hash(z, c), flag never
+%     output; §8 Table 2: n 256, q 3329, k 2/3/4; Table 3: ek 800/1184/1568, dk 1632/2400/3168,
+%     ct 768/1088/1568, ss 32 B; categories 1/3/5; ML-KEM-768 = recommended default)
+%     · FIPS 204 (Table 1: q 8380417, categories 2/3/5; Table 2: sk 2560/4032/4896, pk 1312/1952/2592,
+%     sig 2420/3309/4627 B; private key may be stored as the 32-byte seed; no floating point)
+%     · FIPS 205 (Table 2: 12 sets SHA2/SHAKE × 128/192/256 × s/f; pk 32/48/64; sig 7856/17088,
+%     16224/35664, 29792/49856 B; ≤ 2^64 signatures per key; footnote: SP 800-230 sets sign fewer)
+%   nvlpubs.nist.gov NIST IR 8547 ipd (Nov 2024, still the initial public draft: Mosca X + Y > Z; past
+%     migrations took over a decade; authentication only has to hold when performed; Table 1
+%     categories 1 AES-128 key search · 2 SHA-256 collision · 3 AES-192 · 4 SHA3-384 collision · 5
+%     AES-256; Tables 2 and 4: 112-bit RSA/ECDSA/EdDSA/(EC)DH deprecated after 2030, all disallowed
+%     after 2035; symmetric ≥ 128-bit meets category 1, no transition expected; hybrid = temporary,
+%     a second transition to PQ-only; SP 800-56C Z' = Z ‖ T; code signing; NSM-10 2035)
+%   csrc.nist.gov/projects/post-quantum-cryptography/news (2024-08-13 FIPS 203-205; 2024-11-12 IR
+%     8547 draft; 2025-03-11 HQC, IR 8545; 2025-09-18 SP 800-227 final; 2026-04-13 draft SP 800-230
+%     extra SLH-DSA sets for limited signature use; 2026-05-14 IR 8610: FAEST, HAWK, MAYO, MQOM,
+%     QR-UOV, SDitH, SNOVA, SQIsign, UOV to round 3) — no draft FIPS 206 or HQC standard listed
+%   nist.gov news 2022-07 (2016 call; 5 Jul 2022: Kyber, Dilithium, Falcon, SPHINCS+) · 2025-03
+%     (HQC: error-correcting codes, backup to lattice ML-KEM; draft ~1 year, final 2027)
+%   rfc-editor.org RFC 10024 (Aug 2026, Standards Track: X25519MLKEM768 0x11EC Recommended Y,
+%     SecP256r1MLKEM768 0x11EB and SecP384r1MLKEM1024 0x11ED N; client share 1216 = 1184 + 32 B,
+%     server 1120 = 1088 + 32 B, secret 64 B = ML-KEM ‖ X25519; order reversed "for historical
+%     reasons"; Kyber768Draft00 groups obsoleted) · RFC 9954 (Jul 2026, hybrid key exchange in TLS 1.3)
+%     · RFC 8032 (Ed25519 keys 32 B, signatures 64 B)
+%   datatracker draft-connolly-cfrg-xwing-kem-11 (sk 32 B, pk 1216 B, ct 1120 B; ss = SHA3-256(ss_M ‖
+%     ss_X ‖ ct_X ‖ pk_X ‖ label))
+%   arxiv.org quant-ph/9508027 (Shor, FOCS 1994) · quant-ph/9605043 (Grover, STOC 1996, O(√N)) ·
+%     2505.15917 (Gidney, May 2025: RSA-2048 < 1 week, < 1 M noisy qubits; 2019: 8 h, 20 M) ·
+%     2603.28846 (Google Quantum AI, Mar 2026: ECDLP-256 < 1200 logical / < 90 M Toffoli; minutes on
+%     < 500 k physical qubits at 1e-3 error; ZK proof instead of the circuit) · 2603.28627 (Cain et
+%     al., Mar 2026: Shor with ~10 000 reconfigurable atoms; P-256 in a few days with 26 000; RSA-2048
+%     one to two orders longer)
+%   eprint.iacr.org 2022/975 (SIKE, a round-4 candidate: SIKEp434 in ~10 min on one core) ·
+%     2022/214 (Rainbow, a finalist: 53 h on a laptop)
+%   blog.google cryptography-migration-timeline (25 Mar 2026: Google targets 2029; authentication
+%     prioritised; Android 17 ML-DSA) · cultivating-a-robust-and-efficient-quantum-safe-https (27 Feb
+%     2026: no PQ X.509 in the Chrome Root Store; Merkle Tree Certificates, IETF PLANTS; Q1 2027
+%     bootstrap, Q3 2027 MTC-only quantum-resistant root store; PQ X.509 for private PKI)
+%   blog.cloudflare.com post-quantum-roadmap (Apr 2026: 2029 incl. authentication; > 65 %) ·
+%     post-quantum-visibility (Sep 2026: ~70 % of browser traffic, ~15 % of origins)
+%   security.googleblog.com 2024/09 a-new-path-for-kyber (Chrome 131: 0x6399 → 0x11EC) ·
+%     developer.chrome.com/release-notes/131 (12 Nov 2024) · firefox.com 132.0 release notes (29 Oct
+%     2024, mlkem768x25519) · openssl-library.org 3.5 notes (default keyshares X25519MLKEM768 +
+%     X25519; ML-KEM, ML-DSA, SLH-DSA) · go.dev/doc/go1.24 (crypto/mlkem; X25519MLKEM768 on by
+%     default) · openjdk.org/jeps/496 (ML-KEM, JDK 24)
+%   openssh.org release-9.0 (2022-04-08 sntrup761x25519 default) · 10.0 (2025-04-09
+%     mlkem768x25519-sha256 default) · 10.1 (2025-10-06 warns on non-PQ key agreement,
+%     WarnWeakCrypto) · 10.4 (2026-07-06 experimental mldsa44-ed25519) · 10.6 (2026-10-06
+%     ssh-mldsa44-ed25519 enabled; sshd WarnWeakCrypto)
+%   signal.org/blog/pqxdh (19 Sep 2023, Kyber + X25519) · /spqr (2 Oct 2025, SPQR + Double Ratchet =
+%     Triple Ratchet) · security.apple.com/blog/imessage-pq3 (21 Feb 2024, iOS 17.4; Kyber-1024;
+%     PQ rekey ~every 50 messages, at least every 7 days)
+%   support.apple.com/122756 (iOS / iPadOS / macOS Tahoe / visionOS 26 ClientHello offers
+%     X25519MLKEM768 + key share; server chooses; legacy servers that cannot read a large ClientHello
+%     fail; nscurl --tls-diagnostics) · support.apple.com/guide/security secc7c82e533 (hybrid; TLS in
+%     URLSession + Network; native VPN + IKEv2 API; SSH in macOS 26; iPhone ↔ Watch ML-KEM; CryptoKit)
+%   developer.apple.com/videos/play/wwdc2025/314 (Secure Transport will not get it; "move from AES-128
+%     to AES-256"; formally verified ML-KEM; Swift Crypto) · developer.apple.com/documentation/cryptokit
+%     mlkem768, mlkem1024, mldsa65, mldsa87, xwingmlkem768x25519, secureenclave/mlkem768, /mldsa65,
+%     hpke ciphersuite (all 26.0) · mlkem768/onetimeprivatekey (27.0) · quantum-secure-workflows
+%     sample (one-time keys faster, consumed, not saveable, not in the Secure Enclave)
+%   digital-strategy.ec.europa.eu (EU: start by end-2026, critical infrastructure by end-2030) ·
+%     ncsc.gov.uk/guidance/pqc-migration-timelines (2028 discovery + plan, 2031 priority, 2035 all)
+%   Not reached (NSA site refused): CNSA 2.0 — its line is marked \unverified.
+% @labels: area=crypto kind=concept platform=general topic=security,networking discussion=303
+% @tags: post-quantum, ml-kem, ml-dsa, slh-dsa, x25519mlkem768, hybrid-key-exchange, harvest-now-decrypt-later, shor, grover, hpke, x-wing, crypto-agility, tls13, cryptokit
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\tikzset{
+  ph/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  l/.style={font=\tiny, text=black!75, align=left, inner sep=1pt},
+  seg/.style={draw=#1, fill=#1!15, font=\ttfamily\tiny, inner sep=1.5pt, minimum height=4.2mm},
+  sb/.style={box, font=\tiny, inner sep=2pt},
+  yr/.style={font=\tiny\bfseries, text=white, fill=sheetGrey, inner sep=1.2pt, rounded corners=1pt},
+  ev/.style={font=\tiny, inner sep=0.8pt, align=left, text=#1!80!black},
+  ev/.default=sheetBlue,
+  bar/.style={draw=#1, fill=#1!35, minimum height=2.6mm, inner sep=0pt},
+}
+
+\begin{document}
+
+\sheettitle{Post-quantum cryptography — ML-KEM, ML-DSA, hybrid TLS}{crypto · folio}
+
+\oneliner{A large quantum computer running \textbf{Shor's algorithm} breaks \emph{every}
+public-key primitive in use — RSA, (EC)DH, X25519, ECDSA, EdDSA — at any key size; symmetric
+ciphers and hashes stand. Traffic recorded \emph{today} decrypts \emph{then} (\textbf{harvest now,
+decrypt later}), so \textbf{key exchange} moved first: hybrid \textbf{X25519MLKEM768}, default in
+Chrome, Firefox, iOS 26, OpenSSL and OpenSSH. Since the 2026 estimates, \textbf{signatures} are
+urgent too: Google and Cloudflare now target 2029 for their whole migration.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ================= HNDL + Mosca
+  \node[ph] at (-0.1,3.65) {Harvest now, decrypt later};
+  \draw[->, thick, sheetGrey] (0,2.3) -- (5.3,2.3) node[l, right]{t};
+  \node[sb, draw=sheetOrange, fill=sheetOrange!10] (rec) at (0.75,3.05) {attacker records\\TLS today};
+  \node[sb, fill=black!5, draw=sheetGrey] (st) at (2.55,3.05) {stores it\\(cheap)};
+  \node[sb, draw=sheetRed, fill=sheetRed!8] (q) at (4.4,3.05) {quantum computer\\$\rightarrow$ \textbf{decrypts}};
+  \draw[flow] (rec) -- (st); \draw[flow] (st) -- (q);
+  \foreach \x/\t in {0.3/now, 4.4/Q-day ?} { \draw[sheetGrey] (\x,2.2) -- (\x,2.4); \node[l, below] at (\x,2.2) {\t}; }
+  \draw[sheetBlue, line width=3pt] (0.3,1.55) -- (3.3,1.55); \node[l, right] at (3.35,1.55) {x: data must stay secret};
+  \draw[sheetGreen, line width=3pt] (3.3,1.2) -- (5.0,1.2);  \node[l, left] at (3.25,1.2) {y: time to migrate};
+  \draw[sheetRed, line width=3pt] (0.3,0.85) -- (4.4,0.85); \node[l, right] at (4.45,0.85) {z: to Q-day};
+  \node[l, text=sheetRed, align=center] at (2.6,0.35) {\textbf{Mosca} (NIST IR 8547): start before $x + y > z$;\\past crypto migrations took over a decade};
+  \node[l, align=center] at (2.6,-0.25) {only \emph{confidentiality} is harvestable: a signature\\must hold just when it is checked};
+  \draw[sheetGrey!50] (5.75,3.8) -- (5.75,-0.55);
+  % ================= hybrid TLS key share
+  \node[ph] at (5.8,3.65) {X25519MLKEM768 (RFC 10024, 0x11EC)};
+  \node[l, font=\tiny\bfseries, anchor=west] at (5.85,3.2) {ClientHello key\_share};
+  \node[seg=sheetBlue, anchor=west, minimum width=24mm] (k1) at (5.95,2.8) {ML-KEM-768 ek 1184 B};
+  \node[seg=sheetGreen, anchor=west] (k2) at (k1.east) {X25519 32};
+  \node[l, anchor=west] at (k2.east) {= \textbf{1216 B}};
+  \node[l, font=\tiny\bfseries, anchor=west] at (5.85,2.35) {ServerHello key\_share};
+  \node[seg=sheetBlue, anchor=west, minimum width=24mm] (s1) at (5.95,1.95) {ML-KEM ct 1088 B};
+  \node[seg=sheetGreen, anchor=west] (s2) at (s1.east) {X25519 32};
+  \node[l, anchor=west] at (s2.east) {= \textbf{1120 B}};
+  \node[l, anchor=west, text=sheetGrey] at (5.85,1.52) {shared secret (both sides):};
+  \node[seg=sheetBlue, anchor=west] (ss1) at (5.95,1.12) {ML-KEM ss 32};
+  \node[seg=sheetGreen, anchor=west] (ss2) at (ss1.east) {X25519 ss 32};
+  \node[l, anchor=west] at (ss2.east) {= 64 B};
+  \node[sb, draw=sheetOrange, fill=sheetOrange!10, anchor=west] (hk) at (5.95,0.42) {TLS 1.3 key schedule (HKDF)};
+  \draw[flow] (ss1.south) -- (ss1.south |- hk.north);
+  \node[l, text=sheetRed, anchor=west] at (5.85,-0.12) {safe while \textbf{either} holds: X25519 (classical) · ML-KEM (young)};
+  \node[l, text=sheetGrey, anchor=west] at (5.85,-0.42) {also: SecP256r1MLKEM768 0x11EB · SecP384r1MLKEM1024 0x11ED};
+  \node[l, anchor=west, text=sheetBrown] at (10.15,2.38) {ML-KEM bytes\\first, despite\\the name —\\``historical''};
+  \node[l, anchor=west, text=sheetBrown] at (9.75,0.92) {big ClientHello:\\some legacy\\servers fail\\to read it};
+  \draw[sheetGrey!50] (11.35,3.8) -- (11.35,-0.55);
+  % ================= KEM vs DH
+  \node[ph] at (11.4,3.65) {A KEM is not Diffie-Hellman};
+  \node[sb, minimum width=14mm] (rcv) at (12.25,2.95) {recipient\\KeyGen $\rightarrow$ (ek, dk)};
+  \node[sb, minimum width=14mm] (snd) at (15.4,2.95) {sender};
+  \draw[hot] (rcv.east) -- node[l, above]{ek} (snd.west);
+  \node[sb, draw=sheetBlue, fill=sheetBlue!10] (enc) at (15.4,1.9) {Encaps(ek)\\$\rightarrow$ ct, \textbf{K}};
+  \draw[flow] (snd) -- (enc);
+  \node[sb, draw=sheetBlue, fill=sheetBlue!10] (dec) at (12.25,1.9) {Decaps(dk, ct)\\$\rightarrow$ \textbf{K}};
+  \draw[hot] (enc.west) -- node[l, above]{ct} (dec.east);
+  \node[l] at (13.85,0.95) {one side owns a key pair, the other sends a fresh\\secret \emph{sealed to it} — no ``both mix private keys''.\\Unauthenticated: sign the handshake or it is MITM-able.};
+  \node[l, text=sheetBlue] at (13.85,0.05) {Decaps re-encrypts and compares; on a mismatch\\it returns $K = \mathrm{hash}(z, ct)$ — \textbf{implicit rejection},\\never an error (FIPS 203). Bad ct = keys disagree later.};
+\end{tikzpicture}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[ph] at (-0.1,1.62) {Timeline — standards and policy above, attacks and deployments below};
+  \draw[thick, sheetGrey] (0,0) -- (12.6,0);
+  \draw[thick, sheetGrey, dashed] (12.6,0) -- (16.55,0);
+  % above: lanes 0.26 / 0.52 / 0.78 / 1.04 (label bottom); leaders never cross a label
+  \foreach \x/\y in {0.45/0.26, 2.12/0.26, 4.98/1.04, 5.65/0.78, 6.58/0.52, 8.03/0.26, 9.25/1.04, 9.5/0.78, 10.0/0.52, 10.75/0.26, 12.6/0.26}
+    \draw[sheetBlue!60] (\x,0.08) -- (\x,\y);
+  \node[ev, anchor=south west] at (0.42,0.26) {NIST asks for PQC};
+  \node[ev, anchor=south west] at (2.09,0.26) {Jul: NIST picks Kyber,\\Dilithium, Falcon, SPHINCS+};
+  \node[ev, anchor=south west] at (4.95,1.04) {13 Aug: \textbf{FIPS 203 · 204 · 205}};
+  \node[ev, anchor=south west] at (5.62,0.78) {Nov: IR 8547 draft};
+  \node[ev, anchor=south west] at (6.55,0.52) {Mar: HQC (codes) = backup KEM};
+  \node[ev, anchor=south east] at (8.06,0.26) {Sep: SP 800-227};
+  \node[ev=sheetGreen, anchor=south west] at (9.22,1.04) {Feb: Chrome plans Merkle Tree Certs};
+  \node[ev=sheetGreen, anchor=south west] at (9.47,0.78) {Mar: Google: PQ by 2029, auth first};
+  \node[ev, anchor=south west] at (9.97,0.52) {May: 9 signature schemes to round 3};
+  \node[ev, anchor=south west] at (10.72,0.26) {Aug: \textbf{RFC 10024}};
+  \node[ev=sheetGreen, anchor=south west] at (12.57,0.26) {Q3: CAs join Chrome's MTC-only root store};
+  % below: lanes -0.26 / -0.52 / -0.78 / -1.04 / -1.30 (label top)
+  \foreach \x/\y in {1.95/-0.26, 5.5/-1.30, 6.83/-1.04, 7.07/-0.78, 8.03/-0.52, 9.5/-0.26, 11.25/-1.30}
+    \draw[sheetGreen!60] (\x,-0.08) -- (\x,\y);
+  \node[ev=sheetRed, anchor=north west] at (1.92,-0.26) {SIKE broken: $\sim$10 min on 1 core;\\Rainbow: a weekend on a laptop};
+  \node[ev=sheetGreen, anchor=north west] at (5.47,-1.30) {Oct–Nov: Firefox 132, Chrome 131};
+  \node[ev=sheetGreen, anchor=north west] at (6.8,-1.04) {Apr: OpenSSH 10.0, OpenSSL 3.5};
+  \node[ev=sheetRed, anchor=north west] at (7.04,-0.78) {May: RSA-2048 $<$ 1 M qubits};
+  \node[ev=sheetGreen, anchor=north west] at (8.0,-0.52) {Sep: iOS 26};
+  \node[ev=sheetRed, anchor=north west] at (9.47,-0.26) {Mar: ECC-256\\$<$ 500 k qubits};
+  \node[ev=sheetGreen, anchor=north east] at (11.28,-1.30) {Oct: OpenSSH ML-DSA};
+  \foreach \x/\y in {0.3/2016,1.7/2022,2.55/2023,3.4/2024,6.1/2025,9.0/2026,12.0/2027,13.2/2029,14.2/2030,15.1/2031,16.2/2035}
+    \node[yr] at (\x,0) {\y};
+  % --- deadlines (dashed axis)
+  \node[ev=sheetOrange, anchor=north east, align=right] at (16.55,-0.24) {%
+    \textbf{2029} Google, Cloudflare: migration done\\
+    \textbf{2030} NIST: 112-bit RSA/ECC deprecated;\\EU: critical infrastructure migrated\\
+    \textbf{2031} UK NCSC: priority migrations\\
+    \textbf{2035} NIST: RSA/ECC disallowed; NCSC: done};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\footnotesize\setstretch{1.0}\raggedright
+
+\hd{What a quantum computer breaks}
+{\scriptsize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{21mm}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{37mm}@{}}
+\toprule
+\textbf{primitive} & \textbf{attack} & \textbf{consequence}\\ \midrule
+RSA, (EC)DH, X25519, ECDSA, EdDSA & Shor (1994): factoring + discrete log in poly time & \textbf{broken at any key size} $\rightarrow$ replace with ML-KEM, ML-DSA, SLH-DSA\\
+AES-128 & Grover (1996): $O(\sqrt{N})$ search & NIST: still category 1, no transition planned; Apple: ``move to AES-256''\\
+AES-256, ChaCha20, SHA-2, SHA-3, HMAC & Grover & stand; SHA-256 collision = category 2\\
+\bottomrule
+\end{tabular}}\par
+\vspace{2pt}
+\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\scriptsize, text=sheetBlue, anchor=west] at (-0.1,1.52) {Physical qubits to run Shor (log scale)};
+  \foreach \e/\x in {4/3.0,5/4.2,6/5.4,7/6.6} {
+    \draw[sheetGrey!40] (\x,0.0) -- (\x,1.36);
+    \node[l, below] at (\x,0.04) {$10^{\e}$}; }
+  \foreach \y/\t/\q/\c/\r in {
+      1.24/RSA-2048 (2019)/6.96/sheetBlue/8 h,
+      1.0/RSA-2048 (2025)/5.4/sheetBlue/$<$ 1 week,
+      0.76/ECC-256 (2026)/5.04/sheetBlue/minutes,
+      0.52/P-256 (2026)/3.5/sheetOrange/a few days,
+      0.28/fewest atoms (2026)/3.0/sheetOrange/longer} {
+    \node[l, anchor=east] at (1.75,\y) {\t};
+    \node[bar=\c, anchor=west, minimum height=1.8mm, minimum width={(\q-1.8)*1cm}] at (1.8,\y) {};
+    \node[l, anchor=west] at (\q,\y) {\r}; }
+\end{tikzpicture}\par
+Blue: superconducting, 0.1\,\% error (2019: 20\,M); orange: neutral atoms. ECC-256: $<$\,1\,200
+logical qubits, minutes; RSA-2048: a week — \textbf{X25519 and P-256 fall first}. Google proved
+its circuit by zero-knowledge proof and kept it secret.
+
+\hd{Why key exchange first — and why hybrid}
+\begin{itemize}
+  \item Harvested traffic is safe only if its key was agreed post-quantum \emph{at the time}. A
+        signature need only hold when checked — but forged firmware and CA signatures work for
+        ever: after the 2026 estimates Google ranks authentication first (Android 17: ML-DSA).
+  \item Web PKI: no post-quantum X.509 in Chrome's root store — \textbf{Merkle Tree
+        Certificates}: a CA signs one tree head, a site sends a short inclusion proof.
+  \item \textbf{Hybrid}: secure if \emph{either} part holds; new schemes do fall (SIKE, Rainbow).
+        NIST: hybrid is temporary, a second move to PQ-only follows. CNSA 2.0 (NSA) already wants
+        pure ML-KEM-1024 + ML-DSA-87, LMS/XMSS for firmware\unverified.
+\end{itemize}
+
+\hd{The NIST algorithms (sizes in bytes)}
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{16mm}>{\raggedright\arraybackslash}p{44mm}@{}}
+\toprule
+\textbf{standard} & \textbf{basis} & \textbf{sets $\rightarrow$ category · sizes}\\ \midrule
+\textbf{ML-KEM} FIPS 203 (Kyber) & module lattice, $q$ = 3329 & 512 / \textbf{768} / 1024 $\rightarrow$ 1 / 3 / 5; ek 800 / 1184 / 1568, ct 768 / 1088 / 1568, dk 1632 / 2400 / 3168, K 32. 768 = NIST default\\
+\textbf{ML-DSA} FIPS 204 (Dilithium) & module lattice, $q$ = 8380417 & 44 / 65 / 87 $\rightarrow$ 2 / 3 / 5; pk 1312 / 1952 / 2592, sig 2420 / 3309 / 4627; sk 2560–4896 or a 32-B seed\\
+\textbf{SLH-DSA} FIPS 205 (SPHINCS+) & hashes only (SHA2 / SHAKE) & 12 sets, 128 / 192 / 256 $\rightarrow$ 1 / 3 / 5; pk 32 / 48 / 64; sig s 7856–29792, f (fast) 17088–49856; $\le 2^{64}$ sigs per key\\
+LMS, XMSS (SP 800-208) & hashes, stateful & reuse a one-time key = broken: state must never roll back; firmware only\\
+FN-DSA · HQC & lattice · codes & Falcon: draft FIPS 206 not public; HQC (backup KEM): draft due 2026, not out\\
+\bottomrule
+\end{tabular}}\par
+Categories: 1 = AES-128 key search · 2 = SHA-256 collision · 3 = AES-192 · 4 = SHA3-384 collision
+· 5 = AES-256. X25519 key 32, Ed25519 signature 64: ML-DSA-44's is 38$\times$ that. Backup
+signatures, round 3: FAEST, HAWK, MAYO, MQOM, QR-UOV, SDitH, SNOVA, SQIsign, UOV.
+
+\columnbreak
+
+\hd{Who ships it — defaults and APIs}
+{\scriptsize\setlength\tabcolsep{3pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{56mm}@{}}
+\toprule
+\textbf{where} & \textbf{what}\\ \midrule
+Chrome 131 & X25519MLKEM768; Kyber draft codepoint 0x6399 dropped\\
+Firefox 132 & mlkem768x25519 in TLS 1.3 (desktop)\\
+Apple 26 & URLSession + Network.framework TLS; native VPN + IKEv2 API; SSH (macOS); iPhone $\leftrightarrow$ Watch\\
+OpenSSL 3.5 & default keyshares X25519MLKEM768 + X25519; ML-KEM, ML-DSA, SLH-DSA\\
+Go 1.24 · JDK 24 & \ct{crypto/tls} default + \ct{crypto/mlkem} · ML-KEM KEM API (JEP 496)\\
+OpenSSH & 9.0: sntrup761x25519 · 10.0: \ct{mlkem768x25519-sha256} · 10.1: warns on non-PQ key
+          agreement · 10.6: \ct{ssh-mldsa44-ed25519} signatures\\
+Signal & PQXDH (Sep 2023, Kyber in the handshake) $\rightarrow$ SPQR (Oct 2025) + Double
+          Ratchet = ``Triple Ratchet''\\
+iMessage PQ3 & iOS 17.4 (2024); Kyber-1024 + ECC; PQ rekey $\sim$every 50 messages, $\le$ 7 days\\
+Cloudflare & Sep 2026: $\sim$70\,\% of browser traffic PQ, only $\sim$15\,\% of origins\\
+\bottomrule
+\end{tabular}}
+
+\hd{Apple platforms}
+\begin{itemize}
+  \item \textbf{TLS}: the ClientHello offers \ct{X25519MLKEM768} + a key share; the \emph{server}
+        chooses, else classical — nothing to code, the server/CDN must support it. Check with
+        \ct{nscurl --tls-diagnostics <url>} (macOS 26). \textbf{Secure Transport} and own TLS
+        stacks do not get it.
+  \item \textbf{CryptoKit} 26: \ct{MLKEM768}, \ct{MLKEM1024}, \ct{MLDSA65}, \ct{MLDSA87}, their
+        \ct{SecureEnclave} variants, HPKE \ct{XWingMLKEM768X25519\_SHA256\_AES\_GCM\_256}; core
+        formally verified against FIPS 203; same API server-side in Swift Crypto. 27:
+        \ct{MLKEM768.OneTimePrivateKey} — consumed by decapsulate, faster, not storable, not in
+        the Secure Enclave.
+  \item \textbf{X-Wing} = ML-KEM-768 + X25519 as one KEM: pk 1216, ct 1120, private key a 32-B seed;
+        $K$ = SHA3-256($K_M \Vert K_X \Vert ct_X \Vert pk_X \Vert$ label).
+\end{itemize}
+
+\hd{Migration — crypto agility}
+\begin{enumerate}
+  \item \textbf{Inventory} every RSA/ECC use: TLS, VPN, SSH, custom protocols, wrapped keys,
+        tokens, signatures, pinned keys, firmware roots (a crypto bill of materials).
+  \item Rank by \textbf{secrecy lifetime} (Mosca's $x$) and by \textbf{unpatchable verifiers}.
+  \item Ride platform stacks that upgrade themselves (URLSession, OpenSSL, Go) — hand-rolled
+        protocols move to HPKE with X-Wing.
+  \item Make algorithms \textbf{negotiable}: IDs on the wire, no hard-coded key or signature
+        lengths, rotation paths for keys and pins; budget kilobytes for keys, tokens, QR codes.
+\end{enumerate}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{``No quantum computer yet, so no rush'' — today's traffic is the harvest; $x + y > z$.}
+  \trap{``Swap ECDH for ML-KEM'' — deploy hybrid; and a bare KEM authenticates nobody.}
+  \trap{``Signatures can wait'' — not for roots baked into hardware; estimates keep falling.}
+  \trap{Servers and middleboxes that cannot read a large ClientHello — test the fleet.}
+  \trap{A bad ciphertext raises no error — implicit rejection just yields a different key.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{Shor kills public key, Grover barely dents symmetric. Hybrid KEM now, PQ signatures
+next, deadlines 2029–2035 — and build for the next swap.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{public-key-maths} ·
+Cryptography with CryptoKit · TLS 1.3 \& PKI · TLS 1.3 in depth · Keychain \& Secure Enclave ·
+\texttt{secure-randomness} · \texttt{block-cipher-modes}}
+
+\end{document}

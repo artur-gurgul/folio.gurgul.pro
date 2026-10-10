@@ -1,0 +1,352 @@
+% ts-type-system.tex — how the TypeScript checker reasons: types as sets (unknown, never, any,
+% void, {} and object), structural assignability and its exceptions (fresh-literal excess-property
+% and weak-type checks, private members, enums), unions vs intersections, literal types and
+% widening, as const, annotation vs satisfies vs as, control-flow narrowing, discriminated unions
+% and exhaustiveness, type predicates and assertion functions, function compatibility (parameter
+% bivariance), readonly and optional properties, enums and their erasable alternative,
+% declaration merging; the type-system timeline to 7.0.
+% Sources (checked 2026-10-09):
+%   typescriptlang.org/docs/handbook/type-compatibility (structural; "x is compatible with y if y
+%     has at least the same members as x"; fewer parameters fit, forEach; return = subtype;
+%     parameter bivariance "unsound" → strictFunctionTypes; optional ⇄ required, rest = infinite
+%     optionals; numbers ⇄ numeric enums, different enums incompatible; classes: instance side
+%     only, private / protected must originate in the same class; assignability table: any → all
+%     but never, unknown → any only, never → all)
+%   .../handbook/2/narrowing (8 typeof results, typeof null "object"; falsy 0 NaN "" 0n null
+%     undefined; == null also undefined; in: optional props on both sides; instanceof = prototype
+%     chain; assignment narrows within the declared type, "Type 'boolean' is not assignable to type
+%     'string | number'."; predicates + filter; discriminated union = common literal-typed property;
+%     never exhaustiveness, "Type 'Triangle' is not assignable to type 'never'.")
+%   .../handbook/2/objects (readonly not factored into compatibility, aliasing; readonly string[]
+%     → string[] error; excess property checks and the three escapes; interface conflict error vs &
+%     → never; [3, 4] as const → readonly [3, 4]) · .../2/everyday-types (interface vs type; the
+%     req.method "GET" example and its message; as only to a more / less specific type; as unknown
+%     as T; ! does no runtime check) · .../2/functions (void ≠ undefined; contextual void return
+%     ignored, declared void must not return; "object is not Object"; Function calls return any)
+%   .../handbook/enums (start at 0, reverse mapping numeric only, string enums none; const enum
+%     inlined + isolatedModules pitfalls; as const object, "aligned with the state of JavaScript")
+%   .../handbook/declaration-merging (interface / type alias = type, function / variable = value,
+%     class = type + value; non-function members unique or same type; later overloads first;
+%     namespaces merge with classes, functions, enums; classes cannot merge with classes or
+%     variables; augmentation = patches only; declare global)
+%   release notes: 2.0 (strictNullChecks, control-flow analysis, tagged unions, never "subtype of
+%     and assignable to every type", readonly) · 2.2 (object) · 2.4 (weak type detection) · 2.6
+%     (strictFunctionTypes; methods excluded "to ensure … Array<T> … relate covariantly") · 3.0
+%     (unknown; | unknown absorbs, & unknown vanishes; keyof unknown = never; only equality ops) ·
+%     3.4 (const assertions: no widening, readonly props, readonly tuples; literals only; not through
+%     references) · 3.7 (asserts c / asserts v is T) · 3.9 (intersection reduced by discriminants →
+%     never) · 4.4 (aliased conditions; exactOptionalPropertyTypes) · 4.6 (destructured discriminated
+%     unions) · 4.8 (unknown ≈ {} | null | undefined; truthy unknown → {}; NonNullable = T & {}) ·
+%     4.9 (satisfies; in on an unlisted key → & Record<"k", unknown>) · 5.0 (all enums union enums;
+%     out-of-domain literal is an error) · 5.3 (switch (true); Symbol.hasInstance) · 5.4 (narrowing
+%     kept in closures after the last assignment) · 5.5 (inferred type predicates: 4 conditions,
+%     "if and only if", !!x not inferred; obj[key] narrowing) · 5.6 (always-truthy checks are
+%     errors) · 5.8 (erasableSyntaxOnly: enum, namespace with code, parameter properties, import = /
+%     export =)
+%   devblogs.microsoft.com/typescript: announcing-typescript-6-0 (23 Mar 2026; "the last release
+%     based on the current JavaScript codebase"; strict true by default) · announcing-typescript-7-0
+%     (8 Jul 2026; native port in Go; "compatible with TypeScript 6.0's type-checking"; 8–12× full
+%     builds) · api.github.com/repos/microsoft/TypeScript/releases (v6.0.2 2026-03-23, v6.0.3
+%     2026-04-16, v7.0.2 mirrored 2026-08-20) · api.github.com/repos/microsoft/typescript-go/releases
+%     (typescript/v7.0.2 2026-07-08)
+%   nodejs.org/api/typescript (type stripping on by default 23.6 / 22.18, stable 25.2 / 24.12; no
+%     enums, namespaces with code, parameter properties, import aliases; tsconfig ignored;
+%     ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX; --experimental-transform-types removed in 26.0)
+%   raw.githubusercontent.com/microsoft/TypeScript/v6.0.3/src/compiler/diagnosticMessages.json (texts
+%     and codes 1294, 1360, 2352, 2353, 2366, 2559, 2717, 2775, 2872, 4104)
+%   github.com/microsoft/TypeScript/wiki/Performance (interfaces report conflicting properties,
+%     intersections merge them recursively)
+%   Compiled with typescript 6.0.3 (strict): every type result, code-line outcome and quoted error
+%     message on the page matches (54 checks; satisfies' r2.hmoe gives 2339 "Property 'hmoe' does
+%     not exist on type '{ home: string; }'").
+% @labels: area=typescript kind=concept platform=web topic=language discussion=334
+% @tags: typescript, type-system, structural-typing, narrowing, discriminated-unions, exhaustiveness, type-guards, unknown-vs-any, never, satisfies, as-const, excess-property-check, interface-vs-type, enums, declaration-merging, erasable-syntax
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={import,from,export,default,const,let,type,interface,extends,function,
+    return,async,await,if,else,switch,case,new,true,false,null,undefined,typeof,keyof,
+    as,satisfies,never,string,number,boolean,void,declare,namespace,readonly},
+  morekeywords={unknown,any,is,asserts,throw,in,instanceof,enum},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, anchor=west},
+  tn/.style={font=\ttfamily\scriptsize, inner sep=1.2pt},
+  tk/.style={circle, fill=sheetBlue, inner sep=0pt, minimum size=1.6mm},
+}
+
+% 0xProto ligates => == != inside \texttt; a zero kern splits the glyph run.
+\newcommand\fa{=\kern0pt>}
+\newcommand\eqq{=\kern0pt=}
+\newcommand\eqqq{=\kern0pt=\kern0pt=}
+\newcommand\neqq{!\kern0pt=\kern0pt=}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\msg[1]{\textcolor{sheetRed}{\emph{#1}}}
+
+\begin{document}
+
+\sheettitle{TypeScript type system — how the checker reasons}{typescript · folio}
+
+\oneliner{A type is a \textbf{set of values}; assignability is \textbf{subset}, judged by
+\textbf{shape}, not by name. A union must be \textbf{narrowed} along control flow before use.
+Types are \textbf{erased}; enums, namespaces with code and parameter properties are TypeScript
+syntax that emits JavaScript. Soundness is traded away on purpose in known places: \ct{any}, \ct{as}, method
+parameters, \ct{readonly} aliasing.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {5.95,10.95} \draw[sheetGrey!40] (\x,3.0) -- (\x,-0.75);
+  % ── 1 lattice ──
+  \node[pt] at (0,2.85) {\textcolor{sheetBlue}{1} types are sets (up = bigger)};
+  \node[tn, draw=sheetBlue, fill=sheetBlue!8] (unk) at (2.3,2.35) {unknown};
+  \node[tn, draw=sheetGrey] (emp) at (1.45,1.8) {\{\}};
+  \node[tn] (nul) at (3.3,1.8) {null};
+  \node[tn] (und) at (4.25,1.8) {undefined};
+  \node[tn] (str) at (0.3,1.2) {string};
+  \node[tn] (num) at (1.05,1.2) {number};
+  \node[tn] (boo) at (1.85,1.2) {boolean};
+  \node[tn] (obj) at (2.7,1.2) {object};
+  \node[tn] (ox)  at (3.5,1.2) {\{x\}};
+  \node[tn] (la)  at (0.1,0.6) {'a'};
+  \node[tn] (lb)  at (0.5,0.6) {'b'};
+  \node[tn] (l1)  at (1.05,0.6) {42};
+  \node[tn] (tr)  at (1.85,0.6) {true};
+  \node[tn] (ar)  at (2.7,0.6) {T[]};
+  \node[tn] (oxy) at (3.5,0.6) {\{x,y\}};
+  \node[tn, draw=sheetRed, fill=sheetRed!8] (nev) at (1.95,0.0) {never};
+  \foreach \n in {emp,nul,und} \draw[sheetGrey] (unk) -- (\n);
+  \foreach \n in {str,num,boo,obj,ox} \draw[sheetGrey] (emp) -- (\n);
+  \draw[sheetGrey] (str) -- (la); \draw[sheetGrey] (str) -- (lb); \draw[sheetGrey] (num) -- (l1);
+  \draw[sheetGrey] (boo) -- (tr); \draw[sheetGrey] (obj) -- (ar); \draw[sheetGrey] (ox) -- (oxy);
+  \foreach \n in {la,lb,l1,tr,ar,oxy} \draw[sheetGrey!50] (\n) -- (nev);
+  \draw[sheetGrey!50] (nul.south) -- (nev); \draw[sheetGrey!50] (und.south) -- (nev);
+  \node[tn, draw=sheetOrange, dashed, fill=sheetOrange!10] (any) at (5.35,2.35) {any};
+  \draw[hot, <->, dashed] (any) -- node[lbl, above, text=sheetOrange]{both ways} (unk);
+  \draw[hot, ->, dashed] (any.south) -- (5.35,0.0) -- (nev.east);
+  \node[font=\small\bfseries, text=sheetRed] at (4.1,0.0) {$\times$};
+  \node[lbl, text=sheetOrange, anchor=east, align=right] at (5.3,1.0) {\ct{any} takes all,\\goes to all\\but \ct{never}};
+  \node[lbl, anchor=west] at (0,-0.33) {\ct{unknown} $\approx$ \ct{\{\} | null | undefined}; \ct{\{\}} = every non-nullish value};
+  \node[lbl, anchor=west, text=sheetGreen!50!black] at (0,-0.58) {\ct{\{x,y\}} under \ct{\{x\}}: more members = \emph{fewer} values};
+  % ── 2 union vs intersection ──
+  \node[pt] at (6.05,2.85) {\textcolor{sheetBlue}{2} values, not members};
+  \fill[sheetBlue!12] (7.55,1.3) circle (1.0);
+  \fill[sheetGreen!14] (8.85,1.3) circle (1.0);
+  \begin{scope}\clip (7.55,1.3) circle (1.0); \fill[sheetOrange!30] (8.85,1.3) circle (1.0); \end{scope}
+  \draw[sheetBlue] (7.55,1.3) circle (1.0); \draw[sheetGreen] (8.85,1.3) circle (1.0);
+  \node[font=\scriptsize, text=sheetBlue] at (7.05,1.6) {A};
+  \node[lbl] at (7.05,1.25) {has \ct{name}};
+  \node[font=\scriptsize, text=sheetGreen!55!black] at (9.35,1.6) {B};
+  \node[lbl] at (9.35,1.25) {has \ct{age}};
+  \node[lbl, text=sheetOrange!80!black] at (8.2,1.35) {\textbf{A\&B}\\name\\+ age};
+  \node[lbl, anchor=west, text=sheetRed, align=left] at (9.65,2.45) {\ct{u.age} on\\\ct{A|B}: error\\until narrowed};
+  \node[lbl, anchor=west] at (6.05,0.03) {\ct{A\&B}: fewer values, \textbf{more} members};
+  \node[lbl, anchor=west] at (6.05,-0.2) {\ct{A|B}: more values, only \textbf{common} members};
+  \node[lbl, anchor=west] at (6.05,-0.43) {\ct{string \& number} $\to$ \ct{never}; a clashing prop $\to$ \ct{never};};
+  \node[lbl, anchor=west] at (6.05,-0.64) {clashing literal tags $\to$ the whole \ct{A\&B} is \ct{never} (3.9)};
+  % ── 3 control-flow narrowing ──
+  \node[pt] at (11.05,2.85) {\textcolor{sheetBlue}{3} control-flow narrowing};
+  \node[sb, minimum width=36mm] (n0) at (13.5,2.3) {\ct{x: string | number | null}};
+  \node[sb, minimum width=36mm, draw=sheetOrange, fill=sheetOrange!8] (n1) at (13.5,1.6) {\ct{if (x \eqq{} null) return;}};
+  \node[sb] (n2) at (13.5,0.9) {\ct{typeof x \eqqq{} 'string'}?};
+  \node[sb, draw=sheetGreen, fill=sheetGreen!10] (yes) at (12.1,0.15) {\ct{x: string}};
+  \node[sb, draw=sheetGreen, fill=sheetGreen!10] (no)  at (14.9,0.15) {\ct{x: number}};
+  \draw[flow] (n0) -- (n1);
+  \draw[flow] (n1) -- node[lbl, right]{\ct{string|number}} (n2);
+  \draw[flow] (n2) -| node[lbl, left, pos=0.75]{yes} (yes);
+  \draw[flow] (n2) -| node[lbl, right, pos=0.75]{no: the rest} (no);
+  \node[lbl, text=sheetGrey] at (13.5,-0.3) {each branch sees the set minus what was ruled out;};
+  \node[lbl, text=sheetGrey] at (13.5,-0.52) {an assignment re-narrows, inside the declared type};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Assignability is structural}
+\begin{itemize}\raggedright
+  \item \ct{x} is compatible with \ct{y} if \ct{y} has at least the members of \ct{x}; names
+        never matter. Classes compare instance members only; a \ct{private}/\ct{protected}
+        member must come from the \emph{same} declaration — the nominal escape.
+  \item \textbf{Excess properties}: only a \emph{fresh} literal put straight into a typed slot —
+        \msg{Object literal may only specify known properties, and 'y' does not exist in type
+        'P'.} (2353). Via a variable, \ct{as} or an index signature it passes.
+  \item \textbf{Weak type} (all optional, 2.4): even via a variable one property must match —
+        \msg{Type '\{ payload: string; \ldots\ \}' has no properties in common with type
+        'Options'.} (2559)
+  \item \ct{object} (2.2) = non-primitives; ``\ct{object} is not \ct{Object}''.
+\end{itemize}
+
+\section{Top, bottom, special}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{49mm}@{}}
+\toprule
+\textbf{type} & \textbf{takes $\to$ to} & \textbf{what to remember}\\
+\midrule
+\ct{unknown} & all $\to$ \ct{unknown}, \ct{any} & no member, call or arithmetic until narrowed
+(\ct{\eqq}, \ct{\neqq} allowed); \ct{T | unknown} = \ct{unknown}, \ct{T \& unknown} = \ct{T};
+\ct{keyof unknown} = \ct{never}; truthy $\to$ \ct{\{\}} (4.8)\\
+\ct{any} & all $\to$ all but \ct{never} & checking off; members of \ct{any} are \ct{any}, so it
+spreads\\
+\ct{never} & none $\to$ all & empty set: \ct{T | never} = \ct{T}; what is left when every case
+is handled; \ct{(): never} = cannot return (throws, loops)\\
+\ct{void} & \ct{undefined} & $\ne$ \ct{undefined}: a \ct{() \fa{} void} slot takes
+\ct{() \fa{} number} (result ignored); a function \emph{declared} \ct{: void} may not return a value\\
+\ct{\{\}} & all but nullish & \ct{5} and \ct{""} too — not ``an empty object''\\
+\bottomrule
+\end{tabular}}
+
+\section{Literals, widening, \texttt{as const}}
+\ct{const s = 'a'} is \ct{'a'}, \ct{let s = 'a'} is \ct{string}; properties widen too:
+\ct{const req = \{ method: 'GET' \}} gives \ct{method: string}, so passing it to a
+\ct{'GET' | 'POST'} parameter fails — \msg{Argument of type 'string' is not assignable to
+parameter of type '"GET" | "POST"'.} \ct{as const}: no widening, \ct{readonly} properties and
+tuples (\ct{[10, 20] as const}: \ct{readonly [10, 20]}); literals only; a referenced array
+inside stays mutable.
+
+\section{annotation · \texttt{satisfies} · \texttt{as}}
+\begin{lstlisting}[language=TSSheet]
+const r1: Record<string, string> = { home: '/' };
+r1.hmoe;   // compiles: the annotation IS the type
+const r2 = { home: '/' } satisfies Record<string, string>;
+r2.hmoe;   // error: inferred { home: string } is kept
+const r3 = {} as Record<'home', string>;  // compiles: a lie
+const n = 'hi' as number;     // 2352 "... may be a mistake"
+const m = 'hi' as unknown as number;      // forces anything
+\end{lstlisting}
+\ct{as}: only to a more or less specific type. \ct{x!}: non-null, unchecked.
+
+\section{Functions · readonly · optional}
+\begin{itemize}\raggedright
+  \item Fewer parameters fit (\ct{forEach(x \fa{} \ldots)}); returns are covariant; optional
+        $\leftrightarrow$ required interchangeable; a rest = endless optionals.
+  \item Parameters compare \textbf{bivariantly} (unsound) unless \ct{strictFunctionTypes}: then
+        contravariantly — but \textbf{method syntax} \ct{m(x: T): void} stays bivariant ``to
+        ensure \ldots\ \ct{Array<T>} \ldots\ relate covariantly''. Strict callback:
+        \ct{onX: (e: E) \fa{} void}.
+  \item 5.8 checks each branch of a returned \ct{c ? a : b}: in \ct{(s: string): URL},
+        \ct{c ? anyMap.get(s) : s} gives \msg{Type 'string' is not assignable to type 'URL'.}
+  \item \ct{readonly} is ignored by assignability: \ct{\{ readonly x \}} goes into \ct{\{ x \}}
+        and is written through the alias. Arrays differ: \msg{The type 'readonly string[]' is
+        'readonly' and cannot be assigned to the mutable type 'string[]'.} (4104).
+  \item \ct{a?: T} may be \emph{absent}, \ct{a: T | undefined} must be \emph{present};
+        \ct{exactOptionalPropertyTypes} bans writing \ct{a: undefined}.
+\end{itemize}
+
+\section{Merging · interface vs type}
+\ct{interface}s of one name merge: a shared property must keep its type (2717), methods become
+overloads, the later block's first; a \ct{type} cannot reopen (\msg{Duplicate identifier}). A
+namespace merges into a class, function or enum, a class never into a class or variable;
+\ct{declare module './x'} only patches existing names. Only \ct{type} names unions and tuples;
+\ct{extends} reports a clashing property, \ct{\&} silently makes it \ct{never}.
+
+\columnbreak
+
+\section{Narrowing — control-flow analysis}
+\begin{itemize}\raggedright
+  \item \ct{typeof}: \ct{"string" "number" "bigint" "boolean" "symbol" "undefined" "object"
+        "function"} — \ct{typeof null} is \ct{"object"}. Truthiness drops \ct{0 NaN "" 0n null
+        undefined}: \ct{if (count)} loses \ct{0}. \ct{== null} matches \ct{undefined} too.
+  \item \ct{"k" in x} keeps members with \ct{k} (optional \ct{k}: both branches); a key no member
+        lists gives \ct{x \& Record<"k", unknown>} (4.9). \ct{instanceof}: prototype chain.
+  \item An assignment narrows within the declared type: \ct{let x = c ? 10 : 'hi'; x = true} —
+        \msg{Type 'boolean' is not assignable to type 'string | number'.}
+  \item Also tracked: a test kept in a \ct{const} (4.4); \ct{const \{ kind, payload \} = a}
+        (4.6); \ct{switch (true)} (5.3); a closure made after the \emph{last} assignment (5.4;
+        none if a closure assigns); \ct{obj[key]} with both unchanged (5.5). A test truthy by
+        its very form is an error (5.6): \msg{This kind of expression is always truthy.} —
+        \ct{if (/re/)}.
+\end{itemize}
+
+\section{Discriminated unions · guards}
+\begin{lstlisting}[language=TSSheet]
+type Shape =
+  | { kind: 'circle'; r: number }
+  | { kind: 'rect'; w: number; h: number };
+function area(s: Shape): number {
+  switch (s.kind) {               // the literal tag narrows s
+    case 'circle': return Math.PI * s.r ** 2;
+    case 'rect':   return s.w * s.h;
+    default: const gone: never = s; return gone;
+  }                               // a 3rd kind: error above
+}
+const ns = [1, undefined, 2].filter(x => x !== undefined);
+          // number[]: the predicate x is number is inferred
+\end{lstlisting}
+\begin{itemize}\raggedright
+  \item Tag = a property every member has, typed by literals. A new kind fails
+        \ct{gone: never} (\msg{Type '\{ kind: "tri"; \ldots\ \}' is not assignable to type
+        'never'.}), \ct{s satisfies never} (1360), or — with no \ct{default} under a declared
+        return type — \msg{Function lacks ending return statement and return type does not
+        include 'undefined'.} (2366).
+  \item A predicate body is \textbf{trusted, not checked}: \ct{\ldots: x is string \fa{} true}
+        compiles. Inferred only with no return annotation, one \ct{return}, an unmutated
+        parameter, true $\Rightarrow$ \ct{T} and false $\Rightarrow$ not \ct{T}: so not for
+        \ct{x \fa{} !!x} on \ct{number | undefined} (\ct{0}).
+  \item \ct{asserts c} / \ct{asserts v is T} narrow \emph{after} the call (the function throws
+        otherwise). The callee needs an explicitly typed name: \ct{const check = (c: unknown):
+        asserts c \fa{} \ldots;} \ct{check(v)} — \msg{Assertions require every name in the call
+        target to be declared with an explicit type annotation.} (2775)
+\end{itemize}
+
+\section{Enums as types}
+\begin{itemize}\raggedright
+  \item \textbf{Numeric}: any \ct{number} value fits, an out-of-range literal does not (5.0:
+        \ct{1} into \ct{enum E \{ A = 0, B = 2 \}} errors); two enums never mix.
+  \item \textbf{String}: nominal — \ct{const d: Dir = 'UP'} gives \msg{Type '"UP"' is not
+        assignable to type 'Dir'.}
+  \item An enum is a union of its members; each member is a type that narrows
+        (\ct{type Primary = Color.Red | Color.Blue}). Emit, \ct{const enum}, erasability and the
+        \ct{as const} alternative: \ct{ts-config-and-practice}.
+\end{itemize}
+
+\section{Index signatures · tuples}
+\begin{itemize}\raggedright
+  \item Keys: \ct{string}, \ct{number}, \ct{symbol}, template patterns
+        (\ct{[k: \textasciigrave{}data-\$\{string\}\textasciigrave{}]: unknown}, 4.4), unions of
+        them. Under \ct{[k: string]: number}, \ct{name: string} is an error; a \ct{number}
+        index must fit the \ct{string} one.
+  \item \ct{[number, number, number?]} has \ct{length: 2 | 3}; a rest goes anywhere
+        (\ct{[...boolean[], string]}); \ct{readonly [string, number]} refuses
+        \ct{pair[0] = \ldots} — \msg{Cannot assign to '0' because it is a read-only property.}
+\end{itemize}
+
+\section{Timeline}
+\noindent\begin{tikzpicture}[sheet]
+  \draw[thick, sheetGrey] (0.1,0) -- (7.55,0);
+  \foreach \x/\v/\t/\p in {
+      0.45/2.0/{\ct{never}, CFA,\\tagged unions}/1,
+      1.15/2.6/{strictFunc-\\tionTypes}/-1,
+      1.85/3.0/\ct{unknown}/1,
+      2.5/3.4/\ct{as const}/-1,
+      3.15/3.7/\ct{asserts}/1,
+      3.8/4.9/\ct{satisfies}/-1,
+      4.45/5.0/{union\\enums}/1,
+      5.1/5.5/{inferred\\predicates}/-1,
+      5.75/5.8/{erasable-\\SyntaxOnly}/1} {
+    \node[tk] at (\x,0) {};
+    \node[font=\tiny\bfseries, text=sheetBlue, inner sep=0pt] at (\x,0.17*\p) {\v};
+    \node[lbl, anchor={\ifnum\p=1 south\else north\fi}] at (\x,0.25*\p) {\t};
+  }
+  \node[tk, fill=sheetOrange] at (6.45,0) {};
+  \node[font=\tiny\bfseries, text=sheetOrange, inner sep=0pt] at (6.45,-0.17) {6.0};
+  \node[lbl, anchor=north] at (6.45,-0.25) {Mar 2026: last\\JS-based; \ct{strict}\\on by default};
+  \node[tk, fill=sheetRed] at (7.25,0) {};
+  \node[font=\tiny\bfseries, text=sheetRed, inner sep=0pt] at (7.25,0.17) {7.0};
+  \node[lbl, anchor=south] at (7.05,0.25) {Jul 2026: Go\\port, checks\\like 6.0};
+\end{tikzpicture}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\raggedright\textit{Related:}
+\texttt{ts-generics-advanced} (variance, conditional and mapped types) ·
+\texttt{ts-config-and-practice} (\texttt{strict}, brands, parsing at the edge) ·
+\texttt{js-types-coercion-modules} · Typed contracts across iOS, Android, web \& backend ·
+RN testing + TypeScript · Kotlin type system \& generics — variance, reified, nullability\par}
+
+\end{document}

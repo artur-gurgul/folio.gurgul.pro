@@ -1,0 +1,320 @@
+% js-event-loop.tex — the event loop as the specs define it: HTML task queues, the microtask
+% checkpoint, rendering as its own task, idle periods; ECMA-262 jobs; Node's libuv iteration,
+% process.nextTick vs microtasks (CommonJS vs ES modules), setImmediate vs setTimeout; timer clamps
+% and throttling; long tasks, INP and yielding (scheduler.yield / postTask, MessageChannel);
+% React Native's loop. Promise job counting (await costs, combinators) lives in js-async.
+% Sources (checked 2026-10-09):
+%   html.spec.whatwg.org/multipage/webappapis.html (event loop processing model: task queues are
+%     sets, the queue is chosen in an implementation-defined manner, its first runnable task runs;
+%     then a microtask checkpoint: dequeue until empty, then notify about rejected promises, Indexed
+%     DB cleanup, ClearKeptObjects; "clean up after running script": stack empty → microtask
+%     checkpoint; "the microtask queue is not a task queue"; rendering opportunity = refresh rate
+%     + UA throttling, 60 Hz ≈ 16.67 ms; per opportunity a global task on the rendering task source
+%     updates the rendering: resize, scroll, media queries, animations, fullscreen, animation frame
+%     callbacks, style + layout, resize observations, intersection observations, paint; documents
+%     with no visible change and no rAF callbacks are skipped; idle deadline ≤ start + 50 ms;
+%     WindowOrWorkerGlobalScope IDL: setTimeout(handler, optional long timeout = 0))
+%   github.com/whatwg/html issues/9824 → pull/10007 (merged 2024-01-31: "perform rendering as a task")
+%   html.spec.whatwg.org/multipage/timers-and-user-prompts.html (timeout < 0 → 0; nesting level > 5
+%     and timeout < 4 → 4; optional further implementation-defined wait; earlier timers with the same
+%     or a shorter timeout complete first; timer task source; queueMicrotask)
+%   dom.spec.whatwg.org (queue a mutation observer microtask: one per agent until it runs; observers
+%     notified in creation order)
+%   tc39.es/ecma262 §9.5 Jobs (run only when the execution context stack is empty; one job at a
+%     time, to completion; HostEnqueuePromiseJob jobs run in the order they were enqueued)
+%   nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick (phases; libuv 1.45.0 /
+%     Node 20: timers run after poll; poll waits when nothing is due, not when immediates are queued;
+%     setTimeout vs setImmediate: main module unpredictable, inside an I/O callback immediate first;
+%     nextTick is not part of the loop; recursive nextTick starves I/O)
+%   docs.libuv.org/en/v1.x/design.html (due timers once before the loop in UV_RUN_DEFAULT; iteration:
+%     pending, idle, prepare, poll timeout, block for I/O, check, close, update now, due timers)
+%   nodejs.org/api/process.html (nextTick: Stability 3 Legacy since v22.7.0 / v20.18.0 — use
+%     queueMicrotask; each time the tick queue drains the microtask queue drains right after; CJS:
+%     nextTick before promises, ESM: promises first — both examples with stated output)
+%   nodejs.org/api/timers.html (delay > 2147483647, < 1 or NaN → 1, truncated; no guarantee of
+%     exact timing or ordering; setImmediate: whole queue per iteration, one queued inside runs next
+%     iteration; ref / unref; timers/promises scheduler.yield() = setImmediate(), Experimental)
+%     · nodejs.org/api/globals.html (queueMicrotask v11.0.0, MessageChannel v15.0.0)
+%   github.com/nodejs/node pull/22842, commit 52428c8 (11.0.0: nextTicks and microtasks after each
+%     timer and immediate, "to better match browser behaviour")
+%   wicg.github.io/scheduling-apis (Draft CG Report 2025-05-30: user-blocking, user-visible
+%     (default), background; delay, signal; TaskController.setPriority; yield() continuation inherits
+%     priority and signal, ahead of tasks of the same priority)
+%   github.com/mdn/browser-compat-data api/Scheduler.json (postTask Chrome 94 / Firefox 142, yield
+%     Chrome 129 / Firefox 142, Safari none) · api/Window.json (requestIdleCallback Chrome 47,
+%     Firefox 55, Safari preview behind a flag) · api/PerformanceLongAnimationFrameTiming.json (Chrome
+%     123 only) · developer.mozilla.org Window/setTimeout (delay is signed 32-bit; overflow fires at once)
+%   w3c.github.io/longtasks (ED 2026-03-19: > 50 ms = task + the microtask checkpoint after it; 50 ms
+%     so input is handled within RAIL's 100 ms) · w3c.github.io/long-animation-frames (ED 2026-09-03:
+%     > 50 ms task + rendering; script attribution, forcedStyleAndLayoutDuration)
+%   web.dev/articles/inp (≤ 200 ms good, > 500 ms poor, 75th percentile; click, tap, key; input
+%     delay + processing + presentation) · web.dev/blog/inp-cwv-launch (Core Web Vital 2024-03-12)
+%   developer.chrome.com/blog/timer-throttling-in-chrome-88 (hidden page: timers checked once per
+%     second; intensive: hidden > 5 min, chain ≥ 5, silent 30 s, no WebRTC → once per minute;
+%     requestAnimationFrame does not run while hidden)
+%   github.com/facebook/react packages/scheduler (Scheduler.js: setImmediate in Node, else
+%     MessageChannel "because of the 4ms setTimeout clamping", else setTimeout; frameYieldMs = 5)
+%   reactnative.dev/blog/2024/10/23/the-new-architecture-is-here (0.76: New Architecture default;
+%     event loop per RFC0744, follows HTML; urgent events interrupt rendering; useLayoutEffect reads
+%     layout synchronously, same frame) · github.com/react-native-community/discussions-and-proposals
+%     proposals/0744-well-defined-event-loop.md (expired tasks first, then by priority; run; all
+%     microtasks; update the rendering = mount new Fabric commits) · reactnative.dev/docs/animations
+%     (native driver: JS thread can be blocked without affecting the animation; transform, opacity)
+%   Every printed order below is DERIVED from the algorithms above, not run here; the two Node
+%     process.html examples (CJS / ESM) state the nextTick-vs-promise orders the puzzle relies on.
+%   Node orders run in Node v26.7.0, each listing in a fresh process: CommonJS A E H G C F D B,
+%     ES module A E H C F D G B, setImmediate i1 n p i2, I/O callback i t — all as printed. The
+%     browser orders (A E H C F D B; click L1 L2 m1 m2 vs L1 m1 L2 m2) follow the HTML standard's
+%     microtask checkpoint; they were not run in a browser.
+% @labels: area=runtime kind=concept platform=web topic=concurrency,performance discussion=330
+% @tags: event-loop, microtask, queuemicrotask, process-nexttick, setimmediate, settimeout-clamping, requestanimationframe, requestidlecallback, libuv, blocking-event-loop, long-tasks, inp, scheduler-yield, starvation, promises
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{JS}{
+  morekeywords={const,let,var,function,return,async,await,new,for,of,if,else,true,false,null,
+    undefined,this},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`}
+\lstdefinestyle{js}{style=printup, language=JS, basicstyle=\ttfamily\scriptsize,
+  aboveskip=2pt, belowskip=2pt,
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {>=}{{\hbox{>}\hbox{=}}}2 {<=}{{\hbox{<}\hbox{=}}}2
+           {?.}{{\hbox{?}\hbox{.}}}2}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.4mm},
+  mt/.style={sb, draw=sheetOrange, fill=sheetOrange!10},
+  rd/.style={sb, font=\tiny, draw=sheetGreen!70!black, fill=sheetGreen!10, minimum height=6mm},
+  q/.style={sb, font=\tiny, minimum width=13mm, minimum height=3.4mm, inner sep=1pt},
+  ph/.style={sb, font=\tiny, minimum width=18mm, minimum height=6.2mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{The JavaScript event loop — browser and Node}{runtime · folio}
+
+\oneliner{One thread runs JS \textbf{to completion}. The browser takes \textbf{one task} from a
+queue of its choosing, runs it, then \textbf{drains every microtask}; painting is a task of its
+own, queued at each \textbf{rendering opportunity}. Node walks libuv's \textbf{phases} and, after
+\textbf{every} callback, drains \texttt{process.nextTick}, then microtasks. Nothing runs between two
+microtasks — an endless chain of them freezes everything.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \draw[sheetGrey!40] (9.55,3.1) -- (9.55,-1.05);
+  % ── 1 browser ──
+  \node[pt] at (0,2.95) {\textcolor{sheetBlue}{1} browser — HTML event loop};
+  \node[lbl, text=sheetBlue] at (0.75,2.55) {task queues (sets)};
+  \foreach \y/\t in {2.2/timer, 1.82/networking, 1.44/user input, 1.06/posted message} \node[q] at (0.75,\y) {\t};
+  \node[q, draw=sheetGreen!70!black, fill=sheetGreen!12] (rq) at (0.75,0.68) {rendering};
+  \draw[thick, sheetGrey] (1.55,2.3) -- (1.55,0.58);
+  \foreach \y in {2.2,1.82,1.44,1.06,0.68} \draw[sheetGrey] (1.42,\y) -- (1.55,\y);
+  \node[sb, minimum width=24mm] (run) at (3.4,1.45) {UA picks a queue;\\its oldest runnable\\task runs to an empty stack};
+  \node[mt, minimum width=30mm] (mic) at (7.0,1.45) {microtask checkpoint:\\dequeue \textbf{until empty}, also new ones\\\ct{then} · \ct{await} · \ct{queueMicrotask} · MO};
+  \draw[flow] (1.55,1.45) -- (run);
+  \draw[flow] (run) -- (mic);
+  \draw[flow] (mic.north) |- (1.75,2.62) node[pos=0.75, lbl, above]{next task} -- (1.75,2.3) -- (1.6,2.3);
+  \node[lbl, anchor=west, align=left, text=sheetGrey] at (5.1,0.75) {then: unhandled-rejection report,\\WeakRef targets released};
+  \node[lbl, anchor=west, align=left] at (1.7,0.8) {also after \textbf{each callback} that\\leaves the stack empty};
+  % rendering task, expanded
+  \foreach \x/\t/\n in {0.6/{resize\\scroll}/r1, 2.0/{media queries\\animations}/r2, 3.4/{\textbf{rAF}\\callbacks}/r3, 5.0/{style + layout\\↔ ResizeObserver}/r4, 6.85/{Intersection-\\Observer}/r6, 8.45/{\textbf{paint}}/r7}
+    \node[rd, minimum width=11mm] (\n) at (\x,-0.25) {\t};
+  \draw[flow] (rq.south) -- (r1.north);
+  \foreach \a/\b in {r1/r2, r2/r3, r3/r4, r4/r6, r6/r7} \draw[flow] (\a) -- (\b);
+  \node[lbl, anchor=west, text=sheetGreen!45!black] at (1.2,0.3) {rendering task: queued per opportunity (vsync, 16.7\,ms at 60\,Hz; none while hidden)};
+  \node[lbl, anchor=west] at (0,-0.83) {idle (no runnable task): \ct{requestIdleCallback}, deadline $\le$\,50\,ms};
+  \node[lbl, anchor=east, text=sheetRed] at (9.4,-0.83) {microtasks queueing microtasks: no task, no paint};
+  % ── 2 Node ──
+  \node[pt] at (9.65,2.95) {\textcolor{sheetBlue}{2} Node — one libuv iteration};
+  \node[ph] (ti) at (13.05,2.3) {\textbf{timers}\\\ct{setTimeout}/\ct{Interval} due};
+  \node[ph] (pe) at (15.45,1.65) {\textbf{pending}\\deferred I/O cbs};
+  \node[ph, draw=sheetGrey, fill=white] (id) at (15.45,0.65) {idle, prepare\\(internal)};
+  \node[ph, minimum width=28mm] (po) at (13.05,0.02) {\textbf{poll}: wait for I/O, run its\\callbacks (sockets, fs results)};
+  \node[ph] (ch) at (10.65,0.65) {\textbf{check}\\\ct{setImmediate}};
+  \node[ph] (cl) at (10.65,1.65) {\textbf{close}\\\ct{'close'} events};
+  \draw[flow] (pe) -- (id); \draw[flow] (id) |- (po); \draw[flow] (po) -| (ch);
+  \draw[flow] (ch) -- (cl); \draw[flow] (cl) |- (ti); \draw[flow] (ti) -| (pe);
+  \node[mt, minimum width=26mm, font=\tiny] at (13.05,1.17) {after \textbf{every} callback:\\1 drain \ct{nextTick} queue\\2 drain microtask queue\\repeat until both empty};
+  \node[lbl, anchor=west, align=left] at (9.65,-0.6) {Node 20+ (libuv 1.45): timers run \textbf{after} poll, closing each iteration\\(+ once before the first); earlier versions ran them first in each};
+  \node[lbl, anchor=west, align=left, text=sheetGrey] at (9.65,-0.93) {poll waits until the next timer at most, not at all if immediates wait};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{What runs when}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{19mm}L{15mm}L{21mm}L{21mm}@{}}
+\toprule
+\textbf{API} & \textbf{queue} & \textbf{browser} & \textbf{Node}\\
+\midrule
+\ct{process.nextTick} & tick queue & — & before microtasks; Legacy since 22.7 / 20.18\\
+\ct{then}, \ct{await}, \ct{queueMicrotask} & microtask & all & V8's queue; global since 11\\
+\ct{MutationObserver} & microtask, 1 per batch & all & —\\
+\ct{setTimeout}, \ct{setInterval} & task: timer & $\geq$0\,ms; 4\,ms when nested $>$5 & $\geq$1\,ms; timers phase\\
+\ct{setImmediate} & task & not a web API & check phase\\
+\ct{MessageChannel} & task: posted message & no clamp & global since 15\\
+network, input, files & task & own sources & poll phase\\
+\ct{requestAnimation-} \ct{Frame} & rendering task & before style + layout & —\\
+\ct{requestIdle-} \ct{Callback} & idle period & Chrome 47, Firefox 55; Safari: flag only & —\\
+\ct{scheduler.postTask} / \ct{.yield()} & prioritized task & Chrome 94 / 129, Firefox 142; no Safari & \ct{timers/promises}: \ct{yield()} = \ct{setImmediate} (exp.)\\
+\bottomrule
+\end{tabular}}
+
+\section{The processing model (HTML, ECMA-262)}
+\begin{itemize}
+  \item ECMA-262 leaves scheduling to the host: a job runs only on an \textbf{empty stack}, one at
+        a time, to completion; promise jobs in the order queued. HTML: promise job = microtask.
+  \item One queue per \textbf{task source}; the browser picks which goes next — order holds
+        within a source, not \emph{across} them (a timer vs a message).
+  \item Microtask checkpoint after every task \emph{and} every callback that leaves the stack
+        empty: between two listeners of a real click, after each rAF and observer callback. It
+        drains until empty — \ct{function f()\{queueMicrotask(f)\}} freezes the page; a
+        \ct{setTimeout} loop does not.
+  \item \textbf{MutationObserver} queues one microtask per batch: 1000 DOM edits in a task → one
+        callback, 1000 records; observers called in creation order.
+  \item \textbf{Rendering is a task} on the rendering task source (HTML PR \#10007, Jan 2024; before,
+        a step of the loop), skipped when nothing visible changed and no rAF is pending. Reading
+        \ct{offsetWidth} or \ct{getBoundingClientRect()} after a style write forces style + layout
+        inside \emph{your} task.
+\end{itemize}
+
+\section{Timers}
+\begin{itemize}
+  \item HTML: timeout $<$0 → 0; a timer set from a timer task nested more than 5 deep:
+        $<$4\,ms → 4\,ms. Earlier timers with an equal or shorter timeout fire first; the browser
+        may wait longer (power, throttling).
+  \item The IDL type is \ct{long} (signed 32-bit): 2\textsuperscript{31}\,ms ($\approx$24.8 days)
+        or more wraps and fires at once. Node: $>$2147483647, $<$1 or NaN → \textbf{1\,ms},
+        fractions truncated; Node promises neither exact timing nor ordering.
+  \item Chrome, hidden page: timers checked once per second; from Chrome 88, hidden $>$5\,min +
+        chain $\geq$5 + silent 30\,s + no WebRTC → once per \textbf{minute}.
+\end{itemize}
+
+\section{Trace it}
+\begin{lstlisting}[style=js]
+console.log('A');
+setTimeout(() => console.log('B'), 0);              // task
+Promise.resolve().then(() => { console.log('C');    // micro [C]
+  queueMicrotask(() => console.log('D')); });       // [F, D]
+(async () => { console.log('E');                    // runs now
+  await null; console.log('F'); })();               // [C, F]
+globalThis.process?.nextTick(() => console.log('G')); // Node
+console.log('H');
+\end{lstlisting}
+\begin{itemize}
+  \item \textbf{Browser}: \textbf{A E H C F D B} — D was queued during the drain, still before B.
+  \item \textbf{Node, CommonJS}: \textbf{A E H G C F D B} — the tick queue drains first.
+  \item \textbf{Node, ES module}: \textbf{A E H C F D G B} — the module body already runs inside the
+        microtask drain, so G waits for it to empty.
+\end{itemize}
+\begin{lstlisting}[style=js]
+const b = document.querySelector('button');
+for (const n of [1, 2]) b.addEventListener('click', () => {
+  queueMicrotask(() => console.log('m' + n)); console.log('L' + n); });
+b.click();  // L1 L2 m1 m2 -- this script is still on the stack
+            // a real user click: L1 m1 L2 m2
+\end{lstlisting}
+
+\columnbreak
+
+\section{Node specifics}
+\begin{itemize}
+  \item Since \textbf{Node 11} (PR \#22842) ticks + microtasks drain after \emph{each} timer and
+        immediate callback, ``to better match browser behaviour'' — before, once per list.
+  \item \ct{setImmediate} runs its whole queue each iteration; one queued from inside an immediate
+        waits for the next — recursive \ct{setImmediate} lets I/O in, recursive \ct{nextTick} or
+        microtasks starve it.
+  \item \ct{setTimeout(f, 0)} vs \ct{setImmediate} in the main module: either order (has 1\,ms
+        passed?). Inside an I/O callback: \textbf{immediate first} — check follows poll.
+  \item \ct{nextTick}: before promises in CommonJS, after them in ES modules; \textbf{Legacy}
+        since v22.7.0 / v20.18.0 — \ct{queueMicrotask} orders the same in both.
+\end{itemize}
+\begin{lstlisting}[style=js]
+setImmediate(() => { console.log('i1');
+  Promise.resolve().then(() => console.log('p'));
+  process.nextTick(() => console.log('n')); });
+setImmediate(() => console.log('i2'));
+// Node >= 11: i1 n p i2        (Node <= 10: i1 i2 n p)
+fs.readFile(file, () => { setTimeout(() => console.log('t'), 0);
+  setImmediate(() => console.log('i')); });       // always: i t
+\end{lstlisting}
+
+\section{Long tasks and yielding}
+\begin{itemize}
+  \item \textbf{Long task}: a task + its microtask checkpoint $>$\textbf{50\,ms} (so input waits
+        $<$50\,ms, inside RAIL's 100\,ms); \textbf{LoAF} (Chrome 123) adds rendering + per-script
+        attribution. \textbf{INP} = input delay + processing + presentation of clicks, taps, keys; p75
+        $\le$200\,ms good, $>$500\,ms poor; Core Web Vital since 12 Mar 2024.
+  \item \ct{await} does \textbf{not} yield — its continuation is a microtask in the same
+        checkpoint. To let input and paint in, \textbf{end the task}.
+\end{itemize}
+\noindent\begin{tikzpicture}[sheet, x=0.5mm, y=1mm]
+  \node[lbl, anchor=east] at (-1,7) {one task}; \node[lbl, anchor=east] at (-1,1) {chunked};
+  \fill[sheetRed!22, draw=sheetRed] (0,5.5) rectangle (100,8.5);
+  \node[lbl] at (50,7) {120\,ms of work: the click and every frame wait};
+  \fill[sheetBlue!35, draw=sheetBlue] (100,5.5) rectangle (106,8.5);
+  \fill[sheetGreen!45, draw=sheetGreen!70!black] (106,5.5) rectangle (109,8.5);
+  \foreach \s in {0,21,42,63,84} \fill[sheetRed!22, draw=sheetRed] (\s,-0.5) rectangle (\s+12,2.5);
+  \fill[sheetBlue!35, draw=sheetBlue] (12,-0.5) rectangle (18,2.5);
+  \foreach \s in {18,33,54,75,96} \fill[sheetGreen!45, draw=sheetGreen!70!black] (\s,-0.5) rectangle (\s+3,2.5);
+  \draw[->, thick, sheetBlue] (6,12.5) node[lbl, right, text=sheetBlue]{click} -- (6,8.8);
+  \draw[->, thick, sheetBlue, dashed] (6,5.2) -- (6,2.8);
+  \node[lbl, anchor=west] at (111,7) {handler, frame};
+  \node[lbl, anchor=west, align=left] at (101,1) {\textcolor{sheetRed}{work} ·
+    \textcolor{sheetBlue}{handler}\\\textcolor{sheetGreen!45!black}{frame} (rendering task)};
+\end{tikzpicture}
+\begin{itemize}
+  \item \ct{scheduler.yield()}: the continuation keeps the task's priority and signal and runs
+        \textbf{ahead} of same-priority tasks. \ct{scheduler.postTask(fn, \{priority, delay,
+        signal\})}: \ct{user-blocking} · \ct{user-visible} (default) · \ct{background} (WICG draft).
+  \item \ct{setTimeout(r, 0)}: everywhere, back of the queue, clamped once nested.
+        \ct{MessageChannel} is unclamped: React's scheduler uses it in browsers (``because of the
+        4ms setTimeout clamping''), \ct{setImmediate} in Node, and yields every \textbf{5\,ms}.
+        Unchunkable work: a Worker / \ct{worker\_threads} (own loop).
+\end{itemize}
+\begin{lstlisting}[style=js]
+const yieldToLoop = () => globalThis.scheduler?.yield ? scheduler.yield()
+  : new Promise((r) => setTimeout(r, 0));     // Safari: no scheduler yet
+let t = performance.now();                    // inside an async function
+for (const it of items) { work(it); if (performance.now() - t < 5) continue;
+  await yieldToLoop(); t = performance.now(); }
+\end{lstlisting}
+
+\section{React Native}
+\begin{itemize}
+  \item New Architecture (default since 0.76, Oct 2024): an HTML-modelled loop on the \textbf{JS
+        thread} (RFC 0744) — a task, \emph{all} microtasks, then update the rendering (mount new
+        Fabric commits). Layout effects run before the mount: \ct{useLayoutEffect} measures and
+        repositions in the same frame.
+  \item A long JS task delays touches and JS-driven animation; \ct{Animated}'s native driver runs on
+        the UI thread — ``the JS thread can be blocked without affecting the animation'' — for
+        \ct{transform}, \ct{opacity}, not layout props.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``\ct{setTimeout(0)} runs next'' — every microtask (Node: tick) first, then a 1\,ms floor or 4\,ms clamp.}
+  \trap{\ct{el.click()} / \ct{dispatchEvent} from script: listeners run synchronously,
+        microtasks only after the calling script.}
+  \trap{Hidden tab: rAF stops, timers throttle — no heartbeats or game clocks on them.}
+\end{itemize}
+
+\section{Remember}
+\textbf{One task → all microtasks → a rendering task when due. Node: phases; nextTick →
+microtasks after every callback. Yield = end the task.}
+
+\end{multicols}
+
+{\raggedright\noindent\footnotesize\color{sheetGrey}\textit{Related:} \texttt{js-async} ·
+\texttt{node-runtime} · \texttt{js-engines-performance} · \texttt{hermes-v1} ·
+\texttt{rn-architecture} · \texttt{rn-performance} · \texttt{rn-animations-gestures} ·
+\texttt{react-hooks-deep}\par}
+
+\end{document}

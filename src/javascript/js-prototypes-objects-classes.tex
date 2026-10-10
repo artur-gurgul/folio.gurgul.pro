@@ -1,0 +1,327 @@
+% js-prototypes-objects-classes.tex — the [[Prototype]] chain (drawn), what [[Get]] / [[Set]] do
+% (shadowing, setters, read-only), who builds the object in `new` (derived vs base), which
+% operations see which keys, descriptors and integrity levels, prototype pollution, classes
+% (fields, #private, static blocks, super / [[HomeObject]], mixins), the decorators' stage, the
+% 13 internal methods = Proxy traps = Reflect, symbols, iterators, generators.
+% Sources (checked 2026-10-09):
+%   tc39.es/ecma262/2026 (ES2026): 6.1.5.1 well-known symbols (13) · 6.1.7.1 array index ≤ 2^32 − 2;
+%     absent attributes default to false / undefined · OrdinaryGet (getter gets the
+%     receiver) · OrdinarySetWithOwnDescriptor (non-writable or setter-less → false;
+%     setter called with the receiver; else a data property on the receiver) ·
+%     ValidateAndApplyPropertyDescriptor (non-configurable) · OrdinaryOwnPropertyKeys
+%     (indices ascending, then strings, then symbols, by creation) · 10.1.13–14
+%     OrdinaryCreateFromConstructor / GetPrototypeFromConstructor (non-object .prototype →
+%     the realm's Object.prototype) · 10.2.1 [[Call]] throws for class constructors · 10.2.2
+%     [[Construct]] (base: create from new.target, InitializeInstanceElements, body; an object
+%     result wins; derived non-undefined result → TypeError; else the this binding) · 10.5 Proxy
+%     (internal method ↔ trap table; [[Call]] / [[Construct]] only if the target has them;
+%     invariants; trap false → [[Set]] false) · 20.1.3.8 Object.prototype.__proto__ "Normative
+%     Optional, Legacy" · 20.1.2.13 Object.groupBy · 20.1.2.14 Object.hasOwn
+%   github.com/tc39/proposals finished-proposals.md (publication years: getOwnPropertyDescriptors,
+%     values / entries 2017; rest / spread properties, async iteration 2018; class fields, private
+%     methods, static fields, static blocks, #x in obj, Object.hasOwn 2022; Object.groupBy 2024;
+%     iterator helpers 2025; iterator sequencing 2026; explicit resource management 2027) ·
+%     README (Stage 2.7: Decorators, Decorator Metadata; Stage 3: Non-extensible Applies to
+%     Private) · commits "Decorators (sans metadata) to stage 3, per 2022.03.28 TC39" and
+%     "Decorators to stage 2.7, per 2026.05.19 TC39"
+%   github.com/tc39/proposal-decorators (Stage 2.7; `accessor` = getter + setter over a private
+%     slot) · github.com/tc39/proposal-nonextensible-applies-to-private (Stage 3; private fields
+%     can still be added to non-extensible objects today)
+%   262.ecma-international.org/5.1 (Object.create, defineProperty, freeze, seal, preventExtensions,
+%     getPrototypeOf, keys; get / set in initialisers) · 262.ecma-international.org/6.0 (ES2015:
+%     class, Symbol, Proxy, Reflect, setPrototypeOf)
+%   devblogs.microsoft.com/typescript/announcing-typescript-5-0 (standard decorators; no parameter
+%     decorators; not compatible with emitDecoratorMetadata)
+%   developer.mozilla.org, as a cross-check: Proxy (trap table; private elements and Map's
+%     [[MapData]] are not forwarded) · Classes (strict body, TDZ, element order, static blocks) ·
+%     Public class fields (base: before the body; derived: after super(); define semantics — a
+%     base setter is not called) · Private elements (TypeError; #x in obj; not on .prototype; not
+%     inherited; freeze / seal no effect; structuredClone drops them; delete = SyntaxError;
+%     return-override stamping; static private through `this`) · super (home object; copied
+%     methods keep it; super.x = v sets on this) · Function.prototype.prototype (a class's is
+%     read-only; arrows, methods, async and bound functions have none; generators have one but
+%     are not constructible; non-object .prototype → Object.prototype) · Object.setPrototypeOf
+%     ("very slow" in every engine; immutable Object.prototype) · Object.prototype.__proto__
+%     (absent on null-prototype objects) · Array.isArray (realms) · Object.groupBy (null
+%     prototype) · Web/Security/Attacks/Prototype_pollution (JSON.parse makes an own key;
+%     Object.assign runs the setter; null-prototype objects, Map, --disable-proto) · Symbol
+%     (Symbol.for shared across realms; dispose / asyncDispose for using / await using)
+%   html.spec.whatwg.org/multipage/structured-data.html (StructuredSerializeInternal: own
+%     enumerable string keys read with [[Get]]; functions, exotic objects and extra internal
+%     slots → DataCloneError; result gets the target realm's Object.prototype)
+%   vuejs.org/guide/extras/reactivity-in-depth (Vue 3: Proxy, track in get, trigger in set;
+%     proxy !== original) · v2.vuejs.org/v2/guide/reactivity (defineProperty; cannot detect
+%     property addition or deletion)
+%   Code results (key order, the generator, JSON __proto__, the Counter class, freeze, field vs
+%     base setter, construction order, Proxy over Map) run in Node v26.7.0: all match.
+% @labels: area=javascript kind=concept platform=web topic=language discussion=311
+% @tags: prototype-chain, object-create, new-operator, classes, class-fields, private-fields, property-descriptors, object-freeze, proxy, reflect, symbols, iterators, generators, decorators, prototype-pollution
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{JSSheet}{
+  morekeywords={const,let,var,function,return,class,extends,static,get,set,new,this,super,
+    yield,in,of,for,if,else,true,false,null,undefined,typeof,delete,throw},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`}
+\lstdefinestyle{js}{style=printup, language=JSSheet, basicstyle=\ttfamily\scriptsize,
+  aboveskip=2pt, belowskip=2pt,
+  literate={=>}{{\hbox{=}\hbox{>}}}2 {===}{{\hbox{=}\hbox{=}\hbox{=}}}3
+           {!==}{{\hbox{!}\hbox{=}\hbox{=}}}3 {+=}{{\hbox{+}\hbox{=}}}2
+           {->}{{\hbox{-}\hbox{>}}}2}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\fat{\hbox{=}\hbox{>}}% "=>" without the 0xProto ligature
+\newcommand\neqq{\hbox{!}\hbox{=}\hbox{=}}
+\newcommand\qqe{\hbox{?}\hbox{?}\hbox{=}}
+\tikzset{
+  cb/.style={box, font=\tiny, inner sep=1.2pt, minimum height=4mm},
+  st/.style={box, font=\tiny, inner sep=1.2pt, minimum height=4.4mm, text width=20mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, anchor=west},
+  pro/.style={->, thick, draw=sheetOrange},
+  ptp/.style={->, thick, draw=sheetBlue},
+  rk/.style={draw=sheetGrey, fill=black!3, font=\tiny, inner sep=1pt, minimum height=3.3mm,
+             minimum width=23mm, anchor=west, align=left},
+  res/.style={font=\tiny\bfseries, anchor=west, inner sep=1pt},
+}
+
+\begin{document}
+
+\sheettitle{Prototypes, objects and classes}{javascript · folio}
+
+\oneliner{Every object has a hidden \ct{[[Prototype]]} link; a read that misses its \emph{own}
+properties walks the chain to \ct{null} — objects \textbf{delegate} at run time, nothing is
+copied. A write lands on the object itself unless a setter or a read-only property up the chain
+says no. \ct{class} wires the same chain and adds real semantics: \ct{new}-only, fields,
+\ct{\#private}, \ct{super}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {7.2,12.0} \draw[sheetGrey!40] (\x,3.1) -- (\x,-0.5);
+  % ── 1 the chain ──
+  \node[pt] at (0,2.95) {\textcolor{sheetBlue}{1} \ct{class Dog extends Animal}; \ct{d = new Dog()}};
+  \node[cb, minimum width=11mm] (Dg) at (1.95,2.15) {fn \ct{Dog}};
+  \node[cb, minimum width=11mm] (An) at (3.8,2.15) {fn \ct{Animal}};
+  \node[cb, minimum width=15mm, fill=black!4, draw=sheetGrey] (FP) at (5.65,2.15) {\ct{Function.}\\\ct{prototype}};
+  \node[cb, minimum width=9mm, draw=sheetGreen, fill=sheetGreen!10] (d) at (0.35,0.85) {\ct{d}\\own: \ct{name}};
+  \node[cb, minimum width=15mm] (DP) at (1.95,0.85) {\ct{Dog.prototype}\\\ct{bark} · \ct{constructor}};
+  \node[cb, minimum width=15mm] (AP) at (3.8,0.85) {\ct{Animal.prototype}\\\ct{speak} · \ct{constructor}};
+  \node[cb, minimum width=15mm, fill=black!4, draw=sheetGrey] (OP) at (5.65,0.85) {\ct{Object.prototype}\\\ct{toString} · \ct{valueOf}};
+  \node[lbl, font=\tiny\ttfamily] (nl) at (6.85,0.85) {null};
+  \draw[pro] (d) -- (DP); \draw[pro] (DP) -- (AP); \draw[pro] (AP) -- (OP); \draw[pro] (OP) -- (nl);
+  \draw[pro] (Dg) -- node[lbl, above]{statics} (An); \draw[pro] (An) -- (FP); \draw[pro] (FP) -- (OP);
+  \draw[ptp] ([xshift=-2mm]Dg.south) -- node[lbl, left]{\ct{.prototype}} ([xshift=-2mm]DP.north);
+  \draw[flow, dashed] ([xshift=2mm]DP.north) -- node[lbl, right]{\ct{constructor}} ([xshift=2mm]Dg.south);
+  \draw[ptp] ([xshift=-2mm]An.south) -- ([xshift=-2mm]AP.north);
+  \node[lbl, anchor=west, text=sheetOrange] at (0,0.12) {orange = \ct{[[Prototype]]}: \ct{Object.getPrototypeOf(x)}};
+  \node[lbl, anchor=west, text=sheetBlue] at (0,-0.12) {blue = \ct{.prototype}: an ordinary property of a function};
+  \node[lbl, anchor=west, text=sheetBrown] at (0,-0.36) {\ct{d.speak()}: own? $\to$ \ct{Dog.prototype}? $\to$ \ct{Animal.prototype} \checkmark{} with \ct{this} = \ct{d}};
+  % ── 2 who builds the object ──
+  \node[pt] at (7.25,2.95) {\textcolor{sheetBlue}{2} \ct{new Dog()}: who builds it};
+  \node[lbl, font=\tiny\bfseries] at (8.35,2.55) {Dog (derived)};
+  \node[lbl, font=\tiny\bfseries] at (10.85,2.55) {Animal (base)};
+  \node[st, draw=sheetGreen, fill=sheetGreen!8] (D1) at (8.35,2.1) {\ct{this} unset — reading\\it is a ReferenceError};
+  \node[st] (A1) at (10.85,1.62) {new object linked to\\\ct{new.target.prototype}};
+  \node[st] (A2) at (10.85,0.95) {Animal fields, \ct{\#}methods,\\then Animal's body};
+  \node[st, draw=sheetGreen, fill=sheetGreen!8] (D2) at (8.35,0.95) {\ct{this} = that object,\\Dog's fields defined};
+  \node[st, draw=sheetGreen, fill=sheetGreen!8] (D3) at (8.35,0.25) {Dog's body; result:\\an object ? it : \ct{this}};
+  \draw[hot] (D1.east) -- node[lbl, above right, pos=0.35]{\ct{super(a)}} (A1.west);
+  \draw[flow] (A1) -- (A2);
+  \draw[hot] (A2.west) -- (D2.east);
+  \draw[flow] (D2) -- (D3);
+  \node[lbl, text=sheetRed] at (10.85,0.2) {\ct{this.m()} here runs\\Dog's \ct{m} — with Dog's\\fields still \ct{undefined}};
+  \node[lbl, anchor=west, text=sheetBrown] at (7.25,-0.36) {plain \ct{new F()} = the base column, with \ct{new.target} = \ct{F}};
+  % ── 3 o.k = v ──
+  \node[pt] at (12.05,2.95) {\textcolor{sheetBlue}{3} \ct{o.k = v} — first \ct{k} found};
+  \node[rk] at (12.05,2.45) {own data, writable};             \node[res, text=sheetGreen!50!black] at (14.45,2.45) {replace the value};
+  \node[rk] at (12.05,2.08) {inherited data, writable};       \node[res, text=sheetBlue] at (14.45,2.08) {new OWN \ct{k} (shadow)};
+  \node[rk] at (12.05,1.71) {nowhere on the chain};           \node[res, text=sheetBlue] at (14.45,1.71) {new OWN \ct{k}};
+  \node[rk] at (12.05,1.34) {data, \ct{writable:false}};      \node[res, text=sheetRed] at (14.45,1.34) {fail — no shadow};
+  \node[rk] at (12.05,0.97) {accessor with \ct{set}};         \node[res, text=sheetOrange] at (14.45,0.97) {\ct{set.call(o, v)}};
+  \node[rk] at (12.05,0.60) {accessor, no \ct{set}};          \node[res, text=sheetRed] at (14.45,0.60) {fail};
+  \node[rk] at (12.05,0.23) {new key, \ct{o} non-extensible}; \node[res, text=sheetRed] at (14.45,0.23) {fail};
+  \node[lbl, anchor=west, align=left] at (12.05,-0.25) {fail: ignored (sloppy) · TypeError (strict) ·\\\ct{false} (\ct{Reflect.set}) · \ct{defineProperty} skips all this};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Lookup and links}
+\begin{itemize}\raggedright
+  \item \textbf{Read} \ct{o.k}: own? else the \ct{[[Prototype]]}'s, \ldots{} \ct{null} $\to$
+        \ct{undefined}; a getter found anywhere runs with \ct{this} = \ct{o} (the
+        \emph{receiver}).
+  \item \textbf{Write}: drawing 3. Class fields, \ct{defineProperty} and \ct{\{...o\}}
+        \emph{define}: no setter runs, an inherited read-only \ct{k} is shadowed.
+  \item \ct{Object.create(p, descriptors)} links without a constructor. \ct{Object.create(null)}
+        or \ct{\{\_\_proto\_\_: null\}}: no inherited keys, no \ct{toString} (\ct{String(o)}
+        $\to$ TypeError); \ct{Object.groupBy} (ES2024) returns one.
+  \item \ct{Object.setPrototypeOf}: ``very slow'' in every engine (MDN); a cycle, a
+        non-extensible object or \ct{Object.prototype} $\to$ TypeError. \ct{o.\_\_proto\_\_} is
+        a \emph{Normative Optional, Legacy} accessor on \ct{Object.prototype}.
+  \item \ct{new F()} links to \ct{F.prototype}, or to \ct{Object.prototype} if that is not an
+        object. Arrows, methods, \ct{async} functions: no \ct{.prototype}, no \ct{new};
+        generators have one, still no \ct{new}; a bound function has none — \ct{new} uses
+        its target's.
+  \item \ct{o instanceof C}: \ct{C[Symbol.hasInstance]} if defined, else ``\ct{C.prototype} is on
+        \ct{o}'s chain'' — fooled by \ct{Object.create(C.prototype)} (a \ct{\#x in o} brand
+        check is not); false for an iframe's (other realm's) array — \ct{Array.isArray}.
+\end{itemize}
+
+\section{Which operation sees which keys}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}lccc>{\raggedright\arraybackslash}p{17mm}@{}}
+\toprule
+ & \textbf{inherited} & \textbf{non-enum.} & \textbf{symbol} & \\ \midrule
+\ct{k in o} & ✓ & ✓ & ✓ & \\
+\ct{for (k in o)} & ✓ & — & — & \\
+\ct{Object.hasOwn(o, k)} & — & ✓ & ✓ & ES2022\\
+\ct{Object.keys/values/entries} & — & — & — & as \ct{JSON.stringify}\\
+\ct{\{...o\}} · \ct{Object.assign} & — & — & ✓ & getters run\\
+\ct{structuredClone(o)} & — & — & — & deep, plain\\
+\ct{getOwnPropertyNames} & — & ✓ & — & \\
+\ct{Reflect.ownKeys} & — & ✓ & ✓ & \\ \bottomrule
+\end{tabular}}\\[1pt]
+Own key order: array indices ascending, then strings, then symbols, by creation —
+\ct{Object.keys(\{b:1, 2:1, a:1, 1:1\})} is \ct{["1","2","b","a"]}.
+
+\section{Descriptors and integrity}
+Data \ct{\{value, writable, enumerable, configurable\}} · accessor \ct{\{get, set, enumerable,
+configurable\}}. Literal, assignment, class field: all \ct{true}; a \emph{new} key via
+\ct{defineProperty}: omitted $\to$ \ct{false} / \ct{undefined}; class methods: non-enumerable;
+a class's \ct{C.prototype} is read-only. \ct{configurable:false}: no delete, no
+data$\leftrightarrow$accessor switch; only \ct{writable} true$\to$false and (while writable)
+\ct{value} may change.\\[2pt]
+{\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lcccl@{}}
+\toprule
+ & \textbf{add} & \textbf{delete} & \textbf{write} & \textbf{sets on every own property}\\ \midrule
+\ct{preventExtensions} & — & ✓ & ✓ & —\\
+\ct{seal} & — & — & ✓ & \ct{configurable:false}\\
+\ct{freeze} & — & — & — & + \ct{writable:false} (data)\\ \bottomrule
+\end{tabular}}\\[1pt]
+All \textbf{shallow}; setters still run; \ct{\#private} untouched. A failed assignment is silent
+in sloppy code, TypeError in strict; array methods throw in both:
+\ct{Object.freeze([]).push(1)} $\to$ TypeError. Faithful shallow copy (prototype, accessors, attributes, symbols):
+\ct{Object.create(Object.getPrototypeOf(o), Object.getOwnPropertyDescriptors(o))}.
+
+\section{Prototype pollution}
+\ct{JSON.parse('\{"\_\_proto\_\_":\{"admin":1\}\}')} only makes an own key. A recursive merge
+\ct{t[k] \qqe{} \{\}; merge(t[k], s[k])} with that key writes into \ct{t.\_\_proto\_\_} =
+\ct{Object.prototype}: every object now has \ct{admin}. \ct{Object.assign(t, s)} \emph{sets},
+so the key replaces \ct{t}'s prototype; \ct{\{...s\}} defines a plain key. Defend:
+null-prototype objects or \ct{Map}, \ct{Object.hasOwn}, reject \ct{\_\_proto\_\_},
+\ct{constructor}, \ct{prototype} keys, Node \ct{-{}-disable-proto=throw}.
+
+\section{Traps}
+\begin{itemize}\raggedright
+  \trap{\ct{F.prototype.tags = []}: one array shared by every instance — use a field.}
+\end{itemize}
+
+\noindent\begin{tikzpicture}[sheet]
+  \draw[thick, sheetGrey] (0,0) -- (7.85,0);
+  \node[lbl, font=\tiny\bfseries, text=sheetGrey, anchor=north west] at (0,-0.12) {landed in};
+  \foreach \x/\e/\t in {0.9/ES5/{\ct{create} · \ct{freeze}\\\ct{defineProperty}}, 2.8/2017/{\ct{getOwnProperty-}\\\ct{Descriptors}}, 4.75/2022/{fields · \ct{\#x} · \ct{static\{\}}\\\ct{\#x in o} · \ct{Object.hasOwn}}, 6.65/2025/{iterator\\helpers}}
+    { \fill[sheetBlue] (\x,0) circle (0.6mm);
+      \node[lbl, font=\tiny\bfseries, text=sheetBlue] at (\x,0.13) {\e};
+      \node[lbl, anchor=south] at (\x,0.22) {\t}; }
+  \foreach \x/\e/\t in {1.85/2015/{\ct{class} · \ct{Symbol}\\\ct{Proxy} · \ct{Reflect}}, 3.75/2018/{\ct{\{...o\}} · async\\iteration}, 5.75/2024/{\ct{Object.groupBy}}, 7.35/2026/{\ct{Iterator.}\\\ct{concat}}}
+    { \fill[sheetBlue] (\x,0) circle (0.6mm);
+      \node[lbl, font=\tiny\bfseries, text=sheetBlue] at (\x,-0.13) {\e};
+      \node[lbl, anchor=north] at (\x,-0.22) {\t}; }
+\end{tikzpicture}
+
+\columnbreak
+
+\section{Classes — what is not sugar}
+\begin{lstlisting}[style=js]
+class Counter extends Base {
+  static #made = 0;         // ES2022: fields, #private, static
+  static { /* runs once, in order; may use #private */ }
+  #n = 0;                   // per instance; NOT a property
+  step = 1;                 // own data property, defined
+  inc = () => this.#n += this.step;  // one closure per instance
+  get value() { return this.#n; }    // on Counter.prototype
+  static is(o) { return #n in o; }   // brand check
+}
+\end{lstlisting}
+\begin{itemize}\raggedright
+  \item \textbf{Not sugar}: \ct{new}-only (else TypeError); strict body; TDZ like \ct{let};
+        methods non-enumerable, not constructible; \ct{extends Array}/\ct{Error}/\ct{Map}
+        makes real built-in instances — magic \ct{length}, \ct{[[MapData]]} (ES5's
+        \ct{Array.call(this)} could not); \ct{map} on an \ct{Array} subclass returns the
+        subclass (\ct{Symbol.species}).
+  \item \textbf{Fields}: base before its body, derived right after \ct{super()} (drawing 2).
+        They \emph{define}: a base setter of the same name is not called (\ct{this.x = 1} in a
+        constructor would call it).
+  \item \textbf{\ct{\#private}}: a lexical name, not a key — invisible to \ct{Reflect.ownKeys},
+        \ct{JSON}, proxies, \ct{structuredClone}; \ct{o.\#n} on an object without it $\to$
+        TypeError; \ct{\#n in o} cannot be faked, \ct{instanceof} can; \ct{delete this.\#n}
+        is a SyntaxError. A base constructor that returns \ct{obj} lets a subclass stamp
+        \ct{\#fields} on it, even non-extensible (Stage 3 ``Non-extensible Applies to
+        Private'' makes that a TypeError). \ct{static \#x} read via \ct{this} in a subclass
+        $\to$ TypeError.
+  \item \textbf{\ct{super}} comes from the method's \ct{[[HomeObject]]}, fixed where it is
+        written: \ct{super.m()} calls \ct{getPrototypeOf(Home).m} on the current \ct{this}; a
+        copied method keeps it; \ct{super.x = v} sets on \ct{this}. \textbf{Mixin}:
+        \ct{B \fat{} class extends B \{\ldots\}}, then \ct{extends Ser(Stamped(Model))}.
+  \item \textbf{Decorators} (\ct{@dec}; \ct{accessor x = 1} = get/set over a private slot):
+        Stage 3 in Mar 2022, \textbf{back to Stage 2.7} on 19 May 2026 with Decorator Metadata
+        — in no ES edition. TypeScript $\ge$ 5.0 compiles them (no parameter decorators;
+        \ct{experimentalDecorators} is an older, different dialect).
+\end{itemize}
+
+\section{Proxy + Reflect}
+\begin{lstlisting}[style=js]
+const logged = t => new Proxy(t, {
+  get(t, k, r) { log('get', k); return Reflect.get(t, k, r); },
+  set(t, k, v, r) { return Reflect.set(t, k, v, r); } });
+\end{lstlisting}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\ttfamily}l>{\ttfamily}l>{\ttfamily}l>{\ttfamily}l@{}}
+\toprule
+\normalfont\textbf{internal method} & \normalfont\textbf{trap = Reflect.\ldots} & \normalfont\textbf{internal} & \normalfont\textbf{trap}\\ \midrule
+GetPrototypeOf & getPrototypeOf & Get & get\\
+SetPrototypeOf & setPrototypeOf & Set & set\\
+IsExtensible & isExtensible & HasProperty & has\\
+PreventExtensions & preventExtensions & Delete & deleteProperty\\
+GetOwnProperty & getOwnPropertyDescriptor & Call\textsuperscript{*} & apply\\
+DefineOwnProperty & defineProperty & Construct\textsuperscript{*} & construct\\
+OwnPropertyKeys & ownKeys & \multicolumn{2}{l}{\normalfont\textsuperscript{*}functions only}\\ \bottomrule
+\end{tabular}}\\[1pt]
+\ct{Reflect.x} = trap \ct{x}'s default; \ct{false} where \ct{Object.x} throws. \ct{r} =
+receiver: inherited getters see the proxy as \ct{this}; a \ct{set} trap's \ct{false} throws in
+strict code. \textbf{Invariants}: no lying about a non-configurable property or a
+non-extensible target ($\to$ TypeError). \textbf{Not forwarded}: \ct{\#private}, internal slots
+(\ct{new Proxy(new Map, \{\}).size} $\to$ TypeError); \ct{proxy \neqq{} target}. Vue 3
+\ct{reactive()}: \ct{get} tracks, \ct{set} triggers (Vue 2's getters missed added keys).
+
+\section{Symbols, iterators, generators}
+\ct{Symbol('d')}: a unique key; \ct{Symbol.for('k')}: one registry for all realms. The 13
+well-known symbols are protocol hooks — \ct{iterator}, \ct{asyncIterator}, \ct{hasInstance},
+\ct{toPrimitive}, \ct{toStringTag}, \ct{species}, \ldots; Stage 4 for ES2027: \ct{dispose}
+(\ct{using}).
+\textbf{Iterator}: \ct{[Symbol.iterator]()} $\to$ \ct{next()} $\to$ \ct{\{value, done\}};
+\ct{for\ldots of} calls \ct{return()} on \ct{break}. A generator is a two-way iterator:
+\begin{lstlisting}[style=js]
+function* g() { const a = yield 1; const b = yield a + 1; return a + b; }
+const it = g();  // runs nothing yet
+it.next('x');  // {value: 1, done: false}   first argument ignored
+it.next(10);   // a = 10 -> {value: 11, done: false}
+it.next(5);    // b = 5  -> {value: 15, done: true}
+\end{lstlisting}
+
+\section{Remember}
+\textbf{Own first, then the chain · writes shadow unless a setter or read-only says no · fields
+define, assignments set · freeze is shallow · \ct{Reflect.x} is trap \ct{x}'s default.}
+
+\end{multicols}
+
+\noindent{\raggedright\footnotesize\color{sheetGrey}\textit{Related:} \texttt{js-scope-closures-this} ·
+\texttt{js-types-coercion-modules} · \texttt{js-functional-idioms} · \texttt{js-engines-performance}
+· \texttt{ts-type-system} · \texttt{objc-interop}\par}
+
+\end{document}

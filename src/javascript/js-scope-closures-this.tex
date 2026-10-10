@@ -1,0 +1,305 @@
+% js-scope-closures-this.tex — Environment Records and the scope chain, hoisting per declaration
+% kind and the TDZ, per-iteration loop bindings, closures (what is kept, V8 contexts), how `this`
+% is resolved, arrows, bind, classes, host callbacks, top-level `this`, strict mode, `using`.
+% Sources (checked 2026-10-09):
+%   tc39.es/ecma262 (living draft, ES2027) 9.1 Environment Records (Declarative, Function, Module,
+%     Object, Global; [[OuterEnv]]; Function: [[ThisValue]], [[ThisBindingStatus]] lexical /
+%     initialized / uninitialized, [[NewTarget]]; Module GetThisBinding = undefined; Global =
+%     Object Record + Declarative Record + [[GlobalThisValue]]) · 9.4 execution context components
+%     (… LexicalEnvironment, VariableEnvironment, PrivateEnvironment, Generator) ·
+%     ResolveThisBinding / GetThisEnvironment · GlobalDeclarationInstantiation (lexical name
+%     already declared by an earlier script → SyntaxError)
+%   tc39.es/ecma262 10.2 [[Environment]] ("the Environment Record that the function was closed
+%     over"), [[ThisMode]] lexical / strict / global, OrdinaryCallBindThis (undefined / null →
+%     callee realm's [[GlobalThisValue]], else ToObject), FunctionDeclarationInstantiation
+%     (unmapped arguments if strict or non-simple parameters; a separate var environment when
+%     parameters contain expressions) · 10.4.1 bound function [[Call]] passes [[BoundThis]],
+%     [[Construct]] never reads it
+%   tc39.es/ecma262 13 ParenthesizedExpression keeps the Reference · EvaluateCall (property
+%     reference → its base; `with` → base object; else undefined) · optional call and tagged
+%     templates go through EvaluateCall · 14.3.1 let / const / using / await using NOTE + early
+%     errors · 14.3.2 var NOTE · 14.7.4.3–4 ForBodyEvaluation + CreatePerIterationEnvironment
+%     (const: no per-iteration copy) · 14.7.5.7 for-in/of: new environment per iteration · 15.2
+%     named function expression = immutable binding · 15.3 arrow NOTE (no arguments, super, this,
+%     new.target) · "use strict" + non-simple parameters → SyntaxError · 27.2 NewPromiseReactionJob
+%     calls the handler with this = undefined
+%   github.com/tc39/proposals finished-proposals.md (globalThis 2020; class fields, private
+%     methods, static blocks 2022; Explicit Resource Management: stage 4 at the 2026-05 meeting,
+%     expected publication ES2027) · ecma-international.org ECMA-262 (5th edition, Dec 2009,
+%     adds strict mode) · 262.ecma-international.org/5.1 10.3 Table 19 (an ES5 execution context
+%     held LexicalEnvironment, VariableEnvironment, ThisBinding)
+%   developer.mozilla.org/en-US/docs/Web/JavaScript/Reference — Operators/this (script top level
+%     = globalThis strict or not; module undefined; CommonJS module.exports; fields, static,
+%     derived constructors; callbacks; getters; direct / indirect eval; this substitution) ·
+%     Statements/let (TDZ is temporal; typeof throws; scripts share one global lexical scope) ·
+%     Statements/var (non-configurable global property; implicit globals deletable; module scope)
+%     · Statements/function (block functions strict vs sloppy; Safari differs) · Statements/using
+%     (reverse disposal, where it is allowed, SuppressedError) · Statements/await_using
+%     (asyncDispose, falls back to dispose) · Functions/Arrow_functions
+%     (class-field arrows: one closure per instance) · Operators/super (fixed by the class or
+%     literal it is written in) · Global_Objects/Function/Function (global scope only) ·
+%     Strict_mode (error types)
+%   html.spec.whatwg.org/multipage/timers-and-user-prompts.html (timer callback this = the
+%     WindowProxy, or the WorkerGlobalScope) · dom.spec.whatwg.org "inner invoke" (listener
+%     called with currentTarget as this)
+%   v8.dev/blog/preparser (2019: variables referenced from inner functions live in a heap
+%     "context"; a closure points at its code and the current context) · mrale.ph/blog/2012/09/23
+%     (V8: one context per scope, shared by every closure made in it — secondary, by a V8 engineer)
+%   Every example of the Trace listing was run in Node v26.7.0, each in a fresh realm, sloppy and
+%     (where noted) strict: every stated result matches.
+% @labels: area=javascript kind=concept platform=web topic=language discussion=312
+% @tags: closures, lexical-scope, scope-chain, execution-context, hoisting, tdz, var-vs-let, this-binding, arrow-functions, bind, call-apply, strict-mode, globalthis, stale-closure, loop-capture, explicit-resource-management, eval, arguments-object
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={import,from,export,default,const,let,var,function,return,async,await,if,else,
+    new,true,false,null,undefined,typeof,class,this,for,of,in,static,super,extends,using},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]', morestring=[b]`}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\fat{\hbox{=}\hbox{>}}% "=>" without the 0xProto ligature
+\tikzset{
+  sb/.style={box, font=\tiny, inner sep=1.5pt, minimum height=4mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, anchor=west},
+  q/.style={draw=sheetGrey, rounded corners=1pt, font=\tiny, inner sep=1.5pt,
+            minimum height=3.7mm, anchor=west, fill=black!3, text width=19.5mm},
+  a/.style={font=\tiny, anchor=west, inner sep=1pt, align=left, text width=34mm,
+            execute at begin node={\hyphenpenalty=10000\exhyphenpenalty=10000}},
+  ed/.style={font=\tiny\bfseries, text=sheetBlue, anchor=south},
+  ev/.style={font=\tiny, text=black!75, anchor=north, align=center},
+}
+
+\begin{document}
+
+\sheettitle{Scope, closures and \texttt{this}}{javascript · folio}
+
+\oneliner{Scope is \textbf{lexical}: fixed by where code is \emph{written}. Every function
+keeps \ct{[[Environment]]}, the Environment Record it was created in; a closure is that link
+keeping \textbf{bindings} (not values) alive. \ct{this} is \textbf{dynamic}: set by \emph{how
+the function is called} and looked up in the nearest record that has one — arrows have none,
+so they see the enclosing \ct{this}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {5.5,10.5} \draw[sheetGrey!40] (\x,3.15) -- (\x,-0.3);
+  % ── 1 closure + lexical this ──
+  \node[pt] at (0,3.02) {\textcolor{sheetBlue}{1} closure + lexical \texttt{this}};
+  \node[lbl, anchor=west, font=\tiny\ttfamily] at (0,2.7) {function outer() \{ let x = 2; return () \fat{} this.n + x; \}};
+  \node[lbl, anchor=west, font=\tiny\ttfamily] at (0,2.5) {const f = outer.call(\{ n: 1 \});\ \ f();\ \ // 3};
+  \node[sb, text width=24mm] (G) at (4.15,1.92) {\textbf{Global} record · outer: null\\\ct{var}/\ct{function} $\rightarrow$ globalThis\\\ct{let}/\ct{const}/\ct{class}: own part};
+  \node[sb, text width=24mm, draw=sheetGreen, fill=sheetGreen!10] (O) at (4.15,0.98) {\textbf{outer()} Function record\\\ct{x: 2}\ \ \ this: \ct{\{n:1\}}\\\emph{outlives its call}};
+  \node[sb, text width=24mm, draw=sheetOrange, fill=sheetOrange!8] (A) at (4.15,0.08) {\textbf{f()} Function record\\this status: \emph{lexical}};
+  \draw[flow] (O.north east) ++(-0.3,0) -- node[lbl, left]{\ct{[[OuterEnv]]}} ($(G.south east)+(-0.3,0)$);
+  \draw[flow] (A.north east) ++(-0.3,0) -- node[lbl, left]{\ct{[[OuterEnv]]}} ($(O.south east)+(-0.3,0)$);
+  \node[sb, draw=sheetOrange, fill=sheetOrange!8] (F) at (1.2,1.0) {arrow \ct{f}\\\ct{[[Environment]]}};
+  \draw[hot] (F) -- node[lbl, above]{closure} (O);
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (0,1.9) {\ct{outer()} returned: its\\context is popped,\\its record lives on};
+  \node[lbl, anchor=west, align=left, text=sheetBrown] at (0,0.2) {\ct{x}: f() rec $\rightarrow$ outer() rec \checkmark\\\ct{this}: f() rec is lexical, skip\\$\rightarrow$ outer()'s \ct{[[ThisValue]]}};
+  % ── 2 loop bindings ──
+  \node[pt] at (5.6,3.0) {\textcolor{sheetBlue}{2} loop bindings + closures};
+  \node[lbl, anchor=west, font=\tiny\ttfamily] at (5.6,2.62) {for (var i=0; i<3; i++) setTimeout(() \fat{} log(i));};
+  \foreach \k in {0,1,2} \node[sb, minimum width=6mm, fill=white, draw=sheetOrange] (cv\k) at (6.3+0.8*\k,2.15) {c\k};
+  \node[sb, minimum width=24mm, draw=sheetRed, fill=sheetRed!7] (vi) at (7.1,1.5) {ONE \ct{i} (function scope) = 3};
+  \foreach \k in {0,1,2} \draw[flow] (cv\k) -- (vi);
+  \node[lbl, text=sheetRed, font=\tiny\bfseries] at (9.65,1.5) {3 3 3};
+  \node[lbl, anchor=west, align=left] at (5.6,1.0) {\ct{let i}: a new record per iteration, the value copied\\in before the 1st test, then after each body, before \ct{i++}};
+  \foreach \k in {0,1,2} {
+    \node[sb, minimum width=8mm, draw=sheetGreen, fill=sheetGreen!10] (li\k) at (6.3+1.05*\k,0.35) {c\k: \ct{i=\k}};
+  }
+  \draw[->, thin, sheetGreen] (li0) -- (li1); \draw[->, thin, sheetGreen] (li1) -- (li2);
+  \node[lbl, text=sheetGreen!50!black, font=\tiny\bfseries] at (9.65,0.35) {0 1 2};
+  \node[lbl, anchor=west, align=left, text=sheetBrown] at (5.6,-0.1) {\ct{for (const i=0;;i++)}: no copy $\rightarrow$ TypeError at \ct{i++}};
+  % ── 3 this ladder ──
+  \node[pt] at (10.6,3.0) {\textcolor{sheetBlue}{3} what is \texttt{this}? first match};
+  \node[q] at (10.6,2.58) {arrow function};                 \node[a] at (12.95,2.58) {the enclosing \ct{this}; call / apply / bind cannot change it};
+  \node[q] at (10.6,2.14) {\ct{new f()}};                     \node[a] at (12.95,2.14) {the new object; derived class: none until \ct{super()}};
+  \node[q] at (10.6,1.70) {\ct{g = f.bind(t)}; \ct{g()}};      \node[a] at (12.95,1.70) {\ct{t}, whatever call / apply pass; \ct{new g()} ignores it};
+  \node[q] at (10.6,1.26) {\ct{f.call(t)}, \ct{f.apply(t)}};   \node[a] at (12.95,1.26) {\ct{t} as given; sloppy: null $\rightarrow$ globalThis, primitives boxed};
+  \node[q] at (10.6,0.82) {\ct{o.f()} \ct{o[k]()} \ct{o.f?.()}}; \node[a] at (12.95,0.82) {\ct{o}, the base — even when \ct{f} lives on the prototype};
+  \node[q, draw=sheetRed] at (10.6,0.38) {plain \ct{f()}, callbacks}; \node[a, text=sheetRed] at (12.95,0.38) {strict: \ct{undefined}; sloppy: \ct{globalThis} of \ct{f}'s realm};
+  \foreach \y in {2.58,2.14,1.70,1.26,0.82,0.38} \draw[flow] (12.68,\y) -- (12.95,\y);
+  \node[lbl, anchor=west, align=left, text=sheetBrown] at (10.6,-0.08) {tagged template \ct{o.f`x`} and \ct{with (o) f()} $\rightarrow$ \ct{o} too};
+  % ── timeline ──
+  \draw[sheetGrey, thick] (0.1,-0.62) -- (16.5,-0.62);
+  \foreach \x/\e/\t in {1.2/ES5 (2009)/strict mode,
+                        4.6/ES2015/{\ct{let const class}, TDZ, arrows, block functions, modules},
+                        8.3/ES2020/\ct{globalThis},
+                        10.9/ES2022/{class fields, \#private, static blocks},
+                        14.4/ES2027/{\ct{using}, \ct{await using} (stage 4 May 2026)}} {
+    \fill[sheetBlue] (\x,-0.62) circle (1.3pt);
+    \node[ed] at (\x,-0.58) {\e};
+    \node[ev] at (\x,-0.68) {\t};
+  }
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Environment Records — the scope chain}
+\begin{itemize}
+  \item A record maps names $\rightarrow$ bindings; \ct{[[OuterEnv]]} links it to the enclosing
+        one. Lookup walks that chain; a name found nowhere $\rightarrow$ ReferenceError on read,
+        \ct{"undefined"} from \ct{typeof}, a new global property on sloppy assignment.
+  \item \textbf{Declarative} (block, \ct{catch}, \ct{let const class}) and its two kinds:
+        \textbf{Function} (+ \ct{[[ThisValue]]}, \ct{[[ThisBindingStatus]]} lexical / initialized /
+        uninitialized, \ct{[[NewTarget]]}) and \textbf{Module} (imports as live indirect
+        bindings; \ct{this} = \ct{undefined}). \textbf{Object} (\ct{with}). \textbf{Global} = an Object
+        record over the global object (\ct{var}, \ct{function}) + a Declarative record
+        (\ct{let const class}) + \ct{[[GlobalThisValue]]}.
+  \item One \textbf{execution context} per script, module or call: code state, Function, Realm,
+        ScriptOrModule, LexicalEnvironment, VariableEnvironment, PrivateEnvironment
+        (\ct{\#names}, ES2022), Generator. \ct{this} is \emph{not} a field of it (ES5's
+        ThisBinding was): ResolveThisBinding walks outward to the first record that has one.
+  \item A \textbf{function object} carries \ct{[[Environment]]} (the closure), \ct{[[ThisMode]]}
+        (\emph{lexical} = arrow, \emph{strict}, \emph{global} = sloppy), \ct{[[HomeObject]]} (for
+        \ct{super}), \ct{[[Realm]]}.
+\end{itemize}
+
+\section{Hoisting: bindings exist at entry}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright}p{17mm}>{\raggedright}p{17mm}>{\raggedright}p{23mm}>{\raggedright\arraybackslash}p{18mm}@{}}
+\toprule
+\textbf{declaration} & \textbf{at scope entry} & \textbf{read before its line} & \textbf{scope} \\ \midrule
+\ct{var x} & \ct{undefined} & \ct{undefined} & function \\
+\ct{function f()\{\}} & the function & callable & function\textsuperscript{a} \\
+\ct{let}, \ct{const} & uninitialised & ReferenceError (TDZ) & block \\
+\ct{class C} & uninitialised & ReferenceError (TDZ) & block \\
+\ct{using r} & uninitialised & ReferenceError (TDZ) & block; disposed at exit \\
+\ct{var f = ()\fat\{\}} & \ct{undefined} & \ct{f()}: TypeError & function \\
+parameters & uninitialised\textsuperscript{b} & \ct{(a = b, b)}: ReferenceError & own; body \ct{var}s split off if any default \\
+\ct{import \{x\}} & linked first & live, read-only & module \\ \bottomrule
+\end{tabular}\\[1pt]
+\textsuperscript{a}in a block: block-scoped in strict code and modules; sloppy (Annex B) also
+makes a function-level \ct{var}, \ct{undefined} until the block runs (Chrome, Firefox; Safari
+differs). \textsuperscript{b}\ct{undefined} only with duplicate names (sloppy).}
+\begin{itemize}
+  \item \textbf{TDZ} is \emph{temporal}: from scope entry until the declaration
+        \emph{executes}. A closure called after \ct{let x = 1} ran may read \ct{x} though written
+        above it. \ct{typeof x} in the TDZ throws; \ct{let x = x} throws; all \ct{case}s of a
+        \ct{switch} share one block.
+  \item \textbf{Redeclaring}: \ct{var} + \ct{var} / \ct{function} is allowed (\ct{var a = 1;
+        function a()\{\}} $\rightarrow$ \ct{a} is 1); \ct{let const class import} + anything in the
+        same scope is an early SyntaxError — nothing runs. Classic scripts share one global
+        lexical scope: \ct{let x} in two \ct{<script>}s throws in the second.
+  \item Script top level: \ct{var} / \ct{function} become \textbf{non-configurable}
+        \ct{globalThis} properties (\ct{delete} fails); sloppy \ct{x = 1} makes a configurable
+        one; \ct{let const class} make none. A module (or CommonJS file) keeps its top level to
+        itself.
+\end{itemize}
+
+\section{Closures — what is kept}
+\begin{itemize}
+  \item The \textbf{binding}, shared: a later write is seen by every closure over it. To fix a
+        value, pass it as an argument or copy it into a \ct{const} inside the loop body. React's
+        stale closure is a render's old bindings.
+  \item \ct{for-of} / \ct{for-in} with \ct{let}/\ct{const}: a fresh record each turn.
+        \ct{for(let;;)}: copied per iteration (drawing 2). \ct{var}: one binding.
+  \item \textbf{Default parameters} get their own scope: closures in the parameter list never
+        see the body's \ct{var}s.
+  \item Named function expression \ct{function fact()\{\}}: \ct{fact} is an
+        \textbf{immutable} binding visible only inside; \ct{fact = 1} is ignored (sloppy) or a
+        TypeError (strict).
+  \item \textbf{Dynamic code}: direct \ct{eval(s)} sees the local scope (sloppy: its \ct{var}s
+        land in the caller); indirect \ct{(0, eval)(s)} and \ct{new Function(s)} see
+        \textbf{only the global} scope.
+  \item \textbf{V8}: variables an inner function references move into a heap
+        \textbf{context}; every closure made in that scope points at that one context, so a big
+        array captured by one closure lives as long as \emph{any} of them. Leaks are
+        reachability: a listener, timer or cache holding a closure.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``\ct{let}/\ct{const} aren't hoisted'' — they are, uninitialised (TDZ).}
+  \trap{``A closure copies the value'' — it keeps the variable (3 3 3).}
+  \trap{An arrow as an object method: \ct{\{ n: 1, m: () \fat{} this.n \}} reads the outer
+        \ct{this}.}
+\end{itemize}
+
+\columnbreak
+
+\section{Trace — each example run on its own}
+\begin{lstlisting}[language=TSSheet]
+var a = 1; function f() { log(a); var a = 2; } f(); // undefined
+{ log(b); let b = 2; }                     // ReferenceError
+log(typeof h); var h = 1; function h() {}  // "function"
+var x = 1; function g(p = () => x) { var x = 2; return p(); }
+g();                          // 1: the parameter scope
+(function k() { k = 1; return typeof k; })(); // "function"
+                              // (strict code: TypeError)
+const o = { n: 'o', m() { return this.n; },
+            later() { setTimeout(() => log(this.n)); } };
+const m = o.m; m();  // strict TypeError, sloppy globalThis.n
+(o.m)(); o.m?.(); o['m']();   // 'o' 'o' 'o': reference kept
+(0, o.m)(); (o.m = o.m)();    // a bare value, like m()
+o.later();                    // 'o': arrow reads later's this
+o.m.bind({ n: 'x' }).call(o); // 'x': bind is permanent
+function F() { log(this.n); }
+new (F.bind({ n: 'x' }))();   // undefined: new skips boundThis
+\end{lstlisting}
+
+\section{\texttt{this} — the details}
+\begin{itemize}
+  \item \textbf{Arrows}: no own \ct{this}, \ct{arguments}, \ct{super}, \ct{new.target}; no
+        \ct{prototype}; \ct{new} $\rightarrow$ TypeError; call / apply / bind ignore the
+        thisArg (bind still pre-fills arguments). An arrow \emph{property} of an object literal
+        sees the \ct{this} outside the literal.
+  \item \textbf{Lost \ct{this}}: \ct{arr.forEach(o.m)}, \ct{const \{m\} = o},
+        \ct{setTimeout(o.m)} hand over a value, not a reference. Fixes: \ct{o.m.bind(o)},
+        \ct{() \fat{} o.m()}, an arrow class field \ct{onTap = () \fat{} this.go()} — fixed for life,
+        but one closure per instance, not on the prototype.
+  \item \textbf{bind} is permanent: call, apply and a second bind cannot change it; \ct{new}
+        ignores the bound \ct{this} but keeps the bound arguments.
+  \item \textbf{Classes} (always strict): instance field initialisers $\rightarrow$ the
+        instance; static fields, static blocks, static methods $\rightarrow$ the class. Derived
+        constructor: \ct{this} before \ct{super()} $\rightarrow$ ReferenceError, so is a second
+        \ct{super()}.
+  \item \ct{super} is fixed by \ct{[[HomeObject]]}, where the method is written: moving a
+        method changes its \ct{this}, never its \ct{super}. Getters and setters get the object
+        accessed \emph{through}, also via the prototype chain.
+  \item \textbf{Hosts pick it for callbacks}: array iteration methods take a \ct{thisArg}
+        (else \ct{undefined}); Promise reactions \ct{undefined}; DOM listeners
+        \ct{currentTarget}; browser timers \ct{window}, even for a strict function.
+\end{itemize}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}>{\raggedright}p{31mm}>{\raggedright\arraybackslash}p{44mm}@{}}
+\toprule
+\textbf{top-level code} & \textbf{\ct{this}} \\ \midrule
+classic script, strict or not & \ct{globalThis} (ES2020; page \ct{window}, worker \ct{self}) \\
+ES module & \ct{undefined} \\
+CommonJS file (Node) & \ct{module.exports} \\
+direct / indirect \ct{eval} & the caller's \ct{this} / \ct{globalThis} \\ \bottomrule
+\end{tabular}}
+
+\section{Strict mode (classes, modules: always)}
+\ct{'use strict'} first in a script or function body. \ct{this} never substituted or boxed ·
+undeclared assignment $\rightarrow$ ReferenceError ·
+writing a read-only, getter-only or non-extensible property, \ct{delete} of a
+non-configurable one $\rightarrow$ TypeError · \ct{with}, \ct{delete x}, duplicate parameters,
+\ct{010}, \ct{"\textbackslash 045"}, \ct{eval}/\ct{arguments} as names $\rightarrow$ SyntaxError ·
+\ct{arguments} no longer aliases parameters (also unaliased whenever parameters are not
+simple); \ct{arguments.callee} $\rightarrow$ TypeError · \ct{eval}'s \ct{var}s stay inside it ·
+\ct{'use strict'} in a function with default, rest or destructured parameters $\rightarrow$
+SyntaxError.
+
+\section{\texttt{using} (ES2027)}
+\ct{using r = open()}: \ct{const}-like, block-scoped, TDZ. At block exit calls
+\ct{r[Symbol.dispose]()}, last declared first; \ct{null}/\ct{undefined} allowed, any other value
+without the method $\rightarrow$ TypeError; errors chain into a \ct{SuppressedError}. Allowed in
+blocks, function bodies, static blocks, a module's top level, \ct{for} / \ct{for-of} heads; not at
+a classic script's top level, not directly in a \ct{switch}, no destructuring. \ct{await using}
+awaits \ct{[Symbol.asyncDispose]()}, falling back to \ct{[Symbol.dispose]()}.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{js-prototypes-objects-classes} ·
+\texttt{js-functional-idioms} · \texttt{js-async} · \texttt{js-types-coercion-modules} ·
+\texttt{js-engines-performance} · React hooks — the mechanisms (stale closures) · Closures in
+depth (Swift)}
+
+\end{document}

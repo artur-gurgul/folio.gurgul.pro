@@ -1,0 +1,136 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>OS fundamentals — processes, threads, virtual memory, syscalls — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/os/os-fundamentals.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">310</span></a></li><li><a class="side-area" href="/folios.html?area=ai" data-area="ai">ai<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=ble" data-area="ble">ble<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=c" data-area="c">c<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cicd" data-area="cicd">cicd<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=crypto" data-area="crypto">crypto<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=dev-tools" data-area="dev-tools">dev-tools<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=iot" data-area="iot">iot<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=javascript" data-area="javascript">javascript<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=linux" data-area="linux">linux<span class="count">8</span></a></li><li><a class="side-area" href="/folios.html?area=macos" data-area="macos">macos<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area current" href="/folios.html?area=os" data-area="os">os<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=recall" data-area="recall">recall<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=runtime" data-area="runtime">runtime<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li><li><a class="side-area" href="/folios.html?area=typescript" data-area="typescript">typescript<span class="count">3</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">OS fundamentals — processes, threads, virtual memory, syscalls</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">os · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> A <strong>process</strong> = an address space + resources (fds, credentials, signal
+dispositions) with <span class="math">≥</span>1 <strong>thread</strong> (registers + stack, the unit the scheduler runs). The
+kernel shares CPUs by <strong>scheduling</strong>, maps each process’s <strong>virtual</strong> pages to physical
+frames through <strong>page tables</strong> (cached in the <strong>TLB</strong>), fills them lazily on <strong>page
+faults</strong>, and is entered only by a <strong>system call</strong>, an exception or an interrupt.</p>
+<p class="sheet-tools"><a class="sheet-download" href="os-fundamentals.pdf" download>Download PDF</a> <a href="os-fundamentals.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/os/os-fundamentals.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="os-fundamentals-fig1.svg" width="635" height="151" class="wide" alt="OS fundamentals — processes, threads, virtual memory, syscalls — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">Process vs thread — what each owns (POSIX)</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>process-wide (all threads share)</strong></th><th><strong>per thread</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>address space: code, heap, mappings</td><td>stack, registers, PC, SP</td></tr>
+<tr><td>PID, parent, process group, session, tty</td><td>thread ID</td></tr>
+<tr><td>user / group IDs, open fds, <code>fcntl</code> locks</td><td><code>errno</code></td></tr>
+<tr><td>signal <em>dispositions</em>, umask, cwd, root</td><td>signal <em>mask</em>, alt. stack</td></tr>
+<tr><td>timers, nice, rlimits, CPU-time totals</td><td>RT policy, priority; Linux: affinity, capabilities</td></tr>
+</tbody>
+</table></p>
+<p>Linux makes both with <code>clone()</code>; a thread shares VM, handlers, thread group (<code>CLONE_THREAD</code> <span class="math">⇒</span> <code>_SIGHAND</code> <span class="math">⇒</span> <code>_VM</code>); <code>getpid()</code> = group id, <code>gettid()</code> = own. NPTL is <strong>1:1</strong>. Stacks: Linux = soft <code>RLIMIT_STACK</code> (kernel default 8 MiB); Darwin 512 KB, main 8 MB macOS / 1 MB iOS — touched pages only.</p>
+<p><strong><span class="c-sheetblue">Process lifecycle — <code>ps</code> state codes</span></strong></p>
+<figure class="sheet-figure"><img src="os-fundamentals-fig2.svg" width="298" height="104" alt="OS fundamentals — processes, threads, virtual memory, syscalls — figure 2" loading="lazy"></figure>
+<p>A <strong>zombie</strong> holds a process-table slot until the parent waits (a full table blocks new processes). <strong>Orphans</strong> go to init or the nearest <strong>subreaper</strong> (<code>PR_SET_CHILD_SUBREAPER</code>, 3.4). <code>SIGCHLD</code> = <code>SIG_IGN</code> or <code>SA_NOCLDWAIT</code>: no zombies.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">fork, exec, spawn — what crosses</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th><strong><code>fork()</code> child</strong></th><th><strong>after <code>execve()</code></strong></th></tr>
+</thead>
+<tbody>
+<tr><td>memory</td><td>CoW — only page tables copied</td><td>new image, mappings gone</td></tr>
+<tr><td>threads</td><td>the caller only</td><td>others destroyed</td></tr>
+<tr><td>PID</td><td>new</td><td><strong>same</strong>: no new process</td></tr>
+<tr><td>fds</td><td>same open file descriptions</td><td>kept unless close-on-exec</td></tr>
+<tr><td>signals</td><td>handlers, mask copied; none pending</td><td>caught <span class="math">→</span> default, rest kept</td></tr>
+<tr><td>dropped</td><td>mlocks, timers, <code>fcntl</code> locks, AIO</td><td>mlocks, timers</td></tr>
+</tbody>
+</table></p>
+<ul>
+<li><strong>Threaded parent</strong>: one thread, every mutex as it was — async-signal-safe calls only  until <code>execve()</code>. A failed exec ends in <code>_exit()</code>: no <code>atexit</code>, no stdio flush.</li>
+<li><code>vfork()</code>: parent suspended, child borrows its memory and stack until exec or  <code>_exit</code>; dropped in POSIX.1-2008. <code>posix_spawn()</code> = fork + exec in one call (made  for MMU-less systems); glibc <span class="math">≥</span>2.24: <code>clone(CLONE_VM|CLONE_VFORK)</code>.</li>
+<li>The split came from the Berkeley time-sharing system; the PDP-7 <code>fork</code> was 27 lines of  assembly (Ritchie 1979). “A <code>fork()</code> in the road” (HotOS 2019): unsafe with threads,  inefficient, insecure; 1304 Ubuntu packages call <code>fork</code>, 41 <code>posix_spawn</code>.</li>
+<li><strong>Apple</strong>: iOS apps may not spawn processes at all; fork without exec is “not safe on  any Apple platform” — use <code>posix_spawn</code> (Apple DTS).</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Scheduling — Linux policies</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th><code><strong><code>SCHED_</code></strong></code></th><th><strong>priority</strong></th><th><strong>rule</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>OTHER</code></td><td>nice −20…19</td><td>fair share, weight <span class="math">×</span>1.25 per nice step: EEVDF</td></tr>
+<tr><td><code>BATCH</code></td><td>nice</td><td>always treated as CPU-bound (IDLE: below nice 19)</td></tr>
+<tr><td><code>FIFO</code></td><td>1–99</td><td>runs until it blocks, yields or a higher one wakes</td></tr>
+<tr><td><code>RR</code></td><td>1–99</td><td>FIFO + a 100 ms quantum</td></tr>
+<tr><td><code>DEADLINE</code></td><td>—</td><td>runtime <span class="math">≤</span> deadline <span class="math">≤</span> period (3.14); beats all others</td></tr>
+</tbody>
+</table></p>
+<ul>
+<li>It schedules <strong>threads</strong>. RT + deadline get 950 ms of each 1 s, 5 % stays for the  rest. Autogroup (2.6.38): a group per session — <code>make -j</code> cannot starve the desktop.</li>
+<li><strong>EEVDF</strong> (6.6, Oct 2023; replaced CFS of 2.6.23; Stoica &amp; Abdel-Wahab 1995): lag =  fair share <span class="math">-</span> CPU received; lag <span class="math">≥</span>0 = eligible; the earliest <em>virtual deadline</em>  runs; <code>sched_setattr()</code> requests a slice. 6.12 (Nov 2024): <strong>sched_ext</strong>  (schedulers in BPF) and <strong>PREEMPT_RT</strong> merged.</li>
+<li><strong>Context switch</strong>: save registers, switch kernel stack, pick the next; across  processes also reload CR3 / TTBR0 — PCID / ASID keep the TLB entries; caches refill.  <strong>Voluntary</strong> (blocked, <code>ru_nvcsw</code>) vs <strong>involuntary</strong> (preempted, <code>ru_nivcsw</code>).</li>
+<li><strong>Darwin</strong>: QoS — user-interactive, user-initiated, utility, background — via  <code>pthread_set_qos_class_self_np</code>, not <code>pthread_setschedparam</code>; background runs  more likely on efficiency cores; never spin-wait.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Virtual memory</span></h3>
+<p>Per process, one flat address space; the MMU translates every access. Buys isolation, per-page R/W/X, shared frames (libraries, CoW), lazy allocation, files as memory. Atlas, 1962: core + drum (16 000 + 96 000 words) seen as one store.</p>
+<p><strong>Granules</strong> (offset · bits per level · arm64 huge pages, PMD bold): 4 KB: 12 · 9 · 64 KB, <strong>2 MB</strong>, 32 MB, 1 GB; 16 KB: 14 · 11 · 2 MB, <strong>32 MB</strong>, 1 GB; 64 KB: 16 · 13 · 2 MB, <strong>512 MB</strong>, 16 GB. Levels = (VA <span class="math">-</span> offset bits) / bits per level. <strong>x86-64 5-level</strong> (P4D): 57-bit, 128 PiB virtual / 4 PiB physical (4-level: 256 TiB / 64 TiB); user space gets addresses above 47 bits only by passing a hint — JITs keep tags in high pointer bits.</p>
+<ul>
+<li><strong>Not 4 KB everywhere</strong>: iOS 16 KB; Apple silicon <span class="math">≠</span> Intel — read <code>vm_page_size</code>.  Android 15+ allows 16 KB; Play blocks updates without it from 1 Feb 2027 (API 35+).</li>
+<li><strong>TLB tags</strong>: ASID (arm64, 8 or 16 bits, in TTBR0_EL1; kernel entries global) / PCID  (x86). <strong>PTI</strong> (4.15, Jan 2018, against Meltdown): user page tables map almost no  kernel; every entry and exit rewrites CR3 (<span class="math">≈</span>100 cycles), PCID spares the flush.</li>
+</ul>
+<p><strong><span class="c-sheetblue"><code>mmap</code> — files and zeroed memory into the address space</span></strong></p>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong><code>MAP_</code></strong></th><th><strong>writes go to</strong></th><th><strong>use</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>PRIVATE</code>, file</td><td>a private CoW copy, never the file</td><td>a file read as memory</td></tr>
+<tr><td><code>SHARED</code>, file</td><td>the file; every mapper sees them</td><td>zero-copy I/O, IPC</td></tr>
+<tr><td><code>PRIVATE|ANON</code></td><td>own pages, zero-filled</td><td><code>malloc</code> <span class="math">≥</span>128 KiB (glibc)</td></tr>
+<tr><td><code>SHARED|ANON</code></td><td>pages shared with <code>fork()</code> children</td><td>parent ↔ child memory</td></tr>
+</tbody>
+</table></p>
+<p>The fd may be closed after <code>mmap</code>; offsets are page-aligned. A page past EOF (file truncated) <span class="math">→</span> <code>SIGBUS</code>. <code>MAP_POPULATE</code> prefaults; <code>MAP_FIXED_NOREPLACE</code> (4.17) will not replace a mapping. Mmapped <code>malloc</code> blocks go back to the system on <code>free</code>; the threshold rises to freed sizes (<span class="math">≤</span>32 MiB, 64-bit).</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">System calls — the only door in</span></h3>
+<p>User code (x86-64 CPL 3, arm64 EL0) enters the kernel (CPL 0, EL1) by a syscall, an exception (page fault) or an interrupt. arm64: <code>SVC</code> <span class="math">→</span> EL1, <code>HVC</code> <span class="math">→</span> EL2 hypervisor, <code>SMC</code> <span class="math">→</span> EL3 firmware — the last two not from EL0.</p>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>ABI</strong></th><th><code><strong>instr.</strong></code></th><th><code><strong>nr</strong></code></th><th><code><strong>arguments</strong></code></th><th><strong>error</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>Linux x86-64</td><td><code>syscall</code></td><td><code>eax</code></td><td><code>rdi rsi rdx r10 r8 r9</code></td><td>rax = − errno</td></tr>
+<tr><td>Linux arm64</td><td><code>svc #0</code></td><td><code>w8</code></td><td><code>x0–x5</code></td><td>x0 = − errno</td></tr>
+<tr><td>Linux RISC-V</td><td><code>ecall</code></td><td><code>a7</code></td><td><code>a0–a5</code></td><td>a0 = − errno</td></tr>
+<tr><td>Darwin arm64</td><td><code>svc #0x80</code></td><td><code>x16</code></td><td><code>—</code></td><td>carry flag set</td></tr>
+</tbody>
+</table></p>
+<p>libc turns <span class="math">-</span>errno into <span class="math">-1</span> + <code>errno</code> (per thread). Linux keeps the syscall interface stable; Apple guarantees only its dynamic libraries — static binaries unsupported. <strong>vDSO</strong> (<code>AT_SYSINFO_EHDR</code>), x86-64: <code>clock_gettime</code>, <code>gettimeofday</code>, <code>time</code>, <code>getcpu</code> without entering the kernel.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Signals</span></h3>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th><strong>Lx</strong></th><th><strong>mac</strong></th><th><strong>def.</strong></th><th><strong>raised by</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>SIGINT</code></td><td>2</td><td>2</td><td>Term</td><td>Ctrl-C (Ctrl-Z: <code>SIGTSTP</code>, stops)</td></tr>
+<tr><td><code>SIGBUS</code></td><td>7</td><td>10</td><td>Core</td><td>mapped page past EOF, bad alignment</td></tr>
+<tr><td><code>SIGKILL</code></td><td>9</td><td>9</td><td>Term</td><td><strong>cannot be caught, blocked or ignored</strong></td></tr>
+<tr><td><code>SIGSEGV</code></td><td>11</td><td>11</td><td>Core</td><td>unmapped address / wrong permission</td></tr>
+<tr><td><code>SIGPIPE</code></td><td>13</td><td>13</td><td>Term</td><td>write to a pipe with no reader</td></tr>
+<tr><td><code>SIGTERM</code></td><td>15</td><td>15</td><td>Term</td><td><code>kill</code>’s default: please exit</td></tr>
+<tr><td><code>SIGCHLD</code></td><td>17</td><td>20</td><td>Ign</td><td>a child exited or stopped</td></tr>
+<tr><td><code>SIGSTOP</code></td><td>19</td><td>17</td><td>Stop</td><td>uncatchable like KILL; <code>SIGCONT</code> (18 / 19) resumes</td></tr>
+</tbody>
+</table></p>
+<ul>
+<li>POSIX <code>kill -n</code> defines only 1 2 3 6 9 14 15; 10 is <code>SIGUSR1</code> on Linux, <code>SIGBUS</code>  on macOS — use names. A shell reports 128 + n after signal n.</li>
+<li class="trap"><code>kill -9</code> first: no handler, no <code>atexit</code>, no buffered output flushed — send  <code>SIGTERM</code>, then wait.</li>
+<li><strong>Disposition per process, mask per thread</strong>: <code>kill()</code> reaches any one thread not  blocking it, a fault the thread that caused it. Standard signals <strong>do not queue</strong>;  real-time ones do, in order. Interrupted call: <code>SA_RESTART</code> restarts it, else <code>EINTR</code>.</li>
+<li>Handlers: <strong>async-signal-safe</strong> calls only (<code>write</code>, <code>_exit</code>; not <code>printf</code>,  <code>malloc</code>), save <code>errno</code> — or block them and read a <code>signalfd</code> (2.6.22).</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">File descriptors · futex</span></h3>
+<p><strong>fd</strong> = lowest free index in the process’s table <span class="math">→</span> open file description (offset, flags) <span class="math">→</span> file, socket, pipe. <code>O_CLOEXEC</code> (2.6.23) is atomic — a later <code>fcntl</code> races a concurrent fork + exec. <code>EMFILE</code> per process, <code>ENFILE</code> system-wide. <strong>futex</strong>: a 32-bit word; an uncontended lock is one user-space atomic, <code>futex()</code> only sleeps or wakes (2.6.0; Franke, Russell &amp; Kirkwood, OLS 2002).</p>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> <code>linux-memory-oom</code> ·
+<code>linux-filesystems-storage</code> · <code>linux-performance-observability</code> ·
+<code>namespaces-cgroups-containers</code> · <code>xnu-launchd-xpc</code> · <code>mach-o-and-dyld</code> ·
+<code>ios-sandbox-security-model</code> · <code>c-volatile-atomics-isr</code> · Locks &amp; synchronisation
+primitives · Crashes &amp; symbolication</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=os" title="area">os</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=general" title="platform">general</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=memory" title="topic">memory</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=concurrency" title="topic">concurrency</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=performance" title="topic">performance</a></li><li class="sheet-tag"><a href="/folios.html?tag=process">process</a></li><li class="sheet-tag"><a href="/folios.html?tag=thread">thread</a></li><li class="sheet-tag"><a href="/folios.html?tag=scheduling">scheduling</a></li><li class="sheet-tag"><a href="/folios.html?tag=eevdf">eevdf</a></li><li class="sheet-tag"><a href="/folios.html?tag=context-switch">context-switch</a></li><li class="sheet-tag"><a href="/folios.html?tag=virtual-memory">virtual-memory</a></li><li class="sheet-tag"><a href="/folios.html?tag=page-table">page-table</a></li><li class="sheet-tag"><a href="/folios.html?tag=tlb">tlb</a></li><li class="sheet-tag"><a href="/folios.html?tag=page-fault">page-fault</a></li><li class="sheet-tag"><a href="/folios.html?tag=huge-pages">huge-pages</a></li><li class="sheet-tag"><a href="/folios.html?tag=copy-on-write">copy-on-write</a></li><li class="sheet-tag"><a href="/folios.html?tag=fork">fork</a></li><li class="sheet-tag"><a href="/folios.html?tag=posix-spawn">posix-spawn</a></li><li class="sheet-tag"><a href="/folios.html?tag=system-call">system-call</a></li><li class="sheet-tag"><a href="/folios.html?tag=vdso">vdso</a></li><li class="sheet-tag"><a href="/folios.html?tag=signals">signals</a></li><li class="sheet-tag"><a href="/folios.html?tag=mmap">mmap</a></li><li class="sheet-tag"><a href="/folios.html?tag=file-descriptor">file-descriptor</a></li><li class="sheet-tag"><a href="/folios.html?tag=futex">futex</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=os%2Fos-fundamentals.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/327">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

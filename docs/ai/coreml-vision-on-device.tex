@@ -1,0 +1,306 @@
+% coreml-vision-on-device.tex — running models on Apple devices: Core ML (files, loading =
+% device specialisation + cache, compute units, sync/async/stateful prediction, MLTensor,
+% multifunction, encryption, on-device update), coremltools compression, Core AI (iOS 27),
+% Vision's Swift API (18 → 27), Speech, Natural Language, Create ML, Foundation Models, MLX.
+% Sources (checked 2026-10-09):
+%   developer.apple.com/documentation/coreml (overview: "latest architectures and inference
+%     techniques, see Core AI") · /coreml/mlmodel (load(contentsOf:configuration:), compileModel(at:),
+%     prediction(from:using:), makeState(), availableComputeDevices) · /coreml/mlcomputeunits (4 cases;
+%     cpuOnly "if your app might run in the background or runs other GPU intensive tasks") ·
+%     /mlcomputeunits/cpuandneuralengine (iOS 16) · /coreml/mlcomputeplan (iOS 17.4; per-op device
+%     usage + estimated cost) · /coreml/mloptimizationhints/specializationstrategy (iOS 18;
+%     fastPrediction trade-off) · /coreml/mlstate (iOS 18; predictions on one state serialised) ·
+%     /coreml/mltensor (iOS 18) · /coreml/mlupdatetask (iOS 13, not deprecated) ·
+%     /coreml/downloading-and-compiling-a-model-on-the-user-s-device (compiled to a temporary
+%     location; move to Application Support) · /coreml/generating-a-model-encryption-key +
+%     /encrypting-a-model-in-your-app (.mlmodelkey per team; --encrypt compiler flag)
+%   developer.apple.com/documentation/coreai (all platforms 27.0; AIModel, InferenceFunction, NDArray,
+%     AIModelCache, SpecializationOptions, ComputeUnitKind; continued-processing.inference
+%     entitlement; "model types other than neural networks … see Core ML")
+%   developer.apple.com/videos/play/wwdc2026/324 (Meet Core AI: inference engine of Apple
+%     Intelligence; coreai-torch, torch.export, .aimodel; Python runtime to diff outputs; two-phase
+%     specialisation tied to device + OS; AOT compile; AIModelCache policy + app-group sharing;
+%     states as mutable views; non-escapable types; instrument, debug gauge, Core AI Debugger;
+%     Core AI Models repo; Core AI language model for Foundation Models; all Apple silicon)
+%   developer.apple.com/wwdc26/guides/ios (Core AI; Foundation Models: any provider via the
+%     LanguageModel protocol, image prompts, Vision OCR + barcode tools, Dynamic Profiles)
+%   developer.apple.com/videos/play/wwdc2023/10049 (async prediction thread-safe + responds to
+%     cancellation; sync API not thread-safe; limit in-flight predictions; load events "prepare and
+%     cache" vs "cached"; cache deleted on low disk, system update, model deleted/modified)
+%   developer.apple.com/videos/play/wwdc2024/10161 (MLTensor ops dispatched asynchronously,
+%     materialise first; state KV cache 1.6x, Mistral 7B, M3 Max; multifunction adapters;
+%     performance report per-op estimated time + unsupported-op hints)
+%   developer.apple.com/videos/play/wwdc2020/10152 (encrypted model: key fetched on first load and
+%     stored; MLModelError.modelKeyFetch when offline)
+%   apple.github.io/coremltools/docs-guides: model-prediction (all units by default; specialisation
+%     seconds to minutes, cached) · convert-to-ml-program (ML Program iOS 15, weights apart, FP16
+%     default, mlprogram default since 7.0) · flexible-inputs (enumerated shapes best; Infrequent
+%     reshape hint keeps flexible models on the ANE, iOS 17.4) · opt-overview,
+%     opt-palettization-overview, opt-quantization-overview ({1,2,3,4,6,8} bits; iOS 16; grouped
+%     channel + 8-bit LUT iOS 18; int4/int8 weights, int8 activations; W8A8 on A17 Pro / M4 ANE;
+%     6-8 bit rarely loses much accuracy) · opt-workflow (data-free optimize.coreml; calibration
+%     ~128 samples and fine-tuning via optimize.torch; fine-tuning best at <= 4 bits, >= 75 %
+%     sparsity) · github.com/apple/coremltools/releases (8.0 2024-09-16,
+%     9.0 2025-11-10)
+%   developer.apple.com/documentation/vision (Swift-only API from iOS 18; request catalogue;
+%     NormalizedRect lower-left origin, CoordinateOrigin, toImageCoordinates) · /vision/coremlrequest
+%     + /coremlmodelcontainer (init(model:featureProvider:) throws; 3 result types) ·
+%     /recognizedocumentsrequest (26) · /detectlenssmudgerequest (26; A14 / M1+) ·
+%     /generateiterativesegmentationrequest (27; 13 / 11 points) · /downloadableassetsrequest (27) ·
+%     /ocrtool (27; not in Simulator) · wwdc2026/237 (Vision on watchOS; OCR tool over 30 languages)
+%   developer.apple.com/documentation/speech + /speech/speechanalyzer (26; actor; modules; AsyncSequence
+%     in and out; AssetInventory) · /naturallanguage/nlcontextualembedding (17; requestAssets) ·
+%     /createml (task list; iOS 15+) · /foundationmodels/systemlanguagemodel (26; availability,
+%     contextSize; model versions 26.0-26.3 / 26.4 / 27.0)
+%   machinelearning.apple.com/research/apple-foundation-models-2025-updates (on-device ~3B,
+%     2 bits per weight QAT) · github.com/ml-explore/mlx README (array framework, unified memory, lazy,
+%     CPU + GPU; Python, C++, C, Swift)
+% @labels: area=ai kind=api platform=apple topic=ai,platform-apis,performance discussion=288
+% @tags: coreml, core-ai, mlpackage, neural-engine, coremltools, quantization, palettization, vision, speechanalyzer, foundation-models, on-device-ai, swift-concurrency, performance, privacy
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={import,struct,func,var,let,some,if,else,return,guard,nil,true,false,in,
+    try,await,async,throws,for},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {!=}{{\hbox{!}\hbox{=}}}2}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt},
+  stg/.style={draw, rounded corners=2pt, font=\scriptsize, minimum height=7.8mm,
+              minimum width=21mm, text width=20mm, inner sep=1.5pt, align=center},
+  lane/.style={font=\scriptsize\bfseries, anchor=west, inner sep=0pt},
+  lay/.style={draw, rounded corners=2pt, font=\scriptsize, minimum height=6.5mm,
+              inner sep=1.5pt, align=center},
+  hw/.style={lay, draw=sheetGrey, fill=black!6},
+  dot/.style={circle, inner sep=0pt, minimum size=2.4mm},
+}
+
+\begin{document}
+
+\sheettitle{Core ML · Core AI · Vision — machine learning on the device}{ai · folio}
+
+\oneliner{A trained model ships as a \textbf{file}; its first load \textbf{specialises} it for
+this chip and OS and caches the result; it runs on \textbf{CPU, GPU and Neural Engine}.
+\textbf{Core ML} (iOS 11) runs any model type, \textbf{Core AI} (iOS 27) modern neural nets;
+\textbf{Vision}, \textbf{Speech}, \textbf{Natural Language} and \textbf{Foundation Models} put
+Apple's own models behind task APIs.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[stg, draw=sheetGrey, fill=black!4, minimum height=23mm, text width=14mm,
+        minimum width=15mm] (src) at (0.55,0.6) {\textbf{PyTorch}\\\tiny model,\\[-1pt]\tiny\ct{torch.export}\\[3pt]\scriptsize or\\[2pt]\textbf{Create ML}};
+  % Core ML lane
+  \node[lane, text=sheetBrown] at (1.45,2.08) {Core ML — iOS 11+ (ML Program: iOS 15+)};
+  \node[stg, draw=sheetBrown, fill=sheetBrown!8] (c1) at (2.95,1.4) {\ct{ct.convert}\\\tiny coremltools 9 (Nov 2025)\\[-1pt]\tiny + \ct{ct.optimize}};
+  \node[stg, draw=sheetBrown, fill=sheetBrown!8] (c2) at (5.4,1.4) {\ct{.mlpackage}\\\tiny ML Program, weights\\[-1pt]\tiny apart, FP16 compute};
+  \node[stg, draw=sheetBrown, fill=sheetBrown!8] (c3) at (7.85,1.4) {Xcode: \ct{.mlmodelc}\\\tiny + generated class; or\\[-1pt]\tiny \ct{compileModel(at:)}};
+  \node[stg, draw=sheetGreen, fill=sheetGreen!10] (c4) at (10.3,1.4) {\ct{MLModel.load}\\\tiny specialise per chip\\[-1pt]\tiny + OS $\to$ cache};
+  \node[stg, draw=sheetBrown, fill=sheetBrown!8] (c5) at (12.75,1.4) {\ct{prediction(from:)}\\\tiny sync · batch ·\\[-1pt]\tiny async (17) · state (18)};
+  % Core AI lane
+  \node[lane, text=sheetBlue] at (1.45,0.42) {Core AI — iOS 27+, Apple silicon};
+  \node[stg, draw=sheetBlue, fill=sheetBlue!6] (a1) at (2.95,-0.25) {\ct{coreai\_torch}\\\tiny\ct{TorchConverter()}\\[-1pt]\tiny\ct{.to\_coreai()}};
+  \node[stg, draw=sheetBlue, fill=sheetBlue!6] (a2) at (5.4,-0.25) {\ct{.aimodel}\\\tiny source asset, runs on\\[-1pt]\tiny any Apple device};
+  \node[stg, draw=sheetBlue, fill=sheetBlue!6] (a3) at (7.85,-0.25) {AOT compile\\\tiny optional, in Xcode:\\[-1pt]\tiny less work on device};
+  \node[stg, draw=sheetGreen, fill=sheetGreen!10] (a4) at (10.3,-0.25) {\ct{AIModel}\\\tiny specialise $\to$\\[-1pt]\tiny\ct{AIModelCache}};
+  \node[stg, draw=sheetBlue, fill=sheetBlue!6] (a5) at (12.75,-0.25) {\ct{InferenceFunction}\\\tiny\ct{.run(inputs:states:)}\\[-1pt]\tiny\ct{NDArray} in / out};
+  \foreach \a/\b in {c1/c2,c2/c3,c3/c4,c4/c5,a1/a2,a2/a3,a3/a4,a4/a5} \draw[flow] (\a) -- (\b);
+  \draw[flow] (src.east |- c1) -- (c1); \draw[flow] (src.east |- a1) -- (a1);
+  % hardware
+  \node[hw, minimum width=17mm, text width=16mm] (cpu) at (15.5,1.55) {CPU\\[-2pt]\tiny every op};
+  \node[hw, minimum width=17mm, text width=16mm] (gpu) at (15.5,0.65) {GPU\\[-2pt]\tiny shared with UI};
+  \node[hw, draw=sheetGreen, fill=sheetGreen!10, minimum width=17mm, text width=16mm] (ane) at (15.5,-0.25) {Neural Engine\\[-2pt]\tiny not every op};
+  \begin{scope}[on background layer]
+    \node[draw=sheetGrey, dashed, rounded corners=3pt, fit=(cpu)(gpu)(ane), inner sep=2pt] (hwg) {};
+  \end{scope}
+  \draw[flow] (c5.east) -- (hwg.west |- c5.east);
+  \draw[flow] (a5.east) -- (hwg.west |- a5.east);
+  \node[lbl, text=sheetBrown, anchor=north east, align=right] at (16.4,-0.72)
+    {graph \textbf{partitioned} per op: what a unit can't run falls back};
+  \node[lbl, text=sheetRed, anchor=north west, align=left] at (1.45,-0.72)
+    {cache discarded on an OS update, low disk space, or a changed / deleted model $\Rightarrow$ the slow first load again};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Files}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}L{12mm}L{56mm}L{8mm}@{}}
+\toprule
+\textbf{file} & \textbf{what it is} & \textbf{OS}\\
+\midrule
+\ct{.mlmodel} & one file, \emph{neuralnetwork} type (layers + weights inside) & 11\\
+\ct{.mlpackage} & folder: \textbf{ML Program} (typed ops) + separate weights; FP16 compute by
+default (\ct{compute\_precision=FLOAT32} to opt out); \ct{ct.convert}'s default since coremltools 7 & 15\\
+\ct{.mlmodelc} & compiled — the thing that loads. \ct{compileModel(at:)} writes to a
+\emph{temporary} dir: move it to Application Support to reuse & —\\
+\ct{.aimodel} & Core AI asset from \ct{coreai-torch}; still specialised on each device & 27\\
+\bottomrule
+\end{tabular}}
+
+\section{Load once — it is a compile}
+\begin{itemize}
+  \item \ct{try await MLModel.load(contentsOf:configuration:)}: compile (fast) $\to$ instantiate
+        $\to$ \textbf{device specialisation} (e.g. ANE compile) — seconds, minutes for big
+        models; cached. The Core ML instrument labels each load \emph{prepare and cache} or
+        \emph{cached}. So: load early, off the main thread, keep it loaded.
+  \item \ct{optimizationHints}: \ct{reshapeFrequency = .infrequent} (17.4) lets a
+        flexible-shape model stay on the ANE (enumerated shapes are fastest);
+        \ct{specializationStrategy = .fastPrediction} (18) buys latency with longer
+        specialisation, more memory and disk.
+\end{itemize}
+
+\section{Compute units}
+\begin{tikzpicture}[sheet]
+  \foreach \x/\h in {2.55/CPU,3.25/GPU,3.95/ANE} \node[lbl, font=\tiny\bfseries] at (\x,1.4) {\h};
+  \foreach \y/\c/\a/\b/\d/\n in {
+      1.1/.all/1/1/1/{default — Core ML splits the graph},
+      0.8/.cpuAndNeuralEngine/1/0/1/{iOS 16 — leaves the GPU to other work},
+      0.5/.cpuAndGPU/1/1/0/{no ANE},
+      0.2/.cpuOnly/1/0/0/{docs: if the app may run in background}} {
+    \node[lbl, font=\ttfamily\tiny, anchor=east] at (2.2,\y) {\c};
+    \foreach \v/\x in {\a/2.55,\b/3.25,\d/3.95} {
+      \ifnum\v=1 \node[dot, fill=sheetGreen] at (\x,\y) {};
+      \else \node[dot, draw=sheetGrey] at (\x,\y) {}; \fi }
+    \node[lbl, anchor=west] at (4.25,\y) {\n}; }
+\end{tikzpicture}\par
+\ct{MLModel.availableComputeDevices} (17) lists what exists; \ct{MLComputePlan} (17.4) gives each
+op's supported and preferred device and estimated relative cost — the Xcode Core ML performance
+report shows the same, with hints why an op can't run on a unit. iOS 26
+\ct{BGContinuedProcessingTask} can ask for \ct{.gpu} in the background (entitlement; check
+\ct{BGTaskScheduler.supportedResources}).
+
+\section{Predict}
+\begin{itemize}
+  \item Sync \ct{prediction(from:)} is \textbf{not thread-safe} — serialise it. Batch:
+        \ct{predictions(fromBatch:)}. Async overload (17): thread-safe, responds to
+        cancellation, runs concurrently — \textbf{cap in-flight calls}: each holds its inputs and
+        outputs, so peak memory grows.
+  \item \textbf{Stateful} (18): \ct{makeState()} $\to$ \ct{MLState}, then
+        \ct{prediction(from:using:)}; buffers (an LLM's KV cache) update in place, calls on one
+        state must be serialised. WWDC24: Mistral 7B, 1.6$\times$ faster with state (M3 Max).
+  \item \ct{MLTensor} (18): tensor maths on a compute device, dispatched asynchronously —
+        materialise (\ct{shapedArray(of:)}) before reading. \textbf{Multifunction} (18): several
+        functions (e.g. adapters) share one set of base weights; pick with
+        \ct{configuration.functionName}.
+  \item \ct{MLUpdateTask} (13): fine-tune an updatable model on user data, on the device.
+  \item \textbf{Encryption} (14): Xcode makes a per-team \ct{.mlmodelkey}; \ct{--encrypt} at
+        compile; the first load fetches the key over the network, then it is stored — offline
+        first launch fails with \ct{.modelKeyFetch}.
+\end{itemize}
+
+\section{Compress — \texttt{coremltools.optimize}}
+{\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}L{13mm}L{38mm}L{25mm}@{}}
+\toprule
+\textbf{technique} & \textbf{how} & \textbf{pays off on}\\
+\midrule
+palettize & k-means look-up table, \{1,2,3,4,6,8\} bits (iOS 16); per-grouped-channel + 8-bit LUT (18) & ANE: memory + latency; GPU: memory\\
+linear quant. & int8 / int4 weights (per-block int4); \textbf{W8A8} = int8 activations too & W8A8: ANE of A17 Pro / M4; int4: Mac GPU\\
+prune & zero small weights, store sparse & latency on ANE, CPU\\
+joint & sparse + palettized or quantized & further gains\\
+\bottomrule
+\end{tabular}}\par
+Three workflows: \textbf{data-free} (\ct{optimize.coreml}, seconds to minutes; 6--8-bit palettes
+or 8-bit weights rarely cost much accuracy, lower bits drop fast) · \textbf{calibration}
+($\sim$128 samples, \ct{optimize.torch}; e.g. 4-bit palettes) · \textbf{fine-tuning} (full
+training pipeline; best at $\le$4 bits or $\ge$75\,\% sparsity). coremltools 8.0 (Sep 2024):
+stateful models, int4, 3-bit, blockwise; 9.0 (Nov 2025): iOS 26 targets, int8 model I/O.
+
+\columnbreak
+
+\section{The stack}
+\begin{tikzpicture}[sheet, lay/.append style={minimum height=5.6mm}]
+  \node[lay, draw=sheetOrange, fill=sheetOrange!10, minimum width=19mm] at (0.95,1.3) {Foundation\\[-2pt]Models (26)};
+  \node[lay, draw=sheetBlue, fill=sheetBlue!10, minimum width=11mm] at (2.65,1.3) {Vision};
+  \node[lay, draw=sheetBlue, fill=sheetBlue!10, minimum width=14mm] at (4.05,1.3) {Natural\\[-2pt]Language};
+  \node[lay, draw=sheetBlue, fill=sheetBlue!10, minimum width=11mm] at (5.45,1.3) {Speech};
+  \node[lay, draw=sheetGrey, fill=black!4, minimum width=16mm] at (7.05,1.3) {Create ML\\[-2pt]\tiny trains (Mac)};
+  \node[lay, draw=sheetOrange, fill=sheetOrange!4, minimum width=19mm] at (0.95,0.55) {system LLM\\[-2pt]\tiny or PCC, others};
+  \node[lay, draw=sheetBrown, fill=sheetBrown!10, minimum width=26mm] at (3.35,0.55) {\textbf{Core ML}\\[-2pt]\tiny any model type};
+  \node[lay, draw=sheetBlue, fill=sheetBlue!8, minimum width=20mm] at (5.8,0.55) {\textbf{Core AI} (27)\\[-2pt]\tiny modern neural nets};
+  \node[lay, draw=sheetGrey, fill=white, minimum width=11mm] at (7.35,0.55) {MLX\\[-2pt]\tiny CPU+GPU};
+  \node[hw, minimum height=4.5mm, minimum width=24mm] at (1.25,-0.1) {CPU};
+  \node[hw, minimum height=4.5mm, minimum width=24mm] at (3.95,-0.1) {GPU};
+  \node[hw, minimum height=4.5mm, draw=sheetGreen, fill=sheetGreen!8, minimum width=26mm] at (6.6,-0.1) {Neural Engine};
+  \node[lbl, anchor=north west, align=left] at (0.05,-0.4) {Core ML docs: newest architectures $\to$ Core AI. Core AI docs: trees, tabular
+    $\to$ Core ML.\\MLX: Apple's NumPy-like array library (Python, Swift, C++), lazy, unified memory, no ANE.};
+\end{tikzpicture}\par
+\textbf{Choose}: an Apple task API if it already solves the task (real time, nothing to ship)
+$\to$ Foundation Models for open-ended language or image reasoning (Apple Intelligence devices
+only) $\to$ your own model in Core ML (any type, iOS 11+) or Core AI (iOS 27+) $\to$ a server
+when the model is too big or needs world knowledge.
+
+\section{Core AI (iOS 27, WWDC26)}
+\begin{itemize}
+  \item The inference engine behind Apple Intelligence, opened to apps, on every Apple-silicon
+        platform including watchOS. \ct{pip install coreai-torch}: \ct{torch.export} $\to$
+        \ct{TorchConverter()} $\to$ \ct{save\_asset("X.aimodel")}; \ct{coreai.runtime} runs it from
+        Python to diff outputs against PyTorch.
+  \item Swift: \ct{AIModel(contentsOf:)} $\to$ \ct{loadFunction(named:)} $\to$
+        \ct{run(inputs:states:)}; states (a KV cache) are mutable views written in place;
+        non-escapable types keep it memory-safe without copies.
+  \item Specialisation = segment/plan/optimise (the slow part, can run AOT on your Mac) +
+        per-unit executables tied to device and OS. \ct{AIModelCache}: look up, delete, set
+        retention, share across an app group; \ct{AIModel.specialize(contentsOf:)} warms it.
+  \item Core AI instrument; Core AI Debugger traces a tensor to the Python line that made it;
+        Core AI Models repo; a Core AI language model plugs into Foundation Models.
+\end{itemize}
+
+\section{Vision}
+\begin{itemize}
+  \item \textbf{Swift API (iOS 18)}: value-type requests, \ct{try await req.perform(on:)} $\to$
+        typed observations; \ct{ImageRequestHandler} runs several on one image. \ct{VN*} classes
+        are the older Objective-C-era API.
+  \item Text (26 languages), barcodes, faces, poses, subject masks, classification, feature
+        prints, saliency, tracking. \ct{CoreMLRequest} = your model + Vision's scaling
+        (\ct{cropAndScaleAction}) $\to$ classification, pixel-buffer or feature-value results.
+  \item \textbf{26}: \ct{RecognizeDocumentsRequest} (paragraphs, tables, lists, barcodes),
+        \ct{DetectLensSmudgeRequest} (A14 / M1+). \textbf{27}: tap-to-segment
+        \ct{GenerateIterativeSegmentationRequest} (seed point, box or scribble; $\le$13 points,
+        11 from a box; model fetched by \ct{downloadAssets()}), Vision on watchOS, \ct{OCRTool} +
+        \ct{BarcodeReaderTool} for a \ct{LanguageModelSession} (not in Simulator).
+  \item Coordinates are normalised 0–1 with a \textbf{lower-left} origin:
+        \ct{rect.toImageCoordinates(size, origin: .upperLeft)} for UIKit.
+\end{itemize}
+
+\begin{lstlisting}[language=SwiftSheet]
+var ocr = RecognizeTextRequest()               // iOS 18
+ocr.recognitionLevel = .accurate
+let lines = try await ocr.perform(on: cgImage)
+  .compactMap { $0.topCandidates(1).first?.string }
+let m = try await MLModel.load(contentsOf: url, configuration: cfg)
+let box = try CoreMLModelContainer(model: m, featureProvider: nil)
+let out = try await CoreMLRequest(model: box).perform(on: cgImage)
+\end{lstlisting}
+
+\section{Speech · Natural Language · Create ML · Foundation Models}
+\begin{itemize}
+  \item \textbf{Speech} (26): \ct{SpeechAnalyzer} actor + modules \ct{SpeechTranscriber},
+        \ct{DictationTranscriber}, \ct{SpeechDetector}; audio in and results out as
+        \ct{AsyncSequence}s; \ct{AssetInventory} installs the language model. Older:
+        \ct{SFSpeechRecognizer}.
+  \item \textbf{NL}: \ct{NLLanguageRecognizer}, \ct{NLTokenizer}, \ct{NLTagger},
+        \ct{NLEmbedding}; \ct{NLContextualEmbedding} (17, BERT-style; \ct{requestAssets} first).
+  \item \textbf{Create ML}: image, object, hand-pose, action, style, text, word-tagger, sound,
+        activity, tabular models, trained on Apple's feature extractors $\to$ small files.
+  \item \textbf{Foundation Models} (26): \ct{SystemLanguageModel} = the $\sim$3B on-device model
+        (2 bits/weight, QAT); check \ct{availability} (device, region, still downloading); the
+        model changes with the OS (26.0–26.3, 26.4, 27.0). 27: image prompts, any provider via
+        \ct{LanguageModel} $\to$ \ct{llm-features-in-apps}.
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{llm-features-in-apps} · Cloud vs
+on-device · \texttt{instruments-performance} · App size \& energy · App hardening \& privacy ·
+Background execution · AVFoundation · Metal}
+
+\end{document}

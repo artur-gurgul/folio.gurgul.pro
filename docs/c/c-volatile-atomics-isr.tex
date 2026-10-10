@@ -1,0 +1,329 @@
+% c-volatile-atomics-isr.tex — what volatile does and does not do; C23 <stdatomic.h>, memory
+% orders and fences; how hardware makes a read-modify-write indivisible; sharing state with an
+% interrupt, a signal handler or a second CPU (Cortex-M, FreeRTOS, ESP-IDF).
+% Sources (checked 2026-10-09):
+%   open-std.org/jtc1/sc22/wg14/www/docs/n3220.pdf (C23 working draft): 5.1.2.4 p2, p5, p6
+%     (volatile access = side effect; after a signal only lock-free atomics and volatile
+%     sig_atomic_t keep defined values; volatile accesses are observable behaviour) · 5.1.2.5
+%     (conflict, synchronizes-with, modification order, data race = UB p35) · 5.2.4 (signals and
+%     interrupts) · 6.2.6.1 p9 (loads and stores of atomic objects are seq_cst) · 6.5.3.4 p5
+%     (atomic struct member = UB) · 6.5.3.5, 6.5.17.3 (atomic ++ and op=
+%     are seq_cst read-modify-writes) · 6.7.4.1 p8 + fn 150 (volatile: modified in ways unknown to
+%     the implementation; what is an access is implementation-defined; MMIO and "asynchronously
+%     interrupting function") · 7.13.2.1 (non-volatile locals changed between setjmp and longjmp
+%     are indeterminate) · 7.14 p2, 7.14.1.1 p5 (sig_atomic_t; what a handler may touch and call)
+%     · 7.17.1-7.17.8 (__STDC_NO_ATOMICS__, 202311L, lock-free macros 0/1/2, atomic_init only — no
+%     ATOMIC_VAR_INIT, memcpy makes an atomic indeterminate, order rules, seq_cst total order S,
+%     relaxed still indivisible, weak CAS fails spuriously for LL/SC, fetch on signed wraps,
+%     atomic_flag the only type that must be lock-free, atomic_signal_fence emits no hardware fence)
+%     · 7.22.3.2 (SIG_ATOMIC_WIDTH >= 8)
+%   gcc.gnu.org/onlinedocs/gcc: Volatiles (non-volatile accesses not ordered with respect to
+%     volatile ones; not a barrier) · Extended-Asm ("memory" clobber = compiler barrier; does not
+%     stop processor speculative reads) · _005f_005fatomic-Builtins (consume implemented as
+%     acquire; not lock-free -> call to an external routine) · AArch64-Options (-moutline-atomics,
+%     on by default: LSE from Armv8.1-A, else load/store-exclusive)
+%   documentation-service.arm.com ARM DDI 0403E.b (Armv7-M ARM): A3.4.4 (local monitor set to Open
+%     Access on exception entry or exit; keep STREX close to LDREX) · A3.4.5 (no explicit store
+%     between LDREX and STREX; STREX status 1 = no write) · A3.4.3 (reservation granule 1-512
+%     words) · A3.5.3 (single-copy atomic: bytes, aligned halfwords, aligned words; LDRD, LDM, STRD
+%     = word sequences an exception may abandon and re-execute)
+%   developer.arm.com A64 ISA (LDADD, CAS, SWP undefined without FEAT_LSE)
+%   arm-software.github.io/CMSIS_6 Core: intrinsics (__DMB orders, __DSB completes, __ISB flushes
+%     the pipeline; LDREX/STREX/CLREX not for Cortex-M0/M0+) · core registers (CPSID i = PRIMASK;
+%     BASEPRI not for M0/M0+, non-zero masks same and lower priority) · D-cache by address (32 B)
+%   github.com/FreeRTOS/FreeRTOS-Kernel-Book ch07 (only ...FromISR in an ISR; xHigherPriorityTaskWoken
+%     + portYIELD_FROM_ISR; configMAX_SYSCALL_INTERRUPT_PRIORITY = highest priority that may call
+%     the API, higher ones never masked; low number = high priority; default 0, must not be left;
+%     notification = most efficient unblock) · ch08 (critical sections mask fully or up to
+%     MAX_SYSCALL, nest, must be short; FROM_ISR form returns the mask; mutex never from an ISR;
+%     binary semaphore has no priority inheritance; vTaskSuspendAll leaves interrupts enabled) ·
+%     github.com/FreeRTOS/FreeRTOS-Kernel portable/GCC ARM_CM0 (cpsid i) and ARM_CM4F (BASEPRI)
+%   docs.espressif.com/projects/esp-idf v6.1: freertos_idf (SMP: masking interrupts is not mutual
+%     exclusion; portENTER_CRITICAL = mask up to MAX_SYSCALL + spin with compare-and-set; _ISR
+%     forms; portMUX_INITIALIZER_UNLOCKED / portMUX_INITIALIZE; no API or blocking inside;
+%     single-core: no spinlock) · intr_alloc (ESP_INTR_FLAG_IRAM: code IRAM, data DRAM, else
+%     postponed while flash write/erase disables the cache; allocated on the calling CPU)
+%   github.com/espressif/esp-idf components/xtensa/include/xt_utils.h (WSR SCOMPARE1 + S32C1I;
+%     a single-core target without it masks interrupts) · cadence.com Xtensa ISA summary (S32C1I)
+%   felixcloutier.com/x86/lock (Intel SDM: LOCK prefix; XCHG always locked) ·
+%     github.com/riscv/riscv-isa-manual src/a-st-ext.adoc (A = Zalrsc LR/SC + Zaamo AMOs)
+%   docs.kernel.org/process/volatile-considered-harmful.html ("almost never correct")
+%   cs.unc.edu/~anderson/teach/comp790/papers/mars_pathfinder_long_version.html (G. Reeves, JPL,
+%     Dec 1997: resets after the 4 July 1997 landing; VxWorks mutex created with priority
+%     inheritance off; patched in flight)
+% @labels: area=c kind=concept platform=embedded topic=concurrency,hardware,language discussion=296
+% @tags: volatile, atomic, stdatomic, memory-order, acquire-release, happens-before, data-race, isr, critical-section, freertos, esp32, ldrex-strex, memory-barrier, priority-inversion, mmio, c23
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\lstdefinestyle{CSheet}{style=printup, language=C, basicstyle=\ttfamily\scriptsize,
+  morekeywords={uint32_t,bool,_Atomic,TaskHandle_t,BaseType_t},
+  morekeywords=[2]{IRAM_ATTR}, keywordstyle=[2]\color{tangoOperator}}
+
+\tikzset{
+  hd/.style={font=\bfseries\scriptsize, text=sheetBlue, anchor=west, inner sep=0pt},
+  ln/.style={font=\bfseries\tiny, anchor=west, inner sep=0pt},
+  op/.style={draw=sheetGrey, fill=white, rounded corners=1pt, font=\ttfamily\tiny,
+             inner sep=1.2pt, minimum height=3.4mm},
+  l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pk/.style={draw=sheetGrey, fill=sheetBlue!5, rounded corners=1pt, font=\tiny, inner sep=1.3pt,
+             minimum height=3.4mm, anchor=west, align=left},
+  tl/.style={draw=sheetBlue, fill=sheetBlue!12, rounded corners=1pt, font=\tiny, inner sep=1.3pt,
+             minimum height=3.4mm, anchor=west, align=left},
+}
+
+\begin{document}
+
+\sheettitle{volatile · \_Atomic · interrupts — sharing state safely in C}{c · folio}
+
+\oneliner{\ct{volatile} binds only the \textbf{compiler}: every access in the source is
+performed, none merged or dropped. It gives \textbf{no atomicity}, \textbf{no ordering} of
+other memory and \textbf{no CPU barrier}. State shared with an interrupt, a signal handler or
+another CPU needs a lock-free \ct{\_Atomic}, a \textbf{critical section}, or a lock.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ===== lost update
+  \node[hd] at (0,2.2) {\ct{n++} from a task and an ISR};
+  \node[ln] at (0,1.55) {task};
+  \node[ln] at (0,0.85) {ISR};
+  \node[ln, text=sheetGrey] at (0,0.3) {\ct{n}};
+  \draw[sheetGrey!40] (0.5,1.55) -- (5.25,1.55);
+  \draw[sheetGrey!40] (0.5,0.85) -- (5.25,0.85);
+  \node[op] (a) at (0.95,1.55) {LOAD 5};
+  \node[op, draw=sheetOrange] (b) at (1.8,0.85) {LOAD 5};
+  \node[op, draw=sheetOrange] (c) at (2.55,0.85) {ADD};
+  \node[op, draw=sheetOrange] (d) at (3.3,0.85) {STORE 6};
+  \node[op] (e) at (4.0,1.55) {ADD};
+  \node[op, draw=sheetRed, very thick] (f) at (4.75,1.55) {STORE 6};
+  \draw[hot] (a.south east) -- node[l, left, pos=0.55]{IRQ} (b.north west);
+  \draw[flow] (d.north east) -- node[l, right, pos=0.35]{return} (e.south west);
+  \foreach \x/\v in {0.95/5, 1.8/5, 3.3/6} \node[l, font=\ttfamily\tiny] at (\x,0.3) {\v};
+  \node[l, font=\ttfamily\tiny\bfseries, text=sheetRed] at (4.75,0.3) {6, not 7};
+  \node[l, anchor=west, text=sheetBrown] at (0,-0.1) {\itshape \ct{volatile} changes nothing;
+    on two CPUs no IRQ is needed};
+  \draw[sheetGrey!50] (5.45,2.35) -- (5.45,-0.25);
+  % ===== LDREX / STREX
+  \node[hd] at (5.6,2.2) {the same \ct{n++} as \ct{LDREX}/\ct{STREX} (Armv7-M)};
+  \node[ln] at (5.6,1.55) {task};
+  \node[ln] at (5.6,0.85) {ISR};
+  \node[ln, text=sheetGrey] at (5.6,0.3) {monitor};
+  \draw[sheetGrey!40] (6.1,1.55) -- (10.95,1.55);
+  \draw[sheetGrey!40] (6.1,0.85) -- (10.95,0.85);
+  \node[op] (g) at (6.8,1.55) {LDREX 5};
+  \node[op, draw=sheetOrange] (h) at (7.75,0.85) {n: 5$\rightarrow$6};
+  \node[op] (i) at (8.45,1.55) {ADD};
+  \node[op, draw=sheetRed, very thick] (j) at (9.15,1.55) {STREX=1};
+  \node[op, draw=sheetGreen, very thick] (k) at (10.4,1.55) {retry: 7};
+  \draw[hot] (g.south east) -- (h.north west);
+  \draw[flow] (h.north east) -- (i.south west);
+  \draw[flow] (j) -- (k);
+  \node[l, font=\ttfamily\tiny] at (6.85,0.3) {Excl.};
+  \node[l, text=sheetOrange] at (7.85,0.3) {Open (exception)};
+  \node[l, text=sheetRed] at (9.4,0.3) {STREX fails, no write};
+  \node[l, anchor=west, text=sheetBrown] at (5.6,-0.1) {\itshape exception entry or exit clears
+    the monitor: the sequence reruns};
+  \draw[sheetGrey!50] (11.1,2.35) -- (11.1,-0.25);
+  % ===== pick the tool
+  \node[hd] at (11.25,2.2) {what is shared $\rightarrow$ what protects it};
+  \foreach \y/\s/\t in {1.78/{a device register}/{\ct{volatile} access},
+                        1.36/{one flag, counter, pointer}/{lock-free \ct{\_Atomic}},
+                        0.94/{several fields, invariants}/{critical section},
+                        0.52/{long work that may block}/{mutex — tasks only},
+                        0.10/{an ISR waking a task}/{\ct{…FromISR} notification}} {
+    \node[pk, text width=22mm] (s) at (11.25,\y) {\s};
+    \node[tl, text width=23mm] (t) at (13.75,\y) {\t};
+    \draw[->, thin, sheetGrey] (s) -- (t);
+  }
+\end{tikzpicture}
+
+\vspace{-3pt}
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{What \texttt{volatile} guarantees (C23)}
+\begin{itemize}
+  \item A volatile access is a \emph{side effect} (5.1.2.4): performed strictly as the abstract
+        machine says — never dropped, merged or added — and part of observable behaviour; what
+        counts as one access is implementation-defined (6.7.4.1). Meant for memory-mapped I/O
+        and data changed by an ``asynchronously interrupting function''.
+  \item Without it \ct{while (!done) \{\}} may read \ct{done} once — nothing in the loop
+        writes it — and become \ct{if (!done) for (;;);}.
+  \item Also needed: a non-volatile local changed between \ct{setjmp} and \ct{longjmp} is
+        indeterminate after the jump (7.13.2.1).
+\end{itemize}
+
+\section{What it does not do}
+\begin{itemize}
+  \item \textbf{Atomicity}: \ct{v++} is load, add, store (above).
+  \item \textbf{Whole values}: Armv7-M is single-copy atomic only for bytes, aligned halfwords
+        and aligned words; \ct{LDRD}/\ct{LDM} are word sequences an exception may abandon and
+        restart — a 64-bit read can mix two writes.
+  \item \textbf{Ordering}: GCC — ``accesses to non-volatile objects are not ordered with respect
+        to volatile accesses''; \ct{buf[i] = x} may move past \ct{ready = 1}.
+  \item \textbf{CPU barrier}: none emitted; another CPU or bus master may see stores in
+        another order.
+  \item \textbf{Cache bypass}: it stops register caching only. DMA with a D-cache: clean before
+        the device reads, invalidate before the CPU reads (CMSIS
+        \ct{SCB\_CleanDCache\_by\_Addr}, 32-byte lines), or non-cacheable RAM.
+  \item \textbf{Race freedom}: conflicting accesses in two threads, one not atomic, neither
+        happening before the other = \textbf{data race = UB} (5.1.2.5), volatile or not. Linux:
+        volatile for shared data is ``almost never correct''.
+\end{itemize}
+
+\section{\texttt{<stdatomic.h>} in C23}
+\begin{itemize}
+  \item Optional: \ct{\_\_STDC\_NO\_ATOMICS\_\_} may omit it; \ct{\_\_STDC\_VERSION\_STDATOMIC\_H\_\_}
+        = \ct{202311L}. Declare \ct{\_Atomic T}, \ct{\_Atomic(T)} or \ct{atomic\_uint}.
+  \item \ct{n++}, \ct{n += k} on an atomic are \textbf{seq\_cst read-modify-writes}
+        (6.5.3.5, 6.5.17.3); \ct{n = n + 1} is a seq\_cst load, then a seq\_cst store (6.2.6.1)
+        — two steps.
+  \item \ct{atomic\_load/store/exchange}, \ct{atomic\_fetch\_add/sub/or/xor/and},
+        \ct{atomic\_compare\_exchange\_strong/weak}; each has \ct{\_explicit(…, order)}, the
+        plain form means seq\_cst. Signed \ct{fetch\_add} wraps: no UB.
+  \item \ct{compare\_exchange\_weak} may fail spuriously (built for LL/SC machines): use it in a
+        loop; a failure copies the current value into \ct{*expected}. Failure order: not
+        release/acq\_rel, not stronger than success.
+  \item \ct{ATOMIC\_INT\_LOCK\_FREE} etc.: 0 never · 1 sometimes · 2 always;
+        \ct{atomic\_is\_lock\_free(p)} at run time. Only \ct{atomic\_flag} must be lock-free;
+        otherwise GCC calls an external routine (libatomic).
+  \item UB / gone: a member of an atomic struct (6.5.3.4); \ct{memcpy}/\ct{memset} over an
+        atomic leaves it indeterminate; \ct{ATOMIC\_VAR\_INIT} is removed — plain initialiser or
+        \ct{atomic\_init} (itself not atomic).
+\end{itemize}
+
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\ttfamily\raggedright\arraybackslash}p{10mm}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{56mm}@{}}
+\toprule
+\normalfont\textbf{order} & \textbf{valid on} & \textbf{guarantees}\\
+\midrule
+relaxed & all & indivisible + one modification order per object; nothing else — counters\\
+consume & load, RMW & orders only what depends on the value; GCC compiles it as acquire\\
+acquire & load, RMW & reads a release $\Rightarrow$ every write before that release is visible after\\
+release & store, RMW & publishes all earlier writes to an acquire that reads this value\\
+acq\_rel & RMW & both — exchange, \ct{fetch\_add}, CAS that hand state over\\
+seq\_cst & all & acq/rel + one total order S of all seq\_cst ops; the default\\
+\bottomrule
+\end{tabular}}
+
+\section{Fences and barriers}
+\begin{itemize}
+  \item \ct{atomic\_thread\_fence(o)}: acquire / release / both / seq\_cst fence, with a CPU
+        barrier where the target needs one; \ct{relaxed} = no effect.
+  \item \ct{atomic\_signal\_fence(o)}: same ordering, only against a handler on the same
+        thread — compiler ordering, no fence instruction.
+  \item \ct{asm volatile("" ::: "memory")}: GCC compiler barrier; it ``does not prevent the
+        processor from doing speculative reads''.
+  \item Arm (CMSIS): \ct{\_\_DMB()} orders explicit accesses (not completion) ·
+        \ct{\_\_DSB()} waits until they complete · \ct{\_\_ISB()} flushes the pipeline.
+\end{itemize}
+
+\section{Signal handlers (hosted C)}
+C's only model of asynchronous interruption. A handler may touch lock-free atomics and
+\ct{constexpr} objects or \emph{assign} a \ct{volatile sig\_atomic\_t}
+(\mbox{\ct{SIG\_ATOMIC\_WIDTH} $\ge$ 8}), and call only \ct{abort}, \ct{\_Exit}, \ct{quick\_exit},
+\ct{signal} for its own signal and lock-free \ct{<stdatomic.h>} functions — else UB (7.14.1.1).
+
+\columnbreak
+
+\section{Publish with release / acquire}
+\begin{tikzpicture}[sheet]
+  \node[ln] at (0,0.42) {producer (task, ISR, CPU 0)};
+  \node[ln] at (4.1,0.42) {consumer (CPU 1)};
+  \node[op, anchor=west] (w1) at (0,0) {buf = data;};
+  \node[op, anchor=west, draw=sheetBlue, very thick] (w2) at (0,-0.55) {store(\&ready, 1, release)};
+  \node[op, anchor=west, draw=sheetBlue, very thick] (r1) at (4.1,0) {while (!load(\&ready, acquire));};
+  \node[op, anchor=west] (r2) at (4.1,-0.55) {use(buf); // sees data};
+  \draw[flow] (w1) -- (w2);
+  \draw[flow] (r1) -- (r2);
+  \draw[hot] (w2.east) -- node[l, below, sloped, pos=0.5]{synchronizes with} (r1.south west);
+  \node[l, anchor=west, text=sheetBrown] at (0,-0.95) {\itshape \ct{volatile ready} or a relaxed
+    store instead: \ct{buf} may become visible after \ct{ready}};
+\end{tikzpicture}
+
+\section{How hardware makes \texttt{n++} indivisible}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}p{34mm}@{}}
+\toprule
+\textbf{CPU} & \textbf{mechanism} & \textbf{notes}\\
+\midrule
+Cortex-M0/M0+ (Armv6-M) & none: mask with \ct{cpsid i} (PRIMASK) & no \ct{LDREX}/\ct{STREX}, no BASEPRI\\
+Armv7-M: M3, M4, M7 & \ct{LDREX} … \ct{STREX} loop & \ct{STREX} 0 = stored, 1 = retry; no other store between; granule 1–512 words\\
+AArch64 & \ct{LDXR}/\ct{STXR}; Armv8.1 LSE: \ct{LDADD}, \ct{CAS}, \ct{SWP} & GCC \ct{-moutline-atomics} (default) picks at run time\\
+x86 & \ct{LOCK} prefix: \ct{XADD}, \ct{CMPXCHG} & \ct{XCHG} with memory is always locked\\
+RISC-V ``A'' & \ct{LR}/\ct{SC} (Zalrsc) + \ct{AMOADD}, \ct{AMOSWAP}… (Zaamo) & an AMO is one instruction, no loop\\
+Xtensa: ESP32, ESP32-S3 & \ct{S32C1I}: store if word = \ct{SCOMPARE1} & ESP-IDF spinlocks; a single-core target without it masks interrupts\\
+\bottomrule
+\end{tabular}}
+
+\section{Cortex-M interrupt priority under FreeRTOS}
+\begin{tikzpicture}[sheet]
+  \fill[sheetRed!12] (0,0) rectangle (2.3,0.42);
+  \fill[sheetGreen!15] (2.3,0) rectangle (6.6,0.42);
+  \fill[sheetGrey!25] (6.6,0) rectangle (7.85,0.42);
+  \draw[sheetGrey] (0,0) rectangle (7.85,0.42);
+  \draw[very thick, sheetBlue] (2.3,-0.3) -- (2.3,0.5);
+  \node[l] at (1.15,0.21) {never masked, no API};
+  \node[l] at (4.45,0.21) {may call \ct{…FromISR()}; masked in critical sections};
+  \node[l] at (7.22,0.21) {lowest: kernel};
+  \node[l, anchor=north west] at (0,-0.02) {0: highest, reset default};
+  \node[l, anchor=north west, text=sheetBlue] at (2.35,-0.02) {\ct{configMAX\_SYSCALL\_INTERRUPT\_PRIORITY} = BASEPRI level};
+\end{tikzpicture}
+\begin{itemize}
+  \item In an ISR only \ct{…FromISR} calls: the others may block, and an ISR has no task to
+        block. Collect \ct{xHigherPriorityTaskWoken}, then one \ct{portYIELD\_FROM\_ISR()} at the
+        end. A direct-to-task notification is the cheapest way to unblock a task.
+  \item Only the top bits of the 8-bit priority field exist. An API-calling ISR left at the
+        default 0 sits above any legal MAX\_SYSCALL: no critical section can mask it.
+  \item \ct{taskENTER\_CRITICAL()}: M4F port raises BASEPRI, M0 port \ct{cpsid i}; nests (a
+        counter); keep it a few lines. In an ISR: \ct{s = taskENTER\_CRITICAL\_FROM\_ISR()} …
+        \ct{taskEXIT\_CRITICAL\_FROM\_ISR(s)}. \ct{vTaskSuspendAll()} leaves interrupts on.
+  \item No mutex in an ISR (its priority inheritance is about tasks); a binary semaphore has none.
+        Mars Pathfinder, 1997: inheritance off $\rightarrow$ inversion $\rightarrow$ resets.
+\end{itemize}
+
+\section{Two CPUs — ESP-IDF v6.1}
+\begin{itemize}
+  \item SMP: masking interrupts on one CPU is not mutual exclusion.
+        \ct{portENTER\_CRITICAL(\&mux)} masks \emph{this} CPU up to MAX\_SYSCALL, then spins on
+        \ct{mux} with compare-and-set; \ct{\_ISR} forms in handlers; \ct{portMUX\_TYPE mux =
+        portMUX\_INITIALIZER\_UNLOCKED}. No FreeRTOS call, nothing blocking inside.
+        Single-core targets: no spinlock, just the mask.
+  \item \ct{tskNO\_AFFINITY} tasks run on either CPU — two at the same instant. An interrupt is
+        allocated on the CPU that calls \ct{esp\_intr\_alloc}.
+  \item \ct{ESP\_INTR\_FLAG\_IRAM}: handler in IRAM (\ct{IRAM\_ATTR}), its data in DRAM; without it
+        the ISR is postponed while a flash write/erase has the cache off.
+\end{itemize}
+
+\section{Example — ISR counts, task drains}
+\begin{lstlisting}[style=CSheet]
+static _Atomic uint32_t events;  static TaskHandle_t worker;
+void IRAM_ATTR on_edge(void *arg) {                     // ISR
+  atomic_fetch_add_explicit(&events, 1, memory_order_relaxed);
+  BaseType_t woken = pdFALSE;
+  vTaskNotifyGiveFromISR(worker, &woken);
+  portYIELD_FROM_ISR(woken);           // switch now if it outranks us
+}
+void worker_task(void *arg) {
+  for (;;) { ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  // sleep
+             handle(atomic_exchange(&events, 0)); }    // read + reset: ONE step
+}
+\end{lstlisting}
+
+\section{Traps}
+\begin{itemize}
+  \trap{\ct{handle(n); n = 0;} drops every increment in between — \ct{atomic\_exchange}.}
+  \trap{A 64-bit \ct{\_Atomic} on a 32-bit MCU may take a lock: \ct{ATOMIC\_LLONG\_LOCK\_FREE}.}
+  \trap{Interrupts off on one ESP32 CPU $\neq$ exclusion. A compiler barrier $\neq$ a CPU fence.}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{c-bits-and-registers} ·
+\texttt{c-undefined-behavior-and-build} · \texttt{c-memory-layout} · \texttt{os-fundamentals} ·
+Locks \& synchronisation primitives · Sanitizers \& runtime checkers · Concurrency patterns}
+
+\end{document}

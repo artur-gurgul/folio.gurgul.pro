@@ -1,0 +1,307 @@
+% xcodebuild-simctl-cli.tex — Xcode from the command line for CI: xcodebuild actions, destination
+% specifiers, test selection / sharding / repetition, result bundles + xcresulttool, archive → export
+% → upload, SwiftPM on CI, simctl and devicectl, xcode-select / DEVELOPER_DIR / components, Xcode
+% Cloud scripts, and what changed from Xcode 15 to Xcode 27.
+% Sources (checked 2026-10-09):
+%   keith.github.io/xcode-man-pages (mirror of the Xcode 27.2 beta 2 man pages): xcodebuild.1 (actions;
+%     destination keys, id XOR name, OS = latest by default, generic/ prefix, several -destination =
+%     whole suite on each concurrently, -parallelize-tests-among-destinations, -destination-timeout
+%     30 s; -testProductsPath / -xctestrun refuse -workspace / -project; -only-testing
+%     Target[/Class[/method]] and @response-file, -only wins; parallel, iteration (3 / 100),
+%     relaunch, timeout, -collect-test-diagnostics, -enumerate-tests flags; -resultBundlePath must
+%     not exist; -exportArchive takes no action; -allowProvisioningUpdates needs an Xcode account or
+%     the ASC key flags; -xcconfig and XCODE_XCCONFIG_FILE precedence; TEST_RUNNER_<VAR>; sysexits
+%     exit codes; -runFirstLaunch, -checkFirstLaunchStatus) · xcresulttool.1 (get build-results,
+%     get test-results summary / tests / test-details / activities / metrics / insights, get log
+%     --type, export attachments --only-failures, merge, compare) · xccov.1 (view --report --json)
+%     · xcode-select.1 (-s needs sudo, affects all users; DEVELOPER_DIR per process, app or
+%     Contents/Developer; /usr/bin tools are shims) · xcrun.1 (--find, --sdk, --show-sdk-path)
+%     · altool.1 (--upload-package --platform, --api-key / --api-issuer, private_keys directories)
+%     · sysexits.3 (EX_USAGE 64, EX_NOINPUT 66, EX_SOFTWARE 70, EX_IOERR 74)
+%   developer.apple.com/documentation/xcode-release-notes: xcode-15 (-enumerate-tests; -exportArchive
+%     uploads with ASC keys; Xcode Server removed) · xcode-15_3 (devicectl exists) · xcode-16
+%     (xcresulttool new interfaces; unmatched -destination no longer silently replaced;
+%     -downloadPlatform -exportPath, -importPlatform, simctl runtime add; devicectl --console,
+%     --device by name / UDID / ECID; -packageAuthorizationProvider; manual export needs
+%     provisioningProfiles) · xcode-26 (Swift 6.2; macOS 15.6; compilation caching opt-in; explicit
+%     modules default, SWIFT_ENABLE_EXPLICIT_MODULES=NO; prebuilt swift-syntax, IDEPackageEnablePrebuilts;
+%     downloadable Metal toolchain; .xctestrun keeps disabled test-plan configurations) · xcode-26_4
+%     (Swift 6.3; runtime export writes .exportBundle; simctl runtime dyld_shared_cache update --all)
+%     · xcode-27 (Swift 6.4; macOS 26.6; Apple silicon only; ld64 and -ld_classic removed; IB
+%     "toolchain" mode compiles without a simulator, IBC_COCOATOUCH_COMPILER_MODE=simulator opts out;
+%     simctl / devicectl reboot; runtimes ship a prebuilt dyld cache; devicectl --json-output to
+%     stdout, JSON version 5) · xcode-11_4 (simctl privacy, keychain, ui appearance, push with
+%     "Simulator Target Bundle")
+%   developer.apple.com/documentation/xcode: downloading-and-installing-additional-xcode-components
+%     (-downloadPlatform -exportPath -buildVersion -architectureVariant, -downloadAllPlatforms,
+%     -importPlatform after -runFirstLaunch, -checkForNewerComponents, -downloadComponent
+%     metalToolchain, arm64 variant by default) · building-swift-packages-or-apps-that-use-them-in-
+%     continuous-integration-workflows (commit Package.resolved and its path,
+%     -disableAutomaticPackageResolution, SSH URLs + known_hosts, -scmProvider system) ·
+%     writing-custom-build-scripts (ci_scripts beside the project, the three names, post-xcodebuild
+%     runs even if xcodebuild fails, zsh without a shebang, no sudo, created files deleted, non-zero
+%     exit fails, secrets masked) · distributing-your-app-for-beta-testing-and-releases (Organizer
+%     methods, upload / export, manage build number, TestFlight internal only, symbols) ·
+%     building-your-app-to-include-debugging-information (archive keeps binaries + dSYMs, build UUID)
+%   developer.apple.com/videos: wwdc2019/418 (simulator = iOS userspace on the Mac kernel; list
+%     --json; create prints the UDID; prefer identifiers; launch -Key value, --console-pty; spawn log
+%     stream; clone needs shutdown, APFS clones; shutdown all; delete unavailable; get_app_container;
+%     addmedia; io screenshot) · wwdc2020/10647 (privacy grant / revoke / reset, push, io recordVideo
+%     --codec, status_bar override / clear, keychain add-root-cert, booted alias)
+%   asciiwwdc.com/2018/sessions/403 (transcript of WWDC18 "What's New in Testing": parallel testing
+%     clones the chosen simulator, one runner per clone, one test class at a time)
+%   developer.apple.com/forums: 773749 (DTS: export method list, default debugging, deprecated names)
+%     · 763050 (DTS: xcresulttool help prints the JSON schema) · 11313 (Apple engineer: simctl erase)
+%     · 812475 (DTS: simctl openurl) · 759317, 725786 (ExportOptions keys in real plists) · 739347
+%     (-skipMacroValidation help text) · 694058, 699941 (-clonedSourcePackagesDirPath; default
+%     DerivedData/SourcePackages)
+%   github.com/flutter/flutter/issues/151502 (verbatim "--legacy flag is required" error, Xcode 16)
+%   developer.apple.com/help/app-store-connect/manage-builds/upload-builds (Xcode, altool, Transporter,
+%     App Store Connect API) · developer.apple.com/xcode-cloud (25 h/month included; 100 h US$49.99,
+%     250 h, 1,000 h plans)
+%   forums.swift.org/t/81850 (COMPILATION_CACHE_ENABLE_CACHING, local cache only)
+%   gnu.org/software/bash/manual Pipelines (pipefail) · github.com/cpisciotta/xcbeautify README ·
+%     github.com/XcodesOrg/xcodes README (install, select, .xcode-version)
+%   NOT confirmed against a primary source: simctl bootstatus -b (marked \unverified on the page).
+% @labels: area=cicd kind=tooling platform=ios topic=build,testing,tooling discussion=300
+% @tags: xcodebuild, simctl, devicectl, xcarchive, ipa, export-options-plist, xcresult, xcresulttool, xccov, test-sharding, parallel-testing, test-repetition, xctestplan, swift-package-manager, package-resolved, app-store-connect-api-key, xcode-select, xcode-cloud, ci-cd
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+\usetikzlibrary{shadows}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{-\kern0pt-}   % "--" without the ligature; starts horizontal mode (a node line may open with it)
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  act/.style={box, draw=sheetOrange, fill=sheetOrange!10, font=\tiny\ttfamily, inner sep=1.5pt, align=center},
+  fil/.style={draw=sheetBlue, thick, fill=white, font=\tiny, inner sep=1.5pt, align=left, rounded corners=1pt},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\scriptsize, text=sheetBlue, anchor=west},
+  cmd/.style={font=\ttfamily\tiny, inner sep=0.6pt, anchor=base west},
+  brc/.style={decorate, decoration={brace, mirror, amplitude=2.5pt}, draw=sheetGrey},
+}
+
+\begin{document}
+
+\sheettitle{xcodebuild, simctl \& friends — Xcode from the command line}{cicd · folio}
+
+\oneliner{\ct{xcodebuild} runs one \textbf{action} of a \textbf{scheme} against a \textbf{destination};
+\ct{archive} + \ct{-exportArchive} with an \textbf{ExportOptions.plist} make the shippable \ct{.ipa};
+test results land in an \ct{.xcresult} read with \ct{xcresulttool}. \ct{xcrun simctl} scripts
+simulators, \ct{devicectl} real devices, and \ct{xcode-select} / \ct{DEVELOPER\_DIR} decide
+\textbf{which Xcode} answers. Xcode Cloud runs the same \ct{xcodebuild}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ---- anatomy of one invocation ----
+  \node[ttl] at (-0.15,4.75) {One invocation — a workspace needs \ct{-scheme}; everything else has a default};
+  \node[cmd] (c1) at (-0.12,4.3) {xcodebuild};
+  \node[cmd, right=0.6mm of c1.base east] (c2) {-workspace A.xcworkspace};
+  \node[cmd, right=0.6mm of c2.base east] (c3) {-scheme App};
+  \node[cmd, right=0.6mm of c3.base east] (c4) {-configuration Debug};
+  \node[cmd, right=0.6mm of c4.base east] (c5) {-destination 'platform=iOS Simulator,name=iPhone 17,OS=26.4'};
+  \node[cmd, right=0.6mm of c5.base east] (c6) {-resultBundlePath r.xcresult};
+  \node[cmd, right=0.6mm of c6.base east, text=sheetOrange] (c7) {\textbf{test}};
+  \node[cmd, right=0.6mm of c7.base east] (c8) {K=V};
+  \draw[brc] (c2.south west) -- (c2.south east) node[midway, below=2.5pt, lbl] {container\\(or \ct{-project})};
+  \draw[brc] (c3.south west) -- (c3.south east) node[midway, below=2.5pt, lbl] {targets,\\test plans};
+  \draw[brc] (c4.south west) -- (c4.south east) node[midway, below=2.5pt, lbl] {setting\\set};
+  \draw[brc] (c5.south west) -- (c5.south east) node[midway, below=2.5pt, lbl] {keys \texttt{platform}, \texttt{id} xor \texttt{name}, \texttt{OS} (simulator; default \texttt{latest}),\\\texttt{arch}, \texttt{variant}; \texttt{generic/platform=iOS} needs no device};
+  \draw[brc] (c6.south west) -- (c6.south east) node[midway, below=2.5pt, lbl] {results; path\\must not exist};
+  \draw[brc] (c7.south west) -- (c7.south east) node[midway, below=2.5pt, lbl] {action};
+  \draw[decorate, decoration={brace, amplitude=2.5pt}, draw=sheetGrey] (c8.north west) -- (c8.north east) node[pos=1, above=2.5pt, lbl, anchor=south east, align=right] {build setting: beats the target's; \ct{-xcconfig f} beats it,\\\ct{XCODE\_XCCONFIG\_FILE} beats all};
+  % ---- release path ----
+  \node[ttl] at (-0.15,3.42) {Release — each arrow a command, each box a file you can open};
+  \node[fil, text width=16mm, minimum height=10mm] (src) at (0.72,2.78) {\textbf{source}\\\ct{.xcworkspace}\\scheme\\\ct{Package.resolved}};
+  \node[act, text width=19.5mm, minimum height=10mm] (a1) at (2.98,2.78) {\textbf{archive}\\-archivePath A\\-destination\\generic/platform=iOS};
+  \node[fil, text width=22mm, minimum height=10mm] (xa) at (5.5,2.78) {\textbf{\ct{A.xcarchive}}\\the \ct{.app} + every dSYM\\(matched by build UUID)\\keep one per shipped build};
+  \node[act, text width=20mm, minimum height=10mm] (a2) at (8.2,2.78) {\textbf{-exportArchive}\\-archivePath A\\-exportPath out\\-exportOptionsPlist \textcolor{sheetRed}{E}};
+  \node[fil, text width=21mm, minimum height=10mm] (ipa) at (10.95,2.78) {\textbf{\ct{out/App.ipa}}\\a zip: \ct{Payload/App.app}\\repackaged + signed\\for \ct{method}};
+  \node[box, draw=sheetGreen!70!black, fill=sheetGreen!10, font=\tiny, text width=16mm, minimum height=10mm] (asc) at (14.05,2.78) {\textbf{App Store Connect}\\processing\\$\rightarrow$ TestFlight\\$\rightarrow$ review};
+  \draw[flow] (src) -- (a1); \draw[flow] (a1) -- (xa); \draw[flow] (xa) -- (a2); \draw[flow] (a2) -- (ipa);
+  \draw[hot] (ipa) -- node[lbl, above]{upload} (asc);
+  \node[lbl, anchor=north west] at (2.0,2.2) {\textcolor{sheetRed}{E} = ExportOptions.plist; \ct{destination=upload} exports \emph{and} uploads};
+  \node[lbl, anchor=north east] at (14.9,2.2) {or \ct{altool \dd upload-package}, Transporter, the ASC API};
+  % ---- test path: build once, shard, merge ----
+  \node[ttl] at (-0.15,1.75) {Tests — build once, enumerate, shard across Macs, merge the results};
+  \node[act, text width=17mm, minimum height=11mm] (b1) at (0.8,1.05) {\textbf{build-for-}\\\textbf{testing}\\-testProductsPath\\T.xctestproducts};
+  \node[act, text width=21mm, minimum height=11mm] (en) at (3.35,1.05) {\textbf{test-without-building}\\-testProductsPath T\\-destination …\\-enumerate-tests\\…-style flat};
+  \node[fil, text width=12mm, minimum height=11mm] (sf) at (5.65,1.05) {\ct{s1.txt}\\\ct{s2.txt}\\…\\one id per line};
+  \node[act, text width=24mm, minimum height=11mm, double copy shadow={shadow xshift=1.2pt, shadow yshift=-1.2pt}] (sh) at (8.25,1.05) {\textbf{test-without-building}\\-testProductsPath T\\-destination id=UDID\\-only-testing @sK.txt\\-resultBundlePath rK.xcresult};
+  \node[act, text width=21mm, minimum height=11mm] (mg) at (11.3,1.05) {\textbf{xcresulttool merge}\\r1.xcresult r2 …\\\dd output-path\\all.xcresult};
+  \node[act, text width=20mm, minimum height=11mm] (rd) at (14.15,1.05) {get test-results\\summary · tests\\export attachments\\\dd only-failures};
+  \draw[flow] (b1) -- (en); \draw[flow] (en) -- node[lbl, above]{split} (sf); \draw[flow] (sf) -- (sh);
+  \draw[flow] (sh) -- node[lbl, above]{×N} (mg); \draw[flow] (mg) -- (rd);
+  \node[lbl, anchor=west] at (9.75,1.75) {shards get T, not the project: \ct{-testProductsPath} refuses \ct{-workspace}};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\footnotesize\setstretch{1.0}
+
+\hd{Actions}
+\ct{build} (default) · \ct{build-for-testing} (+ \ct{.xctestrun}) · \ct{test} ·
+\ct{test-without-building} · \ct{archive} · \ct{analyze} · \ct{docbuild} · \ct{clean}; they chain
+(\ct{clean build}). \ct{build-for-testing}, \ct{test}, \ct{archive}, \ct{analyze} need \ct{-scheme}.
+\textbf{Discover}: \ct{-list -json}, \ct{-showdestinations}, \ct{-showTestPlans},
+\ct{-showBuildSettings}. \ct{-showBuildTimingSummary} times each command; \ct{-quiet} = warnings and
+errors only.
+
+\hd{Choosing, repeating and timing tests}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{43mm}L{34mm}@{}}
+\toprule
+\ct{-testPlan P} · \ct{-only-test-configuration C} & plan name without extension \\
+\ct{-only-testing T/C/m} · \ct{-skip-testing …} & \ct{@file}: one id a line; \emph{only} wins \\
+\ct{-enumerate-tests} · \ct{…-format json} & list, don't run; needs \ct{-destination} \\
+\ct{-test-iterations N} & N runs — or the cap for: \\
+\ct{-retry-tests-on-failure} & until a pass, ≤3: a flake goes green \\
+\ct{-run-tests-until-failure} & until a fail, ≤100: finds flakes \\
+\ct{-test-repetition-relaunch-enabled YES} & fresh process per repetition \\
+\ct{-test-timeouts-enabled YES} & + per-test time-allowance flags \\
+\ct{-collect-test-diagnostics on-failure} & sysdiagnoses, log archives \\
+\ct{-enableCodeCoverage YES} · \ct{-testLanguage} & override scheme / test plan \\
+\bottomrule
+\end{tabular}}\par
+\ct{TEST\_RUNNER\_Foo=Bar} $\rightarrow$ \ct{Foo=Bar} in the runner. Xcode 26+: \ct{.xctestrun} keeps
+\emph{disabled} plan configurations (\ct{-only-test-configuration}).
+
+\hd{Parallel: clones within a destination, suites across destinations}
+\noindent\begin{tikzpicture}[sheet]
+  \node[fil, text width=10mm, align=center, minimum height=7mm] (sim) at (0,0) {chosen\\simulator};
+  \foreach \y/\n/\c in {0.42/1/A, 0/2/B, -0.42/3/C} {
+    \node[act, text width=16mm, minimum height=3.4mm, inner sep=0.8pt] (k\n) at (2.2,\y) {clone \n: runner};
+    \node[fil, text width=15mm, minimum height=3.4mm, inner sep=0.8pt, align=center] (t\n) at (4.3,\y) {class \c, then next};
+    \draw[flow] (sim.east) -- (k\n.west); \draw[flow] (k\n) -- (t\n);
+  }
+  \node[lbl, anchor=west, align=left] at (5.15,0) {a class per runner:\\class \ct{setUp} once;\\time ≥ slowest class};
+\end{tikzpicture}\par
+\ct{-parallel-testing-enabled YES}; \ct{-parallel-testing-worker-count N} = exactly N. Several
+\ct{-destination}s each run the \emph{whole} suite, concurrently;
+\ct{-parallelize-tests-among-destinations} splits classes instead. A device lookup waits
+\ct{-destination-timeout} (30\,s).
+
+\hd{Result bundles — \ct{xcrun xcresulttool}}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{43mm}L{34mm}@{}}
+\toprule
+\ct{get test-results summary} · \ct{tests} & the summary · the test tree \\
+\ct{get test-results test-details} · \ct{activities} & one test: \ct{\dd test-id ID} \\
+\ct{get test-results insights} · \ct{metrics} & patterns · performance \\
+\ct{get build-results} · \ct{get log \dd type build} & warnings, errors · raw logs \\
+\ct{export attachments \dd only-failures} & screenshots, recordings \\
+\ct{merge a b \dd output-path m} · \ct{compare} & combine shards · diff vs \ct{\dd baseline-path} \\
+\ct{xcrun xccov view \dd report \dd json R} & coverage per target / file \\
+\bottomrule
+\end{tabular}}\par
+JSON out; \ct{help get test-results summary} prints the schema. \textbf{Xcode 16}: \ct{get object}
+fails unless \ct{\dd legacy} (deprecated) — old parsers broke.
+
+\hd{What changed, Xcode 15 $\rightarrow$ 27}
+\noindent\begin{tikzpicture}[sheet]
+  \draw[thick, sheetGrey] (0.45,0.12) -- (0.45,-2.3);
+  \foreach \y/\v/\t in {
+    0/15/{\ct{-enumerate-tests}; \ct{-exportArchive} uploads with an API key; \ct{devicectl}},
+    -0.32/16/{\ct{get test-results}; an unmatched \ct{-destination} no longer silently runs on the first\\compatible one; \ct{-downloadPlatform -exportPath}; \ct{devicectl \dd console}},
+    -0.86/26/{Swift 6.2; explicit modules on (\ct{SWIFT\_ENABLE\_EXPLICIT\_MODULES=NO});\\opt-in local compilation cache (\ct{COMPILATION\_CACHE\_ENABLE\_CACHING=YES})},
+    -1.4/26.4/{Swift 6.3; runtime export adds \ct{.exportBundle}; \ct{simctl runtime dyld\_shared\_cache update}},
+    -1.86/27/{Swift 6.4; Apple-silicon Macs, macOS 26.6+; \ct{-ld\_classic} gone; storyboards compile\\with no simulator; \ct{simctl}/\ct{devicectl reboot}; \ct{devicectl \dd json-output} to stdout}} {
+    \node[circle, fill=sheetBlue, inner sep=1.3pt] at (0.45,\y) {};
+    \node[font=\bfseries\tiny, text=sheetBlue, anchor=east] at (0.35,\y) {\v};
+    \node[font=\tiny, anchor=north west, align=left, text width=71mm, inner sep=0.5pt] at (0.6,\y+0.08) {\t};
+  }
+\end{tikzpicture}
+
+\hd{Traps}
+\begin{itemize}
+  \trap{\ct{xcodebuild … | xcbeautify} without \ct{set -o pipefail}: the pipeline returns the
+        formatter's status — a red build reports green.}
+  \trap{No \ct{OS=} means \ct{latest}: a new runner image silently moves the iOS version — pin
+        \ct{OS=} or \ct{id=}.}
+  \trap{Exit codes (sysexits): \textbf{70 = build or test failed}; 64 usage, 66 no input, 74 I/O.}
+\end{itemize}
+
+\columnbreak
+
+\hd{ExportOptions.plist — what \ct{-exportArchive} reads}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{20mm}L{57mm}@{}}
+\toprule
+\ct{method} & \ct{app-store-connect} · \ct{release-testing} (ad hoc) · \ct{enterprise} · \ct{debugging}
+  (default) · \ct{developer-id} · \ct{mac-application} · \ct{validation}; \ct{app-store}, \ct{ad-hoc},
+  \ct{development} are deprecated \\
+\ct{destination} & \ct{export} (local file) or \ct{upload} (to App Store Connect) \\
+\ct{manageAppVersion}\newline\ct{AndBuildNumber} & Xcode rewrites the build number of everything in the
+  archive — turn off when CI owns the number \\
+\ct{testFlightInternal}\newline\ct{TestingOnly} & team-only TestFlight; the build can never be submitted \\
+\ct{signingStyle} \ct{teamID} & \ct{manual} needs \ct{provisioningProfiles} \{bundle id $\rightarrow$
+  profile\}; \ct{uploadSymbols} for symbolicated crashes \\
+\bottomrule
+\end{tabular}}\par
+\textbf{Signing on a runner}: \ct{-allowProvisioningUpdates} fetches profiles (and creates
+certificates for automatic signing) through an account in Xcode's Accounts pane — or an App Store
+Connect API key: \ct{-authenticationKeyPath}, \ct{-authenticationKeyID},
+\ct{-authenticationKeyIssuerID} (also for uploads, Xcode 15+). \ct{altool} looks for
+\ct{AuthKey\_<id>.p8} in \ct{./private\_keys}, \ct{\textasciitilde/.appstoreconnect/private\_keys} and
+two more.
+
+\hd{Swift packages, plugins, macros on CI}
+\begin{itemize}
+  \item Commit \ct{Package.resolved} (in \ct{App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/});
+        \ct{-disableAutomaticPackageResolution} makes CI use exactly it.
+  \item Checkouts land in \ct{DerivedData/SourcePackages} unless \ct{-clonedSourcePackagesDirPath P}:
+        pin it to cache them.
+  \item Private repos: SSH URLs + \ct{known\_hosts}; \ct{-scmProvider system} uses the Mac's git
+        config (URL rewrites, proxies, SSH); registries: \ct{-packageAuthorizationProvider netrc}.
+  \item Headless, nobody clicks ``Trust \& Enable'': \ct{-skipPackagePluginValidation},
+        \ct{-skipMacroValidation} — ``can be a security risk''.
+\end{itemize}
+
+\hd{\ct{xcrun simctl} — the iOS userspace on the Mac kernel, scripted}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{54mm}L{23mm}@{}}
+\toprule
+\ct{list \dd json devices} · \ct{create CI <type> <runtime>} & create prints the UDID \\
+\ct{boot U} · \ct{bootstatus U -b}\unverified{} · \ct{shutdown all} & wait until usable \\
+\ct{erase U} · \ct{clone U base} · \ct{delete unavailable} & erase, clone: shut down \\
+\ct{install booted A.app} · \ct{launch booted id -K v} & \ct{-K v}: a default, once \\
+\ct{launch \dd console-pty} · \ct{spawn booted log stream} & stdio, logs in terminal \\
+\ct{openurl booted https://…} · \ct{push booted p.apns} & \ct{aps} JSON; id may be in it \\
+\ct{privacy booted grant photos id} & also \ct{revoke}, \ct{reset all} \\
+\ct{keychain booted add-root-cert ca.pem} & trust your CA / proxy \\
+\ct{status\_bar booted override \dd time 9:41} & \ct{clear} undoes it \\
+\ct{ui booted appearance dark} · \ct{addmedia booted p.jpg} & dark mode · photos \\
+\ct{io booted screenshot} · \ct{recordVideo \dd codec h264} & CI evidence \\
+\ct{get\_app\_container booted id} · \ct{runtime add R.dmg} & sandbox path · import \\
+\bottomrule
+\end{tabular}}\par
+\ct{booted} = the one booted device; script with UDIDs, not names. \textbf{Devices}:
+\ct{xcrun devicectl} (CoreDevice, iOS 17+): \ct{list devices}, \ct{device install app \dd device D A.app},
+\ct{device process launch \dd console id}; \ct{\dd device} takes a name, UDID or ECID (Xcode 16).
+
+\hd{Which Xcode, which components}
+\ct{sudo xcode-select -s /Applications/Xcode\_27.app}: every user, persistent;
+\ct{DEVELOPER\_DIR=…/Xcode\_27.app}: this process only. \ct{/usr/bin/xcodebuild}, \ct{git}, \ct{swift}
+are shims through it; \ct{xcrun \dd find T} resolves a tool. \ct{xcodes install 27.0}; pin the
+version in \ct{.xcode-version}. Fresh Mac: \ct{-runFirstLaunch} (components + licence) ·
+\ct{-downloadPlatform iOS -exportPath D [-buildVersion 26.4]} once, \ct{-importPlatform D/….dmg} on
+each Mac · \ct{-downloadComponent metalToolchain}.
+
+\hd{Xcode Cloud}
+From \ct{ci\_scripts/} beside the project it runs only \ct{ci\_post\_clone.sh}, \ct{ci\_pre\_xcodebuild.sh},
+\ct{ci\_post\_xcodebuild.sh} (runs \emph{even if xcodebuild failed}). No shebang $\rightarrow$
+\ct{zsh file}; no \ct{sudo}; created files are deleted; non-zero exit fails the build. Scripts read
+\ct{CI\_*} variables (\ct{CI\_PULL\_REQUEST\_NUMBER} …); secret ones print as \ct{****}. 25 compute
+h/month come with the Developer Program; plans add 100, 250, 1,000\,h.
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{ci-pipeline-design} ·
+\texttt{fastlane-deep} · \texttt{github-actions-deep} · Code signing \& iOS CI/CD ·
+\texttt{macos-keychain-security-cli} · Flaky tests · CI · coverage · TDD ·
+\texttt{xctest-and-swift-testing} · Crashes \& symbolication · Modularization \& Swift Package
+Manager · \texttt{macos-power-user-cli}}
+
+\end{document}

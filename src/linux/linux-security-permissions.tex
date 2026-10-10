@@ -1,0 +1,355 @@
+% linux-security-permissions.tex — the kernel's access decision for one syscall (seccomp, path walk,
+% DAC, capability override, LSM), credentials (ruid/euid/saved/fsuid), mode bits, umask, setuid /
+% setgid / sticky, POSIX ACLs and the mask, capabilities (five sets, the execve rule, file caps),
+% no_new_privs + seccomp-bpf + Landlock, the LSMs (SELinux, AppArmor, Yama, lockdown), sudo / sudo-rs /
+% run0, PAM, OpenSSH 9.5 → 10.6, auditd.
+% Picture: the decision chain + the 12 mode bits; a kernel timeline strip; the execve capability rule.
+% Sources (checked 2026-10-09):
+%   man7.org credentials(7) (real / effective / saved / filesystem IDs; fsuid follows euid; per-thread
+%     in the kernel; up to 65536 supplementary groups) · setuid(2) (CAP_SETUID sets real + saved too,
+%     no way back; unprivileged: euid = real or saved; check the return value) · proc_pid_status(5)
+%     (Uid: real, effective, saved, fs; NoNewPrivs 4.10; Seccomp_filters 5.9; CapAmb 4.3)
+%   man7.org path_resolution(7) (search permission on every directory; owner triple, else group, else
+%     other; fsuid; CAP_DAC_OVERRIDE x only if some x bit; CAP_DAC_READ_SEARCH) · inode(7) (S_ISGID on
+%     a directory: group + S_ISGID inherited; sticky: owner of file, owner of dir, privileged) ·
+%     umask(2) (0666 & ~022; ignored under a default ACL; Umask in status since 4.7) · chmod(2)
+%     (S_ISGID dropped for a non-member; write clears setuid / setgid without CAP_FSETID) · chown(2)
+%     (clears S_ISUID / S_ISGID; root too since 2.2.13) · execve(2) (scripts ignore setuid; nosuid,
+%     no_new_privs, ptraced; euid copied to saved) · ld.so(8) (AT_SECURE; LD_LIBRARY_PATH stripped,
+%     LD_PRELOAD only from standard dirs + setuid libs) · acl(5) (tags; check order; group bits = mask;
+%     default ACL inherited) · gnu.org coreutils manual "What information is listed" (s S t T, + and .)
+%   man7.org capabilities(7) man-pages 6.19 (P E I B A; ambient 4.3; execve transformation; file
+%     effective bit; security.capability; root = all-ones file sets; SECBIT_NOROOT; CAP_SYS_ADMIN
+%     "the new root"; CAP_BPF / CAP_PERFMON 5.8, CAP_CHECKPOINT_RESTORE 5.9) · github.com/torvalds/linux
+%     include/uapi/linux/capability.h on master (CAP_LAST_CAP = CAP_CHECKPOINT_RESTORE = 40)
+%     · docs.kernel.org networking/ip-sysctl (ip_unprivileged_port_start: per netns, default 1024, 0)
+%   docs.kernel.org userspace-api/no_new_privs (setuid / setgid / file caps no longer grant; inherited
+%     across fork, clone, execve; cannot be unset; needed for unprivileged seccomp) · man7.org
+%     seccomp(2) (filter mode 3.5; classic BPF on seccomp_data; action precedence; KILL_PROCESS + LOG
+%     4.14, USER_NOTIF 5.0; NNP or CAP_SYS_ADMIN; inherited, kept across execve; x32 bypass) ·
+%     docs.kernel.org userspace-api/seccomp_filter ("isn't a sandbox"; no pointer dereference; highest
+%     precedence wins) · man7.org landlock(7) man-pages 6.19 (5.13; ABI 1–9 with kernels: 5.19, 6.2,
+%     6.7, 6.10, 6.12, 6.15, 7.0, 7.1) · docs.kernel.org userspace-api/landlock (16 layers; ABI 10 UDP,
+%     ABI 11 NNP flag — development docs, no release given)
+%   docs.kernel.org admin-guide/LSM (capability module always first, minor modules, at most one major;
+%     /sys/kernel/security/lsm) · admin-guide/kernel-parameters (lsm= overrides CONFIG_LSM) ·
+%     security/lsm ("does not provide any additional security") · admin-guide/LSM/Yama (ptrace_scope
+%     0–3, 3 is permanent) · man7.org kernel_lockdown(7) (5.4; /dev/mem, unsigned kexec / modules,
+%     kprobes, BPF) · docs.kernel.org bpf/prog_lsm · usenix.org sec02 Wright et al., "Linux Security
+%     Modules" (hooks mostly restrictive: asked only if the kernel would grant)
+%   github.com/torvalds/linux Documentation/ABI/removed/sysfs-selinux-disable (runtime disable removed
+%     March 2023; selinux=0) · kernelnewbies.org/Linux_6.4 ("Remove SELinux runtime disable
+%     capability") · lwn.net/Articles/927463 (in 6.4) · docs.redhat.com RHEL 9 Using SELinux
+%     (user:role:type:level; mv keeps user_home_t; restorecon, semanage fcontext, matchpathcon) ·
+%     RHEL 7 SELinux guide 4.10 (cp takes the target's default, --preserve=context) ·
+%     source.android.com security/features/selinux (fully enforced since Android 5.0) ·
+%     docs.fedoraproject.org quick-docs/selinux-getting-started (enforcing by default; per-domain
+%     permissive) ·
+%     news.opensuse.org 2025-02-13 (Tumbleweed: SELinux enforcing default from snapshot 20250211) ·
+%     debian.org project-history releases (Debian 10: AppArmor on by default) · manpages.ubuntu.com
+%     apparmor.d(5) (enforce, complain, kill, unconfined, prompt; attach by path; userns rule) ·
+%     documentation.ubuntu.com release-notes 24.04 (unprivileged user namespaces restricted by default)
+%   man7.org sudoers(5) (last match wins; env_reset on; use_pty on since 1.9.14; secure_path off by
+%     default; wildcards match white space; "ALL, !cmd rarely works"; chroot deprecated) · sudo(8)
+%     1.9.18 (sudoedit: temp copy owned by the user, copied back; no symlinks, no user-writable dirs)
+%     · sudo.ws security advisories (CVE-2021-3156 2021-01-26, 1.8.2–1.8.31p2 + 1.9.0–1.9.5p1, no
+%     sudoers entry needed; CVE-2025-32463 2025-06-30, 1.9.14–1.9.17, fixed 1.9.17p1, nsswitch.conf)
+%     · gtfobins.org (contexts: unprivileged, sudo, SUID, capabilities) · documentation.ubuntu.com
+%     release-notes 26.04 summary (sudo-rs default since 25.10; original renamed sudo.ws; sudo-ldap
+%     removed) · raw.githubusercontent.com systemd v256 NEWS (run0: transient unit, no setuid, polkit,
+%     reddish tint for root) · api.github.com systemd v256 (published 2024-06-11) · man7.org run0(1)
+%   man7.org pam.conf(5) (types; required / requisite / sufficient / optional / include / substack;
+%     bracket equivalents) · faillock.conf(5) (deny 3, fail_interval 900, unlock_time 600, root only
+%     with even_deny_root) · api.github.com linux-pam v1.5.0 (2020-11-10: pam_tally / pam_tally2
+%     removed) · debian.org bullseye release notes 5.1 (yescrypt default) · manpages.debian.org
+%     crypt(5) ($y$ recommended; $6$ / $5$ acceptable; $1$ not for new hashes)
+%   man.openbsd.org sshd_config(5) (first obtained value; defaults; KEX order; PerSourcePenalties on)
+%     · sshd(8) (-t, -T, -C, -G) · manpages.debian.org bookworm + manpages.ubuntu.com noble
+%     sshd_config(5) (sshd_config.d/*.conf included at the start, so it overrides) · openssh.org
+%     release notes 9.5 (2023-10-04), 9.8 (2024-07-01), 10.0 (2025-04-09), 10.1 (2025-10-06), 10.6
+%     (2026-10-06) · blog.qualys.com 2024-07-01 regreSSHion (signal-handler race, unauthenticated
+%     root RCE on glibc Linux, 8.5p1 up to 9.8p1; LoginGraceTime 0 workaround)
+%   man7.org auditctl(8) (-w "deprecated due to poor system performance"; -F path / dir; auid; -e 2)
+%     · pam_loginuid(8) (sets loginuid for audit; not for sudo / su)
+% NOT repeated: container defaults, user namespaces, rootless (namespaces-cgroups-containers);
+% systemd sandboxing directives one by one (systemd-deep); nosuid / nodev / noexec mounts
+% (linux-filesystems-storage); TLS and certificates (TLS 1.3 & PKI); ML-KEM (post-quantum-crypto).
+% @labels: area=linux kind=concept platform=backend topic=security,platform-apis discussion=319
+% @tags: permissions, umask, setuid, sticky-bit, acl, capabilities, no-new-privs, seccomp, landlock, lsm, selinux, apparmor, sudo, pam, ssh-hardening, openssh, auditd
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}
+\newcommand\m{\hbox{-}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\small\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\sheettitle{Linux security — credentials, permissions, capabilities, LSMs, sudo, SSH}{linux · folio}
+
+\oneliner{The kernel decides every access from the calling thread's \textbf{credentials}:
+\textbf{seccomp} filters the syscall at entry, \textbf{DAC} (mode bits + ACL, against the
+\emph{fsuid}) says yes or no, a \textbf{capability} may override a DAC ``no'', and the
+\textbf{LSMs} (SELinux, AppArmor, Landlock, Yama …) can, by design, mostly only add a ``no''. Root
+is uid 0 \emph{plus} a full capability set — both can be taken away. sudo, run0, PAM and sshd are
+the user-space doors that hand them out.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet,
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+    st/.style={box, font=\tiny, text width=17mm, minimum height=11mm, inner sep=1.2pt},
+    no/.style={font=\tiny, text=sheetRed, align=center, inner sep=1pt},
+    bit/.style={draw=sheetGrey, minimum width=2.5mm, minimum height=4.2mm, font=\tiny\ttfamily, inner sep=0pt},
+    tk/.style={font=\tiny, inner sep=0.3pt, align=center, text=black!80, text width=11.8mm, anchor=north}]
+  % credentials
+  \node[box, draw=sheetBrown, fill=sheetBrown!8, text width=27mm, align=left, font=\tiny, inner sep=2pt] (cr) at (1.45,2.35)
+     {\textbf{thread credentials}\\
+      ruid 1000 (who started it)\\
+      \textbf{euid 0} (setuid exec) · saved 0\\
+      \textbf{fsuid} = euid (file checks)\\
+      gid + groups \ct{dev,adm}\\
+      caps: P · \textbf{E} · I · B · A\\
+      LSM label / profile / domain\\
+      seccomp filters + \ct{no\_new\_privs}};
+  % pipeline
+  \node[box, draw=sheetGrey, fill=black!5, font=\tiny, text width=15mm] (sc) at (4.1,3.25) {\ct{open("/srv/f",}\\\ct{O\_WRONLY)}};
+  \node[st, draw=sheetRed, fill=sheetRed!6] (s1) at (4.1,2.0) {\textbf{1 seccomp-bpf}\\syscall nr + args\\(at syscall entry)};
+  \node[st] (s2) at (6.25,2.0) {\textbf{2 path walk}\\\ct{x} (search) on\\every directory};
+  \node[st] (s3) at (8.4,2.0) {\textbf{3 DAC}\\owner, else group,\\else other · ACL};
+  \node[st, draw=sheetOrange, fill=sheetOrange!8] (s4) at (8.4,0.5) {\textbf{4 capabilities}\\DAC\_OVERRIDE ·\\READ\_SEARCH · FOWNER};
+  \node[st, draw=sheetGreen!60!black, fill=sheetGreen!6] (s5) at (10.75,2.0) {\textbf{5 LSM hooks}\\SELinux · AppArmor\\Landlock · BPF};
+  \node[box, draw=sheetGreen, fill=sheetGreen!12, font=\tiny, text width=10mm] (ok) at (12.55,2.0) {fd 3};
+  \draw[flow] (sc) -- (s1);
+  \draw[flow] (s1) -- (s2);
+  \draw[flow] (s2) -- (s3);
+  \draw[flow] (s3) -- node[l, above]{yes} (s5);
+  \draw[flow, draw=sheetOrange] (s3) -- node[l, right, text=sheetOrange!80!black]{no} (s4);
+  \draw[flow, draw=sheetOrange] (s4.east) -| node[l, pos=0.3, above, text=sheetOrange!80!black]{has cap} (s5.south);
+  \draw[flow, draw=sheetGreen!60!black] (s5) -- (ok);
+  \node[no] at (4.1,0.95) {$\downarrow$ ERRNO, SIGSYS,\\kill — or log / notify};
+  \node[no] at (6.25,1.05) {$\downarrow$ EACCES};
+  \node[no] at (6.6,0.5) {EACCES $\leftarrow$ no cap};
+  \node[no, anchor=west, align=left] at (11.3,1.2) {deny $\to$ EACCES\\+ AVC / audit record};
+  \node[l, anchor=north west, align=left, text=sheetGreen!40!black] at (11.3,0.8) {mostly restrictive:\\asked only after DAC\\+ caps said yes —\\refuse, never grant};
+  \node[l, anchor=north west, align=left, text=sheetRed] at (0.02,1.15) {seccomp sees only the number\\and raw args — never the path};
+  % mode bits
+  \draw[sheetGrey!40] (13.25,3.75) -- (13.25,-0.1);
+  \node[font=\bfseries\scriptsize, text=sheetBlue, anchor=west] at (13.35,3.6) {The 12 mode bits};
+  \foreach \t [count=\i] in {s,s,t}
+    \node[bit, fill=sheetRed!12] (m\i) at ({13.35+0.26*\i},3.05) {\t};
+  \foreach \t [count=\i from 4] in {r,w,x,r,w,x,r,w,x}
+    \node[bit, fill=white] (m\i) at ({13.35+0.26*\i},3.05) {\t};
+  \node[l] at (m2.south) [below=1pt] {special};
+  \node[l] at (m5.south) [below=1pt] {user};
+  \node[l] at (m8.south) [below=1pt] {group};
+  \node[l] at (m11.south) [below=1pt] {other};
+  \node[l, anchor=west, align=left] at (13.35,2.2) {weights 4 2 1 in each triple:\\
+     special 4 setuid · 2 setgid · 1 sticky};
+  \node[l, anchor=north west, align=left, font=\tiny\ttfamily] at (13.3,1.8)
+     {4755 \m rwsr\m xr\m x passwd\\2770 drwxrws\m\m\m\ team/\\1777 drwxrwxrwt /tmp\\0644 \m rw\m r\m\m r\m\m\ umask 022\\0750 drwxr\m x\m\m\m\ umask 027};
+  \node[l, anchor=north west, align=left] at (13.35,0.4) {\ct{S}/\ct{T}: bit set, no \ct{x} under it\\
+     \ct{ls}: \ct{+} = ACL · \ct{.} = SELinux label};
+  % kernel timeline
+  \draw[sheetGrey!40] (0.02,-0.25) -- (16.55,-0.25);
+  \node[font=\bfseries\scriptsize, text=sheetBlue, anchor=west, inner sep=0pt] at (0.02,-0.66) {Kernel};
+  \draw[thick, sheetGrey] (0.85,-0.81) -- (16.45,-0.81);
+  \foreach \v/\t [count=\i from 0] in {
+      3.5/NNP + seccomp-bpf,
+      4.14/seccomp LOG\\KILL\_PROCESS,
+      5.0/seccomp USER\_NOTIF,
+      5.4/lockdown LSM,
+      5.8/CAP\_BPF + CAP\_PERFMON,
+      5.9/cap 40 = the last,
+      5.13/\textbf{Landlock}: files,
+      6.4/SELinux off\\only at boot,
+      6.7/Landlock TCP ports,
+      6.12/Landlock scopes,
+      6.15/Landlock audit logs,
+      7.0/Landlock all threads,
+      7.1/Landlock path sockets} {
+    \pgfmathsetmacro\x{1.42+1.21*\i}
+    \fill[sheetBlue] (\x,-0.81) circle (0.045);
+    \node[font=\tiny\bfseries, text=sheetBlue, inner sep=0.5pt] at (\x,-0.64) {\v};
+    \node[tk] at (\x,-0.88) {\t};
+  }
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\hd{Credentials}
+\begin{itemize}
+  \item \textbf{real} uid = who owns the process · \textbf{effective} = privileges · \textbf{saved}
+        = euid copied at \ct{execve} (drop, then regain) · \textbf{fsuid} (Linux-only) follows
+        euid, used for files. \ct{/proc/<pid>/status} \ct{Uid:} real, effective, saved, fs.
+  \item \ct{setuid(2)} with \ct{CAP\_SETUID} sets real + saved too — no way back (\ct{seteuid}
+        drops for a while); without it euid may only become real or saved. Check its return value.
+  \item Groups are set at login and inherited: a new membership reaches new logins only.
+\end{itemize}
+
+\hd{Mode bits, umask, special bits}
+\begin{itemize}
+  \item \textbf{One class decides}: fsuid = owner $\to$ owner bits only; else a group matches
+        $\to$ group bits; else other. Mode \ct{0077} locks the \emph{owner} out.
+  \item Directory: \ct{r} list · \ct{w} create / delete / rename (with \ct{x}) · \ct{x} search.
+        \textbf{Deleting needs \ct{w}+\ct{x} on the directory}, nothing on the file.
+  \item \textbf{umask} clears bits from the \ct{open} / \ct{mkdir} mode: 0666 \& \textasciitilde022
+        = 0644, dirs 0755; 077 $\to$ 600 / 700; ignored under a default ACL; \ct{Umask:} in status.
+  \item \textbf{setuid} 4000: exec runs with the file owner's euid — \textbf{ignored} for scripts,
+        on \ct{nosuid} mounts, under \ct{no\_new\_privs}, when ptraced. \ct{AT\_SECURE} exec:
+        \ct{LD\_LIBRARY\_PATH} stripped, \ct{LD\_PRELOAD} only setuid libs from standard dirs.
+  \item \textbf{setgid} 2000: exec $\to$ egid; on a dir, new files take its group, new subdirs
+        keep the bit. \textbf{sticky} 1000 on a dir: only the file's owner, the dir's owner or
+        a privileged process may rename / delete (\ct{/tmp}).
+  \item An unprivileged \ct{write} clears setuid / setgid; \ct{chown} clears them, root too.
+\end{itemize}
+
+\hd{POSIX ACLs}
+\ct{user::} · \ct{user:alice:} · \ct{group::} · \ct{group:dev:} · \ct{mask::} · \ct{other::};
+checked owner $\to$ named user $\to$ groups $\to$ other, users + groups \textbf{ANDed with the
+mask}. \ct{ls -l}'s group bits \emph{are} the mask (\ct{chmod g=} edits it). A dir's
+\textbf{default} ACL is copied to new entries.
+
+\hd{Capabilities — root in 41 pieces (0–40)}
+Per thread: \textbf{P}ermitted (ceiling) · \textbf{E}ffective (checked) · \textbf{I}nheritable ·
+\textbf{B}ounding (drop-only limit) · \textbf{A}mbient (4.3: kept across exec of a plain program).
+Files: P, I + an effective bit in the \ct{security.capability} xattr. At \ct{execve}:
+\par\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet,
+    cs/.style={draw=sheetGrey, fill=#1, font=\tiny, inner sep=1pt, minimum height=3.1mm, minimum width=13mm, rounded corners=1pt},
+    op/.style={circle, draw=sheetGrey, fill=white, inner sep=0pt, font=\tiny\bfseries, minimum size=3.2mm},
+    l/.style={font=\tiny, text=black!75, inner sep=1pt, align=left}]
+  \node[cs=sheetBlue!10] (pi) at (0,1.05) {P(I) thread};
+  \node[cs=sheetOrange!14] (fi) at (0,0.72) {F(I) file};
+  \node[cs=sheetOrange!14] (fp) at (0,0.33) {F(P) file};
+  \node[cs=sheetBlue!10] (pb) at (0,0.0) {P(B) bounding};
+  \node[cs=sheetBlue!10] (pa) at (0,-0.38) {P(A) ambient};
+  \node[op] (a1) at (1.2,0.885) {\&};
+  \node[op] (a2) at (1.2,0.165) {\&};
+  \node[op, fill=sheetRed!10] (z) at (1.2,-0.38) {0?};
+  \draw[thin] (pi.east) -- (a1); \draw[thin] (fi.east) -- (a1);
+  \draw[thin] (fp.east) -- (a2); \draw[thin] (pb.east) -- (a2);
+  \draw[thin] (pa.east) -- (z);
+  \node[op] (or) at (2.05,0.33) {$\cup$};
+  \draw[->, thin] (a1) -- (or); \draw[->, thin] (a2) -- (or); \draw[->, thin] (z) -- (or);
+  \node[cs=sheetGreen!18, minimum width=9mm] (np) at (2.85,0.33) {\textbf{P$'$(P)}};
+  \draw[->, thin] (or) -- (np);
+  \node[cs=sheetGreen!18, minimum width=11mm] (ne) at (4.75,0.75) {\textbf{P$'$(E)} = P$'$(P)};
+  \node[cs=sheetGreen!18, minimum width=11mm] (ne2) at (4.75,-0.05) {\textbf{P$'$(E)} = P$'$(A)};
+  \draw[->, thin] (np.east) -- node[l, above, sloped]{F(E) set} (ne.west);
+  \draw[->, thin] (np.east) -- node[l, below, sloped]{not set} (ne2.west);
+  \node[l, anchor=west, text=sheetRed] at (1.42,-0.42) {0 if setuid / setgid / file caps};
+  \node[l, anchor=west] at (3.95,-0.42) {I, B unchanged};
+\end{tikzpicture}
+\par\vspace{1pt}
+\textbf{Root}: the file's I, P count as all ones, E set $\Rightarrow$ full set
+(\ct{SECBIT\_NOROOT} stops it). \ct{NET\_BIND\_SERVICE}: ports below
+\ct{ip\_unprivileged\_port\_start} (per netns, 1024; 0 = none privileged) · \ct{DAC\_OVERRIDE}:
+skip rwx (exec still needs an \ct{x} bit) · \ct{DAC\_READ\_SEARCH}: read files, search dirs ·
+\ct{FOWNER}: act as owner, ignore sticky · \ct{SYS\_ADMIN}: ``plausibly called \emph{the new
+root}''. \ct{getcap}, \ct{capsh \dd decode=}, \ct{CapEff:} in status.
+
+\hd{Self-sandboxing: no\_new\_privs (NNP), seccomp-bpf, Landlock}
+\begin{itemize}
+  \item \ct{prctl(PR\_SET\_NO\_NEW\_PRIVS)}: \ct{execve} can no longer \emph{grant} — setuid,
+        setgid, file caps ignored; inherited, \textbf{never unset}. Needed for unprivileged
+        seccomp and Landlock.
+  \item \textbf{seccomp-bpf}: classic BPF over \ct{nr}, \ct{arch}, ip, 6 raw args — no pointer
+        reads; ``isn't a sandbox''. Precedence: \ct{KILL\_PROCESS} $>$ \ct{KILL\_THREAD} $>$
+        \ct{TRAP} $>$ \ct{ERRNO} $>$ \ct{USER\_NOTIF} $>$ \ct{TRACE} $>$ \ct{LOG} $>$ \ct{ALLOW};
+        of several filters the highest wins. Inherited, kept across exec; filters only
+        accumulate. Check \ct{arch} — and a deny-list must cover x32 numbers too.
+  \item \textbf{Landlock}: unprivileged LSM — a ruleset (paths, ports, scopes) +
+        \ct{landlock\_restrict\_self()} binds the process and its children; $\le$16 layers.
+\end{itemize}
+
+\columnbreak
+
+\hd{LSMs — who restricts whom}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}L{12mm}L{66mm}@{}}
+\toprule
+\textbf{SELinux} & \textbf{labels} \ct{user:role:type:level} in an xattr, type enforcement by
+  admin policy; enforcing · permissive (or per domain). RHEL, Fedora, Android (enforced since 5.0),
+  openSUSE Tumbleweed (Feb 2025). Runtime disable gone (6.4): \ct{selinux=0} at boot.
+  \ct{ls -Z} · \ct{ausearch -m AVC} · \ct{semanage fcontext} + \ct{restorecon} · \ct{setsebool -P}\\
+\textbf{AppArmor} & per-program \textbf{profiles} attached by \textbf{path}; enforce · complain ·
+  kill · unconfined · prompt. Ubuntu, Debian (default since 10). Ubuntu 24.04: unprivileged user
+  namespaces get no caps unless a profile allows \ct{userns}. \ct{aa-status} · \ct{aa-logprof}\\
+\textbf{Yama} & \ct{ptrace\_scope}: 0 same uid · 1 descendants · 2 \ct{CAP\_SYS\_PTRACE} · 3 none,
+  until reboot\\
+\textbf{lockdown} & blocks \ct{/dev/mem}, unsigned kexec + modules, kprobes, BPF kernel reads\\
+\bottomrule
+\end{tabular}}\par
+\textbf{capability} first, then minor LSMs, at most one ``major'': \ct{/sys/kernel/security/lsm},
+order via \ct{lsm=}. Also Landlock, BPF (eBPF on hooks), Smack, TOMOYO.
+
+\hd{sudo, sudo-rs, run0}
+\begin{itemize}
+  \item \ct{visudo} edits \ct{/etc/sudoers} + \ct{sudoers.d/}: \ct{user host=(runas) cmds};
+        \textbf{the last matching entry wins}, not the most specific. \ct{env\_reset} on,
+        \ct{use\_pty} on (1.9.14), \ct{secure\_path} off upstream. \ct{sudo -l}: your rights.
+  \item NOPASSWD on an editor, pager, \ct{find}, \ct{tar}, an interpreter = a root shell
+        (GTFOBins). Wildcards match spaces; \ct{ALL, !/bin/sh} ``rarely works''.
+        \textbf{sudoedit}: edits a user-owned temp copy, copies it back.
+  \item CVE-2021-3156 ``Baron Samedit'': heap overflow, any local user $\to$ root, no sudoers
+        entry needed (to 1.9.5p1). CVE-2025-32463: \ct{-R} chroot + a planted
+        \ct{nsswitch.conf} $\to$ root (1.9.14–1.9.17; chroot deprecated).
+  \item \textbf{sudo-rs} (Rust) is \ct{sudo} on Ubuntu 25.10 + 26.04 LTS; the original is
+        \ct{sudo.ws}. \textbf{run0} (systemd 256, Jun 2024): no setuid — polkit authorises, the
+        service manager starts a transient unit with a fresh context and pty.
+\end{itemize}
+
+\hd{PAM}
+\ct{/etc/pam.d/<service>}: stacks \ct{auth} · \ct{account} · \ct{password} · \ct{session}.
+\ct{required} = fail, but run the rest · \ct{requisite} = fail now · \ct{sufficient} = succeed now
+if no earlier \ct{required} failed · \ct{optional} = counts only if alone · \ct{include},
+\ct{substack}; or \ct{[success=ok default=bad]}. \ct{pam\_faillock}: 3 failures / 15 min $\to$
+10 min lock, root only with \ct{even\_deny\_root} (\ct{pam\_tally2} removed, Linux-PAM 1.5.0, 2020).
+Hashes in \ct{/etc/shadow}: \ct{\$y\$} yescrypt (Debian default since 11) · \ct{\$6\$} acceptable ·
+\ct{\$1\$} not for new hashes.
+
+\hd{OpenSSH server}
+\textbf{First obtained value wins}: Debian/Ubuntu \ct{Include sshd\_config.d/*.conf} at the top, so
+a drop-in beats the main file. \ct{sshd -t} checks; \ct{sshd -T -C user=…} prints the effective
+config. Defaults: \ct{PermitRootLogin prohibit-password}, \ct{PasswordAuthentication yes},
+\ct{KbdInteractiveAuthentication yes}.
+\par\vspace{1pt}
+{\scriptsize\setlength\tabcolsep{2pt}
+\begin{tabular}{@{}L{12mm}L{66mm}@{}}
+\toprule
+9.5 2023-10 & \ct{ssh-keygen} makes Ed25519 keys by default\\
+9.8 2024-07 & fixes CVE-2024-6387 ``regreSSHion'' (8.5p1–9.7p1: signal race, root RCE, glibc
+  Linux); \ct{sshd-session} split; \ct{PerSourcePenalties} on\\
+10.0 2025-04 & DSA removed; \textbf{\ct{mlkem768x25519-sha256}} default key exchange;
+  \ct{sshd-auth} split; no finite-field DH in sshd\\
+10.1 2025-10 & client warns on non-post-quantum key exchange\\
+10.6 2026-10 & sshd logs it too (\ct{WarnWeakCrypto}); \ct{ssh-mldsa44-ed25519} signatures enabled\\
+\bottomrule
+\end{tabular}}
+
+\hd{Audit}
+\ct{auditd} $\to$ \ct{/var/log/audit/audit.log}; \ct{ausearch -k}, \ct{aureport}.
+\ct{-a always,exit -F arch=b64 -S execve -k exec}; watch files as \ct{-F path=… -F perm=wa}
+(\ct{-w} is deprecated: slow). \textbf{auid} = login uid from \ct{pam\_loginuid}, unchanged by
+sudo / su — who really did it. \ct{-e 2} locks rules until reboot.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{\ct{mv} keeps the SELinux label (\ct{user\_home\_t} in \ct{/var/www} $\to$ denied); \ct{cp}
+        takes the target's default. \ct{restorecon}, never \ct{setenforce 0}.}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\raggedright\footnotesize\color{sheetGrey}\textit{Related:}
+\texttt{namespaces-cgroups-containers} (caps, seccomp, user namespaces) · \texttt{systemd-deep}
+(sandboxing directives) · \texttt{linux-filesystems-storage} (\ct{nosuid} mounts) ·
+\texttt{linux-boot-process} · \texttt{os-fundamentals} · \texttt{macos-security-architecture} ·
+\texttt{post-quantum-crypto} (ML-KEM) · TLS 1.3 \& PKI — handshake, trust, pinning\par}
+
+\end{document}

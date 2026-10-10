@@ -1,0 +1,293 @@
+% ble-apple-ecosystem.tex — BLE on Apple platforms beyond plain GATT: iBeacon (Core Location),
+% what iOS imposes on CoreBluetooth (advertising, background, relaunch), Apple's accessory-side
+% radio parameters, AccessorySetupKit, Nearby Interaction (UWB, DL-TDOA), Bluetooth Channel
+% Sounding (iOS 27), the Find My network and its crypto, MFi / ExternalAccessory, Wi-Fi Aware,
+% the EU accessory APIs.
+% Sources (checked 2026-10-09):
+%   developer.apple.com/ibeacon/Getting-Started-with-iBeacon.pdf (v1.0, 2014: iOS 7; UUID 16 B, major
+%     2 B, minor 2 B, not registered with Apple; iBeacon packets excluded from the CoreBluetooth APIs;
+%     20 regions; Immediate / Near ~1-3 m / Far / Unknown; calibration = mean rssi at 1 m, >= 10 s,
+%     30 cm sweep; ranging not expected in the background; advertising needs the app frontmost, screen
+%     on, unlocked; tens of metres vs ~100 m geofences; room-level; UUID can be sniffed; licence)
+%   bitbucket.org/bluetooth-SIG/public assigned_numbers (company id 0x004C = Apple, Inc.; AD type 0x01
+%     Flags, 0xFF Manufacturer Specific Data, CSS Part A 1.3 / 1.4). The 02 15 prefix and the field
+%     order come from Apple's licence-gated Proximity Beacon Specification, checked only against
+%     secondary decoders (Wireshark, beacon vendors) -> marked (unverified) on the figure
+%   developer.apple.com/documentation/corelocation: clbeaconregion (iOS 7; deprecated 27.2 in the docs
+%     as read 2026-10-09 -> CLBeaconIdentityCondition), clbeaconidentityconstraint (13 -> 27.2),
+%     clbeaconidentitycondition + clmonitor (iOS 17; actor; events async sequence), cllocationmanager/
+%     startmonitoring(for:) (up to 20 regions; deprecated 27.2 -> CLMonitor), determining-the-proximity-
+%     to-an-ibeacon-device (monitoring launches the app; ranging gives no precise distance),
+%     turning-an-ios-device-into-an-ibeacon-device (peripheralData(withMeasuredPower:), foreground),
+%     clbeacon (accuracy in metres, rssi) · videos/play/wwdc2023/10147 (one CLMonitor per name;
+%     conditions persist; re-create after relaunch; wildcards; refinement)
+%   developer.apple.com/documentation/corebluetooth/cbperipheralmanager/startadvertising(_:) (two keys;
+%     28 B + 10 B; background: no local name, UUIDs to the overflow area) · bundleresources:
+%     NSBluetoothAlwaysUsageDescription (iOS 13), UIBackgroundModes (bluetooth-central, -peripheral,
+%     nearby-interaction) · technotes/tn3115 (rev. 2025-09-15: relaunch table, note 5 = iOS 26 ASK only)
+%   developer.apple.com/library/archive/qa/qa1931 (2017, ADG R8: 20 ms for 30 s, then the exact
+%     interval list; old connection rules) · developer.apple.com/forums/thread/775811 (Apple DTS,
+%     Mar 2025, quoting the Accessory Design Guidelines' current connection-parameter rules)
+%   developer.apple.com/documentation/accessorysetupkit (+ discovering-and-configuring-accessories,
+%     asdiscoverydescriptor, asaccessory: iOS 18; Info.plist keys; undeclared ids crash; no TCC alerts;
+%     Wi-Fi Aware fields iOS 26; migration) · videos/play/wwdc2024/10203 (scan returns only paired
+%     accessories; poweredOn only with one paired; Settings > Privacy & Security > Accessories;
+%     180 x 120 pt image; one picker at a time)
+%   developer.apple.com/documentation/nearbyinteraction (iOS 14; iPhone 11 or later; background rules:
+%     BLE-paired + connected, 18.4 Live Activity, 27.2 DL-TDOA on relaunch; watchOS distance only) ·
+%     nidevicecapability (extended distance 17, DL-TDOA 26) · ninearbyaccessoryconfiguration
+%     (channel-sounding init 27, ASK-paired only) · ninearbyobject · initiating-and-maintaining-a-session
+%     · wwdc2022/10008 (camera assistance, horizontalAngle, background accessory sessions, NI GATT
+%     service, deviceCapabilities replaces isSupported)
+%   developer.apple.com/videos/play/wwdc2026/369 (Channel Sounding: iOS 27; N1 iPhones; ASK + connected;
+%     BT 6.3, inline PCT, modes 0 + 2, T_FCS >= 100 us; initiator / reflector; paused in background;
+%     outliers filtered) · bluetooth.com/blog/just-released-bluetooth-core-6-3 (06 May 2026, Inline PCT
+%     Transfer) · NI docs: Channel Sounding is "a Bluetooth 6.0 specification ranging strategy"
+%   support.apple.com/en-us/109512 (2nd-gen UWB: iPhone 15 and later except 16e and 17e; AirTag 2nd
+%     gen; country limits; 2026-03-27) · support.apple.com/en-us/122208 (iPhone 16e specs: no UWB)
+%   support.apple.com/guide/security sec6cbc80fd0 + sece994d0126 (Find My: P-224, KDF chain,
+%     d_i = u_i d + v_i, ~15 min, ECIES, index SHA-256(P_i), no finder auth, iCloud Keychain)
+%   developer.apple.com/find-my (MFi) · apple.com/newsroom/2024/05 unwanted-tracking alerts (DULT,
+%     iOS 17.5, Android 6.0+, IETF) · support.apple.com/guide/personal-safety ips139b15fd9 (14.5 / 17.5)
+%     · apple.com/newsroom/2024/11 Share Item Location (iOS 18.2; authenticated; 7 days)
+%   developer.apple.com/documentation/externalaccessory (MFi; Lightning, 30-pin, Bluetooth;
+%     UISupportedExternalAccessoryProtocols) · /wifiaware (iOS 26; entitlement; WiFiAwareServices; ASK or
+%     DeviceDiscoveryUI) · /accessorynotifications (iOS 26.5; EU customers) · developer.apple.com/
+%     proximity-pairing (EU, iOS 26.5, self-certification, companion app, ASK flow)
+% @labels: area=ble kind=api platform=apple topic=platform-apis discussion=290
+% @tags: ibeacon, core-location, clmonitor, region-monitoring, corebluetooth, state-restoration, accessorysetupkit, nearby-interaction, uwb, channel-sounding, find-my, mfi, externalaccessory, wifi-aware
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\tikzset{
+  by/.style={draw=white, minimum height=4.6mm, inner sep=0pt, font=\ttfamily\tiny, anchor=west},
+  sb/.style={box, font=\tiny, inner sep=1.2pt, minimum height=6mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=0.8pt, align=center},
+  hd/.style={font=\bfseries\scriptsize, text=sheetBlue, anchor=west},
+  tk/.style={circle, fill=sheetBlue, inner sep=0pt, minimum size=1.6mm},
+  ev/.style={font=\tiny, text=black!80, align=center, inner sep=0.5pt, text width=20mm,
+             execute at begin node={\hyphenpenalty=10000\relax}},
+}
+% byte segment: \bseg{x}{width-cm}{fill}{label}
+\newcommand\bseg[4]{\node[by, minimum width=#2cm, fill=#3] at (#1,3.0) {#4};}
+
+\begin{document}
+
+\sheettitle{BLE in the Apple ecosystem — iBeacon, ASK, ranging, Find My}{ble · folio}
+
+\oneliner{Apple's proximity features are \textbf{different frameworks on one radio}: an
+\textbf{iBeacon} is a BLE advert only \textbf{Core Location} sees; \textbf{AccessorySetupKit}
+(iOS 18) pairs one accessory without the Bluetooth prompt and now gates Channel Sounding (27) and
+some background relaunches (26); \textbf{Nearby Interaction} measures over \textbf{UWB}; \textbf{Find My}
+relays locations encrypted to rotating keys. A plain BLE GATT accessory needs \textbf{no MFi}.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ===== iBeacon advert, byte by byte
+  \node[hd] at (-0.1,3.55) {An iBeacon advert — 30 of the 31 legacy advertising bytes};
+  \bseg{0.0}{1.1}{black!10}{02 01 06}
+  \bseg{1.1}{0.55}{sheetBrown!25}{1A}
+  \bseg{1.65}{0.55}{sheetBrown!25}{FF}
+  \bseg{2.2}{0.95}{sheetBlue!25}{4C 00}
+  \bseg{3.15}{0.55}{sheetOrange!35}{02}
+  \bseg{3.7}{0.55}{sheetOrange!35}{15}
+  \bseg{4.25}{4.7}{sheetGreen!25}{proximity UUID — 16 B}
+  \bseg{8.95}{1.35}{sheetBlue!15}{major 2 B}
+  \bseg{10.3}{1.35}{sheetBlue!10}{minor 2 B}
+  \bseg{11.65}{1.35}{sheetRed!25}{power 1 B}
+  \node[lbl] at (0.55,2.45) {Flags AD\\(type 01)};
+  \node[lbl] at (1.375,2.45) {len\\26};
+  \node[lbl] at (1.925,2.45) {mfr\\data};
+  \node[lbl] at (2.675,2.45) {Apple\\0x004C};
+  \node[lbl] at (3.7,2.4) {02 = beacon\\15 = 21 B left\\\textcolor{sheetOrange}{\textit{(unverified)}}};
+  \node[lbl] at (6.6,2.45) {the deployer's own value, not registered\\with Apple; the only required field};
+  \node[lbl] at (9.625,2.45) {group\\(e.g. store)};
+  \node[lbl] at (10.975,2.45) {member\\(e.g. department)};
+  \node[lbl] at (12.325,2.45) {RSSI at 1 m,\\signed dBm};
+  \node[lbl, anchor=west, align=left] at (13.15,2.85) {no room for a name or\\service UUID — and iOS\\never hands this packet\\to CoreBluetooth};
+  \draw[sheetGrey!40] (-0.1,1.95) -- (16.5,1.95);
+  % ===== ranging: three ways to "how far"
+  \node[hd] at (-0.1,1.72) {How far is it? Three radios, three answers};
+  \node[sb, minimum width=11mm] (ph) at (0.55,0.55) {iPhone};
+  \node[sb, minimum width=12mm, minimum height=19mm] (ac) at (7.65,0.55) {beacon /\\accessory /\\peer};
+  \draw[->, thick, sheetGrey] (1.15,1.2) -- (7.0,1.2) node[lbl, pos=0.5, above=0pt]{\textbf{RSSI} (iBeacon): Immediate · Near $\approx$1–3\,m · Far · Unknown};
+  \draw[<->, thick, sheetGreen!60!black] (1.15,0.55) -- (7.0,0.55) node[lbl, pos=0.5, above=0pt]{\textbf{Channel Sounding} (iOS 27): phase-based, iPhone = initiator};
+  \node[lbl, text=sheetGreen!50!black] at (4.07,0.38) {N1 iPhone ↔ ASK-paired BT 6.3 accessory = reflector};
+  \draw[<->, very thick, sheetOrange] (1.15,-0.1) -- (7.0,-0.1) node[lbl, pos=0.5, above=0pt]{\textbf{UWB} (Nearby Interaction): distance + direction};
+  \node[lbl, text=sheetOrange] at (4.07,-0.27) {after tokens / config travel over \emph{your} channel (BLE, network)};
+  \node[lbl, anchor=west, align=left] at (-0.1,-0.62) {result: \ct{NINearbyObject.distance} (m), \ct{direction} (unit vector) — \ct{nil} when not available};
+  \draw[sheetGrey!40] (8.45,1.85) -- (8.45,-0.8);
+  % ===== Find My
+  \node[hd] at (8.5,1.72) {Find My: offline finding, end-to-end encrypted};
+  \node[sb, minimum width=12mm] (tag) at (9.1,0.7) {lost item\\advertises $P_i$};
+  \node[sb, minimum width=12mm] (fin) at (11.0,0.7) {any nearby\\Apple device};
+  \node[sb, minimum width=10mm, draw=sheetGrey, fill=black!4] (srv) at (13.25,0.7) {Apple\\servers};
+  \node[sb, minimum width=12mm, draw=sheetGreen, fill=sheetGreen!10] (own) at (15.75,0.7) {owner\\holds $d_i$};
+  \draw[->, thick, sheetBlue] (tag) -- node[lbl, above=1pt]{BLE} (fin);
+  \draw[->, thick] (fin) -- node[lbl, above=1pt]{location,} node[lbl, below=1pt]{ECIES to $P_i$} (srv);
+  \draw[<->, thick, sheetGreen!60!black] (srv) -- node[lbl, above=1pt]{query by} node[lbl, below=1pt]{SHA-256($P_i$)} (own);
+  \node[lbl, anchor=west, align=left] at (8.5,-0.3) {P-224 key pair $\{d,P\}$ + 256-bit secret $SK_0$; $SK_i$ = KDF($SK_{i-1}$, ``update'')\\
+    $d_i = u_i d + v_i$, $P_i = u_i P + v_i G$; $P_i$ replaced $\sim$every 15 min → adverts unlinkable\\
+    finder sends no identity: Apple knows neither finder nor owner; keys sync via iCloud Keychain};
+  % ===== timeline
+  \draw[sheetGrey!40] (-0.1,-0.95) -- (16.5,-0.95);
+  \node[hd] at (-0.1,-1.2) {iOS};
+  \draw[thick, sheetGrey] (0.3,-1.9) -- (16.4,-1.9);
+  \foreach \i/\v/\t in {
+      0/7/{iBeacon in Core Location (2013)},
+      1/13/{NSBluetoothAlways\\UsageDescription},
+      2/14/{Nearby Interaction, iPhone peers},
+      3/14.5/{alerts: unknown AirTag / Find My item},
+      4/15/{NI with third-party UWB accessories},
+      5/16/{NI camera assist; background accessories},
+      6/17/{CLMonitor; NI extended distance},
+      7/17.5/{DULT alerts for any compliant tracker},
+      8/18/{AccessorySetupKit},
+      9/18.2/{Share Item Location},
+      10/18.4/{NI in background with a Live Activity},
+      11/26/{\mbox{Wi-Fi} Aware, \mbox{DL-TDOA}; some relaunches: ASK apps only},
+      12/26.5/{EU: proximity pairing, notification forwarding},
+      13/27/{Bluetooth Channel Sounding},
+      14/27.2/{docs: iBeacon region API deprecated}} {
+    \pgfmathsetmacro\x{0.95+1.04*\i}
+    \node[tk] at (\x,-1.9) {};
+    \node[font=\tiny\bfseries, text=sheetBlue] at (\x,-1.9) [above=0.6pt] {\v};
+    \pgfmathparse{mod(\i,2)==0 ? 1 : 0}
+    \ifnum\pgfmathresult=1
+      \node[ev, anchor=north] at (\x,-2.02) {\t};
+    \else
+      \node[ev, anchor=south] at (\x,-1.62) {\t};
+    \fi
+  }
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Which framework, what it needs}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{43mm}@{}}
+\toprule
+\textbf{job} & \textbf{framework (iOS)} & \textbf{gate}\\
+\midrule
+GATT, scan, advertise & CoreBluetooth & \ct{NSBluetoothAlwaysUsageDescription} (13; older targets also \ct{…PeripheralUsageDescription}); modes \ct{bluetooth-central} / \ct{-peripheral}\\
+see a beacon & Core Location & location authorisation (the same prompt as GPS)\\
+be a beacon & \ct{CLBeaconRegion} data, \ct{CBPeripheral\-Manager} & app frontmost, screen on, unlocked; \ct{withMeasuredPower: nil} = device default\\
+set up an accessory & AccessorySetupKit (18) & Info.plist declarations; no Bluetooth prompt\\
+distance + direction & NearbyInteraction (14) & \ct{NSNearbyInteractionUsageDescription}; UWB on both ends (or Channel Sounding, 27); your own token channel\\
+distance, no UWB & CoreBluetooth Channel Sounding (27) & N1 iPhone; ASK-paired, connected BT 6.3 accessory\\
+lost-item relay & Find My network & MFi Program; Apple's accessory specification\\
+MFi link & ExternalAccessory & MFi; Lightning, 30-pin or Bluetooth; \ct{UISupportedExternal\-AccessoryProtocols}\\
+P2P Wi-Fi & Wi-Fi Aware (26) & \ct{com.apple.developer.wifi-aware}; \ct{WiFiAwareServices}; pair via ASK or DeviceDiscoveryUI\\
+\bottomrule
+\end{tabular}}
+
+\section{iBeacon}
+\begin{itemize}
+  \item \textbf{Monitoring} (enter / exit, passive, cheap) relaunches a terminated app (location
+        authorisation + the \ct{location} background mode, per the docs);
+        \ct{CLLocationManager} caps it at \textbf{20 regions} per app, shared by all its managers; the
+        same identifier replaces a region; timely events need network connectivity. \ct{CLMonitor} (17): an actor;
+        conditions persist across launches; \ct{events} is an async sequence; one open instance per
+        name — re-create it after a relaunch. An event = state (satisfied / unsatisfied / unknown)
+        + date; a wildcard match reports the seen major / minor as its \emph{refinement}.
+  \item \textbf{Ranging}: frequent RSSI → \ct{proximity} + \ct{accuracy} (m), for a frontmost app,
+        ``not expected in the background''. \textbf{Immediate} = held up to it; \textbf{Far} = seen,
+        confidence too low for Near — not ``far away''; \textbf{Unknown} = too few samples yet.
+        Beacons arrive sorted by best-guess proximity, and the guess can be wrong.
+  \item \textbf{Calibrate} every installed beacon: measured power = mean \ct{rssi} at 1\,m over
+        $\ge$10\,s, sweeping a 30\,cm line. Bodies, water and metal attenuate 2.4\,GHz; range is tens
+        of metres (geofences $\sim$100\,m minimum); room-level at best.
+  \item UUIDs can be sniffed by anyone. Building iBeacon hardware takes Apple's licence (the spec
+        comes with it). Docs, Oct 2026: \ct{CLBeaconRegion}, \ct{CLBeaconIdentityConstraint},
+        \ct{startMonitoring(for:)} deprecated in 27.2 → \ct{CLMonitor} + \ct{CLBeaconIdentityCondition}.
+\end{itemize}
+
+\section{CoreBluetooth on iOS · the accessory side}
+\begin{itemize}
+  \item An app advertises only a local name + service UUIDs: 28\,B, plus 10\,B of scan response for
+        the name; best effort. \textbf{In the background}: no name, every UUID in the
+        \textbf{overflow area} — seen only by iOS devices scanning for it.
+  \item \textbf{Relaunch} (TN3115) only while waiting on a Bluetooth event that then happens. Yes:
+        evicted, crashed, restarted (after first unlock), Control Center toggle, Airplane Mode if it
+        switches Bluetooth. No: force quit, Bluetooth off in Settings. \textbf{iOS 26}: the force-quit, Control Center and Airplane Mode
+        cases relaunch \textbf{only apps that set the accessory up with ASK}.
+  \item \textbf{Accessory advertising}: 20\,ms for $\ge$30\,s, then \emph{exactly} one of 152.5 ·
+        211.25 · 318.75 · 417.5 · 546.25 · 760 · 852.5 · 1022.5 · 1285\,ms (QA1931).
+  \item \textbf{Connection parameters} (ADG, quoted by Apple, 2025): min $\ge$15\,ms, a multiple of
+        15, $\le$2\,s; max $\ge$ min + 15\,ms (or both 15); latency $\le$30; max $\times$ (latency+1)
+        $\le$6\,s; supervision timeout 6–18\,s and $>$ 3 $\times$ max $\times$ (latency+1).
+        QA1931 (2017) still says 2–6\,s and $\le$2\,s.
+\end{itemize}
+
+\columnbreak
+
+\section{AccessorySetupKit (iOS 18)}
+\begin{itemize}
+  \item \ct{ASAccessorySession.showPicker(for:)} with \ct{ASPickerDisplayItem}(name, 180$\times$120\,pt
+        image, \ct{ASDiscoveryDescriptor}: service UUID or company id + name substring, data blob +
+        mask, SSID or prefix, range \ct{.immediate}; Wi-Fi Aware service, 26). One picker at a time.
+  \item The \textbf{system} scans and draws the picker → \ct{ASAccessory} (\ct{bluetoothIdentifier}
+        → \ct{CBPeripheral}, \ct{ssid}). \textbf{No Bluetooth or Wi-Fi prompt}; a scan returns only
+        the app's accessories; \ct{poweredOn} only once one is paired.
+  \item Info.plist \ct{NSAccessorySetupKitSupports} +
+        \ct{NSAccessorySetupBluetooth\{Services, CompanyIdentifiers, Names\}}: discovering anything
+        undeclared \textbf{crashes}. Users rename and remove in Settings › Privacy \& Security ›
+        Accessories. Old pairings: \ct{ASMigrationDisplayItem}, no \ct{CBCentralManager} until done.
+        watchOS 26: the companion watch app may use CoreBluetooth with it, behind its own prompt.
+\end{itemize}
+
+\section{Nearby Interaction · Channel Sounding}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{27mm}@{}}
+\toprule
+\textbf{configuration} & \textbf{other end} & \textbf{bootstrap}\\
+\midrule
+\ct{NINearbyPeerConfiguration (peerToken:)} & iPhone, Watch & \ct{NIDiscoveryToken} sent over your channel\\
+\ct{NINearbyAccessory\-Configuration(data:)} & UWB accessory (15) & config data per Apple's NI accessory protocol\\
+\ldots\ct{(accessoryData:bluetooth\-PeerIdentifier:)} & BLE-paired UWB accessory (16) & NI GATT service; allows background\\
+\ldots\ct{(bluetoothChannel\-SoundingIdentifier:…)} & BT 6.3 accessory (27) & ASK-paired only\\
+\ct{NIDLTDOAConfiguration} & DL-TDOA anchors (26) & \ct{supportsDLTDOA\-Measurement}\\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item \ct{deviceCapabilities} (16, replaces \ct{isSupported}): distance, direction, camera
+        assistance, extended distance (17), DL-TDOA (26), Channel Sounding (27). UWB: iPhone 11 on,
+        not 16e; second-gen chip in iPhone 15 on (not 16e / 17e) and AirTag 2nd gen; barred or
+        limited in some countries. Watch: distance only.
+  \item \textbf{Camera assistance} (16): ARKit adds \ct{horizontalAngle} +
+        \ct{verticalDirectionEstimate} once the phone has been swept enough.
+  \item A peer that quits or leaves UWB range times out → \ct{session(\_:didRemove:reason:)}; a bad
+        token → \ct{invalidConfiguration}; a declined prompt → \ct{userDidNotAllow}.
+  \item \textbf{Background} suspends the session, unless the peer is BLE-paired and connected (the
+        accessory acts; the app gets no callbacks) or a \textbf{Live Activity} starts as the app
+        leaves (18.4); 27.2 docs: DL-TDOA may start on a background relaunch.
+  \item \textbf{Channel Sounding} (27): \ct{supportsFeatures(.channelSounding)} →
+        \ct{peripheral.startChannelSoundingSession} (role \ct{.initiator}) →
+        \ct{CBChannelSoundingProcedureResults.distance}; direction through NI + camera. Accessory: Core
+        6.3 inline PCT, modes 0 + 2, T\textsubscript{FCS} $\ge$100\,µs. Foreground only; iOS drops
+        outliers and may sample less under radio load. A Core 6.0 feature; 6.3 shipped May 2026.
+\end{itemize}
+
+\section{Find My, MFi, EU}
+\begin{itemize}
+  \item Alerts for an
+        unknown AirTag / Find My item moving with you: 14.5; for any tracker built to \textbf{DULT}
+        (Apple + Google, IETF working group): 17.5 and Android 6.0+. \textbf{Share Item Location}
+        (18.2): an authenticated link for an airline or anyone, gone after 7 days.
+  \item Of these APIs only ExternalAccessory and Find My need \textbf{MFi}; a BLE GATT peripheral needs none.
+  \item \textbf{EU, 26.5}: proximity-triggered pairing (system prompt, then the app finishes in the
+        ASK flow; organisation account, self-certification, companion app) and
+        \ct{AccessoryNotifications} (notifications to a wearable; EU devices + EU accounts only).
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\raggedright\color{sheetGrey}\textit{Related:} Core Location + MapKit ·
+Background execution · \texttt{widgets-live-activities} · \texttt{wallet-passes} · Network.framework
+on the LAN — Bonjour, Local Network · \texttt{ble-mesh-matter-thread} · \texttt{public-key-maths}\par}
+
+\end{document}

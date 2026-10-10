@@ -1,0 +1,133 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>C memory layout — sections, alignment, padding, byte order, promotion — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/c/c-memory-layout.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">310</span></a></li><li><a class="side-area" href="/folios.html?area=ai" data-area="ai">ai<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=ble" data-area="ble">ble<span class="count">2</span></a></li><li><a class="side-area current" href="/folios.html?area=c" data-area="c">c<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cicd" data-area="cicd">cicd<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=crypto" data-area="crypto">crypto<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=dev-tools" data-area="dev-tools">dev-tools<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=iot" data-area="iot">iot<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=javascript" data-area="javascript">javascript<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=linux" data-area="linux">linux<span class="count">8</span></a></li><li><a class="side-area" href="/folios.html?area=macos" data-area="macos">macos<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=recall" data-area="recall">recall<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=runtime" data-area="runtime">runtime<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li><li><a class="side-area" href="/folios.html?area=typescript" data-area="typescript">typescript<span class="count">3</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">C memory layout — sections, alignment, padding, byte order, promotion</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">c · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> Four <strong>storage durations</strong>, which the toolchain maps to <strong>sections</strong>: code and
+constants in <code>.text</code>/<code>.rodata</code> (flash on an MCU), initialised statics in <code>.data</code> (an
+image copied to RAM at start-up), zero statics in <code>.bss</code> (zeroed, no image bytes), locals on
+the <strong>stack</strong>, <code>malloc</code> on the <strong>heap</strong>. The <strong>ABI</strong> fixes sizes and
+alignments; members sit in order at multiples of their alignment, so structs get
+<strong>padding</strong>. Byte order is the CPU’s; arithmetic below <code>int</code> happens <strong>in <code>int</code></strong>.</p>
+<p class="sheet-tools"><a class="sheet-download" href="c-memory-layout.pdf" download>Download PDF</a> <a href="c-memory-layout.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/c/c-memory-layout.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="c-memory-layout-fig1.svg" width="609" height="127" class="wide" alt="C memory layout — sections, alignment, padding, byte order, promotion — figure 1" loading="lazy"></figure>
+</section>
+<section class="sheet-section">
+<h2>Where an object lives</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th><strong>declaration (scope)</strong></th><th><strong>duration</strong></th><th><strong>section</strong></th><th><strong>starts as</strong></th></tr>
+</thead>
+<tbody>
+<tr><td><code>int g = 5;</code> (file)</td><td>static</td><td><code>.data</code></td><td>5, from the image</td></tr>
+<tr><td><code>int z;</code> (file) · <code>static int n;</code> (block)</td><td>static</td><td><code>.bss</code></td><td>0 · null · padding 0</td></tr>
+<tr><td><code>const int k = 5;</code> (file)</td><td>static</td><td><code>.rodata</code></td><td>5, read-only</td></tr>
+<tr><td><code>&quot;abc&quot;</code></td><td>static</td><td><code>.rodata</code></td><td>write = UB; may be shared</td></tr>
+<tr><td><code>thread_local int t = 1;</code></td><td>thread</td><td><code>.tdata</code>/<code>.tbss</code></td><td>image copied per thread</td></tr>
+<tr><td><code>int x;</code> (block)</td><td>automatic</td><td>stack / reg.</td><td><span class="c-sheetred">indeterminate</span></td></tr>
+<tr><td><code>const int c = 5;</code> (block)</td><td>automatic</td><td>stack</td><td>const <span class="math">≠</span> ROM</td></tr>
+<tr><td><code>(int[]){1, 2}</code> (block)</td><td>automatic</td><td>stack</td><td>compound literal</td></tr>
+<tr><td><code>p = malloc(n)</code></td><td>allocated</td><td>heap</td><td>indeterminate; <code>calloc</code>: 0</td></tr>
+</tbody>
+</table></p>
+<p>C23 defines only the four durations; section names are the ELF / GCC convention. Static and thread objects are initialised before <code>main</code> / the thread starts — <code>int z;</code> and <code>int z = 0;</code> both land in <code>.bss</code>.</p>
+</section>
+<section class="sheet-section">
+<h2>Before <code>main</code></h2>
+<ul>
+<li>Start-up code (<code>crt0</code>, reset handler) copies <code>.data</code> from its <strong>load address</strong>  (LMA, flash) to its <strong>run address</strong> (VMA, RAM), zeroes <code>.bss</code>, then calls  <code>main</code>. A hosted loader maps the file instead.</li>
+<li><code>size app.elf</code> (Berkeley): <code>text</code> = code <em>and</em> read-only data.</li>
+<li><code>int x;</code> at file scope in two files: GCC 10+ and Clang 11+ default to  <code>-fno-common</code> — a multiple-definition link error (<code>-fcommon</code> used to merge them).  Header: <code>extern int x;</code>, one <code>.c</code> defines it.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>ESP32 (ESP-IDF 6.1)</h2>
+<ul>
+<li>Code runs from flash through the MMU cache; <code>IRAM_ATTR</code> puts a function in internal  IRAM (ISRs flagged <code>ESP_INTR_FLAG_IRAM</code>, timing-critical code). <code>.rodata</code> goes to  DROM (flash, cached); <code>DRAM_ATTR</code> forces data into DRAM. IRAM takes 4-byte-aligned  word accesses only.</li>
+<li>DRAM holds <code>.data</code>, <code>.bss</code>, heap and stacks; static data is capped at  <span class="math">∼</span>160 KB — the rest of DRAM is heap only.</li>
+<li><code>__NOINIT_ATTR</code> → <code>.noinit</code>: not initialised at start-up, survives a software  restart. RTC slow memory survives deep sleep.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Stack overflow</h2>
+<ul>
+<li>No MMU / MPU: nothing faults — the stack runs into the heap or the next task’s stack.  Causes: recursion, a big local (<code>uint8_t buf[8192]</code>), a VLA.</li>
+<li>FreeRTOS: <code>xTaskCreate</code> allocates TCB + stack from the heap,  <code>xTaskCreateStatic</code> takes your buffers. Stack depth and  <code>uxTaskGetStackHighWaterMark()</code> are in <strong>words</strong> — in <strong>bytes</strong> on ESP-IDF.</li>
+<li><code>configCHECK_FOR_STACK_OVERFLOW 1</code>: stack pointer checked at each switch;  <code>2</code>: the stack is pre-filled with a known value and the last 16 bytes are checked too  → <code>vApplicationStackOverflowHook</code>. Neither catches every overflow.</li>
+<li>ESP-IDF adds a watchpoint on the last 32 bytes of the running task’s stack  (<code>CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK</code>) and <code>-fstack-protector</code>  (<code>CONFIG_COMPILER_STACK_CHECK_MODE</code>).</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Packed and misaligned access</h2>
+<p><code>__attribute__((packed))</code> sets alignment 1 and drops padding; <code>m.id</code> then compiles to byte-wise loads, but <code>uint32_t *q = &amp;m.id</code> loses that and <code>*q</code> is a misaligned load — GCC 9+ warns by default (<code>-Waddress-of-packed-member</code>). <code>aligned(N)</code> only raises alignment unless <code>packed</code> is given too.</p>
+<p><table class="sheet-table">
+<tbody>
+<tr><td>x86, x86-64</td><td>works, slower; <code>__m128</code>/<code>256</code>/<code>512</code> operands must be aligned</td></tr>
+<tr><td>Cortex-M3/M4/M7</td><td><code>LDR</code>/<code>STR</code>/<code>LDRH</code>/<code>STRH</code> work (trap only with <code>CCR.UNALIGN_TRP</code>);
+ <code>LDRD</code>/<code>STRD</code>/<code>LDM</code>/<code>STM</code> <strong>always</strong> UsageFault — a <code>double</code> or
+ <code>uint64_t</code> read through a byte pointer</td></tr>
+<tr><td>Cortex-M0</td><td>no unaligned access at all: <strong>HardFault</strong></td></tr>
+<tr><td>ESP32 (Xtensa)</td><td><strong><code>LoadStoreAlignment</code></strong> panic: 32-bit only at %4, 16-bit at %2</td></tr>
+</tbody>
+</table></p>
+<p>Where the CPU copes, C still does not: <code>*(uint32_t *)(buf + 1)</code> is UB (alignment and effective type) — the optimiser may emit an aligned-only instruction.</p>
+</section>
+<section class="sheet-section">
+<h2>Size and alignment — six ABIs</h2>
+<p><table class="sheet-table">
+<thead>
+<tr><th></th><th class="center"><strong>i386</strong></th><th class="center"><strong>Arm32</strong></th><th class="center"><strong>x86-64</strong></th><th class="center"><strong>AArch64</strong></th><th class="center"><strong>Apple arm64</strong></th><th class="center"><strong>Win x64</strong></th></tr>
+</thead>
+<tbody>
+<tr><td>model</td><td class="center">ILP32</td><td class="center">ILP32</td><td class="center">LP64</td><td class="center">LP64</td><td class="center">LP64</td><td class="center">LLP64</td></tr>
+<tr><td><code>char</code></td><td class="center">signed</td><td class="center"><strong>unsigned</strong></td><td class="center">signed</td><td class="center"><strong>unsigned</strong></td><td class="center">signed</td><td class="center">signed</td></tr>
+<tr><td><code>long</code></td><td class="center">4</td><td class="center">4</td><td class="center">8</td><td class="center">8</td><td class="center">8</td><td class="center"><strong>4</strong></td></tr>
+<tr><td><code>long long</code></td><td class="center">8 / <strong>4</strong></td><td class="center">8</td><td class="center">8</td><td class="center">8</td><td class="center">8</td><td class="center">8</td></tr>
+<tr><td>pointer</td><td class="center">4</td><td class="center">4</td><td class="center">8</td><td class="center">8</td><td class="center">8</td><td class="center">8</td></tr>
+<tr><td><code>double</code></td><td class="center">8 / <strong>4</strong></td><td class="center">8</td><td class="center">8</td><td class="center">8</td><td class="center">8</td><td class="center">8</td></tr>
+<tr><td><code>long double</code></td><td class="center">12 / 4 x87</td><td class="center">8</td><td class="center">16 x87</td><td class="center">16 quad</td><td class="center">8</td><td class="center">8</td></tr>
+<tr><td>SP at a call</td><td class="center">16</td><td class="center">8</td><td class="center">16</td><td class="center">16</td><td class="center">16</td><td class="center">16</td></tr>
+</tbody>
+</table></p>
+<p><span class="math">a / b</span> = size / alignment where they differ; x87 <code>long double</code> uses 10 bytes. Red zone (below SP, usable without moving it): 128 B on x86-64 SysV and Apple arm64, none on Win x64. <code>{char c; double d;}</code>: 12 B on i386, 16 elsewhere; <code>{char c; long l;}</code>: 16 on LP64, 8 on LLP64 — never <code>memcpy</code> a struct across ABIs.</p>
+</section>
+<section class="sheet-section">
+<h2>Struct layout — the rules</h2>
+<ul>
+<li>C23: members at increasing addresses in declaration order; <strong>no padding before the
+ first</strong> (a struct pointer converts to a pointer to its first member); padding between  members and at the end.</li>
+<li>ABIs: each member at the lowest offset that is a multiple of its alignment; struct  alignment = its strictest member’s; size rounded up to it, so <code>T a[n]</code> has no gaps.</li>
+<li>Pin a wire or ABI layout: <code>static_assert(sizeof(struct Msg) == 12);</code>  <code>static_assert(offsetof(struct Msg, len) == 10);</code> — C23 keyword, message optional;  <code>offsetof</code> is a <code>size_t</code> constant (<code>&lt;stddef.h&gt;</code>), UB on a bit-field.</li>
+<li><code>alignas(64)</code>, <code>alignof(T)</code>: C23 keywords (<code>&lt;stdalign.h&gt;</code> is empty); every  alignment is a power of two; <code>max_align_t</code> has the largest fundamental one.  <code>malloc</code> (glibc, MSVC): 16-aligned on 64-bit; more → <code>aligned_alloc</code>.</li>
+<li>Flexible array member <code>struct pkt { uint16_t len; uint8_t data[]; };</code>:  <code>sizeof</code> leaves <code>data</code> out; allocate <code>sizeof(struct pkt) + n</code>.</li>
+<li>Bit-fields: storage unit, straddling and bit order are implementation-defined (x86-64:  right to left); plain <code>int</code> bit-field signedness too; no <code>&amp;</code>. Not for wire formats.  C23 <code>enum op : uint8_t {…}</code> is 1 byte; a plain enum’s type is the compiler’s choice.</li>
+<li><strong>Padding bytes</strong>: a store leaves them unspecified — <code>memcmp</code> on structs lies, a  sent struct leaks old bytes. Statics without an initialiser and C23 <code>= {}</code> zero  the padding; otherwise <code>memset</code> first.</li>
+</ul>
+</section>
+<section class="sheet-section">
+<h2>Byte order: <code>0x01020304</code> at <code>0x100</code></h2>
+<figure class="sheet-figure"><img src="c-memory-layout-fig2.svg" width="285" height="47" alt="C memory layout — sections, alignment, padding, byte order, promotion — figure 2" loading="lazy"></figure>
+<pre class="sheet-code"><code class="hljs language-plaintext">uint32_t rd_be32(const uint8_t *p) {      // any alignment, any host
+  return (uint32_t)p[0] &lt;&lt; 24 | (uint32_t)p[1] &lt;&lt; 16
+       | (uint32_t)p[2] &lt;&lt; 8  | p[3]; }   // p[0] &lt;&lt; 24 alone is int
+uint32_t v; memcpy(&amp;v, buf + 1, 4); v = ntohl(v);   // same result
+#if __STDC_ENDIAN_NATIVE__ == __STDC_ENDIAN_LITTLE__ // C23 &lt;stdbit.h&gt;</code></pre>
+<p>Shifts act on values: no byte-order dependence. AAPCS64 allows either order. GCC <code>scalar_storage_order(&quot;big-endian&quot;)</code> stores a struct’s scalars big-endian (<code>&amp;</code> of such a field is an error).</p>
+</section>
+<section class="sheet-section">
+<h2>Integer promotion + usual conversions</h2>
+<ul>
+<li>Rank below <code>int</code> (<code>char</code>, <code>short</code>, <code>uint8_t</code>, <code>uint16_t</code>, <code>bool</code>,  narrow bit-fields) → <code>int</code> if it holds every value, else <code>unsigned</code> — before  arithmetic, unary <code>+ - ~</code>, shifts. <code>_BitInt(N)</code> is exempt.</li>
+<li><code>uint8_t a = 200, b = 100;</code> <code>a + b</code> is <code>int</code> <strong>300</strong>; only  <code>uint8_t r = a + b;</code> wraps to 44. As <code>unsigned _BitInt(8)</code>, <code>a + b</code> is 44.</li>
+<li><code>~x</code> for <code>uint8_t x = 0xFF</code> is <code>int</code> <span class="math">-256</span>, not 0: test  <code>(uint8_t)~x</code>. <code>uint16_t a = 65535; a * a</code> overflows <code>int</code>:  UB; write <code>(uint32_t)a * a</code>. <code>p[0] &lt;&lt; 24</code> with <code>p[0] &gt;= 0x80</code>: UB, cast first.</li>
+<li>Mixed signs: unsigned of rank <span class="math">≥</span> the signed wins — <code>-1 &lt; 1u</code> and  <code>i &lt; sizeof buf</code> (<code>i = -1</code>) are <strong>false</strong>; a wider signed type that holds every  unsigned value wins — <code>-1L &lt; 1u</code> is true on LP64, false on ILP32 / LLP64.</li>
+<li><code>char c = 0xFF; c == 0xFF</code> is true where <code>char</code> is unsigned (Arm32, AArch64  Linux), false where signed: 255 does not fit, GCC wraps it to <span class="math">-1</span>.</li>
+</ul>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> <code>c-pointers-const-restrict</code> ·
+<code>c-bits-and-registers</code> · <code>c-undefined-behavior-and-build</code> · Ownership ·
+exclusivity · memory layout · Cross-language FFI</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=c" title="area">c</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=concept" title="kind">concept</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=embedded" title="platform">embedded</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=memory" title="topic">memory</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=language" title="topic">language</a></li><li class="sheet-tag"><a href="/folios.html?tag=memory-layout">memory-layout</a></li><li class="sheet-tag"><a href="/folios.html?tag=bss">bss</a></li><li class="sheet-tag"><a href="/folios.html?tag=data-segment">data-segment</a></li><li class="sheet-tag"><a href="/folios.html?tag=rodata">rodata</a></li><li class="sheet-tag"><a href="/folios.html?tag=crt0">crt0</a></li><li class="sheet-tag"><a href="/folios.html?tag=linker-script">linker-script</a></li><li class="sheet-tag"><a href="/folios.html?tag=stack-overflow">stack-overflow</a></li><li class="sheet-tag"><a href="/folios.html?tag=alignment">alignment</a></li><li class="sheet-tag"><a href="/folios.html?tag=padding">padding</a></li><li class="sheet-tag"><a href="/folios.html?tag=struct-padding">struct-padding</a></li><li class="sheet-tag"><a href="/folios.html?tag=packed">packed</a></li><li class="sheet-tag"><a href="/folios.html?tag=offsetof">offsetof</a></li><li class="sheet-tag"><a href="/folios.html?tag=data-model">data-model</a></li><li class="sheet-tag"><a href="/folios.html?tag=endianness">endianness</a></li><li class="sheet-tag"><a href="/folios.html?tag=integer-promotion">integer-promotion</a></li><li class="sheet-tag"><a href="/folios.html?tag=bitint">bitint</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=c%2Fc-memory-layout.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/293">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

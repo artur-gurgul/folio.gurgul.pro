@@ -1,0 +1,300 @@
+% vim-editing-grammar.tex — Vim / Neovim Normal mode as a language: modes, the operator + motion /
+% text-object grammar, motion types and forcing, text objects, Insert + Visual keys, registers,
+% macros + :normal + :g, patterns + :substitute + filters, the undo tree, marks + jumps, windows,
+% and what Neovim changes (dated).
+% Sources (checked 2026-10-09):
+%   vimhelp.org — Vim 9.2 runtime/doc: motion.txt (operator list; doubled = linewise; counts multiply,
+%     2d3w; inclusive / exclusive / linewise per motion; o_v forcing v V CTRL-V; cw = ce; dw at line
+%     end; word vs WORD; text objects, [count] = outer levels, quotes one line only + trailing white
+%     space, Visual extends by one object, "it" repeated includes tags; marks '[ '] '< '> '' '" '^ '.,
+%     A-Z file marks, 0-9 from viminfo; jump commands; jumplist 100; 'jumpoptions' stack; g; g,)
+%     · change.txt (ten register types; "1 exception for % ( ) ` / ? n N { }; "- small delete; "0
+%     unless a register was named; :s flags & c e g i I n p # l r; sub-replace-special & \0 \1 ~ \u
+%     \U \l \L \e \E, \r splits the line, \n inserts NUL, \=; & drops flags, :&&, g& = :%s//~/&;
+%     x X D C s S Y; J gJ; xp ddp; CTRL-A + 'nrformats' "bin,octal,hex": 007 → 010) · visual.txt
+%     (gv o O; gn, dgn + .; block I A $A c r; :'<,'> inserted; v_p / v_P; . = same amount of text)
+%     · undo.txt (undo block; CTRL-G u; U is a change; branches; g- g+; :earlier / :later s m h d f;
+%     :undo N; :undolist; 'undofile' + hash check; redo-register "1P then .) · repeat.txt (q,
+%     uppercase appends, @, @@, @:, :g marks then runs, deleted line loses its mark, :v = :g!)
+%     · pattern.txt (* # = \<word\>, 'ignorecase' not 'smartcase'; g*; \v \m \M \V; \{-}; \zs \ze;
+%     \@= \@! \@<= \@<!; \c \C; \_s; offsets e s +n) · insert.txt (CTRL-W U R A O T D V K N P,
+%     CTRL-X submodes, CTRL-G u, gi) · various.txt (:normal[!]; with a range the cursor starts in
+%     column 1; an unfinished command is aborted) · windows.txt (buffer / window / tab page; :split
+%     :vsplit; CTRL-W keys; :ls; :bufdo …) · editing.txt (ZZ = :x writes only if modified; ZQ = :q!;
+%     CTRL-^) · terminal.txt (:terminal opens a new window, keys go to the job; CTRL-\ CTRL-N)
+%     · starting.txt (~/.vimrc → ~/.vim/vimrc → $XDG_CONFIG_HOME/vim/vimrc; defaults.vim only
+%     without a vimrc) · usr_05.txt (defaults.vim sets incsearch, nrformats-=octal …; packadd!
+%     comment → gc) · options.txt ('hlsearch' 'incsearch' off; 'nrformats' default)
+%   github.com/vim/vim src/ex_cmds.c ex_substitute (":s/{empty}/" sets which_pat = RE_LAST — the
+%     last used pattern, so * then :%s//x/g works; the help text words it differently)
+%   vim.org/vim-9.2-released.php (14 Feb 2026; XDG $HOME/.config/vim; fuzzy Insert completion;
+%     CTRL-X CTRL-R completes words from registers; :Tutor)
+%   neovim.io/doc/user (nightly, generated 2026-10-09) + raw.githubusercontent.com/neovim/neovim
+%     v0.12.0 runtime/doc: vim_diff.txt (default mappings Y & Q @ * # gc gcc gO ]d [d [q ]q …;
+%     'hlsearch' 'incsearch' 'autoindent' on; 'nrformats' "bin,hex"; 'jumpoptions' "clean"; ShaDa
+%     replaces viminfo) · change.txt v0.12.0 (Y-default "y$"; &-default ":&&<CR>") · repeat.txt
+%     v0.12.0 (Q repeats the last recorded register; v_Q, v_@ run per line) · news-0.10
+%     (commenting) · news-0.11 (grn grr gri gra gO; vim.lsp.config + vim.lsp.enable) · news-0.12
+%     (grt; Visual an / in; :Undotree after :packadd nvim.undotree; :uniq; 'autocomplete')
+%     · provider.txt (clipboard only through a provider; * = PRIMARY, + = CLIPBOARD; OSC 52)
+%     · terminal.txt (enter Terminal mode with i; leave with CTRL-\ CTRL-N)
+%   github.com/neovim/neovim/releases (v0.10.0 16 May 2024; v0.11.0 26 Mar 2025; v0.12.0 29 Mar 2026;
+%     v0.12.5 = latest stable, 23 Aug 2026)
+% @labels: area=dev-tools kind=tooling platform=general topic=tooling discussion=307
+% @tags: vim, neovim, modal-editing, motions, text-objects, operators, registers, macros, marks, regex, search-replace, undo, splits, key-bindings
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\bq{\textasciigrave}
+\newcommand\ca{\textasciicircum}
+\newcommand\bs{\textbackslash}
+\newcommand\tl{\textasciitilde}
+\newcommand\gtgt{\mbox{>}\mbox{>}}
+\newcommand\ltlt{\mbox{<}\mbox{<}}
+\newcommand\bang{\mbox{!}\mbox{!}}
+\newcommand\sls{\mbox{/}\mbox{/}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{T}[1]{>{\raggedright\arraybackslash\ttfamily}p{#1}}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.6mm},
+  md/.style={sb, minimum width=14mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, anchor=west},
+  seg/.style={font=\ttfamily\small, inner sep=0pt, anchor=west, minimum height=4mm},
+  gr/.style={sb, minimum height=5.5mm, inner sep=1pt},
+  br/.style={decorate, thick},
+  un/.style={circle, draw=sheetBlue, fill=sheetBlue!10, inner sep=0pt, minimum size=4.2mm, font=\sffamily\scriptsize\bfseries},
+}
+
+\begin{document}
+
+\sheettitle{Vim — the editing language: verbs, nouns, registers, undo}{dev-tools · folio}
+
+\oneliner{Normal mode is a \textbf{language}: \texttt{["x][count] operator [count] motion|text-object}
+(\texttt{"a2yy}, \texttt{ci"}, \texttt{gUiw}). An operator typed twice acts on the line
+(\texttt{dd}, \texttt{\gtgt}); \texttt{.} repeats the last change; every motion is
+\textbf{exclusive}, \textbf{inclusive} or \textbf{linewise}. Registers are text, a macro is a
+register, undo is a tree. Same grammar in Vim 9.2 and Neovim 0.12.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % ── 1 modes ──
+  \node[pt] at (-0.1,3.15) {\textcolor{sheetBlue}{1} modes};
+  \node[md, draw=sheetBlue, very thick, fill=sheetBlue!15, minimum width=12mm, minimum height=31mm] (N) at (0.55,1.2) {\textbf{Normal}\\(home)\\[2pt]{\tiny counts,}\\{\tiny operators,}\\{\tiny motions}};
+  \foreach \y/\n/\t/\c in {2.55/I/Insert/sheetGreen!70!black, 1.85/R/Replace/sheetGreen!70!black, 1.15/V/Visual/sheetOrange, 0.45/C/Cmdline/sheetGrey, -0.25/T/Terminal/sheetGrey}
+    \node[md, draw=\c, fill=\c!10, minimum height=4.6mm] (\n) at (4.95,\y) {\t};
+  \foreach \n/\go/\back in {I/{\texttt{i a I A o O s S c gi}}/{\texttt{Esc} · \texttt{CTRL-O} = one Normal cmd},
+                            R/{\texttt{R} (\texttt{r} = one char)}/{\texttt{Esc}},
+                            V/{\texttt{v V CTRL-V gv}}/{\texttt{Esc} or an operator},
+                            C/{\texttt{: / ? !}}/{\texttt{Enter} runs · \texttt{Esc} aborts},
+                            T/{Vim \texttt{:term} · Nvim \texttt{i}}/{\texttt{CTRL-\bs{} CTRL-N}}} {
+    \draw[flow] ($(N.east |- \n.west)+(0,0.07)$) -- node[lbl, above]{\go} ([yshift=0.7mm]\n.west);
+    \draw[flow, sheetRed] ([yshift=-0.7mm]\n.west) -- node[lbl, below, text=sheetRed]{\back} ($(N.east |- \n.west)+(0,-0.07)$);
+  }
+  % ── 2 grammar ──
+  \draw[sheetGrey!40] (5.85,3.25) -- (5.85,-0.5);
+  \node[pt] at (5.9,3.15) {\textcolor{sheetBlue}{2} the grammar: verb + noun};
+  \node[gr, fill=black!4, draw=sheetGrey, minimum width=7mm] (g1) at (6.4,2.45) {\texttt{"x}};
+  \node[gr, fill=black!4, draw=sheetGrey, minimum width=6mm, right=1.6mm of g1] (g2) {\texttt{[n]}};
+  \node[gr, draw=sheetRed, fill=sheetRed!7, minimum width=13mm, right=1.6mm of g2] (g3) {operator};
+  \node[gr, fill=black!4, draw=sheetGrey, minimum width=6mm, right=1.6mm of g3] (g4) {\texttt{[n]}};
+  \node[gr, fill=black!4, draw=sheetGrey, minimum width=10mm, right=1.6mm of g4] (g5) {\texttt{v V \ca{}V}};
+  \node[gr, draw=sheetGreen!70!black, fill=sheetGreen!10, minimum width=19mm, right=1.6mm of g5] (g6) {motion | text obj};
+  \foreach \a/\b in {g1/g2,g2/g3,g3/g4,g4/g5,g5/g6} \draw[->, thin, sheetGrey] (\a) -- (\b);
+  \foreach \n/\t in {g1/register, g2/count, g3/verb, g4/count (×), g5/force type, g6/noun}
+    \node[lbl, below=0.3mm of \n] {\t};
+  \node[lbl, anchor=west, align=left, font=\scriptsize] at (5.9,1.6) {\texttt{"a3yy} 3 lines into \texttt{a}\qquad\texttt{2d3w} = 6 words (counts multiply)};
+  \node[lbl, anchor=west, align=left, font=\scriptsize] at (5.9,1.2) {\texttt{ci"} change inside quotes\qquad\texttt{gUiw} upper-case the word};
+  \node[lbl, anchor=west, align=left, font=\scriptsize] at (5.9,0.8) {\texttt{dt)} delete till \texttt{)}\qquad\texttt{d/end} delete up to a match\qquad\texttt{>ip} indent};
+  \node[lbl, anchor=west, align=left, font=\scriptsize] at (5.9,0.4) {\texttt{dvj} \texttt{j} made charwise\qquad\texttt{d\ca{}V2j} a 3-line, 1-column block};
+  \node[lbl, anchor=west, align=left, font=\scriptsize] at (5.9,0.0) {doubled = the line: \texttt{dd cc yy \gtgt{} == gUU gqq gcc}};
+  \node[lbl, anchor=west, align=left, text=sheetBrown, font=\scriptsize] at (5.9,-0.4) {\texttt{.} repeats the whole change; a new count replaces the old};
+  % ── 3 text objects ──
+  \draw[sheetGrey!40] (13.25,3.25) -- (13.25,-0.5);
+  \node[pt] at (13.3,3.15) {\textcolor{sheetBlue}{3} text objects};
+  \node[seg] (s1) at (13.5,1.6) {f};
+  \node[seg] (s2) at (s1.east) {(};
+  \node[seg] (s3) at (s2.east) {"};
+  \node[seg, text=sheetOrange] (s4) at (s3.east) {big};
+  \node[seg] (s5) at (s4.east) {\ deal};
+  \node[seg] (s6) at (s5.east) {"};
+  \node[seg] (s7) at (s6.east) {, x};
+  \node[seg] (s8) at (s7.east) {)};
+  \draw[br, decoration={brace, amplitude=2pt}, sheetBlue] ([yshift=1.5mm]s3.north west) -- node[lbl, above=2pt]{\texttt{i(}} ([yshift=1.5mm]s7.north east);
+  \draw[br, decoration={brace, amplitude=2pt}, sheetBlue] ([yshift=6.5mm]s2.north west) -- node[lbl, above=2pt]{\texttt{a(} = with the parens} ([yshift=6.5mm]s8.north east);
+  \draw[br, decoration={brace, mirror, amplitude=2pt}, sheetOrange] ([yshift=-1.5mm]s4.south west) -- node[lbl, below=2pt]{\texttt{iw}} ([yshift=-1.5mm]s4.south east);
+  \draw[br, decoration={brace, mirror, amplitude=2pt}, sheetGreen!60!black] ([yshift=-6.5mm]s4.south west) -- node[lbl, below=2pt]{\texttt{i"}} ([yshift=-6.5mm]s5.south east);
+  \draw[br, decoration={brace, mirror, amplitude=2pt}, sheetGreen!60!black] ([yshift=-11.5mm]s3.south west) -- node[lbl, below=2pt]{\texttt{a"} (+ trailing space)} ([yshift=-11.5mm]s6.south east);
+  \node[lbl, anchor=west, align=left] at (13.3,-0.35) {cursor on \textcolor{sheetOrange}{big}: \texttt{i} = inner,\\\texttt{a} = with delimiters / space};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Operators — the verbs}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}T{8mm}L{28mm}T{10mm}L{29mm}@{}}
+\toprule
+c & change = delete, then Insert & gq gw & format (\texttt{gw}: cursor stays)\\
+d & delete (into a register) & g\tl{} gu gU & swap · lower · upper case\\
+y & yank = copy & g? & ROT13\\
+> < & shift by \texttt{'shiftwidth'} & ! & filter through a program\\
+= & re-indent (\texttt{'equalprg'}) & zf & create a fold\\
+gc & comment: Nvim 0.10+; Vim \texttt{packadd!~comment} & g@ & your own: calls \texttt{'operatorfunc'}\\
+\bottomrule
+\end{tabular}}\par
+Shorthands: \ct{x}=\ct{dl} · \ct{X}=\ct{dh} · \ct{D}=\ct{d\$} · \ct{C}=\ct{c\$} · \ct{s}=\ct{cl}
+· \ct{S}=\ct{cc} · \ct{Y}=\ct{yy} (Nvim maps it to \ct{y\$}) · \ct{\tl} swaps one char · \ct{J} /
+\ct{gJ} join with / without a space · \ct{r}x replaces one char · \ct{xp} swaps two chars,
+\ct{ddp} two lines.
+
+\section{Motions — exclusive, inclusive, linewise}
+\textbf{Exclusive} leaves the end char out, \textbf{inclusive} keeps it, \textbf{linewise}
+takes whole lines: \ct{dw} · \ct{de} · \ct{dj}.\par
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}T{17mm}L{48mm}L{12mm}@{}}
+\toprule
+\textrm{\textbf{keys}} & \textbf{to} & \textbf{type}\\
+\midrule
+h l · j k & char · line & exc · line\\
+w b · e ge & word start · word end (\texttt{W B E gE}: WORD) & exc · inc\\
+0 \ca{} · \$ g\_ & col 1 · first non-blank · end · last non-blank & exc · inc\\
+f t · F T & onto / till a char → · ← ; \texttt{;} \texttt{,} repeat / reverse & inc · exc\\
+\% & the bracket matching the next \texttt{( [ \{} on the line & inc\\
+( ) \{ \} & sentence · paragraph & exc\\
+{}[( [\{ ]) ]\} & enclosing unmatched bracket & exc\\
+gg G · 50\% & first · last (or \emph{N}th) line · 50 \% down & line\\
+H M L & top · middle · bottom of the window & line\\
+/ ? n N * \# & search; \texttt{* \#} = word under cursor & exc\\
+\bq{}a · 'a & mark: exact spot · its line & exc · line\\
+gj gk & display line (wrapped text) & exc\\
+\bottomrule
+\end{tabular}}\par
+\textbf{word} = letters, digits, \ct{\_} (\texttt{'iskeyword'}) or a run of other non-blanks;
+\textbf{WORD} = any non-blank run: \ct{foo.bar(x)} is 6 words, 1 WORD. \textbf{Force}: \ct{v}
+charwise (flips inc/exc), \ct{V} linewise, \ct{CTRL-V} blockwise. \textbf{Special}: \ct{cw} acts
+as \ct{ce} on a non-blank (the space survives); \ct{dw} on a line's last word stops at the line
+end, not on the next line.
+
+\section{Text objects — the nouns}
+Only after an operator or in Visual: \ct{iw aw iW} · \ct{is ip} · \ct{i( i\{ i[ i<} (= \ct{ib},
+\ct{iB}) · \ct{it at} tags · \ct{i" i' i\bq}. Quote objects stay \textbf{within one line}. A count
+reaches outer levels: \ct{d2i(} empties the second enclosing \ct{( )}. In Visual a repeated
+\ct{aw} / \ct{ip} extends by one object, a repeated \ct{it} takes the tags. Nvim 0.12: Visual
+\ct{an} / \ct{in} grow / shrink it by LSP selection range.
+
+\section{Insert and Visual}
+\textbf{Insert}: \ct{CTRL-W} word back · \ct{CTRL-U} what was typed on the line ·
+\ct{CTRL-R}\emph{r} put a register · \ct{CTRL-A} the last insert again · \ct{CTRL-O} one Normal
+command · \ct{CTRL-T} / \ct{CTRL-D} indent ± · \ct{CTRL-V} next key literally · \ct{CTRL-K e:} →
+ë · \ct{CTRL-N} / \ct{CTRL-P} complete · \ct{CTRL-X CTRL-L} line, \ct{CTRL-X CTRL-F} file name ·
+\ct{CTRL-G u} new undo step · \ct{gi} resume the last insert. Vim 9.2: fuzzy completion,
+\ct{CTRL-X CTRL-R} words from registers; Nvim 0.12: \texttt{'autocomplete'}.\par
+\textbf{Visual}: \ct{gv} reselect · \ct{o} other end · \ct{:} pre-types \ct{:'<,'>} · \ct{.}
+redoes it on the same amount of text · \ct{p} puts over it (old text → \ct{""}), \ct{P} keeps
+registers · block \ct{I}, \ct{A}, \ct{\$A} + text + \ct{Esc} → every line; \ct{c} and
+\ct{r}x likewise · \ct{gn} = next match: \ct{cgn}\emph{new}\ct{Esc}, then \ct{. .} · Nvim:
+Visual \ct{* \#} search the selection; in linewise Visual \ct{@a} / \ct{Q} run on each line.
+
+\section{Vim 9.2 vs Neovim 0.12 (2026)}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{10mm}L{33mm}L{34mm}@{}}
+\toprule
+& \textbf{Vim 9.2} (14 Feb) & \textbf{Neovim 0.12} (29 Mar)\\
+\midrule
+config & \ct{\tl/.vimrc}, \ct{\tl/.vim/vimrc}, then \ct{\tl/.config/vim/vimrc} (new); none: defaults.vim & \ct{\tl/.config/nvim/init.lua} or \ct{init.vim}\\
+defaults & \texttt{'hlsearch' 'incsearch'} off & on, + \texttt{'autoindent'}; ShaDa, not viminfo\\
+\ct{Y \& Q} & \ct{yy} · \ct{:s} · Ex mode & \ct{y\$} · \ct{:\&\&} · replay last macro\\
+LSP & plugins & \ct{grn} rename \ct{grr} refs \ct{gri} \ct{gra} (0.11) \ct{grt} (0.12) \ct{gO} \ct{K}\\
+\bottomrule
+\end{tabular}}
+
+\columnbreak
+
+\section{Registers and macros}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}T{11mm}L{67mm}@{}}
+\toprule
+"{}" & unnamed: every \texttt{d c s x y} fills it, named or not; \texttt{p} reads it\\
+"0 & last \textbf{yank} (no register named) — deletes leave it alone\\
+"1 … "9 & deletes $\ge$1 line, or by \texttt{\% ( ) \bq{} / ? n N \{ \}}; each shifts 1 → 9\\
+"- & small delete ($<$1 line)\\
+"a … "z & named; \textbf{\texttt{"A}}…\textbf{\texttt{"Z}} \textbf{append}\\
+". ": "\% & last insert · last command line · file name (read-only)\\
+"\# "/ & alternate file · last search pattern\\
+"= & expression: \texttt{"=6*7<CR>p}; \texttt{CTRL-R =} in Insert\\
+"* "+ & PRIMARY · CLIPBOARD; Nvim only via a provider (pbcopy, wl-copy, OSC 52 …)\\
+"\_ & black hole: delete without clobbering anything\\
+\bottomrule
+\end{tabular}}\par
+\ct{"ayiw} · \ct{"ap} · \ct{CTRL-R a} in Insert and on the command line · \ct{:reg} · lost a
+delete? \ct{"1P}, then \ct{.} \ct{.} pastes \ct{"2}, \ct{"3} …\par
+\textbf{Macros}: \ct{qa}…\ct{q} records keys into \ct{"a} (\ct{qA} appends) · \ct{@a} · \ct{3@a}
+· \ct{@@} again · \ct{@:} last Ex command · Nvim \ct{Q} = last recorded register (Vim: Ex mode).
+A macro is register text: \ct{"ap}, edit, \ct{0"ay\$} — or \ct{:let @a='0f,D'}.
+\ct{:\{range\}norm[al][!] @a} runs it per line from column 1 (\ct{!}: no mappings).
+\ct{:g/pat/cmd} marks matching lines \emph{first}, then runs \emph{cmd} on each (a deleted line
+loses its mark) · \ct{:v} = \ct{:g!} · \ct{:g/\ca\$/d} · \ct{:g/x/norm @a}.
+
+\section{Search, substitute, filter}
+\ct{\bs v} very magic (all ASCII but letters, digits, \ct{\_} special: \ct{\bs v(\bs d+)\bs s*=}) · \ct{\bs m}
+default · \ct{\bs V} literal · \ct{\bs\{-\}} lazy · \ct{\bs zs} / \ct{\bs ze} set the match start /
+end · \ct{\bs{}@=} \ct{\bs{}@!} ahead, \ct{\bs{}@<=} \ct{\bs{}@<!} behind · \ct{\bs c} \ct{\bs C} case ·
+\ct{\bs< \bs>} word edges · \ct{\bs\_s} \ct{\bs\_.} span lines. \ct{* \#} search
+\ct{\bs<word\bs>} (\texttt{'ignorecase'} yes, \texttt{'smartcase'} no); \ct{g*} without the edges.\par
+\ct{:[range]s/pat/rep/[flags]} — range \ct{\% . \$ '<,'> .,+3 'a,'b /x/,/y/} · flags \ct{g} all
+(\texttt{'gdefault'} flips it), \ct{c} confirm, \ct{i I} case, \ct{n} count only, \ct{e} quiet,
+\ct{\&} keep · \emph{rep}: \ct{\&} the match, \ct{\bs 1}…\ct{\bs 9}, \ct{\tl} the last \emph{rep},
+\ct{\bs u \bs U}…\ct{\bs E} case, \ct{\bs r} line break, \ct{\bs=} expression. Empty pattern =
+the last used one: \ct{*}, then \ct{:\%s\sls{}x/g}. \ct{\&} repeats without the flags (Nvim maps
+it to \ct{:\&\&}) · \ct{g\&} = \ct{:\%s//\tl/\&} on every line. \textbf{Filters}:
+\ct{!\{motion\}cmd} · \ct{\bang{}cmd} · \ct{:\%!sort} · \ct{:r !cmd} output below · \ct{:w !cmd}
+lines to stdin · built in \ct{:sort u}; Nvim 0.12 \ct{:uniq}.
+
+\section{Undo is a tree}
+\begin{tikzpicture}[sheet]
+  \node[un] (u0) at (0,0.6) {0}; \node[un] (u1) at (0.9,0.6) {1};
+  \node[un] (u2) at (1.8,0.6) {2}; \node[un] (u3) at (2.7,0.6) {3};
+  \node[un, draw=sheetOrange, fill=sheetOrange!15] (u4) at (1.8,-0.2) {4};
+  \draw[thick, sheetGrey] (u0) -- (u1) -- (u2) -- (u3); \draw[thick, sheetGrey] (u1) -- (u4);
+  \draw[->, thin, sheetBlue] (u4.north west) to[bend left=25] node[lbl, left, text=sheetBlue]{\texttt{u}} (u1.south);
+  \draw[->, thin, sheetRed, dashed] (u4.east) to[bend right=30] node[lbl, right, text=sheetRed]{\texttt{g-}} (u3.south);
+  \node[lbl, anchor=west, align=left] at (3.3,0.55) {3 changes, \texttt{u u}, then a new\\change = branch \textcolor{sheetOrange}{4}; nothing is lost};
+  \node[lbl, anchor=west, align=left] at (3.3,-0.15) {\textcolor{sheetBlue}{\texttt{u} / \texttt{CTRL-R}}: along the branch\\\textcolor{sheetRed}{\texttt{g-} / \texttt{g+}}: by change number = time};
+\end{tikzpicture}\par
+One undo = one command or one Insert session (\ct{CTRL-G u} splits it) · \ct{U} (last changed
+line) is itself a change · \ct{:earlier 10m} · \ct{:later 30s} · \ct{:earlier 2f} (file
+writes) · \ct{:undo 3} · \ct{:undolist} · Nvim 0.12: \ct{:packadd nvim.undotree},
+\ct{:Undotree} · \texttt{'undofile'} (off by default) persists it; ignored if the file changed
+outside (hash check).
+
+\section{Marks, jumps, windows}
+\ct{ma} · \ct{\bq{}a} spot / \ct{'a} line · \ct{a}–\ct{z} per buffer, \ct{A}–\ct{Z} across
+files, \ct{0}–\ct{9} from viminfo / ShaDa · \ct{\bq[ \bq]} last change or yank · \ct{\bq< \bq>}
+last Visual · \ct{\bq\bq} before the last jump · \ct{\bq"} last exit · \ct{\bq.} last change. \textbf{Jumplist} (100): \ct{CTRL-O} / \ct{CTRL-I}; jumps are \ct{G / ?
+n N \% ( ) \{ \} H M L}, marks, \ct{:s}, \ct{:tag}, a new file — not \ct{j k w}; Nvim
+\texttt{'jumpoptions'} default \ct{clean}. \textbf{Changelist}: \ct{g;} \ct{g,}.\par
+\textbf{Buffer} = text in memory · \textbf{window} = a viewport on a buffer · \textbf{tab} = a set
+of windows. \ct{:ls} · \ct{:b3} · \ct{CTRL-\ca} alternate · \ct{:sp} stacked, \ct{:vs} side by
+side · \ct{CTRL-W hjkl w p} go, \ct{HJKL} move, \ct{T} to a tab, \ct{o} only, \ct{=} equalise ·
+\ct{:bufdo :windo :cdo} · \ct{ZZ} = \ct{:x} (writes only if modified) · \ct{ZQ} = \ct{:q!}.
+
+\section{Traps}
+\begin{itemize}
+  \trap{A vimrc skips defaults.vim: \texttt{'incsearch'} stays off and \ct{CTRL-A} turns
+        \ct{007} into \ct{010} (octal).}
+  \trap{A delete overwrites \ct{""}: paste the yank with \ct{"0p}, or delete into \ct{"\_}.}
+  \trap{\ct{\bs n} in a replacement inserts a NUL; \ct{\bs r} breaks the line.}
+  \trap{\ct{:sp} is the \emph{horizontal} split (stacked); \ct{:vs} the vertical one.}
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{tmux-panes} ·
+\texttt{macos-power-user-cli} · Git in depth · Swift Regex · Lint \& static analysis}
+
+\end{document}

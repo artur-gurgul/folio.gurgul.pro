@@ -1,0 +1,341 @@
+% js-types-coercion-modules.tex — the eight language types and typeof; ToPrimitive, ToNumber,
+% ToString, ToBoolean as one value table; == / === / Object.is / SameValueZero; relational
+% comparison; IEEE-754 numbers and BigInt; ?? ?. and logical assignment; spread vs
+% structuredClone vs JSON copies; ES modules (load, link, evaluate, live bindings, top-level
+% await, import attributes, import()); Node.js CommonJS <-> ESM interop and cycles.
+% Sources (checked 2026-10-09):
+%   ecma-international.org ECMA-262 (17th edition = ECMAScript 2026, June 2026) · tc39.es/ecma262
+%     (draft "ECMAScript 2027"; nothing below differs from ES2026):
+%     abstract-operations — ToPrimitive (Symbol.toPrimitive; hint "default"/"string"/"number";
+%     no hint behaves as number; only Date and Symbol override, Date reads no hint as string),
+%     OrdinaryToPrimitive (string: toString, valueOf · else valueOf, toString · TypeError),
+%     ToBoolean (undefined null false ±0 NaN 0n ""; [[IsHTMLDDA]]), ToNumber (undefined NaN,
+%     null 0, Symbol / BigInt TypeError, object via number hint), StringToNumber (white space
+%     and line terminators trimmed, empty → 0, 0x / 0o / 0b, sign only on decimal, Infinity,
+%     no separator, no n suffix), ToString, ToPropertyKey (string hint), ToBigInt /
+%     StringToBigInt, ToInt32 / ToUint32, IsLessThan (code-unit order; undefined → false),
+%     IsLooselyEqual (all 14 steps), IsStrictlyEqual, SameValue, SameValueZero
+%   tc39.es/ecma262 language-expressions — typeof table (unresolvable reference → "undefined";
+%     [[Call]] → "function"; [[IsHTMLDDA]] → "undefined"), unary + = ToNumber, binary + (ToPrimitive
+%     without hint, a string on either side concatenates), < > <= >= via IsLessThan, template
+%     substitution = ToString ("like String.prototype.concat rather than the + operator"),
+%     CoalesceExpression grammar (?? not mixable with || && unparenthesised), optional-chain
+%     early errors (new a?.(), assignment, tagged template), logical assignment short-circuits,
+%     ImportCall (second argument, options.with, TypeError on non-object / non-string),
+%     import.meta only in a Module
+%   tc39.es/ecma262 scripts-and-modules — LoadRequestedModules / Link / Evaluate (returns a
+%     promise), [[Status]] new · unlinked · linking · linked · evaluating · evaluating-async ·
+%     evaluated, [[HasTLA]], InitializeEnvironment (CreateImportBinding; unresolvable or
+%     ambiguous export → SyntaxError; functions instantiated at link, let / const left
+%     uninitialised), same Module Record for the same (referrer, specifier, attributes),
+%     WithClause (duplicate key = SyntaxError); module namespace object (writable-looking,
+%     non-configurable properties, not extensible, sorted keys, [[Set]] fails, tag "Module")
+%   tc39.es/ecma262 numbers-and-dates (Number(value): BigInt → 𝔽(ℝ(prim)); NumberToBigInt
+%     RangeError if not integral; Math.round ties toward +∞, -0.5 ≤ n < -0 → -0; EPSILON ≈
+%     2.22e-16; MAX_SAFE_INTEGER 2^53 − 1; MIN_VALUE ≈ 5e-324) · data-types-and-values
+%     (BigInt::divide RangeError on 0n; BigInt::unsignedRightShift TypeError; Number::toString
+%     ±0 → "0") · indexed-collections (join: undefined / null → ""; includes SameValueZero,
+%     indexOf IsStrictlyEqual; default sort compares ToString) · text-processing (String(sym)
+%     → SymbolDescriptiveString)
+%   github.com/tc39/proposals finished-proposals.md (BigInt, ??, ?., import(), import.meta,
+%     globalThis 2020 · logical assignment, numeric separators 2021 · top-level await, .at()
+%     2022 · import attributes, JSON modules 2025 · JSON.parse source text access 2026) · README
+%     (Stage 3: source phase imports, deferring module evaluation · 2.7: import text) ·
+%     proposal-top-level-await (importers wait, siblings do not: "X1", "Y", "X2") ·
+%     proposal-defer-import-eval (evaluates on first property access; async parts eager) ·
+%     proposal-source-phase-imports (import source; WebAssembly.Module) ·
+%     proposal-json-parse-with-source (JSON.rawJSON; reviver context.source, primitives only)
+%   nodejs.org/api (docs v26.11.1): modules (require(esm): flag dropped 23.0 / 22.12 / 20.19,
+%     no warning 23.5 / 22.13, stable 25.4; returns the namespace, __esModule: true when it has a
+%     default; "module.exports" string export; ERR_REQUIRE_ASYNC_MODULE;
+%     process.features.require_module; cycles return an unfinished exports copy; wrapper; cache by
+%     resolved filename) · esm (default always = module.exports; named exports by static analysis;
+%     JSON needs with { type: 'json' }, default export only; import assertions dropped 22.0;
+%     attributes stable 23.1 / 22.12; extensions mandatory, no index; ?query = another instance;
+%     import.meta.dirname / filename 21.2, stable 24.0; import.meta.main 24.2; import() in both;
+%     unsettled top-level await → exit 13) · packages (type field; syntax detection on by default
+%     22.7 / 20.19; module-sync condition; dual package hazard) · globals (structuredClone 17.0)
+%     · nodejs.org/en/about/previous-releases (24 and 22 LTS, 26 Current, 20 end-of-life)
+%   developer.mozilla.org: Structured_clone_algorithm (DataCloneError on functions; prototype,
+%     getters, private fields, symbols not kept; cycles kept) · structuredClone (widely available
+%     since March 2022) · JSON.stringify (undefined / function / symbol omitted, null in arrays;
+%     NaN, Infinity → null; BigInt and cycles TypeError; Map / Set → {}; symbol keys ignored)
+%     · Guide/Modules (deferred automatically, executed once, strict, CORS) · parseInt (radix 0
+%     → 10 unless 0x, radix < 2 → NaN; ≥ 1e21 and tiny numbers stringify in exponent form)
+% @labels: area=javascript kind=concept platform=web topic=language discussion=313
+% @tags: type-coercion, loose-equality, toprimitive, object-is, typeof, falsy-values, ieee-754, bigint, nullish-coalescing, optional-chaining, structuredclone, esm-vs-commonjs, require-esm, top-level-await, import-attributes, tdz
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\tikzset{
+  sb/.style={box, font=\scriptsize, inner sep=1.5pt, minimum height=4.2mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pt/.style={font=\bfseries\small, anchor=west},
+  tr/.style={sb, font=\scriptsize\ttfamily, minimum width=19mm},
+  mb/.style={draw=sheetBlue, fill=sheetBlue!6, rounded corners=1.5pt, font=\ttfamily\tiny,
+             inner sep=1.5pt, minimum height=3.6mm},
+}
+% operators split into boxes so the mono font cannot turn them into ligature glyphs
+\newcommand\eqq{\hbox{=}\hbox{=}}
+\newcommand\eqqq{\hbox{=}\hbox{=}\hbox{=}}
+\newcommand\qq{\hbox{?}\hbox{?}}
+\newcommand\qqe{\hbox{?}\hbox{?}\hbox{=}}
+\newcommand\oo{\hbox{|}\hbox{|}}
+\newcommand\ooe{\hbox{|}\hbox{|}\hbox{=}}
+\newcommand\ane{\hbox{\&}\hbox{\&}\hbox{=}}
+\newcommand\qd{\hbox{?}\hbox{.}}
+\newcommand\gee{\hbox{>}\hbox{=}}
+\newcommand\lee{\hbox{<}\hbox{=}}
+\newcommand\fat{\hbox{=}\hbox{>}}
+\newcommand\ush{\hbox{>}\hbox{>}\hbox{>}}
+\newcommand\pw{\hbox{*}\hbox{*}}
+\newcommand\spr{\hbox{.}\hbox{.}\hbox{.}}
+\newcommand\bq{\textasciigrave}
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\yes{\textcolor{sheetGreen}{\checkmark}}
+\newcommand\no{\textcolor{sheetRed}{$\times$}}
+\newcommand\bad[1]{\textcolor{sheetRed}{#1}}
+
+\begin{document}
+
+\sheettitle{Types, coercion and modules}{javascript · folio}
+
+\oneliner{Seven primitive types (immutable, by value) + \textbf{Object} (by identity). Implicit
+conversions are built from \textbf{ToPrimitive}, \textbf{ToNumber}, \textbf{ToString},
+\textbf{ToBoolean}, so every ``WAT'' traces. ES modules \textbf{link} the whole graph before
+any code runs and imports are \textbf{live bindings}; \ct{require} runs a file and returns an object.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \x in {6.0,11.0} \draw[sheetGrey!40] (\x,3.1) -- (\x,-0.7);
+  % ── 1 trace [] == ![] ──
+  \node[pt] at (0,2.95) {\textcolor{sheetBlue}{1} \texttt{[] \eqq{} ![]} step by step};
+  \node[tr] (a) at (0.9,2.4) {[] \eqq{} ![]};
+  \node[tr] (b) at (0.9,1.5) {[] \eqq{} false};
+  \node[tr] (c) at (0.9,0.6) {[] \eqq{} 0};
+  \node[tr] (d) at (4.3,0.6) {"" \eqq{} 0};
+  \node[tr] (e) at (4.3,1.5) {0 \eqq{} 0};
+  \node[sb, minimum width=19mm, draw=sheetGreen, fill=sheetGreen!10, font=\scriptsize\ttfamily\bfseries] (f) at (4.3,2.4) {true};
+  \draw[flow] (a) -- node[lbl, right, align=left]{\texttt{!} first: an object\\is truthy $\to$ \texttt{false}} (b);
+  \draw[flow] (b) -- node[lbl, right, align=left]{boolean side\\$\to$ ToNumber} (c);
+  \draw[flow] (c) -- node[lbl, below, align=center]{object vs number\\$\to$ ToPrimitive} (d);
+  \draw[flow] (d) -- node[lbl, right, align=left]{string vs number\\$\to$ ToNumber} (e);
+  \draw[flow] (e) -- node[lbl, right, align=left]{same type\\$\to$ \texttt{\eqqq}} (f);
+  \node[lbl, anchor=west, text=sheetBrown] at (0,-0.2) {\texttt{[].valueOf()} is the array itself, not a primitive};
+  \node[lbl, anchor=west, text=sheetBrown] at (0,-0.43) {$\to$ \texttt{toString()} $\to$ \texttt{""}. Same chain makes \texttt{true}:};
+  \node[lbl, anchor=west, text=sheetBrown] at (0,-0.66) {\texttt{[0] \eqq{} false} · \texttt{[] \eqq{} ""} · \texttt{"\textbackslash t\textbackslash n" \eqq{} 0} · \texttt{[1] \eqq{} 1}};
+  % ── 2 ToPrimitive ──
+  \node[pt] at (6.1,2.95) {\textcolor{sheetBlue}{2} \texttt{ToPrimitive(obj, hint)}};
+  \node[sb, minimum width=25mm, anchor=west] (h) at (6.15,2.35) {has \texttt{[Symbol.toPrimitive]}?};
+  \node[sb, minimum width=13mm, anchor=west, draw=sheetGreen, fill=sheetGreen!10] (h1) at (9.55,2.35) {call(hint)};
+  \node[sb, minimum width=25mm, anchor=west] (s) at (6.15,1.55) {hint \texttt{"string"}?};
+  \node[sb, minimum width=21mm, anchor=west, font=\scriptsize\ttfamily] (s1) at (8.55,1.1) {toString, valueOf};
+  \node[sb, minimum width=21mm, anchor=west, font=\scriptsize\ttfamily] (s2) at (6.15,0.55) {valueOf, toString};
+  \draw[flow] (h) -- node[lbl, above]{yes} (h1);
+  \draw[flow] (h) -- node[lbl, left]{no} (s);
+  \draw[flow] (s.east) -| node[lbl, above, pos=0.3]{yes} (s1.north);
+  \draw[flow] (s) -- node[lbl, left]{no} (s2);
+  \node[lbl, anchor=north, align=center] at (10.2,2.05) {object back\\$\to$ TypeError};
+  \node[lbl, anchor=west, align=left] at (8.5,0.45) {first \emph{primitive} result wins;\\none $\to$ TypeError};
+  \node[lbl, anchor=west, text=sheetBrown] at (6.1,-0.2) {hint \textbf{string}: \texttt{String(x)}, \texttt{\bq\$\{x\}\bq}, property keys};
+  \node[lbl, anchor=west, text=sheetBrown] at (6.1,-0.43) {\textbf{number}: \texttt{+x}, \texttt{x - 1}, \texttt{< >} · \textbf{none}: binary \texttt{+}, \texttt{\eqq} (as number)};
+  \node[lbl, anchor=west, text=sheetBrown] at (6.1,-0.66) {\texttt{Date} reads none as string: \texttt{new Date(0) + 1} concatenates};
+  % ── 3 live binding vs copy ──
+  \node[pt] at (11.1,2.95) {\textcolor{sheetBlue}{3} live binding vs copy};
+  \node[sb, minimum width=30mm, align=left, font=\tiny\ttfamily] (m) at (13.75,2.25) {// counter.mjs\\export let n = 0;\\export const inc = () \fat{} n++;};
+  \node[sb, minimum width=24mm, draw=sheetGreen, fill=sheetGreen!10, font=\tiny, align=center] (esm) at (12.3,0.95) {\texttt{import \{n, inc\}}\\\texttt{inc(); n} $\to$ \textbf{1}};
+  \node[sb, minimum width=24mm, draw=sheetRed, fill=sheetRed!7, font=\tiny, align=center] (cjs) at (15.05,0.95) {\texttt{const \{n, inc\} =}\\\texttt{require(…); inc(); n} $\to$ \textbf{0}};
+  \draw[hot] (esm.north) -- node[lbl, left]{same slot} (esm.north|-m.south);
+  \draw[flow, dashed] (cjs.north) -- node[lbl, right]{copied} (cjs.north|-m.south);
+  \node[lbl, anchor=west] at (11.1,-0.2) {an import is an immutable \emph{indirect} binding: \texttt{n = 5} $\to$ TypeError};
+  \node[lbl, anchor=west, text=sheetBrown] at (11.1,-0.43) {\texttt{require(esm)} (Node $\ge$ 22.12) returns the namespace:};
+  \node[lbl, anchor=west, text=sheetBrown] at (11.1,-0.66) {\texttt{ns.n} stays live; destructuring copies the value it saw};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Types and the four conversions}
+\begin{itemize}
+  \item Primitives: \ct{undefined null boolean number string}, \ct{symbol} (ES2015),
+        \ct{bigint} (ES2020). All else is an \textbf{object}: arrays, functions, wrappers
+        (\ct{new Boolean(false)} is truthy). \ct{"a".length} goes through a temporary wrapper.
+        Assignment and arguments copy the value; for an object that value is a reference —
+        mutating a parameter shows in the caller, reassigning it does not.
+  \item \ct{typeof} on an undeclared name $\to$ \ct{"undefined"}; on a \ct{let}/\ct{const} in
+        its TDZ $\to$ ReferenceError. Browsers' \ct{document.all} (Annex B) is the one object
+        with \ct{typeof} \ct{"undefined"}, falsy and \ct{\eqq{} null}. Better tests:
+        \ct{x \eqq{} null} · \ct{Array.isArray} (cross-realm, unlike \ct{instanceof}) ·
+        \ct{Object.prototype.toString.call(null)} $\to$ \ct{"[object Null]"} ·
+        \ct{Number.isNaN} (\ct{isNaN("abc")} is \ct{true}).
+\end{itemize}
+{\scriptsize\setlength{\tabcolsep}{2pt}\renewcommand{\arraystretch}{0.98}
+\begin{tabular}{@{}>{\ttfamily}l>{\ttfamily}l>{\ttfamily}l>{\ttfamily}l>{\ttfamily}l@{}}
+\toprule
+\normalfont\textbf{value} & \normalfont\textbf{typeof} & \normalfont\textbf{ToBoolean} & \normalfont\textbf{ToNumber (+x)} & \normalfont\textbf{ToString (\ct{\bq\$\{x\}\bq})}\\
+\midrule
+undefined & "undefined" & false & NaN & "undefined"\\
+null & "object" & false & 0 & "null"\\
+true & "boolean" & true & 1 & "true"\\
+-0 · NaN & "number" & false & -0 · NaN & "0" · "NaN"\\
+1e21 & "number" & true & 1e21 & "1e+21"\\
+0n & "bigint" & false & TypeError† & "0"\\
+"" · " 12\textbackslash n" & "string" & false · true & 0 · 12 & \normalfont\emph{itself}\\
+"0x1F" · "-0x1F" & "string" & true & 31 · NaN & \\
+"1\_000" · "1e3" & "string" & true & NaN · 1000 & \\
+"Infinity" · "0b11" & "string" & true & Infinity · 3 & \\
+Symbol("s") & "symbol" & true & TypeError & TypeError†\\
+{}[] · [7] & "object" & true & 0 · 7 & "" · "7"\\
+{}[1,2] · [null] & "object" & true & NaN · 0 & "1,2" · ""\\
+\{\} & "object" & true & NaN & "[object Object]"\\
+() \fat{} 1 & "function" & true & NaN & \normalfont its source text\\
+new Date(0) & "object" & true & 0 & \normalfont local date text\\
+\bottomrule
+\end{tabular}}\par
+Falsy: \ct{false 0 -0 0n "" null undefined NaN}; \ct{"0"}, \ct{" "}, \ct{[]},
+\ct{\{\}} are truthy. A string must parse whole after trimming white space; sign only on
+decimals, no \ct{\_}, no \ct{n}. Arrays join with commas, \ct{null}/\ct{undefined} as
+\ct{""}. †\ct{Number(10n)} $\to$ \ct{10} and \ct{String(Symbol("s"))} $\to$
+\ct{"Symbol(s)"} work; \ct{+10n}, \ct{"" + sym}, \ct{\bq\$\{sym\}\bq} throw.
+
+\section{Four equalities}
+{\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{\ttfamily}lcccc@{}}
+\toprule
+\normalfont\textbf{pair} & \ct{\eqq} & \ct{\eqqq} & \ct{Object.is} & \textbf{SameValueZero}\\
+\midrule
+NaN, NaN & \no & \no & \yes & \yes\\
++0, -0 & \yes & \yes & \no & \yes\\
+1, "1" · 1n, 1 & \yes & \no & \no & \no\\
+null, undefined & \yes & \no & \no & \no\\
+\midrule
+\normalfont used by & \normalfont — & \normalfont\ct{switch}, \ct{indexOf} & \normalfont\ct{Object.is} & \normalfont\ct{includes}, \ct{Map}/\ct{Set} keys\\
+\bottomrule
+\end{tabular}}\par
+\textbf{\ct{x \eqq{} y}}, in order: same type $\to$ \ct{\eqqq} · \ct{null}/\ct{undefined}
+equal each other only · number vs string $\to$ ToNumber(string) · bigint vs string $\to$
+StringToBigInt (fails $\to$ false) · a boolean $\to$ ToNumber \emph{first} · object vs
+primitive $\to$ ToPrimitive, no hint · bigint vs number $\to$ same mathematical value · else
+false. Not transitive: \ct{"0" \eqq{} 0}, \ct{0 \eqq{} ""}, yet \ct{"0" \eqq{} ""} is
+false; \ct{null \eqq{} 0} is false.
+\textbf{\ct{< > \lee{} \gee}}: both sides ToPrimitive(number); two strings compare by UTF-16
+code unit (\ct{"10" < "9"}, \ct{"Z" < "a"}), else as numbers. \ct{a \lee{} b} is
+``not \ct{b < a}'': \ct{null \gee{} 0} is true, \ct{null > 0} false; NaN $\to$ false in
+all four. \ct{3 > 2 > 1} is \ct{true > 1}: false.
+
+\section{Operator puzzles, traced}
+{\scriptsize\setlength{\tabcolsep}{2pt}\renewcommand{\arraystretch}{0.98}
+\begin{tabular}{@{}>{\ttfamily}l>{\ttfamily}l>{\raggedright\arraybackslash}p{30mm}@{}}
+\toprule
+\normalfont\textbf{expression} & \normalfont\textbf{result} & \textbf{why}\\
+\midrule
+{}[] + \{\} & "[object Object]" & a string operand: \ct{+} concatenates\\
+\{\} + [] & 0 & as a statement: block, \ct{+[]}\\
+{}[1,2] + [3] · "5" - 2 & "1,23" · 3 & \ct{-} is numeric only\\
+{}[] + null + 1 & "null1" & \ct{"" + null} is a string\\
+{}[10, 1, 2].sort() & {}[1, 10, 2] & default sort compares strings\\
+{}["1","2","3"].map(parseInt) & {}[1, NaN, NaN] & index is the radix\\
+parseInt(0.0000005) & 5 & \ct{String} gives \ct{"5e-7"}\\
+"b"+"a"+ +"a"+"a" & "baNaNa" & \ct{+"a"} is NaN\\
+\bottomrule
+\end{tabular}}\par
+Seeing the hint: with \ct{o = \{[Symbol.toPrimitive]: h \fat{} h \eqq{} "number" ? 42 : h\}},
+\ct{+o} $\to$ \ct{42}, \ct{\bq\$\{o\}\bq} $\to$ \ct{"string"}, \ct{o + ""} $\to$
+\ct{"default"}, \ct{o \eqq{} "default"} $\to$ \ct{true}.
+
+\columnbreak
+
+\section{Numbers and BigInt}
+\begin{itemize}
+  \item \ct{number} = IEEE-754 double: integers exact to \ct{MAX\_SAFE\_INTEGER} $= 2^{53}-1$
+        $= 9007199254740991$; \ct{2\pw53 + 1 \eqqq{} 2\pw53}. \ct{0.1 + 0.2} $\to$
+        \ct{0.30000000000000004}. \ct{Number.EPSILON} $= 2^{-52}$, the gap after 1 — scale it.
+  \item \ct{-0 \eqqq{} 0}, but \ct{1/-0} $\to$ \ct{-Infinity}, \ct{Object.is(-0, 0)} false,
+        \ct{String(-0)} \ct{"0"}. \ct{Math.round} ties go to $+\infty$: \ct{2.5} $\to$ 3,
+        \ct{-2.5} $\to$ \ct{-2}. Bitwise ops use ToInt32 (\ct{\ush}: ToUint32): \ct{2\pw31 | 0} $\to$
+        \ct{-2147483648}; \ct{-1 \ush{} 0} $\to$ \ct{4294967295}.
+  \item \ct{BigInt} (\ct{10n}, ES2020): \ct{1n + 1}, \ct{+1n}, \ct{Math.max(1n)} throw
+        TypeError, but \ct{1n < 1.5} and \ct{1n \eqq{} 1} work. \ct{/} truncates
+        (\ct{-7n / 2n} $\to$ \ct{-3n}); \ct{BigInt(1.5)} RangeError. \ct{JSON.stringify(1n)}
+        throws; ES2026: \ct{JSON.rawJSON(String(v))} writes it, reviver \ct{\{source\}} reads it.
+\end{itemize}
+
+\section{\ct{\qq}, \ct{\oo}, \ct{\qd} and defaults}
+\begin{itemize}
+  \item \ct{a \oo{} d} takes \ct{d} for \emph{any} falsy \ct{a} (\ct{0}, \ct{""} lost);
+        \ct{a \qq{} d} only for \ct{null}/\ct{undefined} (ES2020, like \ct{\qd}); \ct{a \qq{} b \oo{} c}
+        without parentheses is a SyntaxError. Parameter and destructuring defaults fire only
+        for \ct{undefined}: \ct{f(null)} keeps \ct{null}.
+  \item One \ct{\qd} short-circuits the \emph{whole} chain: \ct{a\qd b.c.d}; \ct{(a\qd b).c}
+        throws. \ct{a\qd b = 1}, \ct{new a\qd()} are SyntaxErrors.
+        \ct{x \ooe{} d}, \ct{\ane}, \ct{\qqe} (ES2021) assign only when needed.
+\end{itemize}
+
+\section{Copies — what survives}
+{\scriptsize\setlength{\tabcolsep}{2pt}\renewcommand{\arraystretch}{0.98}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{16mm}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{21mm}>{\raggedright\arraybackslash}p{19mm}@{}}
+\toprule
+ & \ct{\{\spr o\}}, \ct{assign} & \ct{structuredClone} (HTML; Node 17) & \ct{JSON} round trip\\
+\midrule
+nested object & \bad{shared} & deep copy & deep copy\\
+cycle & \bad{shared} & kept & \bad{TypeError}\\
+\ct{Date} · \ct{Map} & \bad{shared} & copied & \bad{ISO string · \ct{\{\}}}\\
+\ct{undefined}, \ct{NaN} & kept & kept & \bad{key gone · \ct{null}}\\
+function & shared & \bad{DataCloneError} & \bad{key gone}\\
+symbol key & copied & \bad{dropped} & \bad{dropped}\\
+\ct{BigInt} & kept & kept & \bad{TypeError}\\
+prototype & \bad{lost} & \bad{lost} & \bad{lost}\\
+\bottomrule
+\end{tabular}}
+
+\section{ES modules — load, link, evaluate}
+\begin{itemize}
+  \item \textbf{Load} parses the whole graph; \textbf{Link} binds every import to an export —
+        a missing name is a SyntaxError before any module of the graph runs; functions are
+        ready, \ct{let}/\ct{const}/\ct{class} not; \textbf{Evaluate} runs dependencies
+        first, each module once. Always strict; top-level \ct{this} is \ct{undefined}.
+  \item \ct{import * as ns}: null prototype, sorted keys, tag \ct{"Module"}, assigning
+        throws. Cached per URL (Node: new \ct{?query}, new instance); browser: deferred, CORS.
+  \item \ct{import(expr)} (ES2020) works in scripts and CommonJS too; a promise of the
+        namespace. \textbf{ES2025}: \ct{import c from "./c.json" with \{ type: "json" \}}
+        (default export only; \ct{import(p, \{ with: \{\spr\} \})}).
+  \item \textbf{Cycles}: CJS hands the requirer the \emph{unfinished} \ct{exports} (missing
+        keys \ct{undefined}); ESM links fine, but reading a \ct{let}/\ct{const}/\ct{class}
+        export before its module ran throws ReferenceError; functions already work.
+\end{itemize}
+\noindent\begin{tikzpicture}[sheet]
+  \node[mb] (mn) at (0.35,0) {main};
+  \node[mb] (ma) at (1.45,0.27) {a};
+  \node[mb] (mbb) at (1.45,-0.27) {b};
+  \node[mb, draw=sheetOrange, fill=sheetOrange!12] (mc) at (2.65,0.27) {c: await};
+  \draw[flow, thin] (mn) -- (ma); \draw[flow, thin] (mn) -- (mbb); \draw[flow, thin] (ma) -- (mc);
+  \node[lbl, anchor=west, align=left] at (3.4,0.0) {\textbf{top-level \ct{await}} (ES2022): importers wait, siblings\\do not — \textbf{c} starts $\to$ \textbf{b} $\to$ \textbf{c} resumes $\to$ \textbf{a} $\to$ \textbf{main}.\\Never settles: Node exits with code 13};
+\end{tikzpicture}\par
+Stage 3: \ct{import defer * as ns} (evaluated on first access), \ct{import source}.
+
+\section{Node.js: CommonJS $\leftrightarrow$ ESM (docs v26)}
+\begin{itemize}
+  \item \ct{.mjs} ESM · \ct{.cjs} CJS · \ct{.js} $\to$ nearest \ct{package.json}
+        \ct{"type"}, else syntax detection (default since 22.7; slower — set \ct{"type"}).
+  \item \textbf{import CJS}: default is \emph{always} \ct{module.exports}; named imports only
+        where static analysis finds them. Compiled \ct{\_\_esModule} code: the real default
+        sits at \ct{x.default}.
+  \item \textbf{\ct{require(esm)}}: the namespace (\ct{.default}; \ct{\_\_esModule: true} added
+        when a default exists); \ct{export \{ v as "module.exports" \}} returns \ct{v}. Unflagged
+        22.12, stable 25.4; top-level await in its graph $\to$ \ct{ERR\_REQUIRE\_ASYNC\_MODULE}.
+  \item ESM: no \ct{require}/\ct{\_\_dirname} — \ct{import.meta.dirname} (stable 24.0),
+        \ct{createRequire(import.meta.url)}; extensions mandatory; \ct{assert \{\}} gone (22.0).
+        Separate \ct{import}/\ct{require} entry files: \textbf{dual package hazard}.
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{js-scope-closures-this} (TDZ,
+\texttt{this}) · \texttt{js-prototypes-objects-classes} (\texttt{valueOf}, \texttt{toString},
+\texttt{Symbol.toPrimitive}) · \texttt{js-async} (promises, \texttt{await}) ·
+\texttt{node-runtime} · \texttt{ts-config-and-practice} (\texttt{module}, interop) ·
+\texttt{swift-numerics-overflow} (IEEE-754) · \texttt{value-vs-reference}}
+
+\end{document}

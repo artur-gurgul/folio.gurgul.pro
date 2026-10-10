@@ -1,0 +1,119 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>fastlane — config, lanes, match internals, store auth — folio</title><meta name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#0a5fd6"><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"></head><body><img class="folio-print" src="/cicd/fastlane-deep.svg" alt="" aria-hidden="true"><div class="container"><div class="sidebar"><nav class="site-nav"><h2 class="intro"><a href="/">folio</a></h2><p class="tagline">one subject, one A4 page</p><details class="contents side-fold" open><summary><span class="contents-label side-fold-label">Filter</span><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg></summary><form class="side-filter" action="/folios.html" method="get" data-list="/folios.html"><input class="side-search" type="search" name="q" placeholder="search the folios…" aria-label="Search the folios" autocomplete="off"><p class="group">Area</p><ul class="posts side-areas"><li><a class="side-area" href="/folios.html" data-area="">all areas<span class="count">310</span></a></li><li><a class="side-area" href="/folios.html?area=ai" data-area="ai">ai<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=architecture" data-area="architecture">architecture<span class="count">15</span></a></li><li><a class="side-area" href="/folios.html?area=ble" data-area="ble">ble<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=c" data-area="c">c<span class="count">5</span></a></li><li><a class="side-area current" href="/folios.html?area=cicd" data-area="cicd">cicd<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=cross-platform" data-area="cross-platform">cross-platform<span class="count">18</span></a></li><li><a class="side-area" href="/folios.html?area=crypto" data-area="crypto">crypto<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=cs" data-area="cs">cs<span class="count">6</span></a></li><li><a class="side-area" href="/folios.html?area=debugging" data-area="debugging">debugging<span class="count">9</span></a></li><li><a class="side-area" href="/folios.html?area=design" data-area="design">design<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=dev-tools" data-area="dev-tools">dev-tools<span class="count">2</span></a></li><li><a class="side-area" href="/folios.html?area=engineering" data-area="engineering">engineering<span class="count">14</span></a></li><li><a class="side-area" href="/folios.html?area=ios-platform" data-area="ios-platform">ios-platform<span class="count">49</span></a></li><li><a class="side-area" href="/folios.html?area=ios-swift" data-area="ios-swift">ios-swift<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=iot" data-area="iot">iot<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=javascript" data-area="javascript">javascript<span class="count">5</span></a></li><li><a class="side-area" href="/folios.html?area=linux" data-area="linux">linux<span class="count">8</span></a></li><li><a class="side-area" href="/folios.html?area=macos" data-area="macos">macos<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=networking" data-area="networking">networking<span class="count">17</span></a></li><li><a class="side-area" href="/folios.html?area=os" data-area="os">os<span class="count">4</span></a></li><li><a class="side-area" href="/folios.html?area=react-native" data-area="react-native">react-native<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=recall" data-area="recall">recall<span class="count">1</span></a></li><li><a class="side-area" href="/folios.html?area=runtime" data-area="runtime">runtime<span class="count">3</span></a></li><li><a class="side-area" href="/folios.html?area=security" data-area="security">security<span class="count">12</span></a></li><li><a class="side-area" href="/folios.html?area=security-build" data-area="security-build">security-build<span class="count">10</span></a></li><li><a class="side-area" href="/folios.html?area=swift" data-area="swift">swift<span class="count">28</span></a></li><li><a class="side-area" href="/folios.html?area=swiftui" data-area="swiftui">swiftui<span class="count">16</span></a></li><li><a class="side-area" href="/folios.html?area=testing" data-area="testing">testing<span class="count">7</span></a></li><li><a class="side-area" href="/folios.html?area=typescript" data-area="typescript">typescript<span class="count">3</span></a></li></ul><noscript><button class="side-apply" type="submit">Search</button></noscript></form></details></nav></div><div class="scroll"><div class="content folio-page"><h1 class="title">fastlane — config, lanes, match internals, store auth</h1><div id="post"><article class="sheet">
+<p class="sheet-kicker">cicd · folio</p>
+<p class="sheet-oneliner"><strong>In one line:</strong> fastlane is a <strong>Ruby gem</strong> (pin it with <strong>Bundler</strong>) whose <strong>lanes</strong> call
+<strong>actions</strong>; <code>gym</code>, <code>scan</code>, <code>pilot</code>, <code>deliver</code>, <code>snapshot</code>, <code>match</code>,
+<code>supply</code> wrap <code>xcodebuild</code>, Apple’s upload tools, the <strong>App Store Connect API</strong> and the
+<strong>Google Play Developer API</strong>. On CI its job is to make <strong>signing and upload
+non-interactive</strong>: <code>match</code> decrypts one shared cert/profile store into a <strong>throw-away
+keychain</strong>, and an <strong>API key (.p8)</strong> replaces an Apple ID that needs 2FA.</p>
+<p class="sheet-tools"><a class="sheet-download" href="fastlane-deep.pdf" download>Download PDF</a> <a href="fastlane-deep.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/cicd/fastlane-deep.tex">LaTeX source</a></p>
+<section class="sheet-section">
+<figure class="sheet-figure"><img src="fastlane-deep-fig1.svg" width="624" height="203" class="wide" alt="fastlane — config, lanes, match internals, store auth — figure 1" loading="lazy"></figure>
+<h3 class="sheet-hd"><span class="c-sheetblue">The files</span></h3>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><code>Fastfile</code></td><td>lanes in Ruby; <strong>its code runs in <code>./fastlane</code></strong>, actions + plugins in the project root</td></tr>
+<tr><td><code>Appfile</code></td><td><code>app_identifier</code>, <code>apple_id</code> (account e-mail), <code>team_id</code>, <code>itc_team_id</code>; Android: <code>json_key_file</code>, <code>package_name</code></td></tr>
+<tr><td><code>Matchfile</code> <code>Gymfile</code> …</td><td>per-tool defaults, found in <code>./fastlane</code>, <code>./.fastlane</code> or <code>.</code>; <strong>the first value set wins</strong> unless inside <code>for_lane</code> / <code>for_platform</code></td></tr>
+<tr><td><code>Gemfile(.lock)</code></td><td>both committed; <code>bundle exec fastlane</code>; upgrade with <code>bundle update fastlane</code></td></tr>
+<tr><td><code>Pluginfile</code></td><td><code>gem &quot;fastlane-plugin-x&quot;</code> lines, pulled in by the Gemfile’s <code>eval_gemfile</code></td></tr>
+<tr><td>generated</td><td><code>README.md</code> (lane <code>desc</code>s; <code>FASTLANE_SKIP_DOCS</code>), <code>report.xml</code> (JUnit of the actions) — git-ignore with <code>Preview.html</code>, <code>screenshots</code>, <code>test_output</code></td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Where an option’s value comes from</span></h3>
+<figure class="sheet-figure"><img src="fastlane-deep-fig2.svg" width="306" height="80" alt="fastlane — config, lanes, match internals, store auth — figure 2" loading="lazy"></figure>
+<p>CLI <code>fastlane ios beta n:5 dry:yes</code> <span class="math">→</span> <code>options[:n] == &quot;5&quot;</code>: only <code>true</code>/<code>yes</code>, <code>false</code>/<code>no</code> are converted; numbers stay strings.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Lanes</span></h3>
+<ul>
+<li><code>platform :ios do</code> <span class="math">→</span> <code>fastlane ios beta</code>; <code>desc</code> feeds <code>fastlane lanes</code> and the  README; a <code>private_lane</code> is hidden and callable only from another lane.</li>
+<li>A lane call is a method call: <code>build(release: true)</code>; last expression = return value;  <code>next</code> leaves early and <code>after_each</code>/<code>after_all</code> still run.</li>
+<li><code>before_all</code>/<code>after_all</code> once; <code>before_each</code>/<code>after_each</code> around <strong>every</strong>  lane, called ones too; <code>error</code> on any raise.</li>
+<li><code>lane_context[SharedValues::…]</code> chains actions: <code>upload_to_testflight</code> defaults  <code>ipa</code> to <code>IPA_OUTPUT_PATH</code> and the key to <code>APP_STORE_CONNECT_API_KEY</code>.</li>
+<li><strong>Plugins</strong> are gems (<code>fastlane add_plugin x</code>) — third-party code on the signing  machine: pin and review. <code>fastlane action gym</code> lists every option and its env name.</li>
+</ul>
+<p><strong><span class="c-sheetblue">Tool <span class="math">↔</span> action</span></strong></p>
+<p><code>gym</code>=<code>build_app</code> · <code>scan</code>=<code>run_tests</code> · <code>pilot</code>=<code>upload_to_testflight</code> ·
+<code>deliver</code>=<code>upload_to_app_store</code> · <code>snapshot</code>=<code>capture_ios_screenshots</code> ·
+<code>precheck</code>=<code>check_app_store_metadata</code> · <code>match</code>=<code>sync_code_signing</code> ·
+<code>cert</code>=<code>get_certificates</code> · <code>sigh</code>=<code>get_provisioning_profile</code> ·
+<code>supply</code>=<code>upload_to_play_store</code>. <strong>Deprecated</strong>: <code>xcversion</code> <span class="math">→</span> <code>xcodes</code>;
+<code>automatic_code_signing</code> <span class="math">→</span> <code>update_code_signing_settings</code>. <strong>precheck</strong> runs inside
+<code>deliver</code> before submit at level <code>warn</code>: placeholder text, other platforms, unreachable URLs.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Example — Fastfile</span></h3>
+<pre class="sheet-code"><code class="hljs language-ruby">before_all { setup_ci }          <span class="hljs-comment"># no-op unless a CI env var is set</span>
+platform <span class="hljs-symbol">:ios</span> <span class="hljs-keyword">do</span>
+  lane <span class="hljs-symbol">:beta</span> <span class="hljs-keyword">do</span>
+    app_store_connect_api_key(<span class="hljs-symbol">key_id:</span> <span class="hljs-variable constant_">ENV</span>[<span class="hljs-string">&quot;ASC_KEY_ID&quot;</span>],
+      <span class="hljs-symbol">issuer_id:</span> <span class="hljs-variable constant_">ENV</span>[<span class="hljs-string">&quot;ASC_ISSUER_ID&quot;</span>], <span class="hljs-symbol">key_content:</span> <span class="hljs-variable constant_">ENV</span>[<span class="hljs-string">&quot;ASC_P8_B64&quot;</span>],
+      <span class="hljs-symbol">is_key_content_base64:</span> <span class="hljs-literal">true</span>)     <span class="hljs-comment"># -&gt; lane_context</span>
+    match(<span class="hljs-symbol">type:</span> <span class="hljs-string">&quot;appstore&quot;</span>, <span class="hljs-symbol">readonly:</span> <span class="hljs-literal">true</span>)
+    increment_build_number(<span class="hljs-symbol">build_number:</span> latest_testflight_build_number + <span class="hljs-number">1</span>)
+    build_app(<span class="hljs-symbol">scheme:</span> <span class="hljs-string">&quot;App&quot;</span>, <span class="hljs-symbol">export_method:</span> <span class="hljs-string">&quot;app-store&quot;</span>)
+    upload_to_testflight(<span class="hljs-symbol">skip_waiting_for_build_processing:</span> <span class="hljs-literal">true</span>)
+  <span class="hljs-keyword">end</span>
+<span class="hljs-keyword">end</span></code></pre>
+<p><code>increment_build_number</code> runs <code>agvtool new-version -all &lt;n&gt;</code>; with no <code>n</code>, <code>next-version</code> — which needs Apple Generic versioning. An empty train returns <code>initial_build_number</code> (1).</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">match — storage and encryption</span></h3>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><code>git</code> (default)</td><td>encrypted with <code>MATCH_PASSWORD</code>; branch <code>master</code>, <strong>one branch per team</strong>;
+ auth <code>git_basic_authorization</code> (base64), <code>_bearer_</code>, <code>git_private_key</code></td></tr>
+<tr><td><code>s3</code></td><td>encrypted unless <code>s3_skip_encryption</code></td></tr>
+<tr><td><code>google_cloud</code></td><td><strong>not</strong> encrypted by match — Google-managed keys; bucket IAM is the lock</td></tr>
+<tr><td><code>gitlab_secure</code><code>_files</code></td><td><strong>not</strong> encrypted by match — GitLab project access is the lock</td></tr>
+<tr><td><strong>v1</strong></td><td><code>Salted__</code> · AES-256-CBC · key + IV from one MD5 round (SHA-256 retried) — a wrong
+ password went undetected <span class="math">∼</span>0.4 % of the time</td></tr>
+<tr><td><strong>v2</strong> (2.220.0+)</td><td><code>match_encrypted_v2__</code> · <strong>AES-256-GCM</strong> + tag · PBKDF2-HMAC-SHA256,
+ 10 000 rounds, 8-byte salt. Older fastlane cannot read it: <code>force_legacy_encryption</code>. The docs’
+ <code>openssl aes-256-cbc</code> recipe opens v1 only; <code>fastlane match decrypt</code> opens both</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">match — what it writes and installs</span></h3>
+<ul>
+<li><code>certs/&lt;type&gt;/&lt;cert-id&gt;.cer + .p12</code> (<code>distribution</code> serves <code>appstore</code> and  <code>adhoc</code>) · <code>profiles/appstore/AppStore_&lt;bundle&gt;.mobileprovision</code>; portal name  <code>match AppStore &lt;bundle&gt;</code>.</li>
+<li><code>security import -T /usr/bin/codesign</code> into <code>keychain_name</code> (default <code>login.keychain</code>,  on CI <code>setup_ci</code>’s), then <code>set-key-partition-list -S apple-tool:,apple:,codesign:</code> —  signing without a UI prompt.</li>
+<li>Profiles go to <code>~/Library/Developer/Xcode/UserData/Provisioning Profiles</code>  for Xcode <span class="math">≥</span> 16 (<code>~/Library/MobileDevice/…</code> before; right only since  <strong>2.230.0</strong>) — select Xcode (<code>xcodes</code>) <em>before</em> match.</li>
+<li>Sets <code>ENV[&quot;sigh_&lt;bundle&gt;_appstore&quot;]</code> = profile UUID (+ <code>_profile-name</code>,  <code>_team-id</code> …), <code>MATCH_PROVISIONING_PROFILE_MAPPING</code> for gym, <code>SIGH_PROFILE_TYPE</code>  as gym’s default <code>export_method</code>.</li>
+<li><code>readonly</code> fetches only · <code>force_for_new_devices</code> renews when the portal’s device  count changed · <code>change_password</code> · <code>import</code> (existing <code>.cer</code>/<code>.p12</code>) · <code>migrate</code>  (storage <span class="math">→</span> storage) · <code>nuke distribution</code> revokes + deletes: App Store / TestFlight builds  keep working, <strong>Ad Hoc and Enterprise builds stop</strong>.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Auth — API key vs Apple ID</span></h3>
+<p><table class="sheet-table">
+<tbody>
+<tr><td><strong>ASC API key</strong></td><td>Key ID + Issuer ID + <code>.p8</code> (downloadable once). <strong>Team</strong> key: an Admin
+ makes it, role-scoped, all apps. <strong>Individual</strong> key: no Provisioning, Sales and Finance or
+ notaryTool — match, sigh, cert need a team key. Apple rejects tokens <span class="math">&gt;</span>20 min for most requests
+ (scoped GET-only tokens on a few resources: up to 6 months).
+ Works for pilot, deliver, match, sigh, cert, precheck (not IAP); <strong>not</strong> <code>pem</code></td></tr>
+<tr><td><strong>Apple ID</strong></td><td><code>FASTLANE_USER</code> + password + 2FA; <code>fastlane spaceauth</code> <span class="math">→</span>
+ <code>FASTLANE_SESSION</code>, valid 1 day – 1 month and only in the region it was made — make it on the CI
+ machine. An app-specific password covers <strong>binary upload only</strong>. It drives Apple’s web sign-in:
+ 2.240.0 had to re-find the sign-in widget key after Apple dropped its endpoint</td></tr>
+</tbody>
+</table></p>
+<h3 class="sheet-hd"><span class="c-sheetblue">supply — Google Play</span></h3>
+<ul>
+<li>Service-account JSON (<code>json_key</code> / <code>_data</code>). One run = one Play Developer API  <strong>edit</strong>: insert <span class="math">→</span> upload AAB <span class="math">→</span> track <span class="math">→</span> listing <span class="math">→</span> commit (or  <code>validate_only</code>). <strong>A commit or a Play Console change invalidates every other open
+ edit</strong> — serialise jobs.</li>
+<li><code>track</code> <code>production</code> (default), <code>beta</code>, <code>alpha</code>, <code>internal</code>; <code>release_status</code>  <code>completed</code> (default), <code>draft</code>, <code>halted</code>, <code>inProgress</code>; <code>rollout: 0.1</code> <span class="math">→</span>  <code>inProgress</code> + <code>userFraction</code>, <code>rollout: 1</code> <span class="math">→</span> <code>completed</code>.</li>
+</ul>
+<h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
+<ul>
+<li class="trap"><code>sh(&quot;ls&quot;)</code> runs in <code>./fastlane</code>, actions in the root — relative paths differ.</li>
+<li class="trap">No <code>bundle exec</code> = the global fastlane; plugins may not load.</li>
+<li class="trap">A committed <code>.env.ci</code> <em>overrides</em> the CI secret of the same name.</li>
+<li class="trap"><code>-showBuildSettings</code> times out on big projects (3 s × 3):  <code>FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT</code>.</li>
+<li class="trap"><code>export_method</code> takes only <code>app-store</code>, <code>ad-hoc</code> …; Xcode 15.4+ logs them as  deprecated (<code>app-store-connect</code>, <code>release-testing</code>).</li>
+<li class="trap">pilot’s <code>apple_id</code> is the <em>app’s</em> numeric id, not the Appfile’s e-mail;  <code>skip_waiting_for_build_processing</code> <span class="math">→</span> nothing is distributed.</li>
+</ul>
+</section>
+<p class="sheet-related"><span class="sheet-related-label">Related:</span> Code signing &amp; iOS CI/CD ·
+macOS keychains &amp; the <code>security</code> CLI (CI signing) · Signing failures — symptom <span class="math">→</span> check <span class="math">→</span> fix ·
+React Native CI/CD &amp; Android signing — build once, promote · Supply-chain security — from a
+maintainer’s laptop to your app · <code>xcodebuild-simctl-cli</code> · <code>github-actions-deep</code> ·
+<code>ci-pipeline-design</p>
+<ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=cicd" title="area">cicd</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=tooling" title="kind">tooling</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=ios" title="platform">ios</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=build" title="topic">build</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=security" title="topic">security</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=tooling" title="topic">tooling</a></li><li class="sheet-tag"><a href="/folios.html?tag=fastlane">fastlane</a></li><li class="sheet-tag"><a href="/folios.html?tag=fastlane-match">fastlane-match</a></li><li class="sheet-tag"><a href="/folios.html?tag=fastfile">fastfile</a></li><li class="sheet-tag"><a href="/folios.html?tag=app-store-connect-api-key">app-store-connect-api-key</a></li><li class="sheet-tag"><a href="/folios.html?tag=code-signing">code-signing</a></li><li class="sheet-tag"><a href="/folios.html?tag=ci-cd">ci-cd</a></li><li class="sheet-tag"><a href="/folios.html?tag=testflight">testflight</a></li><li class="sheet-tag"><a href="/folios.html?tag=setup-ci">setup-ci</a></li><li class="sheet-tag"><a href="/folios.html?tag=bundler">bundler</a></li><li class="sheet-tag"><a href="/folios.html?tag=dotenv">dotenv</a></li><li class="sheet-tag"><a href="/folios.html?tag=gym">gym</a></li><li class="sheet-tag"><a href="/folios.html?tag=pilot">pilot</a></li><li class="sheet-tag"><a href="/folios.html?tag=deliver">deliver</a></li><li class="sheet-tag"><a href="/folios.html?tag=supply">supply</a></li><li class="sheet-tag"><a href="/folios.html?tag=google-play">google-play</a></li><li class="sheet-tag"><a href="/folios.html?tag=build-number">build-number</a></li></ul>
+</article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=cicd%2Ffastlane-deep.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/298">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
+<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></div></div></div><script>if (window.matchMedia('(max-width: 860px)').matches) {
+  var c = document.querySelector('details.contents');
+  if (c) c.open = false;
+}</script></body></html>

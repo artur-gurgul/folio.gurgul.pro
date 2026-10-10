@@ -1,0 +1,273 @@
+% secure-randomness.tex — where cryptographic randomness comes from (entropy source → DRBG, NIST
+% SP 800-90 A/B/C), the Linux and Apple generators, which call to use on each platform, the rules
+% for keys / nonces / IVs / tokens, modulo bias, UUID v4 vs v7, and the failures that taught it.
+% Sources (checked 2026-10-09):
+%   csrc.nist.gov/pubs/sp/800/90/a/r1/final (June 2015; Hash_, HMAC_, CTR_DRBG) · nist.gov news
+%     2014-04 + 2015-06 (Dual_EC_DRBG advised against Sept 2013, removed in Rev. 1) · SP 800-90A
+%     Rev. 1 Tables 2–3 (hash, HMAC, AES-CTR: 2^19 bits per request, reseed interval 2^48) · SP
+%     800-90B §2.1, §4.4 (min-entropy; repetition count + adaptive proportion health tests) ·
+%     csrc.nist.gov/News/2025/nist-publishes-sp-800-90c
+%     (25 Sep 2025; RBG1, RBG2, RBG3, RBGC)
+%   kernelnewbies.org/Linux_5.6 (blocking pool removed, /dev/random = getrandom(0), GRND_RANDOM a
+%     no-op, GRND_INSECURE; "good enough to use even for key generation") · zx2c4.com/projects/
+%     linux-rng-5.17-5.18 (BLAKE2s extraction 5.17; LFSR → BLAKE2s, init 128 → 256 bits, vmgenid,
+%     per-CPU fast key erasure 5.18; WireGuard clears keys on VM fork; /dev/urandom blocking
+%     reverted; 5.4 jitter) ·
+%     github.com/torvalds/linux drivers/char/random.c (master: BLAKE2s pool, ChaCha20 base_crng +
+%     per-CPU, reseed 1 s → 60 s, POOL_READY_BITS 256, /dev/urandom = GRND_INSECURE, trust_cpu
+%     default on, add_vmfork_randomness, vDSO generation) · kernelnewbies.org/Linux_6.11 (vDSO
+%     getrandom) · lists.gnu.org info-gnu 2025-01 (glibc 2.41 uses it) · man7.org getrandom.2
+%     (3.17 / glibc 2.25; reads ≤ 256 B never interrupted) + random.7 (man-pages 6.19 still
+%     describes the pre-5.6 blocking pool)
+%   support.apple.com/guide/security "Random number generation" (Fortuna-derived, 256-bit target;
+%     SE TRNG, boot jitter, interrupts, seed file, Intel RDSEED/RDRAND; getentropy, /dev/random) ·
+%     developer.apple.com SystemRandomNumberGenerator (arc4random_buf / getrandom /
+%     BCryptGenRandom; "cryptographically secure whenever possible") · GKRandomSource ("not
+%     cryptographically robust") · github.com/swiftlang/swift Random.swift (Lemire nearly divisionless)
+%   docs.oracle.com javase/21 security oracle-providers (NativePRNG: nextBytes /dev/urandom,
+%     generateSeed /dev/random; NativePRNGBlocking) · openjdk java.security (strongAlgorithms =
+%     NativePRNGBlocking:SUN,DRBG:SUN; DRBG default Hash_DRBG SHA-256 128) · developer.android.com
+%     privacy-and-security/cryptography (Crypto provider removed in Android 9)
+%   developer.mozilla.org Crypto.getRandomValues (65 536 B, QuotaExceededError, integer arrays,
+%     insecure contexts allowed) · nodejs.org/api/crypto (randomInt max − min < 2^48; randomUUID
+%     caches entropy for 128 UUIDs) · v8.dev/blog/math-random (xorshift128+, Chrome 49, "still not
+%     cryptographically secure") · github.com/LinusU/react-native-get-random-values (SecRandomCopyBytes
+%     / SecureRandom; import first) · docs.expo.dev sdk/crypto (getRandomBytes ≤ 1024, Math.random
+%     fallback in development)
+%   docs.python.org/3/library/secrets (3.6, PEP 506, 32 bytes "as of 2015") · pkg.go.dev crypto/rand
+%     (Read never errors, Text ≥ 128 bits, Go 1.24; ProcessPrng, arc4random_buf, getrandom) ·
+%     pkg.go.dev math/rand/v2 ("might be easily predictable") · docs.rs/rand ThreadRng (ChaCha12,
+%     reseed every 64 kB, not on fork) · docs.espressif.com esp-idf random (true random only with
+%     Wi-Fi / BT or bootloader_random_enable; seed mbedTLS CTR / HMAC-DRBG)
+%   rfc-editor.org RFC 9562 (May 2024, obsoletes 4122; v4 122 bits; v7 layout; prefer v7 over v1/v6;
+%     poor index locality of v4; SHOULD NOT assume hard to guess; MUST NOT be security capabilities;
+%     §6.9 CSPRNG) · RFC 6749 §10.10 (guess ≤ 2^-128 MUST, 2^-160 SHOULD) · OWASP Session Management
+%     cheat sheet (≥ 64 bits entropy, 16 hex chars) · NIST SP 800-38D §8.3 (2^32 invocations with
+%     random IVs) · SP 800-38A App. C (CBC IV unpredictable) · RFC 6979 (deterministic ECDSA k) ·
+%     RFC 8032 (EdDSA deterministic) · doc.libsodium.org xchacha20-poly1305 (192-bit nonce, random
+%     nonces safe) · docs.oracle.com java/util/Random ("not cryptographically secure") ·
+%     Matsumoto & Nishimura, ACM TOMACS 1998 (MT19937 state = 624 words; tempering invertible)
+%   lists.debian.org DSA-1571-1 (13 May 2008, CVE-2008-0166, 0.9.8c-1 of 17 Sep 2006, every DSA key
+%     used) · hdm.io/tools/debian-openssl (PID only; 32 767 outcomes per architecture, key size, type)
+%     · factorable.net (Heninger, Durumeric, Wustrow, Halderman, USENIX Security 2012: 0.50 % TLS,
+%     0.03 % SSH RSA, 1.03 % SSH DSA) · android-developers.googleblog.com 2013/08 some-securerandom-
+%     thoughts + NVD CVE-2013-7372 (Harmony SHA1PRNG offset, Bitcoin wallets, fixed 4.4) ·
+%     eprint.iacr.org/2016/376 (Checkoway et al., Juniper Dual EC, Q changed) · milksad.info + NVD
+%     CVE-2023-39910 (bx seed, mt19937, 32-bit time) · git.kernel.org e980de2ff109 "x86/CPU/AMD: Add
+%     RDSEED fix for Zen5" + AMD-SB-7055 + CVE-2025-62626 (16/32-bit RDSEED → 0 with CF=1)
+%   Checked but NOT used (secondary only): the 2010 PS3 constant-ECDSA-nonce story (the 27C3 talk
+%     abstract does not state it).
+% @labels: area=crypto kind=concept platform=cross-platform topic=security,platform-apis discussion=305
+% @tags: csprng, prng, entropy, drbg, nist-sp-800-90, getrandom, secrandomcopybytes, securerandom, getrandomvalues, react-native-get-random-values, uuid-v7, rfc-9562, nonce-reuse, ecdsa, aes-gcm, modulo-bias
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{TSSheet}{
+  morekeywords={const,let,function,return,if,new,do,while,number},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]", morestring=[b]'}
+\newcommand\ct[1]{\texttt{#1}}
+\tikzset{
+  l/.style={font=\tiny, text=black!75, align=left, inner sep=1pt},
+  st/.style={font=\bfseries\scriptsize, text=sheetBlue, anchor=west, inner sep=0pt},
+  rl/.style={font=\scriptsize, align=center, text width=10mm, inner sep=0pt},
+  cb/.style={draw=#1, fill=#1!7, rounded corners=1.5pt, font=\tiny, align=left, inner sep=1.6pt,
+             anchor=west, minimum height=8.6mm},
+  fld/.style={draw=sheetGrey, font=\ttfamily\tiny, inner sep=0pt, minimum height=4.2mm, anchor=west},
+}
+
+\begin{document}
+
+\sheettitle{Secure randomness — entropy, DRBGs, platform APIs, nonces, UUIDs, failures}{crypto · folio}
+
+\oneliner{A few hundred bits of real \textbf{entropy} seed a \textbf{DRBG} that expands them into an
+unlimited, unpredictable stream. Take every key, nonce, IV and token from the \textbf{OS generator}
+(\ct{getrandom}, \ct{SecRandomCopyBytes}, \ct{SecureRandom}, \ct{crypto.getRandomValues}); the
+dangerous moment is \emph{before} it is seeded, or after its state was copied.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[st] at (1.25,3.2) {1 · noise};
+  \node[st] at (4.85,3.2) {2 · entropy source $\to$ seed};
+  \node[st] at (8.6,3.2) {3 · DRBG expands the seed};
+  \node[st] at (12.45,3.2) {4 · interfaces, constructions};
+  % NIST row
+  \node[rl] at (0.5,2.45) {\textbf{NIST}\\SP 800-90};
+  \node[cb=sheetGreen, text width=31mm] (n1) at (1.25,2.45) {physical noise (thermal, oscillator jitter) or non-physical (OS event timing) — slow, biased, can fail};
+  \node[cb=sheetOrange, text width=33mm] (n2) at (4.85,2.45) {\textbf{90B}: digitise $\to$ health tests (repetition count, adaptive proportion) $\to$ condition; credit only min-entropy ($-\log_2$ of the likeliest value)};
+  \node[cb=sheetBlue, text width=34mm] (n3) at (8.6,2.45) {\textbf{90A}: Hash\_, HMAC\_ or CTR\_DRBG (Dual\_EC removed 2015); $\le 2^{19}$ bits per call, reseed within $2^{48}$ calls; state updated after every call};
+  \node[cb=sheetGrey, text width=38mm] (n4) at (12.45,2.45) {\textbf{90C} (Sep 2025) assembles them: RBG1 seeded once from outside · RBG2 own entropy source, may reseed · RBG3 full-entropy output · RBGC chains};
+  % Linux row
+  \node[rl] at (0.5,1.4) {\textbf{Linux}\\6.x};
+  \node[cb=sheetGreen, text width=31mm] (x1) at (1.25,1.4) {interrupt timings · cycle-counter jitter (5.4) · RDSEED/RDRAND (credited unless \ct{random.trust\_cpu=off}) · boot-loader seed · VM generation ID (5.18)};
+  \node[cb=sheetOrange, text width=33mm] (x2) at (4.85,1.4) {one input pool hashed with \textbf{BLAKE2s} (5.17; LFSR gone 5.18); ``crng init done'' at 256 credited bits (128 before 5.18)};
+  \node[cb=sheetBlue, text width=34mm] (x3) at (8.6,1.4) {\textbf{ChaCha20} base key $\to$ per-CPU keys with fast key erasure (5.18); reseed every 60\,s, sooner right after boot};
+  \node[cb=sheetGrey, text width=38mm] (x4) at (12.45,1.4) {\ct{getrandom(2)} (3.17) · vDSO \ct{getrandom} (6.11, used by glibc 2.41) · \ct{/dev/random} · \ct{/dev/urandom} — one generator behind all};
+  % Apple row
+  \node[rl] at (0.5,0.35) {\textbf{Apple}};
+  \node[cb=sheetGreen, text width=31mm] (a1) at (1.25,0.35) {Secure Enclave TRNG · boot-time jitter · hardware interrupts · seed file kept across boots · RDSEED/RDRAND (Intel Macs)};
+  \node[cb=sheetBlue, text width=71.3mm, minimum height=6mm] (a2) at (4.85,0.35) {kernel CPRNG, \textbf{Fortuna-derived}, 256-bit security target — one generator for kernel and user space; writes to \ct{/dev/random} add entropy};
+  \node[cb=sheetGrey, text width=38mm] (a4) at (12.45,0.35) {\ct{getentropy(2)} · \ct{/dev/random}; apps: \ct{SecRandomCopyBytes}, \ct{arc4random\_buf} (behind Swift's \ct{SystemRandomNumberGenerator})};
+  \foreach \a/\b in {n1/n2,n2/n3,n3/n4,x1/x2,x2/x3,x3/x4,a1/a2,a2/a4} \draw[flow] (\a.east) -- (\b.west);
+  \node[l, text=sheetRed, anchor=west] at (4.85,-0.3) {until step 2 has credited enough entropy, everything to its right is predictable — that window, not ``running out'', is the risk};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{PRNG · CSPRNG · TRNG}
+\begin{itemize}
+  \item \textbf{PRNG}: a fast deterministic function of its state, built for statistics. Mersenne
+        Twister (Python \ct{random}, \ct{mt19937}): state = 624 words, output tempering is
+        invertible, so 624 outputs give every later one. V8's \ct{Math.random} (Chrome 49+) is xorshift128+ —
+        ``still not cryptographically secure''; Go \ct{math/rand/v2} ``might be easily predictable''.
+  \item \textbf{CSPRNG / DRBG}: next bit unguessable from all earlier output; \textbf{backtracking
+        resistance} — a stolen state does not reveal past output; \textbf{prediction resistance}
+        — a stolen state stops predicting the future — only by reseeding with fresh entropy.
+  \item \textbf{TRNG / entropy source}: physical noise; slow, biased, may fail silently — tested,
+        conditioned, used only to \emph{seed}.
+  \item Once seeded with 256 bits a generator does not ``run out''. Linux 5.6 removed the blocking
+        pool: the CRNG output is ``good enough to use even for key generation''.
+\end{itemize}
+
+\section{Linux — what blocks, today}
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{33mm}>{\raggedright\arraybackslash}p{19mm}@{}}
+\toprule
+\textbf{call} & \textbf{before CRNG ready} & \textbf{after}\\ \midrule
+\ct{getrandom(b,n,0)} & blocks & CSPRNG bytes\\
++ \ct{GRND\_NONBLOCK} & $-1$, \ct{EAGAIN} & same\\
++ \ct{GRND\_INSECURE} (5.6) & returns anyway — not for secrets & same\\
++ \ct{GRND\_RANDOM} & no-op since 5.6 (was the blocking pool) & same\\
+\ct{/dev/random} & blocks (pre-5.6 also whenever the estimate ran low) & same\\
+\ct{/dev/urandom} & never blocks (= \ct{GRND\_INSECURE}; tries jitter first) & same\\
+\bottomrule
+\end{tabular}}\par
+Reads $\le$256\,B are never cut short by a signal. \ct{random(7)} (man-pages 6.19, 2026) still
+describes the pre-5.6 blocking pool.
+
+\section{When seeding goes wrong}
+\begin{itemize}
+  \item \textbf{First boot, headless}: no disk, keyboard or mouse noise; keys generated before the
+        pool is seeded (routers, 2012 below).
+  \item \textbf{Cloned VM / restored snapshot}: two machines, one generator state. VM generation ID
+        (5.18) forces a reseed; WireGuard wipes its keys on VM fork.
+  \item \textbf{\ct{fork()}}: the child inherits a user-space generator's state — Rust
+        \ct{ThreadRng} (ChaCha12, reseeds every 64\,kB) does not reseed on fork; call \ct{reseed()}.
+  \item \textbf{Microcontrollers}: ESP-IDF \ct{esp\_random()} is true random only while Wi-Fi or
+        Bluetooth runs (or \ct{bootloader\_random\_enable()}), else pseudo-random — seed an mbedTLS
+        DRBG from it.
+\end{itemize}
+
+\section{UUIDs — identifiers, not secrets (RFC 9562)}
+\begin{tikzpicture}[sheet]
+  \def\u{0.0605}
+  \node[l, font=\tiny\bfseries, anchor=west] at (0,1.55) {v4 — 122 random bits};
+  \node[fld, fill=sheetGreen!15, minimum width=48*\u cm] (r1) at (0,1.15) {random\_a 48};
+  \node[fld, fill=sheetOrange!40, minimum width=4*\u cm] (v1) at (r1.east) {};
+  \node[fld, fill=sheetGreen!15, minimum width=12*\u cm] (r2) at (v1.east) {12};
+  \node[fld, fill=sheetOrange!40, minimum width=2*\u cm] (w1) at (r2.east) {};
+  \node[fld, fill=sheetGreen!15, minimum width=62*\u cm] (r3) at (w1.east) {random\_c 62};
+  \node[l, text=sheetOrange, anchor=south] at (v1.north) {ver};
+  \node[l, text=sheetOrange, anchor=south] at (w1.north) {var};
+  \node[l, font=\tiny\bfseries, anchor=west] at (0,0.62) {v7 — time-ordered, 74 random bits};
+  \node[fld, fill=sheetBlue!18, minimum width=48*\u cm] (t1) at (0,0.22) {unix\_ts\_ms 48};
+  \node[fld, fill=sheetOrange!40, minimum width=4*\u cm] (v2) at (t1.east) {};
+  \node[fld, fill=sheetGreen!15, minimum width=12*\u cm] (t2) at (v2.east) {rand\_a};
+  \node[fld, fill=sheetOrange!40, minimum width=2*\u cm] (w2) at (t2.east) {};
+  \node[fld, fill=sheetGreen!15, minimum width=62*\u cm] (t3) at (w2.east) {rand\_b 62};
+  \node[l, anchor=north, text=sheetGrey] at (t2.south) {or counter};
+\end{tikzpicture}\par
+May 2024, obsoletes RFC 4122; ``SHOULD utilize UUIDv7 instead of UUIDv1 and UUIDv6''. v4 has ``poor
+database-index locality''; v7 sorts by creation (ms) and \emph{reveals} it; a counter or sub-ms time
+in \ct{rand\_a} costs random bits. ``SHOULD NOT assume that UUIDs are hard to guess'', ``MUST NOT be
+used as security capabilities'' — no reset tokens, no share links. CSPRNG ``SHOULD'' generate them.
+
+\section{Modulo bias}
+\begin{tikzpicture}[sheet]
+  \def\s{0.0298}
+  \fill[sheetGreen!18] (0,0) rectangle (250*\s,0.32);
+  \foreach \i in {0,...,25} \draw[sheetGreen!60!black, thin] (\i*10*\s,0) -- (\i*10*\s,0.32);
+  \fill[sheetRed!35] (250*\s,0) rectangle (256*\s,0.32);
+  \draw[sheetGrey] (0,0) rectangle (256*\s,0.32);
+  \node[l, anchor=north west] at (0,0) {0};
+  \node[l, anchor=north east] at (250*\s,0) {250};
+  \node[l, anchor=north west] at (256*\s,0) {256};
+  \node[l, anchor=south west] at (0,0.32) {a random byte: 25 full runs of 0–9 \ldots};
+  \node[l, anchor=south east, text=sheetRed] at (256*\s,0.32) {\ldots + 0–5 once more};
+\end{tikzpicture}\par
+\ct{byte \% 10}: digits 0–5 have 26/256, 6–9 have 25/256 — 4\,\% likelier. Reject the red tail and
+redraw, or call \ct{Int.random(in:)}, \ct{arc4random\_uniform}, \ct{randomInt}, \ct{secrets.randbelow}.
+\begin{lstlisting}[language=TSSheet, basicstyle=\ttfamily\scriptsize, aboveskip=1pt, belowskip=1pt]
+const lim = 2**32 - 2**32 % n;  // largest multiple of n; u = new Uint32Array(1)
+do crypto.getRandomValues(u); while (u[0] >= lim); return u[0] % n;
+\end{lstlisting}
+
+\columnbreak
+
+\section{Which call, per platform}
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{10mm}>{\raggedright\arraybackslash}p{32mm}>{\raggedright\arraybackslash}p{35mm}@{}}
+\toprule
+& \textbf{use} & \textbf{know}\\ \midrule
+Apple & \ct{SecRandomCopyBytes}; \ct{Int.random(in:)}; CryptoKit \ct{SymmetricKey(size:)} & check \ct{errSecSuccess}; \ct{random(in:)} is unbiased (Lemire); GameplayKit sources ``not cryptographically robust''\\
+Java, Android & \ct{new SecureRandom()} — no seed, no provider (JDK on Linux: NativePRNG, \ct{/dev/urandom}) & JDK \ct{getInstanceStrong()} = NativePRNGBlocking (\ct{/dev/random}); ``Crypto'' SHA1PRNG provider gone in Android 9; \ct{java.util.Random} not crypto\\
+Browser & \ct{crypto.getRandomValues}, \ct{crypto.randomUUID} & $\le$65\,536\,B a call, else \ct{QuotaExceededError}; integer arrays only; \ct{randomUUID} needs a secure context\\
+Node & \ct{randomBytes}, \ct{randomInt}, \ct{randomUUID} & \ct{randomInt}: max$-$min $<2^{48}$; \ct{randomUUID} caches entropy for 128 UUIDs\\
+React Native & \ct{react-native-get-random-values} (imported first, before \ct{uuid}) or \ct{expo-crypto} & bridges to \ct{SecRandomCopyBytes} / \ct{SecureRandom}; Expo \ct{getRandomBytes} $\le$1024\,B and falls back to \ct{Math.random} in development\\
+Python & \ct{secrets.token\_urlsafe()} etc. (3.6) & default 32\,B — ``sufficient'' as of 2015; \ct{random} is for ``modelling and simulation''\\
+Go & \ct{crypto/rand.Read}, \ct{rand.Text()} & 1.24: \ct{Read} never returns an error (crashes instead); \ct{Text} = base32, $\ge$128 bits\\
+Windows & \ct{ProcessPrng}, \ct{BCryptGenRandom} & what Go and Swift call\\
+\bottomrule
+\end{tabular}}
+
+\section{Keys, nonces, IVs, tokens}
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{63mm}@{}}
+\toprule
+symmetric key & 128 / 256 bits straight from the CSPRNG, or a KDF of a secret — never a password or the time\\
+CBC IV & \emph{unpredictable}: fresh random 16\,B per message (SP 800-38A)\\
+GCM nonce & \emph{unique} per key: a counter, or random 96-bit for $\le 2^{32}$ messages per key (SP 800-38D); XChaCha20 takes a random 192-bit nonce\\
+ECDSA $k$ & a repeated or guessable $k$ gives away the key — RFC 6979 derives it deterministically; Ed25519 (RFC 8032) is deterministic by design\\
+access token, reset link & OAuth: guessing $\le 2^{-128}$ (MUST), $\le 2^{-160}$ (SHOULD) — i.e. $\ge$128\,bits of CSPRNG output, base64url\\
+session ID & OWASP: $\ge$64 bits of entropy ($\ge$16 hex chars) — 585 years at 10\,000 guesses/s vs 100\,000 live sessions\\
+\bottomrule
+\end{tabular}}
+
+\section{Failures — one weak generator, every key}
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{65mm}@{}}
+\toprule
+2006–08 Debian & a Debian-only OpenSSL patch (0.9.8c-1, Sep 2006) left the PID as the only input: 32\,767 keys per architecture, size and type. SSH, OpenVPN, DNSSEC, X.509 keys; every DSA key \emph{used} there (CVE-2008-0166)\\
+2012 Ps \& Qs & routers, firewalls seeded at boot $\to$ shared RSA primes, batch GCD: keys of 0.50\,\% of TLS and 0.03\,\% of SSH hosts; DSA keys of 1.03\,\% of SSH hosts by repeated $k$\\
+2013 Android & Harmony \ct{SHA1PRNG} bug + unseeded OpenSSL PRNG ($\le$4.3, CVE-2013-7372) $\to$ Bitcoin wallets repeated ECDSA $k$, coins stolen; fixed in 4.4\\
+2013–15 Dual\_EC & whoever knows $e$ with $P = eQ$ predicts all later output; NIST advised against it in Sep 2013. Juniper ScreenOS (Dec 2015): intruders swapped $Q$ $\to$ passive VPN decryption\\
+2023 Milk Sad & \ct{bx seed} (Libbitcoin Explorer 3.x): \ct{mt19937} seeded with 32 bits of time $\to$ $2^{32}$ wallets, drained in the wild (CVE-2023-39910)\\
+2025 Zen 5 & 16/32-bit \ct{RDSEED} returns 0 while signalling success (AMD-SB-7055); Linux disables it on unfixed microcode\\
+\bottomrule
+\end{tabular}}
+
+\section{Traps}
+\begin{itemize}
+  \trap{Ignoring \ct{SecRandomCopyBytes}' status: on failure whatever the buffer held — usually
+        zeros — becomes the key.}
+  \trap{Seeding any generator with the time, the PID or a test constant — 32 bits is $2^{32}$ guesses.}
+  \trap{Hashing the output of a weak PRNG: SHA-256 of 32 bits of entropy is still 32 bits.}
+  \trap{A 6-digit OTP holds $\log_2 10^6 \approx 20$ bits — safe only with rate limits and expiry,
+        never as a bearer token.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Entropy seeds, the DRBG expands, the OS serves. Keys random, nonces unique, IVs
+unpredictable, tokens $\ge$128 bits. Watch first boot, clones and forks — UUIDs identify, never
+authorise.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{block-cipher-modes} (IV vs nonce) ·
+\texttt{public-key-maths} (ECDSA $k$) · \texttt{encoding-encryption-hashing-signing} · Hashing — tables,
+crypto, rings, passwords, Bloom (birthday bound) · Cryptography with CryptoKit · Keychain · Secure
+Enclave · biometrics · JWT attacks \& token hardening}
+
+\end{document}

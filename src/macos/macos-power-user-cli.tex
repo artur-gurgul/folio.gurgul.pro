@@ -1,0 +1,310 @@
+% macos-power-user-cli.tex — the stock macOS command-line tools and the daemon each one talks
+% to: defaults/cfprefsd (domains, search order, types, the caching trap), launchctl (domain
+% targets, bootstrap/bootout/kickstart/print/blame vs legacy load/unload), log (stream/show/
+% collect/config, predicates, private data), Spotlight, open, pbcopy, caffeinate/pmset, APFS +
+% snapshots, scutil/networksetup/DNS, dscl, spctl/xattr/csrutil/tccutil, sysctl/sw_vers/
+% Rosetta, sudo + Touch ID, Homebrew, and the process inspectors.
+% Picture: the commands grouped over the daemon that owns their state, and a timeline of what
+% changed at the command line from 10.8 to macOS 27 (+ the announced macOS 28 cut).
+% Sources (checked 2026-10-09):
+%   Apple man pages as shipped in the Xcode SDK, read in the keith.github.io/xcode-man-pages
+%     render (verbatim text; current enough to carry macOS 27's spctl --purge):
+%     launchctl(1) (domain targets system/ user/ login/ gui/ pid/; bootstrap|bootout, enable|
+%     disable persist across boots, bootstrap prints failing paths with their errors,
+%     kickstart -k -p, print, blame, error, legacy load|unload
+%     "Recommended alternative subcommands", -w stores Disabled elsewhere) · launchd.plist(5)
+%     (must not daemon(3) / fork + exit; relative ProgramArguments[0] resolved with _PATH_STDPATH)
+%     · defaults(1) (-g, -currentHost, read-type, delete-all, find, export -, untyped = string,
+%     WARNING: path mode to be dropped) · cfprefsd(8) · log(1) (stream --level hierarchy; show =
+%     default level unless --info/--debug; --last boot; styles; collect --last/--output/--device,
+%     /var/db/diagnostics + uuidtext; config --mode level/persist; predicate keys; ~/.logrc) ·
+%     logd(8) · mds(8) · mdworker(8) · mdfind(1) · mdutil(1) · open(1) · pbcopy(1) (-pboard, LANG
+%     UTF-8) · pboard(8) · lsd(8) · caffeinate(8) (-d -i -m -s(AC only) -u(5 s) -t -w; no flag =
+%     idle) · pmset(1) (-g assertions/log/therm/ps/sched; -b -c -u -a; sleepnow) · tmutil(8) ·
+%     backupd(8) · diskutil(8) (image, ASIF replaces .sparseimage) · diskarbitrationd(8) · cp(1)
+%     (-c = clonefile) · scutil(8) (--dns --proxy -r, ComputerName/LocalHostName/HostName,
+%     configd dynamic store) · resolver(5) (/etc/resolver/*, resolv.conf maintained by macOS) ·
+%     networksetup(8) (admin; "empty"; * = disabled) · dscacheutil(1) · dscl(1) · dseditgroup(8) ·
+%     opendirectoryd(8) · spctl(8) (-t execute|install|open; --global-disable only reveals the
+%     option; --purge; exit 0/1/2/3/4) · syspolicyd(8) · xattr(1) · tccutil(1) · sw_vers(1)
+%     (--productVersionExtra = RSR) · system_profiler(8) · softwareupdate(8) (--install-rosetta)
+%     · sample(1) (10 s, 1 ms) · spindump(8) (force-quit reports; 10 s, 10 ms) · fs_usage(1)
+%     (root, kernel tracing) · footprint(1) (dirty memory, phys_footprint ledger) · leaks(1)
+%     (-atExit, .memgraph, exit 0/1/>1) · plutil(1) (-extract … raw since macOS 12)
+%   github.com/apple-oss-distributions: configd scutil.tproj/scutil.c (undocumented --nwi) ·
+%     PowerManagement (powerd.1 "manages Energy Preferences"; caffeinate.c flag → assertion type)
+%     · Libc include/paths.h (_PATH_STDPATH = /usr/bin:/bin:/usr/sbin:/sbin)
+%   developer.apple.com/documentation: foundation/userdefaults (domain search order; managed
+%     domain; don't touch the files) · os/logging (10.12, supersedes ASL/syslog) ·
+%     os/customizing-logging-behavior-while-debugging (log config; /Library/Preferences/Logging/
+%     Subsystems) · kernel/1387446-sysctlbyname/determining_system_capabilities (hw.nperflevels,
+%     perflevelN, 0 = fastest) · apple-silicon/about-the-rosetta-translation-environment
+%     (sysctl.proc_translated; Rosetta general-purpose through macOS 27) ·
+%     bundleresources/entitlements/com.apple.security.cs.debugger (task ports need get-task-allow;
+%     Xcode adds it to debug builds) · coreservices/kmditemwherefroms · /kmditemcfbundleidentifier
+%     · devicemanagement/dock (payload type com.apple.dock) · security/disabling-and-enabling-
+%     system-integrity-protection (csrutil from Recovery) · xcode/gathering-information-about-
+%     memory-use (memgraph → vmmap, leaks)
+%   developer.apple.com/documentation/macos-release-notes: macos-26-release-notes (ASIF +
+%     diskutil image; NSLog dynamic data → <private>; nox86exec=1) · macos-27-release-notes
+%     (launchd refuses plists with the quarantine xattr; spctl --purge; TCC database closed to
+%     apps; 27.0 log archives need 26.2+; Rosetta not restored on upgrade; Intel software
+%     incompatible with macOS 28 except legacy games)
+%   developer.apple.com/library/archive/releasenotes/DataManagement/RN-CoreFoundationOlderNotes
+%     (10.8: cfprefsd caches and writes asynchronously; edited plists "may even be overwritten")
+%   developer.apple.com/news/?id=saqachfa (macOS Sequoia: no Control-click Gatekeeper override)
+%   developer.apple.com/forums/thread/705810 (Apple DTS: OSLogPreferences / com.apple.system.logging
+%     Enable-Private-Data, victim machines only) · /thread/706442 (Apple DTS: com.apple.quarantine
+%     not API; Safari sets, Archive Utility propagates, curl/scp don't set, tar/unzip don't
+%     propagate) · /thread/783186 (Apple DTS: csrutil status exists, no supported API for SIP
+%     state; csrutil(8) itself documents only "some commands require Recovery OS")
+%   developer.apple.com/videos/play/wwdc2019/710 (volume group, firmlinks)
+%   support.apple.com/en-us/102149 (SIP paths, El Capitan) · /en-us/109030 (Sonoma: sudo_local) ·
+%     /en-us/124963 (Tahoe 26.4 Rosetta notice; Rosetta through macOS 27) · /en-us/148830 (macOS 27:
+%     tccutil list, TCC.db, Rosetta) · guide/security/signed-system-volume-security-secd698747c9
+%     (10.15 read-only system volume, 11 SSV on APFS snapshots) · guide/deployment/manage-login-
+%     items-background-tasks-mac-depdca572563 (macOS 13; sfltool dumpbtm / resetbtm) ·
+%     guide/disk-utility dskua9e6a110 (container shares space; volume group) + dskuf82354dc
+%     (snapshot = read-only copy of a volume)
+%   docs.brew.sh/Installation (read 2026-10-09: /opt/homebrew on Apple silicon, no sudo after
+%     install, macOS 15+, Intel = Tier 3) · docs.brew.sh/Manpage (brew services = launchctl;
+%     ~/Library/LaunchAgents, sudo → /Library/LaunchDaemons; brew bundle dump)
+% Not repeated: plist keys + XPC (macos/xnu-launchd-xpc), the security layers themselves
+% (macos/macos-security-architecture), Logger API (debugging/logging-signposts-power).
+% @labels: area=macos kind=tooling platform=apple topic=tooling,debugging,platform-apis discussion=322
+% @tags: defaults, cfprefsd, launchctl, launchd, launchagents, unified-logging, log-stream, spotlight, pmset, caffeinate, apfs-snapshots, gatekeeper, quarantine, sip, tcc, rosetta, homebrew
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}          % "--" without the ligature
+\newcommand\eqq{\hbox{=}\hbox{=}}         % "==" without the ligature
+\newcommand\tl{\textasciitilde}
+\newcommand\hd[1]{\par\vspace{2pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  sub/.style={box, font=\tiny, text width=24.5mm, minimum height=10mm, align=left,
+              inner sep=1.5pt, anchor=north},
+  so/.style={box, font=\tiny, inner sep=1.5pt, minimum height=7mm, text width=11mm},
+  tv/.style={font=\bfseries\scriptsize, text=sheetBlue},
+  tx/.style={font=\tiny, align=center, text width=25mm, inner sep=1pt},
+}
+% one subsystem box: \subbox{x}{y}{colour}{title}{daemon}{commands}
+\newcommand\subbox[6]{%
+  \node[sub, draw=#3, fill=#3!6] at (#1,#2) {{\bfseries\scriptsize\color{#3}#4}\\
+    {\itshape\color{sheetBrown}#5}\\[1pt]\ttfamily #6};}
+
+\begin{document}
+
+\sheettitle{macOS power-user CLI — what each command really talks to}{macos · folio}
+
+\oneliner{Most macOS admin commands are \textbf{thin clients of a daemon} that owns and caches
+the state — so change it \emph{through the tool}, name the \textbf{domain} (prefs domain,
+launchd \ct{gui/<uid>}, log subsystem), and expect \textbf{SIP}, \textbf{TCC} and the
+\textbf{sealed system volume} to refuse even \ct{root}.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \fill[sheetGreen!10] (-0.05,0.22) rectangle (16.55,0.55);
+  \node[font=\scriptsize, anchor=west] at (0,0.385) {\textbf{your shell} — each tool asks the daemon (\emph{italic}) that owns the state; the daemon, not the file on disk, is the truth};
+  \subbox{1.3}{0.1}{sheetBlue}{Preferences}{cfprefsd}{defaults · UserDefaults\\plutil = raw file!}
+  \subbox{4.08}{0.1}{sheetOrange}{Services}{launchd (PID 1)}{launchctl · sfltool\\brew services}
+  \subbox{6.86}{0.1}{sheetGreen!70!black}{Logs}{logd}{log stream / show\\log collect / config}
+  \subbox{9.64}{0.1}{sheetBrown}{Spotlight}{mds · mdworker}{mdfind · mdls\\mdutil -s / -E}
+  \subbox{12.42}{0.1}{sheetBlue}{Apps \& clipboard}{lsd · pboard}{open -a -b -n -W -R\\pbcopy · pbpaste}
+  \subbox{15.2}{0.1}{sheetOrange}{Power}{powerd}{pmset -g assertions\\caffeinate -dimsu}
+  \subbox{1.3}{-1.08}{sheetBrown}{Storage}{diskarbitrationd · backupd}{diskutil · hdiutil\\tmutil · cp -c}
+  \subbox{4.08}{-1.08}{sheetBlue}{Network}{configd · mDNSResponder}{scutil · networksetup\\dscacheutil -q host}
+  \subbox{6.86}{-1.08}{sheetGreen!70!black}{Users \& groups}{opendirectoryd}{dscl . -read /Users/x\\dseditgroup · id}
+  \subbox{9.64}{-1.08}{sheetGrey}{System info}{kernel · sysctl MIB}{sysctl · sw\_vers · ioreg\\system\_profiler}
+  \subbox{12.42}{-1.08}{sheetRed}{Security}{syspolicyd · TCC}{spctl -a · xattr\\csrutil · tccutil}
+  \subbox{15.2}{-1.08}{sheetOrange}{Process inspectors}{kernel trace · task ports}{fs\_usage · sample\\footprint · leaks}
+  \fill[sheetBlue!12] (-0.05,-2.5) rectangle (16.55,-2.2);
+  \node[font=\tiny, anchor=west] at (0,-2.35) {\textbf{XNU} — \ct{sysctl} reads kernel variables · \ct{fs\_usage} needs root for the kernel tracing facility · a debugger needs the target's \textbf{task port}, given only if the target carries \ct{get-task-allow}};
+  % ── timeline ──
+  \node[font=\bfseries\scriptsize, text=sheetBlue, anchor=west] at (-0.05,-2.72) {What changed at the command line};
+  \draw[thick, sheetGrey] (0,-3.65) -- (16.5,-3.65);
+  \foreach \x/\v in {0.55/10.8, 1.95/10.11, 3.35/10.12, 4.75/10.15, 6.15/11, 7.55/12, 8.95/13, 10.35/14, 11.75/15, 13.15/26, 14.55/27, 15.95/28}
+    { \fill[sheetBlue] (\x,-3.65) circle (1.3pt); \node[tv] at (\x,-3.9) {\v}; }
+  \node[tx, anchor=south west, text width=21mm] at (-0.05,-3.55) {cfprefsd caches plists: edit via \ct{defaults}};
+  \node[tx, anchor=north] at (1.95,-4.05) {SIP: root can't touch \ct{/System} \ct{/usr}};
+  \node[tx, anchor=south] at (3.35,-3.55) {unified log, \ct{log}; ASL + syslog superseded};
+  \node[tx, anchor=north] at (4.75,-4.05) {read-only System volume + Data = volume group};
+  \node[tx, anchor=south] at (6.15,-3.55) {signed system volume (SSV), on APFS snapshots};
+  \node[tx, anchor=north] at (7.55,-4.05) {\ct{plutil -extract … raw}};
+  \node[tx, anchor=south] at (8.95,-3.55) {login + background items: \ct{sfltool dumpbtm}};
+  \node[tx, anchor=north] at (10.35,-4.05) {Touch ID \ct{sudo} via \ct{/etc/pam.d/sudo\_local}};
+  \node[tx, anchor=south] at (11.75,-3.55) {no Control-click past Gatekeeper};
+  \node[tx, anchor=north] at (13.15,-4.05) {\ct{diskutil image} (ASIF) · NSLog args $\to$ \ct{<private>} · \ct{nox86exec=1}};
+  \node[tx, anchor=south] at (14.55,-3.55) {quarantined plists: launchd won't load · \ct{spctl \dd{}purge} · \ct{tccutil list}};
+  \node[tx, anchor=north east, text width=21mm, text=sheetRed] at (16.55,-4.05) {Intel apps end, legacy games kept (announced)};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright\footnotesize\setstretch{1.0}
+
+\hd{defaults — preferences through cfprefsd}
+\begin{itemize}
+  \item \textbf{Domain} = bundle id; \ct{-g} = \ct{NSGlobalDomain} (every app);
+        \ct{-currentHost} = this host only. A file \emph{path} as domain: slated to go.
+  \item No type flag $\Rightarrow$ \textbf{string}: \ct{-bool -int -float -date -data
+        -array(-add) -dict(-add)}; check with \ct{read-type}. \ct{find <word>} ·
+        \ct{export <dom> -} (XML) · \ct{delete-all} (every container).
+  \item Since 10.8 cfprefsd caches and writes \emph{asynchronously}: a hand-edited plist ``will
+        not necessarily be read, and may even be overwritten''.
+\end{itemize}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\tiny, anchor=west] at (-0.05,0.62) {\textbf{UserDefaults lookup order} — first hit wins (\emph{volatile} = gone when the app quits):};
+  \foreach \i/\n/\d/\c in {0/Managed/{MDM, forced}/sheetRed, 1/Argument/{\ct{-Key val}, volatile}/sheetOrange, 2/App/its domain/sheetBlue, 3/Suite/app group/sheetBlue, 4/Global/\ct{-g}/sheetGreen!70!black, 5/Registration/{\ct{register()}, volatile}/sheetGrey}
+    { \node[so, draw=\c, fill=\c!6] (s\i) at (\i*1.33,0) {\textbf{\n}\\\d}; }
+  \foreach \i [evaluate=\i as \j using int(\i+1)] in {0,...,4} \draw[->, thin, sheetGrey] (s\i) -- (s\j);
+\end{tikzpicture}
+
+\hd{launchctl — verbs on domain targets (\ct{U=\$(id -u)})}
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{56mm}>{\raggedright\arraybackslash}p{10mm}@{}}
+\toprule
+\textbf{want} & \textbf{modern} & \textbf{legacy}\\ \midrule
+load & \ct{bootstrap gui/\$U \tl/Library/LaunchAgents/x.plist} & \ct{load}\\
+unload & \ct{bootout gui/\$U/com.example.x} & \ct{unload}\\
+restart & \ct{kickstart -k -p gui/\$U/com.example.x} (\ct{-p}: pid) & —\\
+inspect & \ct{print gui/\$U/…} · \ct{blame} (why it was launched) & \ct{list}\\
+keep off & \ct{disable gui/\$U/…} — persists across boots & \ct{-w}\\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item \ct{system/} (anyone reads, root modifies) · \ct{user/<uid>/} (exists without a
+        login) · \ct{gui/<uid>/} (the login session: agents) · \ct{login/<asid>/} ·
+        \ct{pid/<pid>/} (the XPC services it can reach). Legacy verbs pick the domain by
+        whether you are root.
+  \item Relative \ct{ProgramArguments[0]} resolves via \ct{\_PATH\_STDPATH} =
+        \ct{/usr/bin:/bin:/usr/sbin:/sbin}, not your \ct{PATH}; never \ct{daemon(3)} / fork + exit.
+  \item Background items (13+): \ct{sfltool dumpbtm} lists, \ct{resetbtm} resets.
+        \ct{brew services} = \ct{\tl/Library/LaunchAgents} (\ct{sudo}: \ct{/Library/LaunchDaemons}).
+\end{itemize}
+
+\hd{log — the unified log (10.12+)}
+\begin{itemize}
+  \item \ct{log stream \dd level debug} = live (debug \pdfonly{$\supset$}\htmlonly{⊃} info \pdfonly{$\supset$}\htmlonly{⊃} default) ·
+        \ct{log show \dd last 1h} = stored, default level unless \ct{\dd info \dd debug} ·
+        \ct{\dd last boot} · \ct{\dd style compact|json|ndjson}.
+  \item Keys: \ct{subsystem}, \ct{category} (with subsystem), \ct{process}, \ct{sender}
+        (the library), \ct{messageType} (default info debug error fault),
+        \ct{eventMessage CONTAINS[c] "x"}. \ct{\tl/.logrc}: default options + predicate aliases.
+  \item Persist debug for one subsystem: \ct{sudo log config \dd subsystem com.example.app
+        \dd mode "level:debug,persist:debug"} (\ct{\dd status}, \ct{\dd reset}).
+  \item \ct{sudo log collect \dd last 30m \dd output x.logarchive} (\ct{\dd device}: a paired
+        device); store = \ct{/var/db/diagnostics}. 27.0 archives need 26.2+ to read.
+  \item \ct{<private>} lifts only via \ct{OSLogPreferences} (Info.plist) or a
+        \ct{com.apple.system.logging} profile (\ct{Enable-Private-Data}) — on a throwaway Mac.
+\end{itemize}
+
+\hd{Spotlight · open · clipboard}
+\begin{itemize}
+  \item \ct{mdfind 'kMDItemCFBundleIdentifier \eqq{} "com.example.app"'} — every copy (stale
+        builds); \ct{-onlyin <dir>} \ct{-name} \ct{-live} \ct{-0}.
+        \ct{mdls -name kMDItemWhereFroms f} = download URL. \ct{sudo mdutil -E /} rebuilds,
+        \ct{-s} status.
+  \item \ct{open -a Xcode .} · \ct{-b <id>} · \ct{-n} new instance · \ct{-W} wait · \ct{-R}
+        reveal · \ct{-j} hidden · \ct{-F} no restore · \ct{\dd env K=V} · \ct{\dd args …}.
+  \item \ct{pbpaste | jq . | pbcopy}; \ct{-pboard find}. Without a UTF-8 \ct{LANG} the C
+        encoding is used — non-ASCII mangles.
+\end{itemize}
+
+\hd{Power — assertions held by powerd}
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{38mm}>{\raggedright\arraybackslash}p{24mm}@{}}
+\toprule
+\textbf{caffeinate} & \textbf{assertion (\ct{pmset -g assertions})} & \textbf{note}\\ \midrule
+\ct{-i} & \ct{PreventUserIdleSystemSleep} & default, no flag\\
+\ct{-d} & \ct{PreventUserIdleDisplaySleep} & display\\
+\ct{-s} & \ct{PreventSystemSleep} & \textbf{AC power only}\\
+\ct{-m} / \ct{-u} & disk idle / ``user is active'' & \ct{-u}: 5 s unless \ct{-t}\\
+\bottomrule
+\end{tabular}}
+\ct{caffeinate -i make} holds it while \ct{make} runs, \ct{-w <pid>} until that pid exits.
+\ct{pmset -g log} (sleep/wake history) · \ct{-g therm} · \ct{-g sched}; settings per source:
+\ct{-b} battery \ct{-c} charger \ct{-u} UPS \ct{-a} all; \ct{pmset sleepnow}.
+
+\hd{Storage — APFS}
+\begin{itemize}
+  \item A \textbf{container} shares free space among its \textbf{volumes}. macOS = a
+        \textbf{volume group}: System (read-only 10.15, signed + sealed 11) + Data, joined by
+        \textbf{firmlinks}.
+  \item Snapshot = read-only copy of a volume. \ct{tmutil localsnapshot} ·
+        \ct{listlocalsnapshots /} · \ct{deletelocalsnapshots <date>} · \ct{thinlocalsnapshots /};
+        \ct{diskutil apfs listSnapshots /}.
+  \item \ct{cp -c} = \ct{clonefile(2)}, copy-on-write. \ct{diskutil image create} (26) writes
+        \textbf{ASIF}, which replaces \ct{.sparseimage}.
+\end{itemize}
+
+\hd{Network, DNS, users}
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{45mm}>{\raggedright\arraybackslash}p{31mm}@{}}
+\toprule
+\ct{scutil \dd dns} · \ct{\dd proxy} & resolver + proxy config (configd)\\
+\ct{scutil \dd get LocalHostName} & also \ct{ComputerName}, \ct{HostName}\\
+\ct{/etc/resolver/<domain>} & per-domain DNS; \ct{resolv.conf} is generated\\
+\ct{networksetup -setdnsservers Wi-Fi 9.9.9.9} & per \emph{service}; \ct{empty} clears\\
+\ct{networksetup -listallhardwareports} & service name $\leftrightarrow$ \ct{en0}\\
+\ct{dscacheutil -q host -a name example.com} & system lookup; \ct{-flushcache}\\
+\ct{dscl . -list /Users UniqueID} & local directory node\\
+\ct{dseditgroup -o checkmember -m x admin} & group membership\\
+\bottomrule
+\end{tabular}}
+
+\hd{Gatekeeper, quarantine, SIP, TCC}
+\begin{itemize}
+  \item \ct{spctl -a -vv -t execute App.app} (\ct{install} a \ct{.pkg}, \ct{open} a document):
+        exit 0 ok · 1 failed · 2 bad args · \textbf{3 denied}. \ct{\dd global-disable} only
+        \emph{reveals} ``Anywhere'' in Privacy \& Security.
+  \item \textbf{Quarantine} = xattr \ct{com.apple.quarantine} (not API): Safari sets it, Archive
+        Utility propagates it; \ct{curl}/\ct{scp} don't set it, \ct{tar}/\ct{unzip} don't
+        propagate. \ct{xattr -d com.apple.quarantine f} · \ct{-r} · \ct{-c} (all).
+  \item SIP guards \ct{/System /usr /bin /sbin /var} — not \ct{/usr/local},
+        \ct{/Applications}, \ct{/Library}. \ct{csrutil status} (not an API); disable only in
+        Recovery.
+  \item \ct{tccutil reset AddressBook [bundle-id]} re-prompts; 27: \ct{tccutil list} (managed Macs);
+        apps can no longer read the TCC database.
+\end{itemize}
+
+\hd{System info, Rosetta, sudo, Homebrew}
+\begin{itemize}
+  \item \ct{sw\_vers \dd productVersion} · \ct{\dd buildVersion} · \ct{\dd productVersionExtra}
+        (Rapid Security Response). \ct{sysctl hw.nperflevels}, \ct{hw.perflevel0.physicalcpu}
+        (0 = fastest cores), \ct{hw.memsize}; \ct{sysctl.proc\_translated} 1 = under Rosetta.
+  \item \ct{softwareupdate \dd install-rosetta}: Rosetta stays general-purpose through 27, is
+        not restored by the upgrade; \ct{sudo nvram boot-args="nox86exec=1"} (26) makes x86
+        code crash — proof you no longer need it.
+  \item Touch ID \ct{sudo}: \ct{/etc/pam.d/sudo\_local} (14+, from \ct{sudo\_local.template})
+        survives updates.
+  \item Homebrew: \ct{/opt/homebrew}, no \ct{sudo} after install; macOS 15+, Intel = Tier 3
+        (Oct 2026). \ct{brew bundle dump} $\to$ \ct{Brewfile}.
+\end{itemize}
+
+\hd{Process inspectors}
+\ct{sample <pid>} — all threads' stacks, 10\,s at 1\,ms · \ct{spindump} — the report of a
+force-quit hang · \ct{sudo fs\_usage -w -f filesys <proc>} · \ct{footprint} — \emph{dirty}
+memory, \ct{phys\_footprint} = kernel ledger · \ct{vmmap \dd summary} · \ct{heap} ·
+\ct{leaks \dd atExit \dd{} ./tool}: exit 0 clean, 1 leaks (a CI gate); reads Xcode
+\ct{.memgraph} files too.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{\ct{bootstrap} prints each failing path with its error; \ct{launchctl error 5} decodes
+        the number. On 27 a downloaded (quarantined) plist won't load: \ct{xattr -d} it.}
+  \trap{\ct{networksetup} wants the \emph{service} (\ct{"Wi-Fi"}), not the device (\ct{en0}).}
+  \trap{\ct{leaks}/\ct{vmmap} on a distribution build: no task port\unverified{} — Xcode adds
+        \ct{get-task-allow} only when building for debugging.}
+\end{itemize}
+
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{xnu-launchd-xpc} (plist keys,
+XPC) · \texttt{macos-security-architecture} (SIP, Gatekeeper, TCC) · \texttt{logging-signposts-power}
+(\ct{Logger}) · \texttt{macos-keychain-security-cli} · \texttt{notarization-distribution} ·
+\texttt{systemd-deep} (the Linux counterpart) · \texttt{os-fundamentals}}
+
+\end{document}

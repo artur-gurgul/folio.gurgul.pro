@@ -1,0 +1,306 @@
+% ci-pipeline-design.tex — designing a CI/CD pipeline for a mobile team, vendor-neutral: stages PR ->
+% merge queue -> main -> release; ordering by cost, the critical path, cancelling superseded runs;
+% sharding (count vs duration) and each vendor's fan-out knob; caching (keys, restore order,
+% immutability, who may write, poisoning); merge queues / merge trains and required checks; trunk;
+% the five vendors side by side; build once and promote (App Store Connect, Google Play);
+% provenance (SLSA, Sigstore, artifact attestations); the DORA metrics; secrets on fork PRs.
+% Sources (checked 2026-10-09):
+%   martinfowler.com/articles/continuousIntegration.html (rev. 18 Jan 2024: 11 practices; XP ten-minute
+%     build; two-stage pipeline, 2nd stage may take hours; commit to mainline every day; Beck "nobody has
+%     a higher priority task than fixing the build"; revert) · /bliki/DeploymentPipeline.html (30 May
+%     2013; Humble & Farley; first stage compiles and provides binaries for later stages)
+%   graydon2.dreamwidth.org/1597.html (Feb 2014, Not Rocket Science Rule; bors) — 404 today, so the
+%     rule is paraphrased, not quoted, after blog.janestreet.com/making-never-break-the-build-scale/
+%     ("automatically maintain a repository that never fails its tests", attributed to that post)
+%   docs.github.com: managing-a-merge-queue (merge_group trigger; gh-readonly-queue/{base_branch};
+%     build concurrency 1-100; group size 1-100; failed PR removed, groups rebuilt; jumping = full
+%     rebuild) · merging-a-pull-request-with-a-merge-queue (removal reasons: failure, timeout) ·
+%     troubleshooting-required-status-checks (path/branch/message-skipped workflow stays Pending and
+%     blocks; job skipped by if = Success) · dependency-caching (exact key, key prefix, restore-keys,
+%     newest; immutable; current/default/base branch; PR caches on refs/pull/../merge; 10 GB/repo;
+%     7 days unused; key <= 512 chars; pull_request_target, workflow_run read-only) · workflow-syntax
+%     (matrix <= 256 jobs/run; concurrency: one running, pending replaced; path-filtered workflow
+%     stays Pending) · secure-use (masking needs an exact match: derived/base64 values must be
+%     registered; fork PRs get no secrets; environment secrets only after reviewer approval) ·
+%     artifact-attestations + use-artifact-attestations
+%     (actions/attest v4; id-token + attestations: write; SLSA v1.0 Build L2, L3 via shared reusable
+%     workflows; public-good Sigstore for public repos, GitHub's instance without log for private;
+%     gh attestation verify)
+%   docs.gitlab.com: ci/yaml (default stages .pre build test deploy .post; needs <= 50 on GitLab.com;
+%     parallel 1-200, parallel:matrix <= 200; cache:key:files <= 10 files, SHA of contents;
+%     fallback_keys; policy pull/push/pull-push; interruptible) · ci/pipelines/merge_trains (Premium,
+%     Ultimate; merged results pipelines; 20 pipelines in parallel by default; failure -> removed,
+%     later pipelines restart) · ci/variables (protected = protected branches/tags only; forks get no
+%     parent variables by default)
+%   buildkite.com/docs: pipelines/architecture ("hybrid"; SaaS control plane, your build environment;
+%     source and secrets stay with you) · hosted-agents (Linux, macOS + Xcode per queue, Windows) ·
+%     dynamic-pipelines (buildkite-agent pipeline upload) · command-step (parallelism,
+%     BUILDKITE_PARALLEL_JOB/_COUNT, depends_on) · canceling-builds, skipping (intermediate builds) ·
+%     test-engine/test-splitting (bktec, historical timing)
+%   docs.bitrise.io configuring-a-bitrise-pipeline (pipelines -> workflows -> steps; depends_on;
+%     parallel <= 200, BITRISE_IO_PARALLEL_INDEX zero-based / _TOTAL; stages before Dec 2024
+%     deprecated) · configure-builds/secrets (PRs get no secrets unless "Expose for Pull Requests") ·
+%     infrastructure/build-stacks/about-build-stacks (macOS stacks with Xcode; Linux stacks)
+%   developer.apple.com: xcode-cloud (25 compute h/month with membership) · xcode-cloud-workflow-
+%     reference (actions Build/Test/Analyze/Archive; post-actions TestFlight, App Store Connect upload,
+%     notify; Auto-cancel Builds on by default; derived data cached, "Clean" option) · writing-custom-
+%     build-scripts (ci_scripts/ci_post_clone.sh, ci_pre_xcodebuild.sh, ci_post_xcodebuild.sh) ·
+%     xcode-26-release-notes (compilation caching opt-in, Swift + C-family, branch switches and clean
+%     builds) · news/upcoming-requirements (since 28 Apr 2026 uploads built with Xcode 26 + 26 SDKs) ·
+%     help/app-store-connect upload-builds (the build string uniquely identifies the build) ·
+%     choose-a-build-to-submit (one build per version, changeable until submitted)
+%   keith.github.io/xcode-man-pages xcodebuild.1 (-testProductsPath: destination with
+%     build-for-testing, source with test-without-building)
+%   developer.android.com/studio/publish/versioning (versionCode greater each release, never reused,
+%     max 2 100 000 000) · /app-signing (upload key vs app signing key; required for apps created from
+%     Aug 2021) · support.google.com/googleplay/android-developer/answer/9859348 ("Add from library";
+%     no staged rollout on a first release) · developers.google.com/android-publisher/tracks
+%     (Edits.tracks update with versionCodes; inProgress/halted; userFraction)
+%   bazel.build/remote/caching (action cache + CAS; declared inputs; only CI writes;
+%     --remote_upload_local_results) · docs.gradle.org build_cache (key from task inputs + classpath;
+%     isPush = isCiServer) · ccache.dev/manual (compiler size + mtime hashed by default; base_dir
+%     rewrites absolute paths, "kind of a brittle hack")
+%   jestjs.io/docs/cli (--shard i/n, 1-based) · circleci.com/docs parallelism-faster-jobs
+%     (--split-by=timings from the previous run; default by name) · nx.dev/docs/features/ci-features/
+%     affected (git diff + project graph) · github.com/tuist/tuist server/priv/docs/en/guides/features/
+%     selective-testing.md (hash per test target + dependencies; target granularity)
+%   slsa.dev/spec/v1.2 build-track-basics (L0-L3; L3 keeps signing secrets from user-defined steps) +
+%     source-requirements (Source L1-L4) · slsa.dev/blog/2025/11/announce-slsa-v1.2 (24 Nov 2025)
+%   docs.sigstore.dev certificate_authority/overview (Fulcio: OIDC identity, certs valid 10 minutes,
+%     transparency log)
+%   dora.dev/guides/dora-metrics (five metrics, throughput vs instability) · /insights/dora-metrics-
+%     history (2014-15 four keys; 2023 MTTR -> failed deployment recovery time; 2024 rework rate +
+%     regrouping) · /capabilities/trunk-based-development (<= 3 active branches, merge daily, no
+%     freezes) · cloud.google.com/blog announcing-the-2025-dora-report (23 Sep 2025; ~5 000 people;
+%     AI: + throughput, still - stability; seven team profiles)
+%   Not confirmed on a primary source, marked \unverified: the 2024 elite-tier values.
+% Not repeated: triggers, OIDC, runner prices (github-actions-deep); xcodebuild test flags
+% (xcodebuild-simctl-cli); signing, match, phased release (signing-and-cicd); flaky-test causes
+% (flaky-tests-ci-tdd); branching models (git-in-depth); npm provenance (supply-chain-security).
+% @labels: area=cicd kind=process platform=general topic=build,testing,tooling discussion=297
+% @tags: ci-cd, pipeline-design, build-caching, cache-poisoning, test-sharding, merge-queue, required-checks, trunk-based-development, build-once-promote, slsa, sigstore, provenance, dora-metrics, github-actions, gitlab-ci, xcode-cloud
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcommand\dd{\hbox{-}\hbox{-}}
+\newcommand\hd[1]{\par\vspace{3pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{1pt}}
+
+\tikzset{
+  st/.style={box, font=\tiny, inner sep=1.5pt, text width=17mm, minimum height=8.5mm},
+  pr/.style={st, draw=sheetBlue, fill=sheetBlue!7},
+  mn/.style={st, draw=sheetGreen!70!black, fill=sheetGreen!8},
+  rl/.style={st, draw=sheetOrange, fill=sheetOrange!9},
+  gate/.style={diamond, draw=sheetRed, thick, fill=sheetRed!5, aspect=2.2, inner sep=0.3pt, font=\tiny, align=center},
+  lane/.style={font=\scriptsize\bfseries, anchor=west, align=left},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+}
+
+\begin{document}
+
+\sheettitle{CI pipeline design — fast feedback, safe merges, one artifact}{cicd · folio}
+
+\oneliner{A pipeline is a \textbf{DAG of gates} ordered so the \textbf{cheapest check most likely to fail runs first};
+its \textbf{critical path} is the developer's wait. Speed comes from \textbf{content-keyed caches} only CI writes and
+\textbf{duration-balanced shards}; \ct{main} stays green because a \textbf{merge queue} tests the merge
+\emph{before} it lands; the release \textbf{artifact is built once}, attested, and \textbf{promoted}; the whole
+system is judged by the \textbf{DORA} metrics — not by how many jobs it has.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  % lanes
+  \node[lane, text=sheetBlue] at (-0.25,3.55) {PR\\(every push)};
+  \node[lane, text=sheetGreen!50!black] at (-0.25,1.85) {merge queue\\+ \ct{main}};
+  \node[lane, text=sheetOrange!85!black] at (-0.25,0.35) {release\\(tag)};
+  % PR lane
+  \node[pr] (lint) at (2.55,3.0) {\textbf{lint · format}\\SwiftLint, ktlint,\\\ct{tsc} \textcolor{sheetOrange}{\textbf{0:40}}};
+  \node[pr] (bld) at (4.6,3.0) {\textbf{build-for-testing}\\\textbf{once}, warm\\caches \textcolor{sheetOrange}{\textbf{3:00}}};
+  \node[pr, text width=19mm, minimum height=5mm] (u1) at (7.0,3.55) {unit, 4 shards \textcolor{sheetOrange}{\textbf{2:00}}};
+  \node[pr, text width=19mm, minimum height=5mm] (sn) at (7.0,2.95) {snapshot \textcolor{sheetOrange}{\textbf{2:30}}};
+  \node[pr, text width=19mm, minimum height=5mm] (ui) at (7.0,2.35) {UI smoke ×2 \textcolor{sheetOrange}{\textbf{5:00}}};
+  \foreach \n in {u1,sn,ui} \draw[flow] (bld.east) -- (\n.west);
+  \node[gate] (g) at (9.3,2.95) {required\\checks\\green?};
+  \foreach \n in {u1,sn,ui} \draw[flow] (\n.east) -- (g.west);
+  \draw[flow] (lint) -- (bld);
+  \node[lbl, text=sheetRed, anchor=west, align=left] at (10.35,3.45) {\textbf{critical path} = 0:40 + 3:00 + 5:00\\$\approx$ \textbf{9 min} wall clock (not the 24 runner-min)};
+  \node[lbl, anchor=west, align=left] at (10.35,2.75) {+ review $\rightarrow$ ``merge when ready''\\a new push \textbf{cancels} the superseded run};
+  % merge queue lane
+  \node[mn, text width=22mm] (mq) at (2.8,1.55) {\textbf{merge group} = main\\+ PRs ahead + this PR,\\same checks \textcolor{sheetOrange}{\textbf{8:00}}};
+  \node[mn] (full) at (5.45,1.55) {\textbf{main}: full suite\\+ coverage, devices,\\sanitizers \textcolor{sheetOrange}{\textbf{15:00}}};
+  \node[mn, text width=19mm] (art) at (7.85,1.55) {\textbf{archive once}\\\ct{.ipa}/\ct{.aab} + dSYMs\\+ \textbf{provenance}};
+  \node[mn, draw=sheetGrey, fill=black!4] (ni) at (10.2,1.55) {\textbf{nightly}: E2E on\\devices, locales,\\perf, flake stats};
+  \draw[hot, draw=sheetRed] (g.south) |- node[lbl, pos=0.25, right]{yes} ($(mq.north)+(0,0.25)$) -- (mq.north);
+  \draw[flow] (mq) -- node[lbl, above]{merge} (full);
+  \draw[flow] (full) -- (art);
+  \draw[flow, dashed] (art) -- (ni);
+  \node[lbl, anchor=west, align=left, text=sheetRed] at (11.3,1.55) {fails? \textbf{the PR leaves the}\\\textbf{queue}, groups behind it are\\rebuilt; \ct{main} never sees red};
+  % release lane
+  \node[rl] (tag) at (2.55,0.2) {\textbf{tag} \ct{v5.12.0}\\on a green commit};
+  \node[rl] (prom) at (4.6,0.2) {\textbf{promote} the\\stored artifact\\(no rebuild)};
+  \node[gate, draw=sheetOrange] (appr) at (6.85,0.2) {env\\approval};
+  \node[rl, text width=19mm] (up) at (9.05,0.2) {upload $\rightarrow$ TestFlight /\\Play internal $\rightarrow$\\review $\rightarrow$ staged \%};
+  \draw[flow] (tag) -- (prom); \draw[flow] (prom) -- (appr); \draw[flow] (appr) -- (up);
+  \draw[flow, dashed] (art.south) -- ++(0,-0.35) -| (prom.north);
+  \node[lbl, anchor=west, align=left] at (10.2,0.2) {release secrets live \textbf{only} in this job's\\\textbf{environment} (reviewers, branch/tag\\filter) — PR jobs never see them};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\hd{Order and speed}
+\begin{itemize}
+  \item \textbf{Cheap and likely-to-fail first}: lint (seconds) $\rightarrow$ compile $\rightarrow$ unit $\rightarrow$
+        snapshot $\rightarrow$ UI/E2E. Commit stage within XP's \textbf{ten-minute build}; slow suites in a
+        second stage that ``might take a couple of hours'' (Fowler, rev.\ 2024).
+  \item \textbf{Critical path, not CPU}: wall clock = the longest chain. Build \textbf{once}, fan out:
+        \ct{build-for-testing -testProductsPath T.xctestproducts} $\rightarrow$ artifact (jobs share no disk)
+        $\rightarrow$ \ct{test-without-building} per shard.
+  \item \textbf{Skip what cannot change}: path filters (see the trap); Nx \ct{affected} (git diff + project
+        graph); Tuist selective testing (hash per test target + its dependencies — target, not test, granularity).
+  \item \textbf{Cancel superseded PR runs}, never deploys: GitHub \ct{concurrency} (+ \ct{cancel-in-progress})
+        · GitLab \ct{interruptible} · Buildkite \emph{Cancel Intermediate Builds} · Xcode Cloud
+        \emph{Auto-cancel Builds} (on by default).
+\end{itemize}
+
+\hd{Sharding — split by duration, not by count}
+\begin{tikzpicture}[sheet]
+  % same 14 test-minutes, split two ways over 4 shards
+  \node[lbl, anchor=west, font=\tiny\bfseries, text=sheetRed] at (0,0.95) {by count (same no.\ of tests)};
+  \foreach \i/\w in {0/1.2,1/1.5,2/3.6,3/0.9} {
+    \fill[sheetRed!35] (0,0.68-\i*0.2) rectangle ++(\w,0.13);
+    \node[lbl, anchor=east] at (0,0.745-\i*0.2) {\i}; }
+  \draw[sheetRed, dashed] (3.6,0.83) -- (3.6,-0.02) node[lbl, below, text=sheetRed] {wall 3.6};
+  \node[lbl, anchor=west, font=\tiny\bfseries, text=sheetGreen!40!black] at (4.2,0.95) {by recorded duration};
+  \foreach \i/\w in {0/1.8,1/1.75,2/1.8,3/1.85} {
+    \fill[sheetGreen!45] (4.2,0.68-\i*0.2) rectangle ++(\w,0.13); }
+  \draw[sheetGreen!40!black, dashed] (6.05,0.83) -- (6.05,-0.02) node[lbl, below, text=sheetGreen!40!black] {wall 1.85};
+  \node[lbl, anchor=west, align=left] at (6.3,0.42) {same 7.2\\test-min,\\$\approx$ half\\the wait};
+\end{tikzpicture}\par
+Wall clock $\approx$ build + slowest shard + per-shard setup (boot, download): past a point more shards only add
+setup and cost. Timing data: Buildkite \ct{bktec} (history), CircleCI \ct{tests split \dd{}split-by=timings}
+(previous run; with none, by name).\par
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{28mm}>{\raggedright\arraybackslash}p{38mm}@{}}
+\toprule
+\textbf{CI} & \textbf{fan-out} & \textbf{each copy learns its slot} \\ \midrule
+GitHub & \ct{strategy.matrix} $\leq$ 256 jobs/run & \ct{\$\{\{ matrix.shard \}\}} \\
+GitLab & \ct{parallel: 1..200} & \ct{CI\_NODE\_INDEX}, \ct{CI\_NODE\_TOTAL} \\
+Buildkite & step \ct{parallelism:} & \ct{BUILDKITE\_PARALLEL\_JOB}, \ct{\_COUNT} \\
+Bitrise & pipeline \ct{parallel:} $\leq$ 200 & \ct{BITRISE\_IO\_PARALLEL\_INDEX} (0-based), \ct{\_TOTAL} \\
+CircleCI & job \ct{parallelism:} & \ct{CIRCLE\_NODE\_INDEX}, \ct{\_TOTAL} \\
+Jest & \ct{\dd{}shard=2/4} & 1-based index / count \\
+\bottomrule
+\end{tabular}}
+
+\hd{Caching — what, key, who writes}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{23mm}>{\raggedright\arraybackslash}p{35mm}@{}}
+\toprule
+\textbf{cache} & \textbf{key} & \textbf{trap} \\ \midrule
+downloads: SPM, Pods, npm, Gradle deps & OS + tool version + \textbf{hash(lockfile)} & a key without the lockfile hash restores stale deps \\
+outputs: ccache, DerivedData & inputs + compiler (ccache: size + mtime) & absolute paths miss across checkouts; \ct{base\_dir}: ``a brittle hack'' \\
+remote: Bazel (action cache + CAS), Gradle & hash of every declared input & hermetic or wrong: an undeclared input is not in the key \\
+Xcode 26 compilation cache & per compile inputs & opt-in, Swift + C; wins on branch switches and clean builds \\
+\bottomrule
+\end{tabular}}\par
+\textbf{GitHub restore}: exact key $\rightarrow$ key as prefix $\rightarrow$ each \ct{restore-keys} prefix, newest wins.
+Entries are \textbf{immutable} (new lockfile = new key), 10\,GB/repo by default, gone after 7 days unused. Visible: own
+branch, default branch, PR base; PR caches sit on \ct{refs/pull/…/merge}. \textbf{GitLab}:
+\ct{cache:key:files} ($\leq$ 10 files $\rightarrow$ SHA of contents), \ct{fallback\_keys}, \ct{policy: pull} for readers.
+\textbf{Poisoning} = an untrusted job writes what a trusted job restores and runs. One rule everywhere:
+\textbf{only trusted CI writes} — GitHub makes \ct{pull\_request\_target}/\ct{workflow\_run} read-only; Bazel:
+\ct{\dd{}remote\_upload\_local\_results=false} off CI; Gradle: \ct{isPush = isCiServer}.
+
+\hd{Keeping main green}
+\begin{itemize}
+  \item \textbf{Not Rocket Science Rule} (Hoare 2014; the \emph{bors} bot): automatically keep a
+        repository that never fails its tests — test the \emph{merge}, then advance \ct{main}:
+        two PRs green against an old \ct{main} can be red together.
+  \item \textbf{GitHub merge queue}: workflows need the \ct{merge\_group} trigger, else checks never report. Branch
+        \ct{gh-readonly-queue/main/…} = main + PRs ahead + this PR; 1–100 groups at once, 1–100 PRs per merge.
+        Failure or timeout $\rightarrow$ PR out, groups behind rebuilt; jumping rebuilds all in flight.
+  \item \textbf{GitLab merge trains} (Premium+): $\leq$ \textbf{20} pipelines in parallel by default; a failure drops
+        the MR and restarts all behind it.
+  \item \textbf{Required checks} match \textbf{by name}: renaming a job silently un-requires it.
+  \item \textbf{Trunk} (DORA): $\leq$ 3 active branches, merged daily, no freezes. Fowler: commit to mainline
+        every day; fix a red build first — usually by \textbf{revert}.
+\end{itemize}
+
+\columnbreak
+
+\hd{Five CI systems side by side}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11.5mm}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}p{22.5mm}@{}}
+\toprule
+ & \textbf{config · DAG} & \textbf{runs on} & \textbf{secrets on PRs} \\ \midrule
+GitHub Actions & \ct{.github/workflows/*.yml} · \ct{needs:} & hosted (Linux, Windows, macOS) or yours & fork PR: none, read-only token \\
+GitLab CI & \ct{.gitlab-ci.yml} · stages \ct{.pre build test deploy .post} + \ct{needs:} ($\leq$ 50) & SaaS or your runners & protected vars on protected refs only; forks: none \\
+Buildkite & \ct{pipeline.yml} + steps generated at run time (\ct{pipeline upload}) & ``hybrid'': SaaS control plane, \textbf{your} agents; or hosted & code + secrets never reach Buildkite \\
+Bitrise & \ct{bitrise.yml}: pipelines $\rightarrow$ workflows (\ct{depends\_on}) $\rightarrow$ steps & hosted macOS/Linux & none unless ``Expose for Pull Requests'' \\
+Xcode Cloud & no YAML: Xcode / App Store Connect; \ct{ci\_scripts/} & Apple only; 25 compute h/month included & secret env vars masked in logs \\
+\bottomrule
+\end{tabular}}
+
+\hd{Build once, promote}
+The first stage ``will do any compilation and provide binaries for later stages'' (Fowler 2013, after
+Humble \& Farley); a rebuild per environment ships a binary nobody tested.
+\begin{itemize}
+  \item \textbf{App Store}: each upload needs a new \textbf{build string} (\ct{CFBundleVersion} ``uniquely
+        identifies the build''); a version takes \textbf{one} build, swappable until submitted — the TestFlight
+        build \emph{is} the reviewed one. Since \textbf{28 Apr 2026}: Xcode 26+ and a 26 SDK.
+  \item \textbf{Google Play}: \ct{versionCode} must grow, never reused, $\leq$ 2\,100\,000\,000. Promote via
+        ``Add from library'' or \ct{Edits.tracks: update} with the existing \ct{versionCode}; staged = \ct{inProgress}
+        + \ct{userFraction} (not on a first release). You sign with the \textbf{upload key}; Play re-signs with
+        the app signing key (required for apps created since Aug 2021).
+\end{itemize}
+
+\hd{Provenance — prove which build it is}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{37mm}>{\raggedright\arraybackslash}p{31mm}@{}}
+\toprule
+\textbf{SLSA} & \textbf{Build track requirement} & \textbf{stops} \\ \midrule
+L1 & provenance shows how it was built & mistakes; documents \\
+L2 & \textbf{signed} provenance from a \textbf{hosted} platform & tampering \emph{after} the build \\
+L3 & hardened: runs isolated, signing key unreachable from build steps & tampering \emph{during} the build \\
+\bottomrule
+\end{tabular}}\par
+SLSA \textbf{v1.2} (24 Nov 2025) adds a \textbf{Source track}: L1 version control $\rightarrow$ L2 history +
+source provenance $\rightarrow$ L3 enforced controls $\rightarrow$ L4 code review. GitHub \ct{actions/attest}
+(\ct{id-token} + \ct{attestations: write}) = Build L2; L3 via a shared reusable workflow. Keyless
+\textbf{Sigstore}: Fulcio certifies the job's OIDC identity for \textbf{10 minutes}; public repos log to
+Rekor. Gate deploys on \ct{gh attestation verify app.ipa -R org/app} — it proves \emph{where from}, not \emph{safe}.
+
+\hd{DORA — measure the system}
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{3mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{47mm}@{}}
+\toprule
+\textcolor{sheetGreen!50!black}{\textbf{T}} & change lead time & commit $\rightarrow$ deployed in production \\
+\textcolor{sheetGreen!50!black}{\textbf{T}} & deployment frequency & deploys per period, or time between them \\
+\textcolor{sheetGreen!50!black}{\textbf{T}} & failed deploy. recovery time & was MTTR; deploy-caused failures only (2023) \\ \midrule
+\textcolor{sheetRed}{\textbf{I}} & change fail rate & share of deploys needing immediate intervention \\
+\textcolor{sheetRed}{\textbf{I}} & deployment rework rate & share that are unplanned, caused by an incident (2024) \\
+\bottomrule
+\end{tabular}}\par
+\textbf{T}hroughput / \textbf{I}nstability grouping since 2024. 2024 elite: on-demand deploys,
+lead time $<$ 1 day, $\sim$5\,\% fail rate, recovery $<$ 1 h\unverified. 2025 report ($\sim$5\,000 people):
+AI adoption $\rightarrow$ \emph{more} throughput, still \emph{less} stability; \textbf{seven team profiles}.
+
+\hd{Traps}
+\begin{itemize}
+  \trap{Required check + path filter: a skipped \emph{workflow} stays ``Pending'' forever and blocks the PR; a job
+        skipped by \ct{if:} reports Success. Fix: one always-run gate job (\ct{if: always()}) that \ct{needs:} the rest.}
+  \trap{Secrets mask only verbatim: a base64 or derived copy prints in clear — register it as a secret too.}
+\end{itemize}
+
+\hd{Remember}
+\textbf{``Cheap first, shard by time, cache by content, queue the merge, build once, attest, measure DORA.''}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{github-actions-deep} · \texttt{xcodebuild-simctl-cli} ·
+\texttt{fastlane-deep} · signing-and-cicd · rn-ci-and-signing · flaky-tests-ci-tdd · supply-chain-security ·
+release-engineering}
+
+\end{document}

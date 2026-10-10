@@ -1,0 +1,313 @@
+% c-pointers-const-restrict.tex — reading C declarations, const placement and the qualifier
+% conversions, decay and pointer arithmetic, arrays of pointers vs pointers to arrays, function
+% pointers + void *ctx callbacks, restrict + memcpy / memmove, object lifetime and dangling
+% pointers, null pointers and C23 nullptr. Version-specific claims dated (C23 current, Oct 2026).
+% Sources (checked 2026-10-09):
+%   open-std.org/jtc1/sc22/wg14/www/docs/n3220.pdf — C23 working draft (= ISO/IEC 9899:2024):
+%     6.2.4 (using a pointer to a dead object is UB, its representation indeterminate; temporary
+%     lifetime of a returned struct's array member) · 6.3.2.1 (array → pointer except sizeof,
+%     typeof, unary &, string literal initialising an array; function designator → pointer)
+%     · 6.3.2.3 (void * round trip; adding a qualifier; null pointer constant 0, (void *)0, nullptr;
+%     integer → pointer implementation-defined; misaligned conversion UB; function-pointer cast
+%     round trip, a call through an incompatible type UB) · 6.4.5 (literal is char[N]; modifying
+%     it UB) · 6.5.3.2 (E1[E2] = *((E1)+(E2)); row-major) · 6.5.3.6 (compound literal: block
+%     lifetime; static / constexpr / thread_local allowed) · 6.5.4.2 + fn 101 (&*E = E; invalid
+%     for *: null, misaligned, dead) · 6.5.4.4 fn 102 (sizeof of an array parameter) · 6.5.7
+%     (pointer ± integer needs a complete object type; same array or one past; no * on one past;
+%     difference is ptrdiff_t) · 6.5.9 (< > only within one object; later member greater) · 6.5.10
+%     (one past may compare equal to the next object) · 6.5.17.2 EXAMPLE 3 (char ** → const char **
+%     is a constraint violation) · 6.7.2 (constexpr: pointer initialiser must be null; adds const;
+%     EXAMPLE 4 array[K] not a VLA) · 6.7.4.1 (const object may be placed read-only; modifying a
+%     const-defined object UB; array qualifiers apply to array and element; restrict only on object
+%     pointers; deleting restrict keeps the meaning) · 6.7.4.2 (formal restrict; UB only if the
+%     object is modified; EXAMPLE 2 f(50, d+50, d) / f(50, d+1, d); EXAMPLE 3 h(100, a, b, b);
+%     EXAMPLE 4 outer-to-inner) · 6.7.7.2-6.7.7.4 ([static n], [const]; parameter adjustment;
+%     () = (void); parameter qualifiers ignored for compatibility; EXAMPLE 2 apfi) · 6.10.10.4
+%     (__STDC_NO_VLA__: variably modified parameters mandatory) · 7.1.4 (null = invalid library
+%     argument; one past + size 0 valid) · 7.14.1.1 (signal returns the previous handler)
+%     · 7.16.1.1 (va_arg: nullptr_t read as char * / void *) · 7.21, 7.21.2 (NULL implementation-
+%     defined; nullptr_t, size of char *) · 7.24.3 (free(NULL) no-op; double free UB; realloc may
+%     move, failure keeps the old object, size 0 UB) · 7.24.5.1 (bsearch generic) · 7.26.1 (n = 0
+%     still needs valid pointers) · 7.26.2 (memcpy, memccpy, strcpy, strncpy restrict, overlap UB;
+%     memmove as if via a temporary array) · 7.26.5 (memchr, strchr, strpbrk, strrchr, strstr
+%     generic in const) · 7.28.1 (thrd_start_t = int (*)(void *))
+%   open-std.org/jtc1/sc22/wg14/www/docs/n2607.pdf (Uecker 2020: an array and its element type
+%     identically qualified → float x[N][N] passes to const float x[N][N]) · n3322.pdf (C2y: null
+%     + 0, null − null, memcpy etc. with a null pointer and length 0 defined) · /www/projects.html
+%     (C23 = ISO/IEC 9899:2024; TS 6010 provenance model published May 2025)
+%   gcc.gnu.org: gcc-15/changes.html (default -std=gnu23; C2y zero-length null operations, compiler
+%     side) · gcc-14/porting_to.html (-Wincompatible-pointer-types an error by default; only void *
+%     converts implicitly) · onlinedocs/gcc Pointer-Arith (void * and function pointers as size 1;
+%     -Wpointer-arith) · Restricted-Pointers (G++ __restrict__ / __restrict; restrict is not a C++
+%     keyword) · Warning-Options (-Wreturn-local-addr and -Wsizeof-array-argument on by default;
+%     -Wdangling-pointer=2 and -Wuse-after-free=2 in -Wall, =3 adds equality; -Wrestrict;
+%     -Wwrite-strings; -Wcast-qual)
+%   clang.llvm.org/docs/AddressSanitizer.html (use-after-free / -return / -scope, double free)
+%   pubs.opengroup.org/onlinepubs/9799919799 functions/dlsym (void * → function pointer: not ISO C,
+%     required by POSIX) · functions/qsort (qsort_r added in Issue 8: cmp(a, b, arg))
+%   freebsd.org/releases/14.0R/relnotes (qsort_r moved to the POSIX order)
+%     · github.com/apple-oss-distributions/libc stdlib/FreeBSD/qsort.3 (thunk 4th, cmp(thunk, a, b))
+% @labels: area=c kind=concept platform=embedded topic=language,memory discussion=294
+% @tags: pointers, const-pointer, restrict, function-pointers, void-ctx, array-decay, pointer-arithmetic, dangling-pointer, use-after-free, undefined-behavior, memcpy, memmove, realloc, nullptr, c23
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinestyle{CSheet}{style=printup, language=C,
+  morekeywords={uint8_t,uint32_t,size_t,bool,restrict,typeof,nullptr,constexpr}}
+
+\newcommand\ct[1]{\texttt{#1}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\tikzset{
+  mem/.style={cell, minimum width=9mm, minimum height=4.2mm, font=\ttfamily\scriptsize},
+  sc/.style={cell, minimum width=4.4mm, minimum height=4.2mm, font=\ttfamily\tiny, inner sep=0pt},
+  ptr/.style={draw=sheetBlue, thick, fill=sheetBlue!8, font=\ttfamily\scriptsize,
+              minimum width=7mm, minimum height=4.2mm, inner sep=1pt},
+  pc/.style={draw=sheetBlue, fill=sheetBlue!8, minimum width=5mm, minimum height=4.2mm,
+             font=\ttfamily\tiny, inner sep=0pt},
+  dat/.style={draw=sheetGrey, fill=white, font=\ttfamily\scriptsize,
+              minimum width=8mm, minimum height=4.2mm, inner sep=1pt},
+  ro/.style={draw=sheetRed, very thick, fill=sheetRed!12},
+  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt},
+  tl/.style={font=\tiny, text=black!75, inner sep=1pt},
+  bar/.style={rounded corners=1pt, minimum height=3mm, inner sep=0pt},
+}
+
+\begin{document}
+
+\sheettitle{Pointers — declarations, const, restrict, decay, lifetime}{c · folio}
+
+\oneliner{A pointer is an address \textbf{plus a type} (the step of \ct{p+1}, the type of
+\ct{*p}) \textbf{plus one object} it may reach — only inside that object, only while it lives.
+Read a declaration from the name outward: \textbf{right first} (\ct{[]}, \ct{()}), \textbf{then
+left} (\ct{*}, qualifiers). \ct{const} binds to what is on its left (if nothing, its right).
+\ct{restrict} promises that data modified through the pointer has no other path.}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Reading declarations}
+{\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}L{34mm}L{45mm}@{}}
+\toprule
+\textbf{declaration} & \textbf{reads as · allowed}\\ \midrule
+\ct{const int *p} = \ct{int const *p} & ptr to const int · \ct{p++} ok, \ct{*p=1} \textcolor{sheetRed}{error}\\
+\ct{int *const p} & const ptr to int · \ct{*p=1} ok, \ct{p++} \textcolor{sheetRed}{error}\\
+\ct{const int *const p} & neither moves nor writes\\
+\ct{volatile uint32\_t *const r} & fixed pointer to a register that changes by itself\\
+\ct{int **pp} & ptr to ptr — a callee can reseat \emph{your} pointer\\
+\ct{int *a[5]} & array of 5 pointers to int\\
+\ct{int (*a)[5]} & pointer to an array of 5 int · \ct{a+1} skips 5 ints\\
+\ct{int *f(void)} & function returning \ct{int *}\\
+\ct{int (*f)(void)} & pointer to function returning int\\
+\ct{int (*fa[3])(int *, int *)} & array of 3 pointers to functions\\
+\ct{void (*signal(int, void (*)(int)))(int)} & takes (int, handler), returns the previous handler\\
+\ct{typeof(int (void)) *f} & C23 \ct{typeof}: \ct{int (*f)(void)}, read left to right\\
+\ct{void g(int a[static 4])} & caller passes $\ge$4 elements (so not null)\\
+\ct{void g(int a[const])} & parameter is \ct{int *const a}\\
+\ct{int *p, q;} & \ct{q} is an \emph{int}: \ct{*} belongs to the declarator\\
+\bottomrule
+\end{tabular}}
+
+\section{const and the conversions}
+\begin{itemize}
+  \item \ct{T *} → \ct{const T *} is implicit; back needs a cast (\ct{-Wcast-qual} warns).
+        Writing through it is UB only if the object was \emph{defined} const (or is a string
+        literal).
+  \item \ct{char **} → \ct{const char **} is a \textbf{constraint violation}: otherwise
+        \ct{*cpp = \&c; *p = 0;} would write the \ct{const char c}.
+  \item \ct{void *} ↔ any object pointer, implicitly; the round trip compares equal. GCC 14+:
+        any other implicit pointer mismatch is an \textbf{error}
+        (\ct{-Wincompatible-pointer-types}).
+  \item \ct{const} is neither ROM nor a constant: a non-volatile const object \emph{may} sit in
+        read-only memory; at block scope \ct{const int n = 4; int a[n];} is a VLA. C23
+        \ct{constexpr int n = 4;} is a constant; a \ct{constexpr} pointer can only be null.
+  \item C23: \ct{strchr strrchr strpbrk strstr memchr bsearch} are generic — a \ct{const}
+        argument gives a \ct{const} result, so \ct{char *p = strchr(cs, 'x');} now needs a
+        diagnostic. An array and its elements are identically qualified, so
+        \ct{float m[n][n]} passes to a \ct{const float m[n][n]} parameter.
+  \item A string literal is \ct{char[N]}, not \ct{const}, yet \ct{char *s = "hi"; s[0] = 'H';}
+        is UB. \ct{-Wwrite-strings} types it \ct{const char[N]}; \ct{char s[] = "hi";} is a copy.
+\end{itemize}
+
+\section{Function pointers + \texttt{void *ctx}}
+\begin{lstlisting}[style=CSheet]
+typedef void (*event_cb)(uint8_t evt, void *ctx);
+typedef struct { event_cb cb; void *ctx; } listener;
+static void on_evt(uint8_t evt, void *ctx) {
+  struct counter *c = ctx;   // void * -> T *: no cast in C
+  c->n++;                    // fn + state = C's closure
+}
+static struct counter clicks; // ctx must OUTLIVE l
+listener l = { on_evt, &clicks };  // &on_evt: same value
+l.cb(EVT_PRESS, l.ctx);   // = (*l.cb)(...) = (**l.cb)(...)
+const event_cb table[] = { [EVT_A] = on_a, [EVT_B] = on_b };
+\end{lstlisting}
+\begin{itemize}
+  \item A function name decays like an array; \ct{*fp} is a designator again, so any number
+        of \ct{*} still calls.
+  \item Casting between function-pointer types and back is fine; \textbf{calling} through an
+        incompatible type is UB — e.g.\ \ct{int cmp(const int *, const int *)} cast for
+        \ct{qsort}. Write \ct{cmp(const void *, const void *)}, convert inside.
+  \item Function pointer ↔ \ct{void *}: not ISO C; POSIX requires it for \ct{dlsym}.
+  \item C23: \ct{int (*fp)()} means \ct{(void)} — unprototyped functions are gone.
+  \item Library fn + ctx: \ct{thrd\_create(\&t, fn, arg)}, \ct{fn} is \ct{int (*)(void *)};
+        \ct{qsort}, \ct{atexit} take none. POSIX.1-2024 \ct{qsort\_r(b, n, sz, cmp, arg)},
+        \ct{cmp(a, b, arg)} = glibc, FreeBSD 14+; macOS keeps \ct{qsort\_r(b, n, sz, thunk,
+        cmp)}, \ct{cmp(thunk, a, b)}.
+\end{itemize}
+
+\section{restrict — the only path}
+\begin{lstlisting}[style=CSheet]
+int f(int *a, int *b)
+  { *a = 1; *b = 2; return *a; }  // reload *a: b may == a
+int g(int *restrict a, int *restrict b)
+  { *a = 1; *b = 2; return *a; }  // may just return 1
+\end{lstlisting}
+\begin{itemize}
+  \item Promise per block: an object \textbf{modified} via \ct{p} is accessed only via \ct{p}
+        (or pointers based on it). Read-only overlap is fine: \ct{h(n, a, b, b)} doing
+        \ct{p[i] = q[i] + r[i]}. Copy loop \ct{f(n, p, q)}: \ct{f(50, d+50, d)} ok,
+        \ct{f(50, d+1, d)} UB.
+  \item Broken promise = UB, no diagnostic required (\ct{-Wrestrict}, in \ct{-Wall}, sees
+        visible overlaps). A compiler may ignore \ct{restrict}; deleting every one never changes
+        a correct program. Gain: dependence analysis from the declarations alone.
+  \item Only on pointers to object types. \ct{f(int *restrict p)} and \ct{f(int *p)} are
+        compatible declarations. Restricted-to-restricted assignment: outer block → inner only.
+  \item \ct{memcpy}, \ct{memccpy}, \ct{strcpy}, \ct{strncpy} take \ct{restrict}: overlap is UB;
+        \ct{memmove} copies \emph{as if} via a temporary array. Not a C++ keyword: G++ spells it
+        \ct{\_\_restrict\_\_}.
+\end{itemize}
+\begin{tikzpicture}[sheet]
+  \foreach \i in {0,...,7} \node[sc] (b\i) at (0.44*\i,0) {\i};
+  \draw[sheetBlue, thick] ($(b0.north west)+(0,0.08)$) -- node[tl, above, text=sheetBlue]{src = \ct{buf}, 6 B} ($(b5.north east)+(0,0.08)$);
+  \draw[sheetOrange, thick] ($(b2.south west)+(0,-0.08)$) -- node[tl, below, text=sheetOrange]{dst = \ct{buf+2}, 6 B} ($(b7.south east)+(0,-0.08)$);
+  \node[tl, anchor=west, align=left] at (3.65,0) {\textcolor{sheetRed}{\ct{memcpy(buf+2, buf, 6)}: UB}\\[1pt]\textcolor{sheetGreen!60!black}{\ct{memmove(buf+2, buf, 6)}: ok}};
+\end{tikzpicture}
+
+\columnbreak
+
+\section{Which part is read-only?}
+\begin{tikzpicture}[sheet]
+  \foreach \y/\decl/\pr/\dr in {0/{const int *p}/0/1, -0.6/{int *const p}/1/0, -1.2/{const int *const p}/1/1}{
+    \node[font=\ttfamily\scriptsize, anchor=east] at (2.3,\y) {\decl};
+    \ifnum\pr=1 \node[ptr, ro] (p) at (2.85,\y) {p}; \else \node[ptr] (p) at (2.85,\y) {p}; \fi
+    \ifnum\dr=1 \node[dat, ro] (d) at (4.3,\y) {42}; \else \node[dat] (d) at (4.3,\y) {42}; \fi
+    \draw[flow] (p.east) -- (d.west);
+  }
+  \node[lbl, anchor=west, text=sheetRed] at (4.9,0) {no \ct{*p = 1}};
+  \node[lbl, anchor=west, text=sheetRed] at (4.9,-0.6) {no \ct{p++}};
+  \node[lbl, anchor=west, text=sheetRed] at (4.9,-1.2) {neither};
+  \node[note, anchor=west] at (-0.1,-1.7) {Red = read-only \emph{through this name}; the 42 may
+    change by another path.};
+\end{tikzpicture}
+
+\section{Decay, arithmetic, sizeof}
+\begin{tikzpicture}[sheet]
+  \foreach \i in {0,1,2,3} \node[mem] (m\i) at (0.95*\i+1.0,0) {a[\i]};
+  \node[mem, draw=sheetGrey!60, dashed, text=sheetGrey] (m4) at (4.8,0) {end};
+  \foreach \i/\a in {0/1000,1/1004,2/1008,3/100C,4/1010}
+    \node[font=\ttfamily\tiny, text=sheetGrey] at (0.95*\i+1.0,-0.36) {0x\a};
+  \node[lbl, anchor=east] at (0.5,0) {\ct{int a[4]}};
+  \draw[hot] (1.0,0.8) node[above, lbl]{\ct{p = a} (decay)} -- (m0.north);
+  \draw[hot] (1.95,0.5) node[above right=-1pt, lbl]{\ct{p+1}: +4 B} -- (m1.north);
+  \draw[flow] (4.8,0.8) node[above, lbl]{\ct{\&a + 1}: +16 B} -- (m4.north);
+  \node[tl, anchor=west, align=left] at (5.3,0.05) {one past the end:\\may be formed and\\compared, never \ct{*}};
+  \node[lbl, align=left, anchor=north west] at (-0.6,-0.55) {\ct{sizeof a} = 16 · \ct{sizeof p} = 4 (32-bit) or 8 (64-bit) ·
+    \ct{\&a} is \ct{int (*)[4]}\\\ct{a[i]} = \ct{*(a+i)} = \ct{i[a]} · \ct{\&a[i]} = \ct{a+i} · \ct{\&*p} = \ct{p}, nothing evaluated};
+\end{tikzpicture}
+\begin{itemize}
+  \item Decay to \ct{\&a[0]} happens everywhere except under \ct{sizeof}, \ct{typeof}, unary
+        \ct{\&}, and a string literal initialising an array.
+  \item Parameter \ct{int a[10]} \emph{is} \ct{int *a}: \ct{sizeof a / sizeof a[0]} gives
+        pointer size / element size (GCC warns by default). Pass the length:
+        \ct{(size\_t n, int a[n])} documents it; \ct{int (*m)[n]} keeps a row size.
+  \item \ct{p ± n} moves \ct{n * sizeof *p} bytes and must stay in the array or one past —
+        forming any other address is UB, dereferenced or not. \ct{q - p}: \ct{ptrdiff\_t}
+        elements, same array only. \ct{< >} only within one object (later member = greater);
+        \ct{==} across objects is fine.
+  \item \ct{void *} arithmetic is a constraint violation (incomplete type); GCC treats the size
+        as 1 (\ct{-Wpointer-arith} warns).
+  \item \ct{\&a[4] == \&b[0]} may be true when \ct{b} follows \ct{a} — still no way into \ct{b}.
+        A pointer carries its object: \emph{provenance}, specified by ISO/IEC TS 6010:2025.
+\end{itemize}
+
+\section{Array of pointers · pointer to array · 2-D}
+\begin{tikzpicture}[sheet]
+  % int *ap[3]
+  \node[lbl, anchor=west] at (0,0) {\ct{int *ap[3]}};
+  \foreach \i in {0,1,2} \node[pc] (ap\i) at (2.2+0.5*\i,0) {•};
+  \foreach \i/\x in {0/3.9,1/4.8,2/5.7} {\node[sc] (t\i) at (\x,0) {int}; }
+  \draw[->, thin, sheetBlue] (ap0.north) to[bend left=25] (t0.north);
+  \draw[->, thin, sheetBlue] (ap1.north) to[bend left=30] (t1.north);
+  \draw[->, thin, sheetBlue] (ap2.north) to[bend left=35] (t2.north);
+  \node[tl, anchor=west] at (6.0,0) {3 ints, anywhere};
+  % int (*pa)[3]
+  \node[lbl, anchor=west] at (0,-0.75) {\ct{int (*pa)[3]}};
+  \node[pc] (pa) at (2.2,-0.75) {•};
+  \foreach \i in {0,1,2} \node[sc] (r\i) at (3.9+0.44*\i,-0.75) {int};
+  \node[sc, dashed, draw=sheetGrey!60] (r3) at (5.22,-0.75) {};
+  \draw[->, thin, sheetBlue] (pa.east) -- (r0.west);
+  \draw[->, thin, sheetOrange] (2.75,-0.45) node[tl, anchor=east]{\ct{pa+1}} to[bend left=20] (r3.north);
+  \node[tl, anchor=west] at (5.5,-0.75) {one object \ct{int[3]}};
+  % int m[2][3]
+  \node[lbl, anchor=west] at (0,-1.5) {\ct{int m[2][3]}};
+  \node[sc, fill=sheetBlue!5, minimum width=13.2mm] at (2.64,-1.5) {row 0: \ct{int[3]}};
+  \node[sc, fill=sheetBlue!18, minimum width=13.2mm] at (3.96,-1.5) {row 1: \ct{int[3]}};
+  \node[tl, anchor=west, align=left] at (4.75,-1.5) {contiguous, row-major;\\\ct{m} decays to \ct{int (*)[3]},\\\textbf{not} \ct{int **}};
+\end{tikzpicture}
+
+\section{Null pointers}
+\begin{itemize}
+  \item Null pointer constant: \ct{0}, \ct{(void *)0}, or C23 \ct{nullptr} (type
+        \ct{nullptr\_t}, size of \ct{char *}). \ct{NULL} is implementation-defined — may be
+        plain \ct{0}, wrong as a variadic pointer argument; \ct{nullptr} may be read with
+        \ct{va\_arg(ap, char *)}.
+  \item \ct{*p} is UB for null, misaligned or dead targets. Converting to a misaligned
+        \ct{uint32\_t *} is UB already, before any read — \ct{memcpy} the bytes.
+  \item C23: \ct{memcpy(d, NULL, 0)} is UB — null is an invalid library argument even for
+        length 0. C2y (N3322; GCC 15 \ct{-std=c2y}) defines it, \ct{NULL + 0}, \ct{NULL - NULL}.
+\end{itemize}
+
+\section{Lifetime — dangling pointers}
+\begin{tikzpicture}[sheet]
+  \draw[->, sheetGrey] (0,-1.95) -- (7.6,-1.95) node[tl, anchor=south east]{time};
+  \foreach \x/\t in {0/start, 1.2/call f, 2.2/\{, 3.1/\}, 4.3/return, 5.8/free, 7.0/exit}
+    {\draw[sheetGrey] (\x,-1.9) -- (\x,-2.0); \node[tl, anchor=north] at (\x,-2.0) {\t};}
+  \node[bar, fill=sheetGreen!35, minimum width=70mm, anchor=west] at (0,0) {};
+  \node[tl, anchor=west] at (0.1,0) {static: globals, \ct{static} locals, string literals — the whole run};
+  \node[bar, fill=sheetBlue!30, minimum width=31mm, anchor=west] at (1.2,-0.38) {};
+  \node[tl, anchor=west] at (1.25,-0.38) {automatic: locals of \ct{f}};
+  \node[bar, fill=sheetOrange!40, minimum width=9mm, anchor=west] at (2.2,-0.76) {};
+  \node[tl, anchor=west] at (3.15,-0.76) {block: compound literal, VLA};
+  \node[bar, fill=sheetBrown!40, minimum width=1.5mm, anchor=west] at (2.6,-1.14) {};
+  \node[tl, anchor=west] at (2.8,-1.14) {temporary: \ct{g().arr} — one full expression};
+  \node[bar, fill=sheetRed!25, minimum width=44mm, anchor=west] at (1.4,-1.52) {};
+  \node[tl, anchor=west] at (1.45,-1.52) {allocated: \ct{malloc} → \ct{free} / \ct{realloc}};
+  \draw[sheetRed, very thick, dashed] (4.3,-0.38) -- (5.2,-0.38) node[tl, anchor=west, text=sheetRed]{\ct{p} → dead: any use UB};
+\end{tikzpicture}
+\begin{itemize}
+  \item Once the object dies, \textbf{every} use of the pointer value is UB — \ct{if (p == q)}
+        after \ct{free(p)} too; its bits are indeterminate. GCC \ct{-Wuse-after-free=2} and
+        \ct{-Wdangling-pointer=2} are in \ct{-Wall}; ASan finds use-after-free, -return, -scope.
+  \item \ct{char buf[32]; return buf;} (GCC warns by default). Fix: caller's buffer + size,
+        \ct{static} (not re-entrant) or \ct{malloc} (caller frees).
+  \item \ct{\{ p = (int[])\{1, 2\}; \}} dangles after the brace; C23
+        \ct{(static int[])\{1, 2\}} lives for the whole run.
+  \item \ct{free(p); p = NULL;} — \ct{free(NULL)} does nothing, a second \ct{free} is UB.
+  \item \ct{realloc} may move: every old and interior pointer dangles. On failure it returns
+        null and keeps the old block, so \ct{p = realloc(p, n)} leaks — use a temporary.
+        C23: \ct{realloc(p, 0)} is UB (was implementation-defined).
+  \item A \ct{ctx} pointing into a stack frame, registered with something that outlives the
+        frame, dangles on the first event.
+\end{itemize}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{c-memory-layout} ·
+\texttt{c-undefined-behavior-and-build} · \texttt{c-bits-and-registers}
+· \texttt{sanitizers-runtime-checkers} · \texttt{cross-language-ffi}}
+
+\end{document}

@@ -1,0 +1,308 @@
+% xnu-launchd-xpc.tex — how macOS is put together under an app: XNU (Mach + BSD + IOKit), Mach
+% tasks, ports, rights and messages vs BSD processes, exceptions → signals, launchd as the first
+% process (daemons vs agents, domains, plist keys, on-demand launch through MachServices), XPC
+% (bundled services vs launchd Mach services, NSXPCConnection vs XPCSession, interruption vs
+% invalidation, peer requirements), SMAppService, kexts vs DriverKit, and memorystatus on macOS
+% (pressure levels, idle exit, no paging space) vs jetsam + freezer on iOS.
+% Picture: an app reaching a daemon through launchd over Mach ports (numbered on-demand launch),
+% beside the kernel stack with XNU's source directories; a Mach message; the macOS pressure ladder.
+% Sources (checked 2026-10-09):
+%   github.com/apple-oss-distributions/xnu README.md (hybrid kernel: Mach from CMU + FreeBSD components
+%     + IOKit C++; osfmk = Mach, bsd, libkern, libsa = boot, security = MAC policy, pexpert = platform;
+%     iokit/ in the tree)
+%   xnu doc/mach_ipc/port_types.md (service port: launchd launch-on-demand, reclaimed when the owner is
+%     killed so it stays active; hardened = immovable receive + enforced reply ports, required for
+%     platform binaries; reply ports: send-once, exactly one reply; port set ~ select; raw Mach "new
+%     code generally should not use"; violations → mach_port_exc_guard, telemetry or fatal)
+%     · doc/mach_ipc/ipc_security_concepts.md (task / thread control ports pinned) · doc/mach_ipc/kmsg.md
+%     (header; descriptors if MACH_MSGH_BITS_COMPLEX; body; trailer)
+%   xnu osfmk/mach/message.h (5 descriptor types; MOVE / COPY / MAKE dispositions; virtual vs physical
+%     copy; msgh_audit in trailers) · osfmk/mach/port.h (send, receive, send-once, port set, dead name;
+%     a name is local to its task) · osfmk/mach/mach_types.h (task flavors control, read, inspect, name:
+%     "capability strictly decreasing") · osfmk/mach/task_special_ports.h (bootstrap, host, access =
+%     task_for_pid check) · osfmk/kern/syscall_sw.c (mach_msg_trap = 31) · osfmk/kern/exception.c
+%     (thread → task → host exception ports) · bsd/uxkern/ux_exception.c (exception → signal table) ·
+%     bsd/kern/kern_exec.c (load_init_program runs /sbin/launchd) · bsd/kern/kern_exit.c ("initproc
+%     exited" panic) · bsd/kern/kern_prot.c (audit token = auid, euid, egid, ruid, rgid, pid, asid,
+%     pidversion) · bsd/sys/proc_internal.h (proc ↔ task)
+%   xnu doc/vm/memorystatus.md (memorystatus lives in bsd/; 210 levels, launchd has none; band 0 idle,
+%     100 foreground; RunningBoard moves managed processes) · memorystatus_kills.md (macOS idle exit:
+%     1 idle daemon / s, ≤ 100 per normal → pressure, opted-in + clean; warning ≥ 10 min → idle kills
+%     500 ms apart; macOS no paging space: largest process if > ½ of compressed pages, else a pcontrol
+%     action, 1 per 5 s, then the "Out of Application Memory" dialog; hard limit = immediate kill, soft
+%     = simulated crash; most kills climb the bands) · memorystatus_notify.md (normal / warning /
+%     critical; warning = relax caching, critical = drop all caches; PROC_LIMIT_WARN at 80 %) ·
+%     freezer.md ("limited form of swap on embedded": suspended apps, band 75; app swap on M1+ iPads)
+%   launchd(8), launchd.plist(5), launchctl(1) as shipped with macOS (keith.github.io/xcode-man-pages
+%     mirror): first process; daemon = one instance for all clients, agent = per user; setuid is not a
+%     full user identity; MUST NOT daemon(3) / fork + exit; MUST check in MachServices; ProgramArguments
+%     → execvp; BundleProgram only via SMAppService; KeepAlive ORed; ThrottleInterval default 10 s;
+%     StartInterval missed asleep; StartCalendarInterval at wake, coalesced; Sockets +
+%     launch_activate_socket; EnablePressuredExit (ignored with KeepAlive true); ProcessType; SIGTERM
+%     then SIGKILL, inactive = SIGKILL at once; reply-expecting message = transaction; domains
+%     system/ user/ gui/ login/ pid/; FILES
+%   developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup:
+%     CreatingLaunchdJobs (launchd introduced in OS X 10.4; requests delayed, not failed; "You must not
+%     daemonize") · CreatingXPCServices (SIGKILL when idle; private to the app; no root; sandboxed by
+%     default; NSXPC: void methods, one reply block, NSSecureCoding; encoding not an ABI)
+%   developer.apple.com/documentation: xpc (agent / daemon / XPC-service table; a daemon cannot open
+%     connections to user processes) · xpc/creating-xpc-services (XPCListener + XPCSession, dispatchMain)
+%     · xpc/xpcsession, xpclistener, incomingsessionrequest/accept (macOS 14) · xpc/xpcpeerrequirement
+%     (macOS 26) · xpc_connection_set_peer_code_signing_requirement (12.0) ·
+%     xpc_connection_set_peer_lightweight_code_requirement (14.4) · foundation/nsxpcconnection
+%     (setCodeSigningRequirement 13.0; .privileged; interruption / invalidation handlers) ·
+%     servicemanagement/smappservice (macOS 13; status cases) +
+%     updating-helper-executables-from-earlier-versions-of-macos (BundleProgram; Contents/Library/…;
+%     daemons need authentication, approving one approves the rest; a switch per app in Login Items;
+%     AssociatedBundleIdentifiers for plists outside the bundle) +
+%     updating-your-app-package-installer-to-use-the-new-service-management-api (plistName with
+%     ".plist") · smjobbless (deprecated 13.0) · bundleresources/entitlements/com.apple.security.cs.debugger
+%     (task_for_pid: target needs get-task-allow; SIP-protected refuse; admin dialog, 10-hour session)
+%     · driverkit (macOS 10.15, iPadOS 16 on M-series; user space; delivered inside the app; macOS
+%     installs it with SystemExtensions) · macos-release-notes/macos-27-release-notes (launchd no
+%     longer loads plists with the quarantine extended attribute)
+%   developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Multithreading/AboutThreads
+%     ("the underlying implementation mechanism for threads is Mach threads")
+%   keith.github.io/xcode-man-pages mig.1 (Mach Interface Generator, RPC code) · ioreg.8 (I/O Kit registry)
+%   support.apple.com/guide/security/kernel-extensions-sec8e454101b (macOS 11: AuxKC at boot; Reduced
+%     Security in 1TR; "Kexts are no longer recommended") · role-of-apple-file-system-seca6147599e (VM
+%     volume holds encrypted swap files) · support.apple.com/guide/deployment/depdca572563 (sfltool
+%     dumpbtm; macOS 26+ asks whether background tasks may stay active after the app quits)
+%   developer.apple.com/forums/thread/652363 (Apple DTS: audit token defeats PID wrap; PID first = race)
+% Not repeated: launchctl / log commands (macos-power-user-cli); SIP, TCC, Gatekeeper
+% (macos-security-architecture); sandbox + entitlements (ios-sandbox-security-model); Logger API
+% (logging-signposts-power); processes, VM, syscalls in general (os-fundamentals).
+% @labels: area=macos kind=concept platform=apple topic=platform-apis,memory,security discussion=324
+% @tags: xnu, mach-ports, mach-messages, audit-token, signals, iokit, driverkit, launchd, launchctl, pid-1, socket-activation, xpc, nsxpcconnection, smappservice, code-signing, entitlements, jetsam, memory-pressure, swap
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{SwiftSheet}{
+  morekeywords={let,var,func,struct,try,guard,else,return,in,nil,any},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]",
+  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2}
+\lstset{basicstyle=\ttfamily\scriptsize, aboveskip=2pt, belowskip=2pt}
+
+\newcommand\ct[1]{\texttt{#1}}
+
+\tikzset{
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  pr/.style={box, font=\tiny, align=center, inner sep=2pt, minimum height=11mm},
+  ly/.style={draw=sheetGrey, font=\tiny, inner sep=1pt, align=center, minimum height=4.2mm},
+  mf/.style={draw=sheetGrey, font=\tiny, inner sep=1.5pt, align=left, anchor=north west, minimum height=12mm},
+  st/.style={draw=#1, fill=#1!8, font=\tiny, inner sep=1pt, align=center, text width=13.6mm, minimum height=8.5mm},
+}
+
+\begin{document}
+
+\sheettitle{XNU, launchd \& XPC — how macOS runs your code}{macos · folio}
+
+\oneliner{\textbf{XNU} is a \emph{hybrid} kernel: CMU's \textbf{Mach} (tasks, threads,
+\textbf{ports}, VM, scheduler), \textbf{BSD} code from FreeBSD (processes, POSIX, VFS, sockets,
+signals) and \textbf{IOKit} (C++ drivers) in \emph{one} address space. The kernel starts
+\textbf{launchd} as the first process; launchd owns every service \emph{name}, holds its port,
+and \textbf{starts the job when the first message arrives}. \textbf{XPC} is launchd-managed IPC
+on top — how an app splits into small, separately sandboxed, crash-isolated helpers.}
+
+\vspace{1pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (-0.05,2.95) {On-demand launch: client $\to$ launchd $\to$ daemon, over Mach ports};
+  \node[pr, text width=20mm, fill=sheetGreen!8, draw=sheetGreen!70!black] (app) at (1.1,1.6) {\textbf{client app}\\(\ct{gui/<uid>})\\\ct{NSXPCConnection(}\\\ct{machServiceName:)}};
+  \node[pr, text width=24mm, fill=sheetOrange!8, draw=sheetOrange] (ld) at (5.05,1.6) {\textbf{launchd} (first process)\\bootstrap namespace:\\\ct{com.example.helper}\\$\to$ holds the \textbf{receive right}};
+  \node[pr, text width=20mm, fill=black!4, draw=sheetGrey] (dm) at (9.3,1.6) {\textbf{helper} (\ct{system/})\\\ct{NSXPCListener(}\\\ct{machServiceName:)}};
+  \draw[hot] ($(app.east)+(0,0.4)$) -- node[lbl, above]{1 look up the name} ($(ld.west)+(0,0.4)$);
+  \draw[flow] ($(ld.west)+(0,0.0)$) -- node[lbl, above]{2 send right} ($(app.east)+(0,0.0)$);
+  \draw[hot] ($(app.east)+(0,-0.4)$) -- node[lbl, above]{3 first message} ($(ld.west)+(0,-0.4)$);
+  \draw[hot] ($(ld.east)+(0,0.4)$) -- node[lbl, above]{4 spawn the job} ($(dm.west)+(0,0.4)$);
+  \draw[flow] ($(dm.west)+(0,-0.15)$) -- node[lbl, above, align=center]{5 check in: receive\\right + the queue} ($(ld.east)+(0,-0.15)$);
+  \draw[hot, sheetGreen!60!black] (dm.north) -- ++(0,0.3) -| node[lbl, pos=0.25, above]{6 reply on a send-once reply port — the listener checks the peer's audit token / code requirement} (app.north);
+  \node[lbl, anchor=north west, align=left, text width=105mm] at (-0.05,0.9) {idle $\to$ the job exits (an XPC service gets SIGKILL), the service port stays live, the next message relaunches it · crash $\to$ the client's \ct{interruptionHandler}; state is lost · requests wait for the launch instead of failing · launchd exiting = kernel panic ``initproc exited''};
+  \fill[sheetBlue!12] (-0.05,-0.12) rectangle (10.5,0.24);
+  \node[font=\tiny, anchor=west] at (0,0.06) {\textbf{\ct{mach\_msg}} copies the header + inline bytes, \emph{moves} or \emph{makes} port rights, virtual-copies out-of-line memory, appends a trailer};
+  % ── layer stack ──
+  \draw[sheetGrey!50] (10.75,3.0) -- (10.75,-0.12);
+  \node[font=\bfseries\scriptsize, anchor=west, text=sheetBlue] at (10.85,2.7) {User space down to XNU (source dir)};
+  \node[ly, minimum width=56mm, fill=sheetGreen!10] at (13.7,2.3) {apps · agents · daemons · XPC services · DriverKit dexts};
+  \node[ly, minimum width=56mm, fill=sheetGreen!5] at (13.7,1.88) {Foundation · \ct{libdispatch} · \ct{libSystem}: libc, \ct{libxpc}};
+  \node[ly, minimum width=27.5mm, fill=white] at (12.275,1.46) {BSD syscalls};
+  \node[ly, minimum width=27.5mm, fill=white] at (15.125,1.46) {Mach traps (\ct{mach\_msg} = 31)};
+  \node[ly, minimum width=18.5mm, minimum height=7.5mm, fill=sheetBlue!10] at (11.825,0.82) {\textbf{BSD} \ct{bsd/}\\proc, VFS, sockets,\\signals, memorystatus};
+  \node[ly, minimum width=18.5mm, minimum height=7.5mm, fill=sheetOrange!12] at (13.7,0.82) {\textbf{Mach} \ct{osfmk/}\\task, thread, port,\\VM, scheduler};
+  \node[ly, minimum width=18.5mm, minimum height=7.5mm, fill=sheetBrown!12] at (15.575,0.82) {\textbf{IOKit} \ct{iokit/}\\\ct{libkern/}: C++,\\IORegistry};
+  \node[ly, minimum width=56mm, fill=black!4] at (13.7,0.24) {\ct{security/} MAC policy hooks · \ct{pexpert/} platform · \ct{libsa/} boot};
+  \node[lbl, anchor=west] at (10.85,-0.12) {all of it one kernel, one address space};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{Mach vs BSD — one process, two views}
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{9mm}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{37mm}@{}}
+\toprule
+ & \textbf{Mach} (\ct{osfmk/}) & \textbf{BSD} (\ct{bsd/})\\ \midrule
+unit & \textbf{task}: VM map + port space & \textbf{proc}: pid, credentials, fds — 1:1 with its task\\
+runs & thread & a pthread is a Mach thread\\
+talks & ports + \ct{mach\_msg} & pipes, sockets, signals\\
+names & port name, local to one task & pid — \textbf{reused}; audit token adds a \emph{version}\\
+faults & exception $\to$ thread, then task, then host exception port & signal: \ct{BAD\_ACCESS} $\to$ SEGV (bad address) or BUS · \ct{BAD\_INSTRUCTION} $\to$ ILL · \ct{ARITHMETIC} $\to$ FPE · \ct{BREAKPOINT} $\to$ TRAP\\
+\bottomrule
+\end{tabular}}
+
+\section{Ports, rights, messages}
+A \textbf{port} is a kernel message queue; tasks hold \emph{rights} to it under task-local names:
+\textbf{receive} (one holder, who dequeues) · \textbf{send} (many) · \textbf{send-once} (one
+message — replies) · \textbf{port set} (wait on many, like \ct{select}) · \textbf{dead name}.
+
+\noindent\begin{tikzpicture}[sheet]
+  \node[mf, fill=sheetBlue!10, text width=19mm] at (0,0) {\textbf{header}\\bits · size\\remote = destination\\local = reply port\\voucher · id};
+  \node[mf, fill=sheetOrange!10, text width=17mm] at (2.05,0) {\textbf{descriptors}\\(if \ct{COMPLEX})\\port · OOL memory\\OOL ports · guarded};
+  \node[mf, fill=black!4, text width=12mm] at (3.9,0) {\textbf{body}\\inline bytes\\(copied)};
+  \node[mf, fill=sheetGreen!10, text width=22mm] at (5.25,0) {\textbf{trailer} (kernel)\\audit token: auid,\\euid, egid, ruid, rgid,\\pid, asid, pidversion};
+  \node[lbl, anchor=north west, align=left, text width=78mm] at (0,-1.3) {rights travel as \ct{MOVE\_RECEIVE} · \ct{MOVE\_SEND} · \ct{MOVE\_SEND\_ONCE} · \ct{COPY\_SEND} · \ct{MAKE\_SEND} · \ct{MAKE\_SEND\_ONCE}; OOL memory as a \emph{virtual} (copy-on-write) or \emph{physical} copy};
+\end{tikzpicture}
+\begin{itemize}
+  \item \textbf{Task ports}, capability strictly decreasing: control $\to$ read $\to$ inspect $\to$
+        name; also \emph{bootstrap} (launchd), \emph{host}, \emph{exception}. Control ports are
+        \textbf{pinned}. \ct{task\_for\_pid}: debugger entitlement (admin dialog, 10-hour session)
+        + a target with \ct{get-task-allow}; SIP-protected processes refuse.
+  \item \textbf{Hardened} (platform binaries): service ports' receive right is immovable; a reply
+        port's \emph{send-once} right lets exactly one reply back, from that peer. Breach = guard
+        exception.
+  \item \textbf{MIG} generates RPC stubs; XNU's docs discourage new raw Mach code — use XPC.
+\end{itemize}
+
+\section{IOKit, kexts, DriverKit}
+Devices and drivers sit in the \textbf{IORegistry} (\ct{ioreg}). ``Kexts are no longer
+recommended'': since macOS 11 third-party kexts load only at boot, from an \emph{Auxiliary Kernel
+Collection} — on Apple silicon only in Reduced Security (1TR + admin password). \textbf{DriverKit}
+(macOS 10.15; M-series iPads, iPadOS 16): \ct{.dext} drivers in user space, shipped inside an
+app — on the Mac installed as system extensions.
+
+\section{Memory pressure — macOS vs iOS}
+\noindent\begin{tikzpicture}[sheet]
+  \node[st=sheetGreen] (a) at (0,0) {\textbf{compress}\\anonymous\\pages};
+  \node[st=sheetBlue] (b) at (1.62,0) {\textbf{swap}: encrypted\\files on the\\VM volume};
+  \node[st=sheetOrange] (c) at (3.24,0) {\textbf{warning}\\idle exit: 1 daemon/s,\\$\le$100 per rise};
+  \node[st=sheetOrange] (d) at (4.86,0) {\textbf{warning $\ge$10 min}\\kill the idle band,\\500 ms apart};
+  \node[st=sheetRed] (e) at (6.48,0) {\textbf{compressor full}\\1 action / 5 s,\\then a dialog};
+  \foreach \x/\y in {a/b,b/c,c/d,d/e} \draw[flow] (\x.east) -- (\y.west);
+\end{tikzpicture}
+\begin{itemize}
+  \item \textbf{normal · warning · critical} reach code via
+        \ct{DispatchSource.makeMemoryPressureSource}: relax caching / drop all caches.
+        \ct{PROC\_LIMIT\_WARN} fires at 80\,\% of a process's limit.
+  \item \textbf{Idle exit} takes only opted-in (\ct{EnablePressuredExit}), idle (no open
+        transaction) daemons. \textbf{Compressor full}: kill the largest process if it holds
+        $>$\,½ of compressed pages, else a \ct{pcontrol} action (kill, suspend, throttle); then
+        ``Out of Application Memory''.
+  \item Past a \emph{hard} footprint limit: killed at once; past a \emph{soft} one: a simulated crash.
+  \item \textbf{Jetsam} is the same subsystem everywhere: 210 priority levels, every process but
+        launchd has one (0 idle · 100 foreground); RunningBoard moves apps between bands; most
+        kills climb from the bottom. iOS swap is the \textbf{freezer} (suspended apps' dirty memory
+        to flash, band 75), plus \textbf{app swap} on M1-and-later iPads.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``XNU is a microkernel'' — Mach, BSD and IOKit run in one kernel address space.}
+  \trap{Daemonizing (\ct{daemon(3)}, fork + parent exits): launchd sees the job die.}
+  \trap{\ct{KeepAlive true} + a crashing binary = a respawn every 10~s.}
+  \trap{\ct{setuid()} in a root daemon is not ``being the user'': bootstrap subset and audit
+        session stay — use an agent.}
+\end{itemize}
+
+\columnbreak
+
+\section{launchd — first process (OS X 10.4)}
+The kernel execs \ct{/sbin/launchd}. \textbf{Daemon}: one instance for all clients, \ct{system/},
+root, no UI. \textbf{Agent}: one per logged-in user, \ct{gui/<uid>} (= \ct{login/<asid>}), may show
+UI. \ct{pid/<pid>} = the XPC services that process sees. \ct{<Label>.plist} lives in
+\ct{\textasciitilde/Library/LaunchAgents} · \ct{/Library/LaunchAgents|Daemons} (admin) ·
+\ct{/System/Library/…} (Apple).
+
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{23mm}>{\raggedright\arraybackslash}p{54mm}@{}}
+\toprule
+\ct{Label} & required; the unique job name\\
+\ct{ProgramArguments} & argv for \ct{execvp} — no shell\\
+\ct{BundleProgram} & path inside the app bundle (SMAppService only)\\
+\ct{RunAtLoad} & start once when loaded\\
+\ct{KeepAlive} & \ct{true}, or \ct{SuccessfulExit} · \ct{Crashed} · \ct{PathState}… ORed\\
+\ct{MachServices} & bootstrap names; the job \textbf{must check in}\\
+\ct{Sockets} & launchd listens; \ct{launch\_activate\_socket} hands over fds\\
+\ct{StartInterval} & every N s — a firing during sleep is \textbf{missed}\\
+\ct{StartCalendarInterval} & cron-like — missed in sleep $\to$ \textbf{once at wake}\\
+\ct{ThrottleInterval} & spawn at most every N s (default \textbf{10})\\
+\ct{ProcessType} & Background · Standard · Adaptive · Interactive\\
+\ct{EnablePressuredExit} & reclaimable when idle under pressure; ignored with \ct{KeepAlive true}\\
+\bottomrule
+\end{tabular}}
+
+Stop: SIGTERM, SIGKILL after \ct{ExitTimeOut} — at once if no transaction is open (a message
+expecting a reply holds one). \textbf{macOS 27}: launchd refuses quarantined plists.
+
+\section{XPC — three kinds of service}
+{\scriptsize\setlength\tabcolsep{2.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{11mm}>{\raggedright\arraybackslash}p{19.5mm}>{\raggedright\arraybackslash}p{18mm}>{\raggedright\arraybackslash}p{25.5mm}@{}}
+\toprule
+ & \textbf{launch agent} & \textbf{launch daemon} & \textbf{XPC service (bundled)}\\ \midrule
+instances & 1 per logged-in user & 1 system-wide & 1 per client, dies with it\\
+runs as & that user & root & the app's user; sandboxed by default; never root\\
+lives in & \ct{LaunchAgents} plist & \ct{LaunchDaemons} plist & \ct{Contents/XPCServices/X.xpc}\\
+reach & \ct{machServiceName:} & + \ct{.privileged} & \ct{serviceName:} — that app only\\
+\bottomrule
+\end{tabular}}
+\begin{itemize}
+  \item A daemon \textbf{cannot open} a connection to a user process — it only answers. launchd
+        SIGKILLs an idle XPC service: keep it stateless.
+  \item \textbf{APIs}: C \ct{libxpc} (10.7) · \ct{NSXPCConnection} (10.8): \ct{@objc} protocol,
+        \ct{void} methods, one reply block, \ct{NSSecureCoding} arguments · Swift \ct{XPCSession} /
+        \ct{XPCListener} (macOS 14): \ct{Codable}. The wire encoding is no ABI — never persist it.
+  \item \textbf{Interruption}: the peer exited or crashed — the connection still works, the next
+        message relaunches it, state is gone. \textbf{Invalidation}: never connected, or
+        invalidated — always the last handler; build a new connection.
+  \item \textbf{Check the peer}, not its pid — pids are reused and pid-then-lookup races; the audit
+        token carries the pid \emph{version}. Code requirement: C API (macOS 12),
+        \ct{setCodeSigningRequirement} (13), lightweight requirement (14.4),
+        \ct{XPCPeerRequirement} \ct{.isFromSameTeam()} · \ct{.hasEntitlement(\_:)} (26).
+\end{itemize}
+
+\begin{lstlisting}[language=SwiftSheet]
+struct Job: Codable { let png: Data; let px: Int }
+struct Thumb: Codable { let data: Data }
+// bundled service, main.swift
+let l = try XPCListener(service: "com.example.app.Resizer") { req in
+  req.accept { (job: Job) in Thumb(data: render(job)) } }
+dispatchMain()
+// app: the first message launches the service
+let s = try XPCSession(xpcService: "com.example.app.Resizer")
+let t: Thumb = try s.sendSync(Job(png: png, px: 512))
+\end{lstlisting}
+
+\section{SMAppService — shipping a helper}
+macOS 13+; replaces \ct{SMJobBless} (deprecated in 13) and \ct{SMLoginItemSetEnabled}. The plist stays in the
+bundle — \ct{Contents/Library/LaunchDaemons/} (or \ct{LaunchAgents}) with \ct{BundleProgram} —
+and \ct{SMAppService.daemon(plistName: "com.example.helper.plist").register()}. \ct{status}:
+\ct{notRegistered} · \ct{enabled} · \ct{requiresApproval} · \ct{notFound}. A daemon needs the
+user's authentication; approving it approves the bundle's other helpers. One switch per app in
+Login Items; a plist outside the bundle joins its app's switch with
+\ct{AssociatedBundleIdentifiers}; \ct{sfltool dumpbtm} lists them all. macOS 26+: tasks still
+running after the app quits trigger an allow / don't-allow prompt.
+
+\section{Remember}
+\textbf{Mach moves messages, BSD owns processes, launchd owns names — helpers start when called,
+die when idle, and trust audit tokens, not pids.}
+
+\end{multicols}
+
+\noindent{\raggedright\footnotesize\color{sheetGrey}\textit{Related:} \texttt{os-fundamentals} ·
+\texttt{ios-sandbox-security-model} (entitlements, sandbox) · \texttt{mach-o-and-dyld} ·
+\texttt{macos-power-user-cli} (\ct{launchctl}, \ct{log}) · \texttt{macos-security-architecture}
+(SIP, TCC) · \texttt{systemd-deep} (Linux's launchd) · \texttt{linux-memory-oom} · Logging,
+signposts \& power · Code signing internals · Crashes \& symbolication · App extensions — own
+process, shared disk\par}
+
+\end{document}

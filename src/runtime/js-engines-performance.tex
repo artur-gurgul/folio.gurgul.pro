@@ -1,0 +1,326 @@
+% js-engines-performance.tex — how JavaScript engines run code fast and manage memory: the tier
+% ladders of V8, JavaScriptCore, SpiderMonkey and Hermes, feedback and deoptimisation, hidden
+% classes and inline caches, elements kinds, Smis and pointer compression, the four collectors,
+% weak references, heap snapshots.
+% Sources (checked 2026-10-09):
+%   v8.dev/blog/ignition-interpreter (2016: register machine + accumulator; bytecode 50–25 % of
+%     baseline machine code; handlers built with TurboFan's macro-assembler) ·
+%     /launching-ignition-and-turbofan (V8 5.9 / Chrome 59, May 2017; Full-codegen + Crankshaft
+%     retired; Crankshaft could not optimise try / catch / finally)
+%   v8.dev/blog/sparkplug (V8 9.1 / Chrome 91, May 2021: one linear pass over bytecode, no IR,
+%     interpreter-compatible frames, non-optimising; Speedometer +5–10 %) · /maglev (Chrome M117;
+%     SSA + CFG; ~10x slower to compile than Sparkplug, ~10x faster than TurboFan) ·
+%     /leaving-the-sea-of-nodes (Mar 2025: Turboshaft CFG IR = the whole JS backend + all of Wasm;
+%     JS frontend still Sea of Nodes, being replaced by Maglev; compile time halved)
+%   github.com/v8/v8 main, read 2026-10-09: src/flags/flag-definitions.h (invocation_count_for_
+%     maglev 400, Android 1000; _for_turbofan 3000; _for_osr 500; _for_maglev_osr 100;
+%     minimum_invocations_after_ic_update 500; turbolev false = Maglev + Turboshaft as 4th tier;
+%     max_valid_polymorphic_map_count 4; max_inlined_bytecode_size 460, cumulative 920; jitless
+%     disables sparkplug / maglev / turbofan; trace_opt / trace_deopt = developer-only flags) ·
+%     src/common/globals.h (DeoptimizeKind eager / lazy; InlineCacheState) · src/ic/stub-cache.h
+%     (megamorphic: (map, name) -> handler, 2^12 + 2^10 entries) · src/runtime/runtime.h
+%     (%HaveSameMap, %OptimizeFunctionOnNextCall, %GetOptimizationStatus all exist)
+%   v8.dev/blog/preparser (2019: inner functions pre-parsed, compiled on first call; PIFE) ·
+%     /explicit-compile-hints (Apr 2025, Chrome 136: //# allFunctionsCalledOnLoad; 17 of 20 pages,
+%     -630 ms foreground parse + compile on average; "use sparingly")
+%   v8.dev/blog/fast-properties (2017: map = count, prototype, descriptor array; in-object / fast /
+%     dictionary) · /slack-tracking (2020: + 8 slots, fixed after 7 constructions) · /react-cliff
+%     (2019: Smi = 31-bit; Double field representation; old map deprecated, objects migrate
+%     lazily; preventExtensions orphaned shapes, fixed V8 7.4) · /elements-kinds (2017: 21 kinds,
+%     downward only; float, -0, NaN, Infinity -> DOUBLE; holes are permanent)
+%   mathiasbynens.be/notes/shapes-ics (Bynens + Meurer of the V8 team, 2018: Maps / Structures /
+%     Shapes; IC caches shape + offset)
+%   v8.dev/blog/pointer-compression (2020: low bit 0 = Smi; 4 GB cage; Smi 31 bits; heap up to
+%     43 % smaller) · /v8-release-80 (V8 8.0, Dec 2019) · /jitless (V8 7.4, 2019: for iOS, TVs,
+%     consoles; Speedometer 2 ~40 % slower, Web Tooling ~80 %) · github.com/nodejs/node configure.py
+%     (--experimental-enable-pointer-compression, off unless passed: 4 GB heap, breaks ABI)
+%   nodejs.org/en/blog: v22 announcement (V8 12.4, Maglev on) · release/v24.0.0 (2025-05-06,
+%     V8 13.6) · v25.0.0 (2025-10-15, V8 14.1) · v26.0.0 (2026-05-05, V8 14.6; LTS in October) ·
+%     nodejs.org/api/v8 (writeHeapSnapshot synchronous, ~2x heap;
+%     queryObjects 22.0) · /learn/diagnostics/memory/using-heap-snapshot (signal flag, comparison)
+%   v8.dev/blog/trash-talk (2019, Orinoco: parallel scavenge, concurrent marking with write
+%     barriers, concurrent sweeping, parallel compaction, idle-time GC) · /orinoco-parallel-
+%     scavenger (V8 6.2; semi-spaces; young GC -20–50 %)
+%   webkit.org/blog/10308 speculation in JavaScriptCore (2020: LLInt, template Baseline, DFG,
+%     FTL; 500 / 1000 / 100000 points, call +15, loop iteration +1; 2x / 5x / 1.5x faster; DFG
+%     compiles 4x Baseline's time, FTL 6x DFG's; OSR exit; jettison after 100·2^R exits;
+%     watchpoints) · /3362 (FTL, May 2014, LLVM) · /5852 (B3 replaces LLVM, Feb 2016, 4.7x faster
+%     compiles) · /7122 (Riptide, Jan 2017: concurrent, non-copying, sticky mark bits, retreating
+%     wavefront; pauses mostly ≤ 1 ms)
+%   hacks.mozilla.org/2020/11 Warp (Firefox 83: CacheIR instead of Type Inference; Docs load -20 %,
+%     Speedometer +10–12 %, memory -8 %; slower on Octane / Kraken) · firefox-source-docs.mozilla.org
+%     /js/index.html (C++ interpreter, Baseline Interpreter + ICs, Baseline Compiler, WarpMonkey,
+%     bailout) · /js/gc.html (precise; nursery + tenured; incremental slices; compacting rarely;
+%     zones)
+%   github.com/facebook/hermes doc/Hades.md (YG as GenGC; OG concurrent snapshot-at-the-beginning
+%     mark-sweep, free lists, one segment compacted per cycle; incremental on 32-bit) ·
+%     reactnative.dev/blog 2026-02-11 (0.84: Hermes V1 default)
+%   bun.com/docs (JavaScriptCore) · github.com/denoland/deno README (V8, Rust, Tokio)
+%   developer.mozilla.org WeakMap (ES2015; objects + non-registered symbols; not iterable) ·
+%     WeakRef (ES2021; target kept to the end of the job; cleanup may never run)
+%   developer.chrome.com/docs/devtools/memory-problems (leak / bloat / frequent GC; detached DOM)
+%     · /heap-snapshots (shallow vs retained, retainers, distance, Comparison)
+%   The elements-kinds listing and %HaveSameMap run in Node v26.7.0 (V8 14.6.202) with
+%     --allow-natives-syntax: every stated kind and result matches; Node 26 = V8 14.6 confirmed.
+% @labels: area=runtime kind=concept platform=web topic=performance,memory discussion=329
+% @tags: v8, javascriptcore, spidermonkey, hermes, jit-tiers, turbofan, maglev, deoptimization, hidden-classes, inline-caches, elements-kinds, pointer-compression, generational-gc, weakref, heap-snapshot
+\documentclass[8pt]{extarticle}
+\usepackage{printup-sheet}
+\usepackage{array}
+
+\lstdefinelanguage{JSSheet}{
+  morekeywords={const,let,class,constructor,new,this,return,function,delete,true,false},
+  sensitive=true, morecomment=[l]{//}, morestring=[b]", morestring=[b]'}
+
+\newcommand\ct[1]{\texttt{#1}}
+\tikzset{
+  tb/.style={box, font=\tiny, inner sep=1pt, minimum height=5.6mm, text width=19mm},
+  hot2/.style={tb, draw=sheetOrange, fill=sheetOrange!10},
+  top/.style={tb, draw=sheetGreen!70!black, fill=sheetGreen!10},
+  mp/.style={box, font=\tiny\ttfamily, inner sep=1.5pt, minimum height=4mm, minimum width=11mm},
+  ek/.style={box, font=\tiny\ttfamily, inner sep=1pt, minimum height=4mm, minimum width=24mm},
+  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
+  hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  eng/.style={font=\scriptsize\bfseries, align=center},
+  deo/.style={->, thick, draw=sheetRed, dashed},
+  up/.style={->, thick, draw=sheetGrey},
+}
+
+\begin{document}
+
+\sheettitle{JS engines — JIT tiers, shapes, inline caches, GC}{runtime · folio}
+
+\oneliner{An engine turns source into \textbf{bytecode}, \textbf{interprets} it while recording
+\textbf{feedback} (maps, types, call targets) and compiles hot functions in \textbf{tiers} that
+\textbf{speculate} on that feedback — a failed guard \textbf{deoptimises} to the bottom tier.
+Objects share \textbf{hidden classes}, so an \textbf{inline cache} turns \ct{o.x} into one compare
+and one load. Memory is a \textbf{tracing, generational GC}: what is reachable lives.}
+
+\vspace{2pt}
+\noindent\begin{tikzpicture}[sheet]
+  \node[hd] at (-0.15,3.45) {Tier ladders — up = hot code + stable feedback};
+  % ---------- V8
+  \node[eng] at (1.2,2.95) {V8\\[-1pt]{\tiny\mdseries Chrome · Node · Deno}};
+  \node[tb] (v0) at (1.2,0.0) {\textbf{Ignition} interpreter\\bytecode + feedback};
+  \node[tb] (v1) at (1.2,0.75) {\textbf{Sparkplug} baseline\\no IR · Chrome 91};
+  \node[hot2] (v2) at (1.2,1.5) {\textbf{Maglev} mid-tier\\SSA · Chrome 117};
+  \node[top] (v3) at (1.2,2.25) {\textbf{TurboFan} top tier\\Turboshaft backend};
+  \draw[up] (v0) -- (v1); \draw[up] (v1) -- node[lbl, right, inner sep=0.5pt, xshift=2pt]{400} (v2);
+  \draw[up] (v2) -- node[lbl, right, inner sep=0.5pt, xshift=2pt]{3000} (v3);
+  \draw[deo] (0.1,2.25) -- (0.1,0.0);
+  % ---------- JSC
+  \node[eng] at (3.65,2.95) {JavaScriptCore\\[-1pt]{\tiny\mdseries Safari · Bun}};
+  \node[tb] (j0) at (3.65,0.0) {\textbf{LLInt}\\interpreter};
+  \node[tb] (j1) at (3.65,0.75) {\textbf{Baseline} template JIT\\2$\times$ LLInt};
+  \node[hot2] (j2) at (3.65,1.5) {\textbf{DFG} speculative\\5$\times$ Baseline};
+  \node[top] (j3) at (3.65,2.25) {\textbf{FTL} (B3 backend)\\1.5$\times$ DFG};
+  \draw[up] (j0) -- node[lbl, right, inner sep=0.5pt, xshift=2pt]{500} (j1); \draw[up] (j1) -- node[lbl, right, inner sep=0.5pt, xshift=2pt]{1000} (j2);
+  \draw[up] (j2) -- node[lbl, right, inner sep=0.5pt, xshift=2pt]{100\,000} (j3);
+  \draw[deo] (2.55,2.25) -- (2.55,0.0);
+  % ---------- SpiderMonkey
+  \node[eng] at (6.1,2.95) {SpiderMonkey\\[-1pt]{\tiny\mdseries Firefox}};
+  \node[tb] (s0) at (6.1,0.0) {\textbf{C++ interpreter}\\bytecode};
+  \node[tb] (s1) at (6.1,0.75) {\textbf{Baseline Interpreter}\\+ inline caches};
+  \node[hot2] (s2) at (6.1,1.5) {\textbf{Baseline Compiler}\\whole script native};
+  \node[top] (s3) at (6.1,2.25) {\textbf{WarpMonkey}\\CacheIR $\to$ Ion · Fx 83};
+  \draw[up] (s0) -- (s1); \draw[up] (s1) -- (s2); \draw[up] (s2) -- (s3);
+  \draw[deo] (5.0,2.25) -- (5.0,0.75);
+  % ---------- Hermes
+  \node[eng] at (8.55,2.95) {Hermes\\[-1pt]{\tiny\mdseries React Native}};
+  \node[tb, draw=sheetGrey, fill=white, dashed] (h1) at (8.55,2.25) {\ct{hermesc} at \textbf{build}\\JS $\to$ \ct{.hbc} bytecode};
+  \node[tb] (h0) at (8.55,0.0) {\textbf{interpreter}\\mmaps \ct{.hbc} · no JIT};
+  \draw[up] (7.8,1.95) -- (7.8,0.3);
+  \node[lbl, anchor=west, align=left] at (7.9,1.5) {ships in the app};
+  \node[lbl, anchor=west, align=left, text=sheetGreen!45!black] at (7.9,0.95) {Hermes V1: default\\since RN 0.84};
+  \draw[deo] (-0.1,-0.45) -- (0.35,-0.45);
+  \node[lbl, anchor=west, align=left] at (0.4,-0.6) {a failed guard drops down: V8 \emph{deopt} · JSC \emph{OSR exit} · SpiderMonkey \emph{bailout}\\V8: flag defaults on \ct{main}, Oct 2026 (invocations) · JSC: points (call $+15$, loop iteration $+1$)};
+  % ---------- shapes + ICs
+  \draw[sheetGrey!40] (9.95,3.6) -- (9.95,-0.8);
+  \node[hd] at (10.0,3.45) {Shapes + inline caches};
+  \node[lbl, anchor=west] at (10.05,3.15) {V8 \emph{map} = JSC \emph{Structure} = SpiderMonkey \emph{Shape}};
+  \node[mp] (m0) at (10.55,2.75) {\{\}};
+  \node[mp] (m1) at (12.2,2.75) {\{x\}};
+  \node[mp] (m2) at (13.95,2.75) {\{x,y\}};
+  \node[mp] (m3) at (12.2,2.05) {\{y\}};
+  \node[mp] (m4) at (13.95,2.05) {\{y,x\}};
+  \draw[flow] (m0) -- node[lbl, above]{+x} (m1); \draw[flow] (m1) -- node[lbl, above]{+y} (m2);
+  \draw[flow] (m0.south) |- node[lbl, pos=0.75, above]{+y} (m3); \draw[flow] (m3) -- node[lbl, above]{+x} (m4);
+  \node[lbl, text=sheetRed, anchor=west, align=left] at (14.55,2.4) {same keys,\\other order\\= other map};
+  \node[lbl, anchor=west, align=left] at (10.0,1.45) {map: prototype, descriptor array (name $\to$ slot, attributes),\\transitions — objects keep only their values};
+  \node[lbl, anchor=west] at (10.0,0.9) {IC at \ct{o.x} (a feedback-vector slot), V8 states:};
+  \node[box, font=\tiny, inner sep=1pt, minimum height=4.6mm, text width=9mm] (i0) at (10.55,0.35) {uninit.};
+  \node[top, text width=10mm, minimum height=4.6mm] (i1) at (11.95,0.35) {mono\\1 map};
+  \node[hot2, text width=11mm, minimum height=4.6mm] (i2) at (13.45,0.35) {poly\\$\le$\,4 maps};
+  \node[tb, text width=12mm, minimum height=4.6mm, draw=sheetRed, fill=sheetRed!7] (i3) at (15.15,0.35) {mega\\stub cache};
+  \draw[flow] (i0) -- (i1); \draw[flow] (i1) -- (i2); \draw[flow] (i2) -- (i3);
+  \node[lbl, anchor=west, align=left] at (10.0,-0.45) {mono / poly: compare the map, load at the cached offset;\\mega: one global (map, name) $\to$ handler table, 4096 + 1024 entries};
+\end{tikzpicture}
+
+\begin{multicols}{2}
+\raggedright
+\footnotesize\setstretch{1.0}
+
+\section{From source to machine code (V8)}
+\begin{itemize}
+  \item \textbf{Lazy parsing}: inner functions are only \emph{pre-parsed} and compiled on first
+        call; \ct{(function()\{…\})} is assumed called and compiled eagerly. Chrome 136:
+        \ct{//\# allFunctionsCalledOnLoad} atop a file compiles it all eagerly, off the main
+        thread — 17 of 20 pages faster, $-$630\,ms foreground on average; ``use sparingly''.
+  \item \textbf{Ignition}: register machine + accumulator; bytecode 25–50\,\% the size of the
+        old baseline machine code (2016). Each function's \textbf{feedback vector} records the
+        maps, types and call targets every site has seen — the input to every higher tier.
+  \item \textbf{Sparkplug} (2021): one linear pass bytecode $\to$ machine code, no IR,
+        interpreter-shaped frames, no optimisation; Speedometer +5–10\,\%.
+  \item \textbf{Maglev} (2023): SSA + CFG, compiles $\sim$10$\times$ slower than Sparkplug and
+        $\sim$10$\times$ faster than TurboFan; on in Node from 22 (V8 12.4).
+  \item \textbf{TurboFan}: inlines (callee $\le$\,460 bytes of bytecode, 920 cumulative),
+        removes checks, unboxes numbers. Its backend is \textbf{Turboshaft}, a CFG IR that halved
+        compile time against Sea of Nodes (2025); the frontend is being replaced by Maglev —
+        \ct{--turbolev} (Maglev + Turboshaft as the 4th tier) exists, off by default.
+  \item \textbf{OSR} (on-stack replacement): a long loop tiers up mid-run (flags: OSR 500,
+        Maglev OSR 100); a tier-up waits $\ge$\,500 invocations after the last IC change.
+\end{itemize}
+
+\section{Speculation and deoptimisation}
+\begin{itemize}
+  \item Optimised code guards each assumption (map check, ``is Smi'', bounds). \textbf{Eager}
+        deopt: a guard fails, exit now. \textbf{Lazy}: an assumption the code depends on was
+        broken elsewhere — the code is marked and exits when it next runs. The frame is
+        rebuilt as an interpreter frame and execution continues there.
+  \item \textbf{JSC}: an OSR exit returns to Baseline / LLInt; after $100 \cdot 2^R$ exits ($R$ =
+        reoptimisations so far) the code is \textbf{jettisoned} and recompiled with the new
+        profile. \textbf{Watchpoints} drop a check entirely: the runtime invalidates the code
+        when the watched fact changes. Compile cost: DFG 4$\times$ Baseline, FTL 6$\times$ DFG.
+  \item See it: \ct{node --trace-opt --trace-deopt}; \ct{--allow-natives-syntax} adds
+        \ct{\%OptimizeFunctionOnNextCall}, \ct{\%GetOptimizationStatus}.
+  \item \ct{--jitless} (V8 7.4) allocates no executable memory: Ignition only, regexps
+        interpreted — for iOS, TVs, consoles. Cost (2019): Speedometer 2 $\sim$40\,\% slower, Web
+        Tooling $\sim$80\,\%.
+\end{itemize}
+
+\section{Hidden classes}
+\begin{itemize}
+  \item Properties live \textbf{in-object} (fastest), in a \textbf{fast} out-of-object array
+        (slot from the descriptor array), or in a \textbf{dictionary} — a per-object hash
+        table, used once many properties are added and deleted.
+  \item \textbf{Slack tracking}: a constructor's objects start with the expected properties
+        + 8 spare in-object slots; after 7 constructions the size is fixed and spare slack cut.
+  \item \textbf{Field representation} is in the map: a field of small ints is \emph{Smi}, one
+        holding other numbers \emph{Double}. A double stored into a Smi field
+        \textbf{deprecates} the map; objects migrate lazily on next access. React (2019):
+        \ct{Object.preventExtensions} + a later Smi $\to$ Double change orphaned shapes (V8 7.4
+        fixed it); init timestamps with \ct{NaN}, not \ct{0}.
+\end{itemize}
+
+\section{Elements kinds — downhill only}
+\begin{tikzpicture}[sheet]
+  \node[ek, draw=sheetGreen!70!black, fill=sheetGreen!10] (ps) at (0,0) {PACKED\_SMI};
+  \node[ek] (pd) at (2.85,0) {PACKED\_DOUBLE};
+  \node[ek, draw=sheetOrange, fill=sheetOrange!10] (pe) at (5.7,0) {PACKED\_ELEMENTS};
+  \node[ek] (hs) at (0,-0.75) {HOLEY\_SMI};
+  \node[ek] (hd) at (2.85,-0.75) {HOLEY\_DOUBLE};
+  \node[ek, draw=sheetRed, fill=sheetRed!7] (he) at (5.7,-0.75) {HOLEY\_ELEMENTS};
+  \draw[flow] (ps) -- (pd); \draw[flow] (pd) -- (pe);
+  \node[lbl] at (1.425,0.38) {1.5 · $-$0 · NaN · Infinity};
+  \node[lbl] at (4.275,0.38) {\ct{'x'} · \{\} · any object};
+  \draw[flow] (hs) -- (hd); \draw[flow] (hd) -- (he);
+  \foreach \a/\b in {ps/hs, pd/hd, pe/he} \draw[flow] (\a) -- (\b);
+  \node[lbl, anchor=west] at (0.05,-0.375) {hole};
+\end{tikzpicture}\par
+21 kinds (2017), plus kinds for typed arrays — the choice for numeric work. \ct{new Array(n)} or
+a write past the end makes holes; holes, and reads past \ct{length}, cost prototype-chain
+lookups.
+
+\begin{lstlisting}[language=JSSheet, basicstyle=\ttfamily\scriptsize]
+// node --allow-natives-syntax
+const a = { x: 1, y: 2 }, b = { y: 2, x: 1 };
+%HaveSameMap(a, b);    // false: other transition path
+const arr = [1, 2, 3]; // PACKED_SMI_ELEMENTS
+arr.push(4.56);        // PACKED_DOUBLE_ELEMENTS
+arr.push('x');         // PACKED_ELEMENTS
+arr[9] = 1;            // HOLEY_ELEMENTS, for good
+\end{lstlisting}
+
+\columnbreak
+
+\section{Smis and pointer compression}
+\begin{itemize}
+  \item Tagged slot: low bit \ct{0} = \textbf{Smi} (integer in the slot), \ct{1} = pointer.
+        Other numbers are boxed \emph{HeapNumbers}; a Double field updates its box in place.
+  \item \textbf{Pointer compression} (V8 8.0, Dec 2019; Chrome): slots are 32-bit offsets into a
+        4\,GB cage, Smis 31-bit; V8 heap up to 43\,\% smaller.
+  \item \textbf{Off in official Node builds}: the configure flag
+        \ct{--experimental-enable-pointer-compression} caps the heap at 4\,GB and breaks the
+        addon ABI — Node keeps 64-bit slots and 32-bit Smis.
+  \item Node $\to$ V8: 22 $\to$ 12.4 · 24 (May 2025) $\to$ 13.6 · 25 (Oct 2025) $\to$ 14.1 ·
+        26 (May 2026, LTS due Oct) $\to$ 14.6.
+\end{itemize}
+
+\section{Garbage collection — tracing, generational}
+Live = reachable from roots; a cycle with no path from a root dies whole — no \ct{weak}
+needed, unlike ARC. Most objects die young, so all four split the heap (V8 shown):
+
+\begin{tikzpicture}[sheet]
+  \node[box, font=\tiny, minimum width=14mm, minimum height=7mm] (n) at (0.75,0) {nursery\\(allocate)};
+  \node[box, font=\tiny, minimum width=14mm, minimum height=7mm] (i) at (2.55,0) {intermediate\\(survived 1)};
+  \node[box, font=\tiny, draw=sheetOrange, fill=sheetOrange!10, minimum width=27mm, minimum height=7mm] (o) at (6.1,0) {old generation\\mark-sweep(-compact)};
+  \draw[flow] (n) -- (i); \draw[flow] (i) -- node[lbl, above]{survived 2} (o);
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}, sheetGrey] (0.05,-0.45) -- (3.25,-0.45) node[lbl, midway, below=2pt] {young: semi-spaces; \textbf{scavenge} = copy the live};
+  \draw[decorate, decoration={brace, amplitude=3pt, mirror}, sheetGrey] (4.75,-0.45) -- (7.45,-0.45) node[lbl, midway, below=2pt] {V8: mark + sweep concurrently};
+\end{tikzpicture}\par
+
+{\scriptsize\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{22mm}>{\raggedright\arraybackslash}p{43mm}@{}}
+\toprule
+\textbf{GC} & \textbf{young} & \textbf{old}\\
+\midrule
+V8 \textbf{Orinoco} & semi-spaces; parallel scavenger (6.2): $-$20–50\,\% time & concurrent marking (write barriers), concurrent sweeping, parallel compaction\\
+JSC \textbf{Riptide} (2017) & sticky mark bits — generational without moving & concurrent + parallel mark-sweep, non-copying, retreating-wavefront barrier; pauses mostly $\le$\,1\,ms\\
+SpiderMonkey & nursery = minor GC & tenured: incremental slices, zones; compaction rare, or under memory pressure\\
+Hermes \textbf{Hades} & copying, as the old GenGC & concurrent snapshot-at-the-beginning mark-sweep, free lists, one segment compacted per cycle; incremental on 32-bit\\
+\bottomrule
+\end{tabular}}
+
+\section{Weak references}
+\begin{itemize}
+  \item \ct{WeakMap} / \ct{WeakSet} (ES2015): keys (objects, non-registered symbols) held
+        weakly — the value lives only while its key does; not iterable. Per-object side tables.
+  \item \ct{WeakRef} + \ct{FinalizationRegistry} (ES2021): \ct{deref()} may give
+        \ct{undefined}; a target read in a job survives to that job's end; cleanup callbacks
+        may run late or \textbf{never} — hints, not program logic.
+\end{itemize}
+
+\section{Finding leaks}
+\begin{itemize}
+  \item A leak is \textbf{unwanted reachability}: listeners never removed, live timers,
+        unbounded \ct{Map} caches, globals, \textbf{detached DOM} held by JS, closure contexts.
+        DevTools tells a \emph{leak} (grows) from \emph{bloat} (too big) and \emph{frequent GC}.
+  \item \textbf{Heap snapshot}: shallow size (the object) vs \textbf{retained} size (freed with
+        it); the \textbf{Retainers} path and distance from the root say who keeps it.
+        Snapshot, repeat the action, snapshot, \textbf{Comparison} view; filter detached nodes.
+  \item Node: \ct{--inspect} + DevTools, \ct{--heapsnapshot-signal=SIGUSR2},
+        \ct{v8.writeHeapSnapshot()} — synchronous, blocks the event loop, needs $\sim$2$\times$
+        the heap; \ct{v8.queryObjects(Ctor)} (22.0) counts live instances for leak tests.
+\end{itemize}
+
+\section{Traps}
+\begin{itemize}
+  \trap{``\ct{try/catch} blocks optimisation'' — true of Crankshaft, retired 2017; TurboFan
+        optimises it.}
+  \trap{Synthetic benchmarks: Warp lost on Octane and Kraken and won 20\,\% on Google Docs load;
+        a cold loop times the interpreter.}
+  \trap{\ct{delete}-churn objects end in dictionary mode — dynamic keys belong in a \ct{Map}.}
+  \trap{One \ct{-0}, \ct{NaN} or hole in an int array changes its kind for good.}
+\end{itemize}
+
+\section{Remember}
+\textbf{Same keys, same order, same types — and reachability, not use, keeps memory.}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{js-event-loop} ·
+\texttt{node-runtime} · \texttt{js-prototypes-objects-classes} · \texttt{js-scope-closures-this}
+· \texttt{hermes-v1} · \texttt{rn-memory-leaks} · \texttt{rn-performance} ·
+\texttt{arc-ownership}}
+
+\end{document}
