@@ -58,6 +58,18 @@ pull request that passes the checks and is approved by the maintainer. Run
 
 `docs/CNAME` is the custom domain — the build keeps it; never delete it.
 
+**How a page is built.** A page's HTML carries its own content only, inside
+`<noscript id="page">` (`layouts/frame.pug`): with JavaScript off that is the
+page, and it is what a crawler that runs no script reads. With JavaScript on, a
+few lines of inline script replace the `<noscript>` with that same content —
+nothing is in the document twice — beside the side panel's fixed part; then
+`static/js/site.js` fills the panel from `nav.json`, and on the list page
+`static/js/memos.js` adds tags and the filter from `memos/index.json` (and
+`memos/search.json` when someone searches). Content first, menus after. The
+build writes `nav.json`, `sitemap.xml` and `robots.txt` (`generate:` in
+`src/.sajt/config.yaml`) and fails without them. Do not put anything into a page
+that every page repeats — it belongs in a JSON file or a script.
+
 ## Hard rules — content
 
 1. **One A4 page.** The build fails if a folio's PDF runs to a second page.
@@ -146,7 +158,8 @@ python3 tools/build.py --sajt … --check                  # build only, docs/ u
 ```
 
 Needs Node.js, and for folios TeX Live (xelatex) + poppler (pdftocairo,
-pdfinfo). Sajt is not public yet: **contributors change `src/` only**; the
+pdfinfo), and a Sajt that supports `generate:` (it writes `nav.json`,
+`sitemap.xml` and `robots.txt`; the build fails without them). Sajt is not public yet: **contributors change `src/` only**; the
 maintainer builds and commits `docs/`. Without Sajt, say so — do not
 hand-write anything under `docs/`.
 

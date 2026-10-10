@@ -6,7 +6,8 @@ The site is generated with Sajt. Pass a compiled Sajt checkout with --sajt
 page, SVG figures and a one-page PDF; src/index.md is the front page.
 
 What it does:
-  1. runs `sajt build` in src/ (output: src/.build/, ignored by git);
+  1. runs `sajt build` in src/ (output: src/.build/, ignored by git) — with
+     nav.json, sitemap.xml and robots.txt, or it fails (`generate:`);
   2. replaces the contents of docs/ with that output — keeping docs/CNAME,
      which tells GitHub Pages the custom domain;
   3. writes docs/.nojekyll, so GitHub serves the files exactly as built.
@@ -35,6 +36,7 @@ SRC = ROOT / "src"
 OUT = SRC / ".build"
 DOCS = ROOT / "docs"
 KEEP = {"CNAME"}
+GENERATED = ("nav.json", "sitemap.xml", "robots.txt")
 REPO = "https://github.com/artur-gurgul/folio.gurgul.pro"
 
 
@@ -74,6 +76,15 @@ def main() -> int:
         return fail(f"{OUT}/index.html was not produced", 1)
     pages = sorted(p.relative_to(OUT) for p in OUT.rglob("*.html"))
     print(f"built {len(pages)} page(s): {', '.join(map(str, pages))}")
+
+    # The theme builds the side panel from nav.json and points search engines at
+    # sitemap.xml (src/.sajt/config.yaml, `generate:`). A Sajt without that
+    # feature ignores the block and builds pages whose panel stays empty — a
+    # site that looks fine and is broken. Fail instead.
+    missing = [name for name in GENERATED if not (OUT / name).is_file()]
+    if missing:
+        return fail(f"this Sajt did not write {', '.join(missing)} (`generate:` in src/.sajt/config.yaml) — "
+                    "the pages would have no side panel", 1, "build with a Sajt that supports `generate:`")
 
     # The promise of a folio is ONE A4 sheet. A folio whose PDF runs to a
     # second page has broken it, however good the web page looks — fail.
