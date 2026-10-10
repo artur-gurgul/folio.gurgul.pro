@@ -318,25 +318,12 @@ ul.posts.side-areas a.on span.count {
 	margin-right: 0.25em;
 }
 
-/* the one bright thing on the dark page: a figure is drawn in dark ink with
-   no background of its own (the PDF's own drawing), so it sits on paper, as
-   it does in the printed folio */
+/* a figure sits on the page itself: the build recolours each figure's SVG
+   for the dark page (tools/dark-figures.py — white becomes this background,
+   ink becomes light, the Tango shades their light ends), so no paper card */
 .sheet-figure {
-	/* the paper is cut to the figure: a small diagram in a full-width strip
-	   was a bright band of empty paper on the dark page */
-	width: fit-content;
-	max-width: 100%;
-	margin: 1rem auto 1.4rem;
-	padding: 1rem;
+	margin: 1rem 0 1.4rem;
 	text-align: center;
-	background: var(--paper);
-	color: var(--ink);
-	border-radius: 4px;
-}
-
-/* a figure drawn across the printed page still fills the column */
-.sheet-figure:has(img.wide) {
-	width: auto;
 }
 
 .sheet-figure img {

@@ -44,7 +44,8 @@ src/                     the sources — the only place content is written
   <subject>/<name>.tex   one folio per file, grouped by subject
   .sajt/                 site config + theme (layouts, styles, fonts, sheet style)
 tools/build.py           builds src/ → docs/ (needs a compiled Sajt: --sajt or $SAJT)
-tools/check.py           the checks (headers, leaks, docs untouched, one page) — no Sajt needed
+tools/check.py           the checks (headers, leaks, dark figures, docs untouched, one page) — no Sajt needed
+tools/dark-figures.py    recolours the figures for the dark page (the build runs it)
 tools/ci-fonts.py        installs the exact fonts the page-count check needs
 tools/templates/folio.tex  the anatomy of a folio — start every new one from it
 docs/                    ⚠ BUILD OUTPUT, served by GitHub Pages. Never edit by hand.
@@ -70,7 +71,13 @@ content does not move when the panel arrives. With JavaScript off there is no
 menu at all: the front page alone carries a **site map** (`sitemap: true` in
 `src/index.md`) — the subject groups, each linking to its part of the list —
 hidden whenever JavaScript is on. Groups, not folios, so it stays small as the
-site grows. The build writes `nav.json`,
+site grows. The site is **dark**; a folio's figures are drawn for paper, so the
+build recolours every figure (`<name>-figN.svg`) for the dark page with
+`tools/dark-figures.py` — white becomes the page's background, ink becomes
+light, the Tango shades their light ends — while the whole-page `<name>.svg`,
+which is what prints, stays paper. A recoloured figure is marked and never
+recoloured twice; `tools/check.py` fails while any figure is still paper. The
+build writes `nav.json`,
 `sitemap.xml` and `robots.txt` (`generate:` in `src/.sajt/config.yaml`) and
 fails without them. Do not put anything into a page that every page repeats —
 it belongs in a JSON file, a stylesheet or a script.

@@ -12,6 +12,9 @@ What it does:
      which tells GitHub Pages the custom domain;
   3. writes docs/.nojekyll, so GitHub serves the files exactly as built.
 
+Before the copy, every figure (<name>-figN.svg) is recoloured for the dark page by
+tools/dark-figures.py; the whole-page <name>.svg, which is what prints, stays paper.
+
 Needs: Node.js, and for .tex pages xelatex + pdftocairo (TeX Live, poppler).
 
 USAGE
@@ -123,6 +126,12 @@ def main() -> int:
         page.write_text(html.replace(local, f'<a href="{REPO}/blob/main/src/{rel.as_posix()}">LaTeX source</a>'))
     if missing:
         return fail("could not point LaTeX source at GitHub:\n  " + "\n  ".join(missing), 1)
+
+    # The site is dark; a figure is drawn for paper. Recolour every figure for the page
+    # (the print SVG of each folio stays as it is) — tools/dark-figures.py.
+    dark = subprocess.run([sys.executable, str(ROOT / "tools" / "dark-figures.py"), str(OUT)])
+    if dark.returncode not in (0,):
+        return fail(f"tools/dark-figures.py exited {dark.returncode}", 1)
 
     if args.check:
         print("check only — docs/ untouched")
