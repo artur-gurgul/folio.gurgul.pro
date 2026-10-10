@@ -22,9 +22,9 @@ Xcode</strong> answers.</p>
 <p><a href="https://keith.github.io/xcode-man-pages/xcresulttool.1.html"><code>xcresulttool</code></a> speaks JSON; <code>help &lt;command&gt;</code> prints the schema. Xcode 16 swapped its commands: <code>get object</code> needs <code>--legacy</code>, and parsers built on it broke.</p>
 <p><strong><span class="c-sheetblue">What changed, Xcode 13 <span class="math">→</span> 27</span></strong></p>
 <figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig5.svg" width="304" height="98" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 5" loading="lazy"></figure>
-<h3 class="sheet-hd"><span class="c-sheetblue">Exit codes: a 1983 mail header</span></h3>
-<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig6.svg" width="297" height="39" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 6" loading="lazy"></figure>
-<p><a href="https://keith.github.io/xcode-man-pages/xcodebuild.1.html"><code>xcodebuild</code></a> exits by <a href="https://man.freebsd.org/cgi/man.cgi?query=sysexits&amp;sektion=3">sysexits(3)</a>: 4.2BSD’s <code>sysexits.h</code> (1983), written for delivermail — sendmail’s predecessor — and the Berkeley network, starting at 64 “to reduce the possibility of clashing”. Logs after <code>** TEST FAILED **</code> show 65: branch on non-zero, never on a number.</p>
+<h3 class="sheet-hd"><span class="c-sheetblue">Exit codes: a 1980 mail header</span></h3>
+<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig6.svg" width="271" height="39" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 6" loading="lazy"></figure>
+<p><a href="https://keith.github.io/xcode-man-pages/xcodebuild.1.html"><code>xcodebuild</code></a> exits by <a href="https://man.freebsd.org/cgi/man.cgi?query=sysexits&amp;sektion=3">sysexits(3)</a>: <code>sysexits.h</code>, first shipped in 4BSD (1980), written for delivermail — sendmail’s predecessor — and the Berkeley network, starting at 64 “to reduce the possibility of clashing”. Logs after <code>** TEST FAILED **</code> show 65: branch on non-zero, never on a number.</p>
 <h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
 <ul>
 <li class="trap"><code>xcodebuild … | xcbeautify</code> without <a href="https://www.gnu.org/software/bash/manual/html_node/Pipelines.html"><code>set -o pipefail</code></a>:  the pipeline returns the formatter’s status — a red build reports green.</li>
@@ -58,7 +58,7 @@ back</a>, only renewal does. <code>manageAppVersionAndBuildNumber</code>: Xcode 
 <ul>
 <li><a href="https://developer.apple.com/videos/play/wwdc2019/418/">Getting the Most Out of Simulator (WWDC19)</a> — the simulator’s insides from the people who build it: a userspace on the Mac kernel, why limits are not simulated, clones as APFS copies</li>
 <li><a href="https://asciiwwdc.com/2018/sessions/403">What’s New in Testing (WWDC18, transcript)</a> — where parallel testing came from: template simulator, named clones, classes handed out one at a time</li>
-<li><a href="https://www.tuhs.org/cgi-bin/utree.pl?file=4.2BSD/usr/include/sysexits.h">4.2BSD sysexits.h (1983)</a> — the header behind xcodebuild’s exit codes, still signed by its sendmail-era maintainer</li>
+<li><a href="https://www.tuhs.org/cgi-bin/utree.pl?file=4BSD/usr/include/sysexits.h">4BSD sysexits.h (1980)</a> — the header behind xcodebuild’s exit codes, as it first shipped: 64 to 74, and why they start at 64</li>
 <li><a href="https://saagarjha.com/blog/2019/01/11/mocking-capabilities-in-the-ios-simulator/">Mocking Capabilities in the iOS Simulator</a> — <code>SIMCTL_CHILD_</code> taken to its limit: a capabilities plist that gives an iPhone 8 simulator Face ID</li>
 <li><a href="https://keith.github.io/xcode-man-pages/">Xcode man pages</a> — every man page Xcode ships, browsable: xcodebuild, xcresulttool, xcrun, xcode-select and the rest</li>
 <li><a href="https://nshipster.com/simctl/">simctl (NSHipster, 2018)</a> — a playful tour of the subcommands, from pasteboard syncing to switching a simulator’s language without opening Settings</li>

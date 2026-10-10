@@ -1,6 +1,6 @@
 % xcodebuild-simctl-cli.tex — Xcode from the command line for CI, as mechanisms: one invocation's
 % anatomy, archive → export → upload, build once / shard / merge, the two repetition loops, parallel
-% clones, prefix-stripped environments, the .xcresult, exit codes and their 1983 origin, who an export
+% clones, prefix-stripped environments, the .xcresult, exit codes and their 1980 origin, who an export
 % method lets install, headless signing, SwiftPM on CI, what a simulator really is, which Xcode
 % answers, Xcode Cloud, and what changed from Xcode 13 to Xcode 27.
 % Sources (checked 2026-10-10):
@@ -21,10 +21,13 @@
 %     merge) · xcode-select.1 (-s needs sudo, affects all users; DEVELOPER_DIR overrides it; the tool shims
 %     invoke the selected directory's tool) · xcrun.1 (--find; sets SDKROOT for the tools it runs)
 %     · altool.1 (--api-key / --api-issuer, private_keys directories) · index page (27.2 beta 2)
-%   tuhs.org/cgi-bin/utree.pl?file=4.2BSD/usr/include/sysexits.h (@(#)sysexits.h 4.2 7/31/83;
-%     "notably delivermail and the Berkeley network"; "Error numbers begin at EX__BASE to reduce the
-%     possibility of clashing with other exit statuses that random programs may already return";
-%     EX_USAGE 64, EX_DATAERR 65, EX_SOFTWARE 70) · man.freebsd.org sysexits(3) (EX_NOINPUT 66,
+%   tuhs.org/cgi-bin/utree.pl?file=4BSD/usr/include/sysexits.h (the 4BSD copy: "notably delivermail
+%     and the Berkeley network"; "Error numbers begin at EX__BASE to reduce the possibility of
+%     clashing with other exit statuses that random programs may already return"; EX_USAGE 64,
+%     EX_DATAERR 65, EX_SOFTWARE 70 … EX_IOERR 74 — the ruler's 64–74) · the 4.2BSD copy
+%     (tuhs.org/cgi-bin/utree.pl?file=4.2BSD/usr/include/sysexits.h, @(#)sysexits.h 4.2 7/31/83: the
+%     same text, up to EX_NOPERM 77; 78 EX_CONFIG came later) · en.wikipedia.org/wiki/
+%     Berkeley_Software_Distribution (4BSD released 1980, 4.2BSD 1983) · man.freebsd.org sysexits(3) (EX_NOINPUT 66,
 %     EX_IOERR 74; first appeared in 4BSD; now "deprecated and retained only for compatibility") ·
 %     en.wikipedia.org/wiki/Sendmail (delivermail shipped 1979 with 4.0/4.1 BSD; sendmail derived
 %     from it)
@@ -233,11 +236,11 @@ whole device — in a 2019 experiment, enough to give an iPhone 8 simulator Face
   }
 \end{tikzpicture}
 
-\hd{Exit codes: a 1983 mail header}
+\hd{Exit codes: a 1980 mail header}
 \noindent\begin{tikzpicture}[sheet, x=1mm, y=1mm]
   \node[cell, minimum width=5mm, minimum height=3.4mm, fill=sheetGreen!15, font=\tiny\ttfamily] at (2.5,0) {0};
   \node[cell, minimum width=18mm, minimum height=3.4mm, fill=black!5, font=\tiny] at (14,0) {1–63: anyone's};
-  \foreach \k in {64,...,78} {
+  \foreach \k in {64,...,74} {
     \pgfmathsetmacro\xx{23+(\k-64)*3.6+1.8}
     \node[cell, minimum width=3.6mm, minimum height=3.4mm, font=\tiny\ttfamily, inner sep=0pt] (e\k) at (\xx,0) {\k};
   }
@@ -251,8 +254,8 @@ whole device — in a 2019 experiment, enough to give an iPhone 8 simulator Face
 \end{tikzpicture}\par
 \link{\ct{xcodebuild}}{https://keith.github.io/xcode-man-pages/xcodebuild.1.html} exits by
 \link{sysexits(3)}{https://man.freebsd.org/cgi/man.cgi?query=sysexits&sektion=3}:
-4.2BSD's \ct{sysexits.h} (1983), written for delivermail — sendmail's predecessor — and the Berkeley
-network, starting at 64 ``to reduce the possibility of clashing''. Logs after
+\ct{sysexits.h}, first shipped in 4BSD (1980), written for delivermail — sendmail's predecessor — and
+the Berkeley network, starting at 64 ``to reduce the possibility of clashing''. Logs after
 \ct{** TEST FAILED **} show 65: branch on non-zero, never on a number.
 
 \hd{Traps}
@@ -344,7 +347,7 @@ hours a month are included.
 \begin{itemize}
   \item \href{https://developer.apple.com/videos/play/wwdc2019/418/}{Getting the Most Out of Simulator (WWDC19)} — the simulator's insides from the people who build it: a userspace on the Mac kernel, why limits are not simulated, clones as APFS copies
   \item \href{https://asciiwwdc.com/2018/sessions/403}{What's New in Testing (WWDC18, transcript)} — where parallel testing came from: template simulator, named clones, classes handed out one at a time
-  \item \href{https://www.tuhs.org/cgi-bin/utree.pl?file=4.2BSD/usr/include/sysexits.h}{4.2BSD sysexits.h (1983)} — the header behind xcodebuild's exit codes, still signed by its sendmail-era maintainer
+  \item \href{https://www.tuhs.org/cgi-bin/utree.pl?file=4BSD/usr/include/sysexits.h}{4BSD sysexits.h (1980)} — the header behind xcodebuild's exit codes, as it first shipped: 64 to 74, and why they start at 64
   \item \href{https://saagarjha.com/blog/2019/01/11/mocking-capabilities-in-the-ios-simulator/}{Mocking Capabilities in the iOS Simulator} — \texttt{SIMCTL\_CHILD\_} taken to its limit: a capabilities plist that gives an iPhone 8 simulator Face ID
   \item \href{https://keith.github.io/xcode-man-pages/}{Xcode man pages} — every man page Xcode ships, browsable: xcodebuild, xcresulttool, xcrun, xcode-select and the rest
   \item \href{https://nshipster.com/simctl/}{simctl (NSHipster, 2018)} — a playful tour of the subcommands, from pasteboard syncing to switching a simulator's language without opening Settings
