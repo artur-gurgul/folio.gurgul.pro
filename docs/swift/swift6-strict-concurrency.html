@@ -60,16 +60,11 @@ region</strong>. Non-Sendable state still reachable from its home (red) never le
 </thead>
 <tbody>
 <tr><td><em>Capture of ’x’ with non-sendable type ’X’ in a ‘@Sendable’ closure</em></td><td>make <code>X</code> a Sendable value; capture a copy <code>[v = x.v]</code>; isolate both to one actor</td></tr>
-<tr><td>[1pt]
-<em>Sending ’x’ risks causing data races</em></td><td>don’t touch <code>x</code> after the send; make it Sendable; param <code>sending</code></td></tr>
-<tr><td>[1pt]
-<em>Main actor-isolated … can not be referenced from a nonisolated context</em></td><td>mark the caller <code>@MainActor</code>; or make it <code>async</code> + <code>await</code></td></tr>
-<tr><td>[1pt]
-<em>Static property ’shared’ is not concurrency-safe because it is nonisolated global shared mutable state</em></td><td><code>static let</code> + Sendable type; <code>@MainActor static var</code>; last resort <code>nonisolated(unsafe)</code></td></tr>
-<tr><td>[1pt]
-<em>Stored property ’n’ of ’Sendable’-conforming class ’C’ is mutable</em></td><td><code>let</code>; make it an <code>actor</code>; or <code>Mutex</code>/lock + <code>@unchecked Sendable</code></td></tr>
-<tr><td>[1pt]
-<em>Main actor-isolated method cannot satisfy nonisolated protocol requirement</em></td><td><code>nonisolated</code> + <code>MainActor.assumeIsolated</code>; <code>@MainActor</code> protocol; 6.2 isolated conformance</td></tr>
+<tr><td><em>Sending ’x’ risks causing data races</em></td><td>don’t touch <code>x</code> after the send; make it Sendable; param <code>sending</code></td></tr>
+<tr><td><em>Main actor-isolated … can not be referenced from a nonisolated context</em></td><td>mark the caller <code>@MainActor</code>; or make it <code>async</code> + <code>await</code></td></tr>
+<tr><td><em>Static property ’shared’ is not concurrency-safe because it is nonisolated global shared mutable state</em></td><td><code>static let</code> + Sendable type; <code>@MainActor static var</code>; last resort <code>nonisolated(unsafe)</code></td></tr>
+<tr><td><em>Stored property ’n’ of ’Sendable’-conforming class ’C’ is mutable</em></td><td><code>let</code>; make it an <code>actor</code>; or <code>Mutex</code>/lock + <code>@unchecked Sendable</code></td></tr>
+<tr><td><em>Main actor-isolated method cannot satisfy nonisolated protocol requirement</em></td><td><code>nonisolated</code> + <code>MainActor.assumeIsolated</code>; <code>@MainActor</code> protocol; 6.2 isolated conformance</td></tr>
 </tbody>
 </table></p>
 </section>

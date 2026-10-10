@@ -37,12 +37,12 @@ says no. <code>class</code> wires the same chain and adds real semantics: <code>
 <tr><td><code>Reflect.ownKeys</code></td><td class="center">—</td><td class="center">✓</td><td class="center">✓</td><td></td></tr>
 </tbody>
 </table>
-<br>[1pt] Own key order: array indices ascending, then strings, then symbols, by creation — <code>Object.keys({b:1, 2:1, a:1, 1:1})</code> is <code>[&quot;1&quot;,&quot;2&quot;,&quot;b&quot;,&quot;a&quot;]</code>.</p>
+ Own key order: array indices ascending, then strings, then symbols, by creation — <code>Object.keys({b:1, 2:1, a:1, 1:1})</code> is <code>[&quot;1&quot;,&quot;2&quot;,&quot;b&quot;,&quot;a&quot;]</code>.</p>
 </section>
 <section class="sheet-section">
 <h2>Descriptors and integrity</h2>
 <p>Data <code>{value, writable, enumerable, configurable}</code> · accessor <code>{get, set, enumerable,
-configurable}</code>. Literal, assignment, class field: all <code>true</code>; a <em>new</em> key via <code>defineProperty</code>: omitted <span class="math">→</span> <code>false</code> / <code>undefined</code>; class methods: non-enumerable; a class’s <code>C.prototype</code> is read-only. <code>configurable:false</code>: no delete, no data<span class="math">↔</span>accessor switch; only <code>writable</code> true<span class="math">→</span>false and (while writable) <code>value</code> may change.<br>[2pt] 
+configurable}</code>. Literal, assignment, class field: all <code>true</code>; a <em>new</em> key via <code>defineProperty</code>: omitted <span class="math">→</span> <code>false</code> / <code>undefined</code>; class methods: non-enumerable; a class’s <code>C.prototype</code> is read-only. <code>configurable:false</code>: no delete, no data<span class="math">↔</span>accessor switch; only <code>writable</code> true<span class="math">→</span>false and (while writable) <code>value</code> may change.<br> 
 <table class="sheet-table">
 <thead>
 <tr><th></th><th class="center"><strong>add</strong></th><th class="center"><strong>delete</strong></th><th class="center"><strong>write</strong></th><th><strong>sets on every own property</strong></th></tr>
@@ -53,7 +53,7 @@ configurable}</code>. Literal, assignment, class field: all <code>true</code>; a
 <tr><td><code>freeze</code></td><td class="center">—</td><td class="center">—</td><td class="center">—</td><td>+ <code>writable:false</code> (data)</td></tr>
 </tbody>
 </table>
-<br>[1pt] All <strong>shallow</strong>; setters still run; <code>#private</code> untouched. A failed assignment is silent in sloppy code, TypeError in strict; array methods throw in both: <code>Object.freeze([]).push(1)</code> <span class="math">→</span> TypeError. Faithful shallow copy (prototype, accessors, attributes, symbols): <code>Object.create(Object.getPrototypeOf(o), Object.getOwnPropertyDescriptors(o))</code>.</p>
+ All <strong>shallow</strong>; setters still run; <code>#private</code> untouched. A failed assignment is silent in sloppy code, TypeError in strict; array methods throw in both: <code>Object.freeze([]).push(1)</code> <span class="math">→</span> TypeError. Faithful shallow copy (prototype, accessors, attributes, symbols): <code>Object.create(Object.getPrototypeOf(o), Object.getOwnPropertyDescriptors(o))</code>.</p>
 </section>
 <section class="sheet-section">
 <h2>Prototype pollution</h2>
@@ -104,7 +104,7 @@ configurable}</code>. Literal, assignment, class field: all <code>true</code>; a
 <tr><td><code>OwnPropertyKeys</code></td><td><code>ownKeys</code></td><td colspan="2"><code><sup>*</sup>functions only</code></td></tr>
 </tbody>
 </table>
-<br>[1pt] <code>Reflect.x</code> = trap <code>x</code>’s default; <code>false</code> where <code>Object.x</code> throws. <code>r</code> = receiver: inherited getters see the proxy as <code>this</code>; a <code>set</code> trap’s <code>false</code> throws in strict code. <strong>Invariants</strong>: no lying about a non-configurable property or a non-extensible target (<span class="math">→</span> TypeError). <strong>Not forwarded</strong>: <code>#private</code>, internal slots (<code>new Proxy(new Map, {}).size</code> <span class="math">→</span> TypeError); <code>proxy !== target</code>. Vue 3 <code>reactive()</code>: <code>get</code> tracks, <code>set</code> triggers (Vue 2’s getters missed added keys).</p>
+ <code>Reflect.x</code> = trap <code>x</code>’s default; <code>false</code> where <code>Object.x</code> throws. <code>r</code> = receiver: inherited getters see the proxy as <code>this</code>; a <code>set</code> trap’s <code>false</code> throws in strict code. <strong>Invariants</strong>: no lying about a non-configurable property or a non-extensible target (<span class="math">→</span> TypeError). <strong>Not forwarded</strong>: <code>#private</code>, internal slots (<code>new Proxy(new Map, {}).size</code> <span class="math">→</span> TypeError); <code>proxy !== target</code>. Vue 3 <code>reactive()</code>: <code>get</code> tracks, <code>set</code> triggers (Vue 2’s getters missed added keys).</p>
 </section>
 <section class="sheet-section">
 <h2>Symbols, iterators, generators</h2>

@@ -1,7 +1,10 @@
 # Contributing to folio
 
-A folio is one subject on one A4 page: dense facts and pictures, no noise. Help
-is welcome — reviewing facts is as valuable as writing them.
+A folio is one subject on one A4 page: dense facts and pictures, no noise —
+written to learn and remember ideas, not to look things up. **It is not
+documentation**: a folio that reads like a manual has missed the point; the
+interesting, hard-to-find fact is what it is for. Help is welcome — reviewing
+facts is as valuable as writing them.
 
 ## Ways to help
 
@@ -19,8 +22,11 @@ is welcome — reviewing facts is as valuable as writing them.
 - Change files under **`src/`** only. `docs/` is the built site; the maintainer
   rebuilds it after merging — a pull request that edits `docs/` fails its check.
 - Keep to the rules in [`CLAUDE.md`](CLAUDE.md): one A4 page, one subject,
-  facts with sources, pictures where possible, no interview Q&A, nothing
-  internal or personal.
+  facts with sources, pictures where possible, no documentation voice, no
+  interview Q&A, nothing internal or personal.
+- Links are for the website only: mark linked text with `\link{text}{url}` and
+  put reading suggestions in a `Further reading` block inside
+  `\begin{htmlonly}` — paper shows neither (see [`CLAUDE.md`](CLAUDE.md), rule 8).
 - Run the checks before you open it (Python 3, standard library):
 
   ```sh

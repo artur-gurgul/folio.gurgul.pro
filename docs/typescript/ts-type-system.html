@@ -28,14 +28,14 @@ parameters, <code>readonly</code> aliasing.</p>
 </thead>
 <tbody>
 <tr><td><code>unknown</code></td><td>all <span class="math">→</span> <code>unknown</code>, <code>any</code></td><td>no member, call or arithmetic until narrowed
-(<code>=0pt=</code>, <code>!0pt=0pt=</code> allowed); <code>T | unknown</code> = <code>unknown</code>, <code>T &amp; unknown</code> = <code>T</code>;
+(<code>==</code>, <code>!==</code> allowed); <code>T | unknown</code> = <code>unknown</code>, <code>T &amp; unknown</code> = <code>T</code>;
 <code>keyof unknown</code> = <code>never</code>; truthy <span class="math">→</span> <code>{}</code> (4.8)</td></tr>
 <tr><td><code>any</code></td><td>all <span class="math">→</span> all but <code>never</code></td><td>checking off; members of <code>any</code> are <code>any</code>, so it
 spreads</td></tr>
 <tr><td><code>never</code></td><td>none <span class="math">→</span> all</td><td>empty set: <code>T | never</code> = <code>T</code>; what is left when every case
 is handled; <code>(): never</code> = cannot return (throws, loops)</td></tr>
-<tr><td><code>void</code></td><td><code>undefined</code></td><td><span class="math">≠</span> <code>undefined</code>: a <code>() =0pt&gt; void</code> slot takes
-<code>() =0pt&gt; number</code> (result ignored); a function <em>declared</em> <code>: void</code> may not return a value</td></tr>
+<tr><td><code>void</code></td><td><code>undefined</code></td><td><span class="math">≠</span> <code>undefined</code>: a <code>() =&gt; void</code> slot takes
+<code>() =&gt; number</code> (result ignored); a function <em>declared</em> <code>: void</code> may not return a value</td></tr>
 <tr><td><code>{}</code></td><td>all but nullish</td><td><code>5</code> and <code>&quot;&quot;</code> too — not “an empty object”</td></tr>
 </tbody>
 </table></p>
@@ -59,8 +59,8 @@ r2.<span class="hljs-property">hmoe</span>;   <span class="hljs-comment">// erro
 <section class="sheet-section">
 <h2>Functions · readonly · optional</h2>
 <ul>
-<li>Fewer parameters fit (<code>forEach(x =0pt&gt; …)</code>); returns are covariant; optional  <span class="math">↔</span> required interchangeable; a rest = endless optionals.</li>
-<li>Parameters compare <strong>bivariantly</strong> (unsound) unless <code>strictFunctionTypes</code>: then  contravariantly — but <strong>method syntax</strong> <code>m(x: T): void</code> stays bivariant “to  ensure … <code>Array&lt;T&gt;</code> … relate covariantly”. Strict callback:  <code>onX: (e: E) =0pt&gt; void</code>.</li>
+<li>Fewer parameters fit (<code>forEach(x =&gt; …)</code>); returns are covariant; optional  <span class="math">↔</span> required interchangeable; a rest = endless optionals.</li>
+<li>Parameters compare <strong>bivariantly</strong> (unsound) unless <code>strictFunctionTypes</code>: then  contravariantly — but <strong>method syntax</strong> <code>m(x: T): void</code> stays bivariant “to  ensure … <code>Array&lt;T&gt;</code> … relate covariantly”. Strict callback:  <code>onX: (e: E) =&gt; void</code>.</li>
 <li>5.8 checks each branch of a returned <code>c ? a : b</code>: in <code>(s: string): URL</code>,  <code>c ? anyMap.get(s) : s</code> gives <span class="c-sheetred"><em>Type ’string’ is not assignable to type ’URL’.</em></span></li>
 <li><code>readonly</code> is ignored by assignability: <code>{ readonly x }</code> goes into <code>{ x }</code>  and is written through the alias. Arrays differ: <span class="c-sheetred"><em>The type ’readonly string[]’ is
  ’readonly’ and cannot be assigned to the mutable type ’string[]’.</em></span> (4104).</li>
@@ -100,9 +100,9 @@ r2.<span class="hljs-property">hmoe</span>;   <span class="hljs-comment">// erro
 <li>Tag = a property every member has, typed by literals. A new kind fails  <code>gone: never</code> (<span class="c-sheetred"><em>Type ’{ kind: &quot;tri&quot;; … }’ is not assignable to type
  ’never’.</em></span>), <code>s satisfies never</code> (1360), or — with no <code>default</code> under a declared  return type — <span class="c-sheetred"><em>Function lacks ending return statement and return type does not
  include ’undefined’.</em></span> (2366).</li>
-<li>A predicate body is <strong>trusted, not checked</strong>: <code>…: x is string =0pt&gt; true</code>  compiles. Inferred only with no return annotation, one <code>return</code>, an unmutated  parameter, true <span class="math">⇒</span> <code>T</code> and false <span class="math">⇒</span> not <code>T</code>: so not for  <code>x =0pt&gt; !!x</code> on <code>number | undefined</code> (<code>0</code>).</li>
+<li>A predicate body is <strong>trusted, not checked</strong>: <code>…: x is string =&gt; true</code>  compiles. Inferred only with no return annotation, one <code>return</code>, an unmutated  parameter, true <span class="math">⇒</span> <code>T</code> and false <span class="math">⇒</span> not <code>T</code>: so not for  <code>x =&gt; !!x</code> on <code>number | undefined</code> (<code>0</code>).</li>
 <li><code>asserts c</code> / <code>asserts v is T</code> narrow <em>after</em> the call (the function throws  otherwise). The callee needs an explicitly typed name: <code>const check = (c: unknown):
- asserts c =0pt&gt; …;</code> <code>check(v)</code> — <span class="c-sheetred"><em>Assertions require every name in the call
+ asserts c =&gt; …;</code> <code>check(v)</code> — <span class="c-sheetred"><em>Assertions require every name in the call
  target to be declared with an explicit type annotation.</em></span> (2775)</li>
 </ul>
 </section>

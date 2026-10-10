@@ -142,15 +142,15 @@ region}. Non-Sendable state still reachable from its home (red) never leaves.}
 \toprule
 \textbf{Compiler says (abridged)} & \textbf{Fix, best first} \\ \midrule
 \emph{Capture of 'x' with non-sendable type 'X' in a `@Sendable' closure}
- & make \texttt{X} a Sendable value; capture a copy \texttt{[v = x.v]}; isolate both to one actor \\[1pt]
+ & make \texttt{X} a Sendable value; capture a copy \texttt{[v = x.v]}; isolate both to one actor \\\pdfonly{\noalign{\vskip 1pt}}
 \emph{Sending 'x' risks causing data races}
- & don't touch \texttt{x} after the send; make it Sendable; param \texttt{sending} \\[1pt]
+ & don't touch \texttt{x} after the send; make it Sendable; param \texttt{sending} \\\pdfonly{\noalign{\vskip 1pt}}
 \emph{Main actor-isolated \dots\ can not be referenced from a nonisolated context}
- & mark the caller \texttt{@MainActor}; or make it \texttt{async} + \texttt{await} \\[1pt]
+ & mark the caller \texttt{@MainActor}; or make it \texttt{async} + \texttt{await} \\\pdfonly{\noalign{\vskip 1pt}}
 \emph{Static property 'shared' is not concurrency-safe because it is nonisolated global shared mutable state}
- & \texttt{static let} + Sendable type; \texttt{@MainActor static var}; last resort \texttt{nonisolated(unsafe)} \\[1pt]
+ & \texttt{static let} + Sendable type; \texttt{@MainActor static var}; last resort \texttt{nonisolated(unsafe)} \\\pdfonly{\noalign{\vskip 1pt}}
 \emph{Stored property 'n' of 'Sendable'-conforming class 'C' is mutable}
- & \texttt{let}; make it an \texttt{actor}; or \texttt{Mutex}/lock + \texttt{@unchecked Sendable} \\[1pt]
+ & \texttt{let}; make it an \texttt{actor}; or \texttt{Mutex}/lock + \texttt{@unchecked Sendable} \\\pdfonly{\noalign{\vskip 1pt}}
 \emph{Main actor-isolated method cannot satisfy nonisolated protocol requirement}
  & \texttt{nonisolated} + \texttt{MainActor.assumeIsolated}; \texttt{@MainActor} protocol; 6.2 isolated conformance \\
 \bottomrule

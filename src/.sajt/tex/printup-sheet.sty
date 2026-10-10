@@ -129,4 +129,25 @@
 \newcommand\pdfonly[1]{#1}                % as written on paper
 \newcommand\webfigure[2]{}                % {file}{alt}: an image only on the web
 
+% \begin{htmlonly} … \end{htmlonly} — a whole BLOCK only on the web: a section,
+% a list (2026-10-10: folio's web-only "Further reading" — paper holds no links
+% and has no room for references). Sajt renders the environment's content as
+% blocks; the \htmlonly{…} COMMAND above is inline there, so a \section inside it
+% is an unknown command. On paper the block is typeset into a box that is thrown
+% away, so it prints nothing and takes no space.
+% One name, two forms: \begin{htmlonly} runs \htmlonly with \@currenvir set to
+% "htmlonly", which is how the command tells the environment from \htmlonly{…}.
+% Inside the block \htmlonly is the inline form again (it is all discarded).
+\makeatletter
+\def\sheet@htmlonly@env{htmlonly}
+\renewcommand\htmlonly{%
+  \ifx\@currenvir\sheet@htmlonly@env
+    \expandafter\sheet@htmlonly@begin
+  \else
+    \expandafter\@gobble
+  \fi}
+\def\sheet@htmlonly@begin{\let\htmlonly\@gobble\setbox\z@\vbox\bgroup}
+\def\endhtmlonly{\egroup}
+\makeatother
+
 \endinput

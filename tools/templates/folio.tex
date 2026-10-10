@@ -10,10 +10,15 @@
 %   @tags:      comma list; reuse tags other folios already use
 %
 % Sources: <url or reference>, <url or reference>
+%   (the fact-check trail, for whoever edits the folio — readers get "Further reading")
 % @labels: area=c-systems kind=memory
 % @tags: stack, heap, malloc, lifetime, dangling-pointer
 \documentclass[8pt]{extarticle}
 \usepackage{printup-sheet}
+
+% Linked text: the website links it, paper prints the text only (paper holds no links).
+% Defined here, not in the style: the website's renderer reads macros from the folio itself.
+\newcommand\link[2]{\pdfonly{#1}\htmlonly{\href{#2}{#1}}}
 
 \begin{document}
 
@@ -34,7 +39,9 @@ lives until \texttt{free} (manual, slower, fragmentable).}
   \item The stack is small (8~MiB main thread on Linux, often 4--16~KiB on an
         RTOS task) and grows \emph{down}; overflow is a crash, not an error code.
   \item \texttt{malloc} asks the allocator for a block; the allocator asks the
-        OS (\texttt{brk}/\texttt{mmap}) only when its free lists run dry.
+        OS (\texttt{brk}/\texttt{mmap}) only when its free lists run dry —
+        \link{glibc}{https://man7.org/linux/man-pages/man3/malloc.3.html} gives a
+        block over 128~kB (the default threshold) its own \texttt{mmap}.
 \end{itemize}
 
 \section{Example}
@@ -69,6 +76,16 @@ int *good(void) { int *p = malloc(sizeof *p);
 
 \section{Remember}
 \textbf{Stack = scope, heap = \texttt{free}.} Whoever calls \texttt{malloc} owns the \texttt{free}.
+
+% Web only, last before Related: a few links worth reading, one line each on why.
+% Paper prints nothing here and keeps the space.
+\begin{htmlonly}
+\section{Further reading}
+\begin{itemize}
+  \item \href{https://man7.org/linux/man-pages/man3/malloc.3.html}{malloc(3)} — the 128~kB
+        \texttt{mmap} threshold, and the extra arenas glibc adds when threads contend
+\end{itemize}
+\end{htmlonly}
 
 \end{multicols}
 

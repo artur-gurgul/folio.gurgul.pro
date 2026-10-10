@@ -11,6 +11,20 @@ a picture carries a fact better than words. **No noise** — no filler, no
 narrative, no padding; every line earns its place by being a fact worth
 memorising.
 
+**It is for learning, not for looking things up.** A folio is for people who
+want to understand ideas, remember them and see them — and to have fun doing
+it. Prefer the mechanism behind a feature, the idea that makes it click, the
+surprising number, the history that explains a quirk, the trick nobody writes
+down. **When something is interesting and hard to find on the internet, it
+belongs on the folio** — that is worth more than what is on the first page of
+the manual.
+
+**It is not documentation.** A folio that reads like a manual — option lists for
+their own sake, "X is used to Y", an API surface copied from the reference — has
+failed, however correct it is. **Documentation voice is a red flag**, not a style
+choice: rewrite it as the idea, the mechanism or a picture, or cut it. The manual
+already exists; link to it (see "Links and references" below).
+
 **It is not** interview preparation (no Q&A lists, no "how to answer"), not a
 tutorial, not a blog post. A section called "Likely questions" or "Interview
 …" does not belong in a folio.
@@ -68,6 +82,30 @@ pull request that passes the checks and is approved by the maintainer. Run
 7. **Public domain.** Everything here is CC0 1.0 (`LICENSE`); contributions
    are dedicated the same way. Add a third-party file only if its licence
    allows it, and record it in `LICENSES/README.md` with its licence text.
+8. **Links and references live on the web; paper has none.** A printed folio
+   cannot hold a link and has no room for references — the website can. So the
+   source marks both, and the PDF shows neither:
+   - **Linked text:** `\link{text}{url}` — on paper the text alone, on the web
+     a link. Define it in the folio's preamble (the template has it), because
+     the website's renderer reads macros from the folio itself:
+     `\newcommand\link[2]{\pdfonly{#1}\htmlonly{\href{#2}{#1}}}`.
+     Never put a bare URL in the printed text.
+   - **Further reading:** a block that only the website shows, last in the
+     body, before the Related line — a few links worth a reader's time (the
+     manual, the spec, a talk, a blog post or paper that is hard to find), each
+     with one line on why:
+     ```latex
+     \begin{htmlonly}
+     \section{Further reading}
+     \begin{itemize}
+       \item \href{https://…}{Title} — why it is worth reading
+     \end{itemize}
+     \end{htmlonly}
+     ```
+     On paper it prints nothing and takes no space.
+   - **The `% Sources` header stays.** It is the fact-check trail for whoever
+     edits the folio; Further reading is for readers. A link in either must be
+     `https://` and point where it says.
 
 ## Hard rules — working
 

@@ -1,10 +1,10 @@
-% js-async.tex — promises as ECMA-262 defines them (states and fates, the resolve functions,
-% thenable adoption, reaction jobs), a counted job trace (then vs await vs return p vs return
-% await p), async functions, rejection tracking (HTML, Node), the four combinators, concurrency
-% shapes (waterfall, forEach, pool, withResolvers), cancellation with AbortSignal, retry with
-% full jitter, async iteration + await using, and the edition each piece arrived in.
+% js-async.tex — promises as mechanisms: settle-once, executor now and handlers always later (and
+% why: "Zalgo"), thenable adoption and its cost in jobs, why a promise never holds a promise, the
+% await job count and how a V8 bug became the spec, async stack traces, rejection tracking (HTML,
+% Node), the combinators as logic, concurrency shapes, cancellation by AbortSignal (and why not by
+% the language), retry with full jitter, async iteration + await using.
 % Event-loop mechanics (tasks, rendering, nextTick, timers, yielding) live in js-event-loop.
-% Sources (checked 2026-10-09):
+% Sources (checked 2026-10-10):
 %   tc39.es/ecma262 (draft ES2027, Promise Objects): fulfilled / rejected / pending / settled;
 %     resolved = settled or "locked in" to another promise · Promise constructor (executor called
 %     synchronously; abrupt completion → reject) · Promise Resolve Functions (self-resolution
@@ -15,44 +15,82 @@
 %     Promise.all (empty → resolves []), Promise.any (AggregateError, "errors"), Promise.race
 %     (empty → never settles), Promise.try, Promise.withResolvers, finally (thenFinally calls
 %     onFinally with no argument, PromiseResolve's its result, then passes the value on) ·
-%     AsyncBlockStart (return → Resolve(value), throw → Reject) · AsyncGeneratorYield(Await(v))
+%     AsyncBlockStart (return → Resolve(value), throw → Reject) · AsyncGeneratorYield(Await(v)) ·
+%     link targets on multipage/control-abstraction-objects.html: #sec-promise-jobs (27.5.2
+%     Promise Jobs, NewPromiseResolveThenableJob inside it), #await (both present)
 %   github.com/tc39/ecma262/pull/1250 (merged 2019-02, in ES2019: Await calls PromiseResolve
 %     instead of always wrapping — awaiting a native promise takes 1 job instead of 3)
-%   github.com/tc39/proposal-faster-promise-adoption (Stage 1; resolving with a native promise
-%     takes 2 ticks) · github.com/tc39/proposal-native-promise-adoption (Stage 1; no tick change)
-%   github.com/tc39/proposals finished-proposals.md (publication year: async functions 2017;
-%     async iteration, finally 2018; allSettled 2020; any 2021; top-level await 2022;
-%     withResolvers, Atomics.waitAsync 2024; Promise.try, sync iterator helpers 2025;
+%   v8.dev/blog/fast-async ("Faster async functions and promises", 2018-11-12): Node 8 printed
+%     after:await before tick:a, tick:b — "not correct according to the specification"; Node 10
+%     prints tick:a, tick:b, after:await; at least three microticks per await before, one after;
+%     on by default in V8 v7.2; "no longer a bug — it's now an optimization that is being
+%     standardized" · zero-cost async stack traces: with await the resume and suspend locations
+%     are the same, for then()/catch() they are not
+%   github.com/tc39/proposals finished-proposals.md (publication year: Promise.try 2025;
 %     Array.fromAsync 2026; Explicit Resource Management 2027 — the proposal repo's README still
-%     says Stage 3) · README.md (Await Dictionary = Promise.allKeyed / allSettledKeyed: Stage 3;
-%     Async Iterator helpers, Async Context: Stage 2)
+%     says Stage 3)
 %   github.com/tc39/proposal-explicit-resource-management (await using: Symbol.asyncDispose, else
 %     Symbol.dispose; at block exit; reverse order; SuppressedError; AsyncDisposableStack)
+%   github.com/tc39/proposal-cancelable-promises (README: "withdrawn by its champion and is no
+%     longer active in the TC39 process"; last commit "Withdraw the proposal", 2016-12-15; earlier
+%     "Promise.withCancelToken surface API is final", 2016-09-12) · tc39/proposals
+%     inactive-proposals.md (Cancelable Promises: Withdrawn; meeting notes 2016-05, -07, -09)
+%   promisesaplus.com (thenable = an object or function that defines a then method; treating
+%     thenables so lets implementations interoperate and "assimilate" nonconformant ones;
+%     handlers run only when the stack holds platform code only — micro- or macro-task) ·
+%     developer.mozilla.org Promise#thenables ("multiple Promise implementations long before it
+%     became part of the language")
+%   github.com/promises-aplus/promises-spec/issues/94 ("Incorporate monads and category theory",
+%     opened 2013-04-10: Promise.of, then(f) taking one function, onRejected on the prototype;
+%     closed; reply: "ignores reality in favor of typed-language fantasy land")
+%   blog.izs.me/2013/08/designing-apis-for-asynchrony (2013-08-23: a callback API that is called
+%     sometimes immediately and sometimes later is "impossible to reason about" — "Zalgo")
 %   html.spec.whatwg.org/multipage/webappapis.html (HostEnqueuePromiseJob = queue a microtask;
 %     microtask checkpoint → "notify about rejected promises"; unhandledrejection fired from a
 %     global task on the DOM manipulation task source, cancelable, else may be reported to the
-%     console; rejectionhandled when a handler is added later)
-%   nodejs.org/api/cli.html (--unhandled-rejections: throw = emit unhandledRejection, else raise
-%     as an uncaught exception, default since v15.0.0; strict, warn, warn-with-error-code, none)
-%     · nodejs.org/api/timers.html (timers/promises setTimeout(delay, value, {signal, ref})
-%     rejects with an AbortError, v15.0.0)
+%     console; rejectionhandled when a handler is added later; anchors
+%     #perform-a-microtask-checkpoint, #unhandled-promise-rejections present) ·
+%     developer.mozilla.org/en-US/docs/Web/API/HTML_DOM_API/Microtask_guide (promises use the
+%     microtask queue)
+%   nodejs.org/api/cli.html#--unhandled-rejectionsmode (throw = emit unhandledRejection, else
+%     raise as an uncaught exception, "This is the default"; v15.0.0 "Changed default mode to
+%     throw. Previously, a warning was emitted.") · nodejs.org/api/timers.html (timers/promises
+%     setTimeout(delay, value, {signal, ref}) rejects with an AbortError, v15.0.0)
 %   dom.spec.whatwg.org (abort() default reason: AbortError DOMException; timeout(): TimeoutError;
 %     any(): reason of the signal that caused it; throwIfAborted; abort steps run the abort
 %     algorithms then fire "abort"; APIs should reject with the signal's abort reason)
 %   developer.mozilla.org: Promise.try (Baseline 2025; func called synchronously) ·
-%     AbortSignal.any (no way to unsubscribe from the inputs; remove your listeners) ·
-%     Array.fromAsync (awaits sequentially, lazily; Promise.all is concurrent)
-%   aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter (M. Brooker, 2015: full
-%     jitter = random(0, min(cap, base·2^attempt)); jittered backoff does far less work)
+%     AbortSignal (timeout → fetch rejects with a TimeoutError DOMException, to tell timeouts
+%     from user aborts) · AbortSignal.any (no way to unsubscribe from the inputs; remove your
+%     listeners) · Array.fromAsync (awaits sequentially, lazily; Promise.all is concurrent) ·
+%     Statements/await_using (disposers run in reverse order of declaration; SuppressedError) ·
+%     Promise#promise_concurrency
+%   aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter (2015-03-04: full jitter =
+%     random(0, min(cap, base * 2 ** attempt)); "Adding Jitter": "The gaps are gone ... an
+%     approximately constant rate of calls", "In the case with 100 contending clients, we've
+%     reduced our call count by more than half" vs un-jittered exponential backoff, "the clear
+%     loser"; full jitter uses less work but slightly more time than decorrelated jitter)
 %   rfc-editor.org RFC 9110 §9.2.2 (PUT, DELETE and safe methods are idempotent), §10.2.3
 %     (Retry-After with 503) · RFC 6585 §4 (429 MAY carry Retry-After)
-%   The output of the trace is derived step by step from the job algorithms above (one FIFO job
-%     queue): S A B E C H D G F — and the listing, run verbatim in Node v26.7.0, prints exactly that.
+%   Run in Node v26.7.0 (V8 14.6), every runnable claim on this page — 28/28 match, a positive
+%     control went red: the trace S A B E C H D G F · after:await before tick:a, tick:b · await
+%     {then(r){r(42)}} → 42 · a module exporting then hijacks await import() · then read now,
+%     called a job later · a promise of a promise fulfils with the inner value · all([]) → [] ·
+%     allSettled([]) fulfils · any([]) → empty AggregateError · race([]) pending after 200 ms ·
+%     any .errors in input order · all rejects, b runs on · finally · return p vs return await p
+%     in try · the caller is in error.stack after await and return await, not after return p or
+%     then · the pa/pb trap (unhandledRejection, then rejectionHandled) · async executor ·
+%     Object.prototype.then → async () => ({}) never settles · await using reverse order · pool
+%     keeps input order, peak = n
 % @labels: area=javascript kind=concept platform=web topic=concurrency,language discussion=309
 % @tags: promises, async-await, microtask, thenable, promise-all, promise-allsettled, promise-any, promise-race, unhandled-rejection, abortcontroller, cancellation, jitter, concurrency-pool, async-iterators, async-generators, explicit-resource-management
 \documentclass[8pt]{extarticle}
 \usepackage{printup-sheet}
 \usepackage{array}
+
+% Linked text: the website links it, paper prints the text only (paper holds no links).
+% Defined here, not in the style: the website's renderer reads macros from the folio itself.
+\newcommand\link[2]{\pdfonly{#1}\htmlonly{\href{#2}{#1}}}
 
 \lstdefinelanguage{JS}{
   morekeywords={const,let,var,function,return,async,await,yield,new,try,catch,finally,throw,
@@ -87,10 +125,11 @@
 \sheettitle{Async JavaScript — promises, await, combinators, cancellation}{javascript · folio}
 
 \oneliner{A promise is a \textbf{settle-once} result: its executor runs \textbf{now}, its
-handlers \textbf{always later}, each as a promise \textbf{job} (a microtask on the web).
-\texttt{then} returns a \textbf{new} promise that adopts whatever its handler returns;
-\texttt{async}/\texttt{await} runs on the same jobs. The work starts when it is called and a
-promise cannot be cancelled — an \texttt{AbortSignal} asks the work to stop.}
+handlers \textbf{always later}, each as a promise \textbf{job} (a
+\link{microtask}{https://developer.mozilla.org/en-US/docs/Web/API/HTML_DOM_API/Microtask_guide}
+on the web). \texttt{then} returns a \textbf{new} promise that adopts whatever its handler
+returns; \texttt{async}/\texttt{await} runs on the same jobs. The work starts when it is called
+and a promise cannot be cancelled — an \texttt{AbortSignal} asks the work to stop.}
 
 \vspace{2pt}
 \noindent\begin{tikzpicture}[sheet]
@@ -142,7 +181,7 @@ promise cannot be cancelled — an \texttt{AbortSignal} asks the work to stop.}
   \node[sb, anchor=west, minimum width=64mm, draw=sheetGreen, fill=sheetGreen!10] at (4.05,0.25) {prints \ct{S A B E C H D G F} — one FIFO queue, round by round};
   \node[lbl, anchor=west] at (4.0,-0.17) {\ct{t}: job calling \ct{p.then} · \ct{r}: resolves the outer promise · \ct{w}: \ct{await} resumes};
   \node[lbl, anchor=west, text=sheetBrown] at (4.0,-0.45) {returning a native promise: \textbf{2 extra jobs}; \ct{return await p}: 1 fewer};
-  \node[lbl, anchor=west, text=sheetGrey] at (4.0,-0.72) {since ES2019 \ct{await} on a native promise takes 1 job (it took 3)};
+  \node[lbl, anchor=west, text=sheetGrey] at (4.0,-0.72) {\ct{await} on a native promise or a plain value (\ct{await 1}): 1 job};
   % ── 3 combinators ──
   \node[pt] at (10.65,2.95) {\textcolor{sheetBlue}{3} combinators, same inputs};
   \foreach \t/\x in {t1/12.45,t2/13.35,t3/14.25} {
@@ -174,26 +213,30 @@ promise cannot be cancelled — an \texttt{AbortSignal} asks the work to stop.}
 \raggedright
 \footnotesize\setstretch{1.0}
 
-\section{Promise rules (ECMA-262)}
+\section{Why a promise behaves as it does}
 \begin{itemize}
-  \item The \textbf{executor runs synchronously} inside \ct{new Promise}; a throw in it rejects.
-        The first \ct{resolve}/\ct{reject} wins; later calls do nothing.
-  \item \ct{then} never calls back synchronously: on a settled promise the job is queued at
-        once (HTML: a microtask). A non-function argument lets the value or reason pass.
-  \item \ct{p.then(f, r)} returns a \textbf{new} promise: \ct{f} returns \ct{v} → fulfilled with
-        \ct{v}; throws → rejected; returns a thenable → \textbf{adopts} it. \ct{r} does not see a
-        throw from \ct{f}; \ct{catch(r)} = \ct{then(undefined, r)} placed after it.
-  \item Adopting thenable \ct{t}: \ct{t.then} is read now, called a job later; for a native
-        promise that costs 2 rounds (drawing 2) — Stage 1 ``faster promise adoption'' would cut them.
-  \item \ct{Promise.resolve(x)} returns \ct{x} itself when \ct{x.constructor === Promise};
-        \ct{await} uses the same check (tc39/ecma262 \#1250, ES2019).
-  \item \ct{finally(f)}: \ct{f} gets no argument; the value or reason passes through once
-        \ct{f}'s result settles; a throw or rejection in \ct{f} replaces it.
-  \item \ct{Promise.try(f, ...args)} (ES2025): calls \ct{f} now; a sync throw becomes a
-        rejection. \ct{Promise.withResolvers()} (ES2024): \ct{\{promise, resolve, reject\}}.
+  \item \textbf{Always async, on purpose.} The executor runs synchronously, but \ct{then}
+        never calls back synchronously — even on a settled promise the handler waits for a
+        \link{job}{https://tc39.es/ecma262/multipage/control-abstraction-objects.html#sec-promise-jobs}.
+        An API that is sometimes sync and sometimes async is impossible to reason about: the 2013
+        ``do not release Zalgo'' rule. \ct{Promise.try(f)} (ES2025) closes the gap: a sync throw
+        in \ct{f} becomes a rejection.
+  \item In \ct{p.then(f, r)}, \ct{r} does not see a throw from \ct{f}; a \ct{catch(r)} after it
+        does. A non-function handler lets the value pass; \ct{finally(f)} calls \ct{f} with no
+        argument and passes the value on, unless \ct{f} throws.
+  \item \textbf{Duck typing is history.} Promise libraries predate ES2015, so a promise adopts
+        any
+        \link{thenable}{https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise#thenables}
+        (a callable \ct{then}), which is read now, called a job later (\ct{t} in drawing 2). So \ct{await \{ then(r) \{ r(42) \} \}} is \ct{42}; a module
+        exporting \ct{then} hijacks \ct{await import()}; with \ct{Object.prototype.then} set,
+        \ct{async () \fat{} (\{\})} never settles.
+  \item \textbf{A promise never holds a promise:} \ct{then} maps \emph{and} flattens. A 2013
+        Promises/A+ request for a monadic \ct{then} was turned down as ``typed-language fantasy
+        land''. \ct{Promise.resolve(p)} returns a native \ct{p} itself, as \ct{await} does
+        since ES2019.
 \end{itemize}
 
-\section{The code of drawing 2}
+\section{Drawing 2 in code, and its history}
 \begin{lstlisting}[style=js]
 const log = (s) => console.log(s), p = Promise.resolve();
 (async () => { await p; log('A'); })();
@@ -204,43 +247,53 @@ p.then(() => { log('E'); return p; }).then(() => log('F'));
 log('S');                                  // S A B E C H D G F
 \end{lstlisting}
 
+\noindent\begin{tikzpicture}[sheet]
+  \foreach \r/\x in {1/2.25,2/2.8,3/3.35} \node[lbl] at (\x,0.92) {\r};
+  \node[lbl, anchor=east] at (2.0,0.92) {job round};
+  \foreach \n/\y in {Node 8/0.6,Node 10/0.25,ES2019+/-0.1} \node[code] at (0,\y) {\n};
+  \node[lg, fill=sheetGreen!70!black] at (2.25,0.6) {A}; \node[lg] at (2.8,0.6) {B}; \node[lg] at (3.35,0.6) {C};
+  \node[lg] at (2.25,0.25) {B}; \node[lg] at (2.8,0.25) {C}; \node[lg, fill=sheetGreen!70!black] at (3.35,0.25) {A};
+  \node[lg, fill=sheetGreen!70!black] at (2.25,-0.1) {A}; \node[lg] at (2.8,-0.1) {B}; \node[lg] at (3.35,-0.1) {C};
+  \node[lbl, anchor=west, text=sheetRed] at (3.65,0.6) {a V8 bug: \ct{await} acted like 1 job — out of spec};
+  \node[lbl, anchor=west] at (3.65,0.25) {bug fixed: \ct{await} = 3 jobs, as specified};
+  \node[lbl, anchor=west, text=sheetGreen!60!black] at (3.65,-0.1) {spec changed: 1 job — the bug is the rule};
+\end{tikzpicture}\par
+Until ES2019
+\link{\ct{await}}{https://tc39.es/ecma262/multipage/control-abstraction-objects.html#await}
+wrapped every operand in a new promise; tc39/ecma262 \#1250 made it call \ct{PromiseResolve}
+(above). On by default from V8 7.2.
+
 \section{async functions}
 \begin{itemize}
-  \item Run synchronously up to the first \ct{await}; always return a new promise:
-        \ct{return v} resolves it (a returned promise is adopted), a throw rejects it.
-  \item \ct{await x}: \ct{PromiseResolve(x)}, then an internal \ct{then} — one job for a native
-        promise or a plain value (\ct{await 1}). Code after an \ct{await} never runs in the
-        same job; state may have changed meanwhile.
-  \item Inside \ct{try}, \ct{return await p}: a plain \ct{return p} leaves the \ct{try} before
-        \ct{p} rejects, so \ct{catch} never sees it. Top-level \ct{await} (ES2022): modules only.
+  \item Run synchronously up to the first \ct{await}; the code after it runs in a later job,
+        when state may have changed. \ct{return} / a throw settle the returned promise.
+  \item \ct{return await p} beats \ct{return p} twice. In a \ct{try}, \ct{return p} leaves
+        before \ct{p} rejects: \ct{catch} never sees it. And V8's async stack traces follow
+        \ct{await} only: after \ct{return await} the caller stays in \ct{error.stack}
+        (\ct{at async outer}); after \ct{return p} or a \ct{then} chain it is gone.
 \end{itemize}
 
 \section{Rejections nobody handles}
 \begin{itemize}
-  \item Engine: rejecting an unhandled promise calls \ct{HostPromiseRejectionTracker(p,
-        "reject")}; a later handler calls it with \ct{"handle"}.
-  \item Browser: checked after every microtask checkpoint → \ct{unhandledrejection} fired from
-        a task, cancelable (\ct{preventDefault()} keeps it off the console); a handler added
-        later → \ct{rejectionhandled}.
-  \item Node $\geq$ 15: \ct{--unhandled-rejections=throw} by default — the
-        \ct{'unhandledRejection'} listener if any, otherwise raised as an uncaught exception.
-        Other modes: \ct{strict}, \ct{warn}, \ct{warn-with-error-code}, \ct{none}.
+  \item The engine only reports: \ct{HostPromiseRejectionTracker(p, "reject")} with no handler,
+        \ct{"handle"} once one comes. ``Too late'' is the host's call.
+  \item Browser: after a
+        \link{microtask checkpoint}{https://html.spec.whatwg.org/multipage/webappapis.html#perform-a-microtask-checkpoint}
+        →
+        \link{\ct{unhandledrejection}}{https://html.spec.whatwg.org/multipage/webappapis.html#unhandled-promise-rejections}
+        (cancelable: \ct{preventDefault()} keeps it off the console); a later handler →
+        \ct{rejectionhandled}.
+  \item Node only warned until v15; since then
+        \link{\ct{--unhandled-rejections}}{https://nodejs.org/api/cli.html#--unhandled-rejectionsmode}
+        defaults to \ct{throw}: your \ct{'unhandledRejection'} listener, else an uncaught exception.
 \end{itemize}
 
-\section{Combinators}
-{\scriptsize\setlength{\tabcolsep}{2pt}
-\begin{tabular}{@{}>{\raggedright}p{11mm}>{\raggedright}p{21mm}>{\raggedright}p{17mm}>{\raggedright}p{15mm}>{\raggedright\arraybackslash}p{7mm}@{}}
-\toprule
- & \textbf{fulfils with} & \textbf{rejects with} & \textbf{empty input} & \textbf{since}\\
-\midrule
-\ct{all} & values, input order & first rejection & \ct{[]} at once & 2015\\
-\ct{allSettled} & \ct{\{status, value\}} / \ct{\{status, reason\}} & never & \ct{[]} at once & 2020\\
-\ct{race} & first to settle & first to settle & never settles & 2015\\
-\ct{any} & first fulfilment & \ct{AggregateError} & rejects at once & 2021\\
-\bottomrule
-\end{tabular}}\par
-Inputs go through \ct{Promise.resolve}, so plain values are fine. Stage 3:
-\ct{Promise.allKeyed(\{a: pa, b: pb\})} → \ct{\{a, b\}} (Await Dictionary).
+\section{Combinators are logic}
+\link{The combinators}{https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise#promise_concurrency}
+(drawing 3): \ct{all} = AND of fulfilments, \ct{any} = OR, \ct{race} = first to settle,
+\ct{allSettled} = wait for all. Empty input gives the identities: \ct{all([])} fulfils with
+\ct{[]} at once (AND of nothing is true), \ct{any([])} rejects at once with an empty
+\ct{AggregateError} (OR of nothing is false), \ct{race([])} never settles (no runner, no winner).
 
 \section{Traps}
 \begin{itemize}
@@ -249,8 +302,6 @@ Inputs go through \ct{Promise.resolve}, so plain values are fine. Stage 3:
         \ct{Promise.all}.}
   \trap{\ct{new Promise(async (resolve) \fat{} …)}: a throw inside rejects only the executor's
         own, unhandled promise; the outer one stays pending.}
-  \trap{\ct{Promise.race([work, timeout])} settles, but the work and the timer run on — pass an
-        \ct{AbortSignal} instead.}
 \end{itemize}
 
 \columnbreak
@@ -277,6 +328,10 @@ One failing lane rejects \ct{pool} at once, yet the other lanes keep pulling ite
 \ct{work} a signal and abort it in \ct{catch}.
 
 \section{Cancel with AbortSignal}
+The language has no cancel (TC39 withdrew cancelable promises on 2016-12-15), so
+\ct{Promise.race([work, timeout])} stops only the waiting. The DOM's
+\link{\ct{AbortSignal}}{https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal} is a flag
+the work must choose to check.
 \begin{lstlisting}[style=js]
 const ac = new AbortController();
 const signal = AbortSignal.any([ac.signal, AbortSignal.timeout(5000)]);
@@ -290,26 +345,26 @@ const sleep = (ms, signal) => new Promise((resolve, reject) => {
 });
 \end{lstlisting}
 \begin{itemize}
-  \item \ct{abort(reason)} runs the abort algorithms, then the \ct{abort} event, synchronously.
-        Default reason: an \ct{AbortError} \ct{DOMException}; \ct{timeout()} uses
-        \ct{TimeoutError}; \ct{any()} takes the reason of the signal that fired.
-  \item \ct{any()} cannot unsubscribe from its inputs: remove your own listeners when done.
-        Node: \ct{await setTimeout(ms, v, \{ signal \})} from \ct{node:timers/promises}.
+  \item \ct{abort(reason)} runs the abort algorithms and the \ct{abort} event before it returns.
+        The reason travels — \ct{AbortError} by default, \ct{TimeoutError} from \ct{timeout()} —
+        so a \ct{catch} tells ``too slow'' from ``cancelled''; \ct{any()} keeps the reason of the
+        signal that fired, and cannot unsubscribe from its inputs: remove your listeners.
+        Node ships the \ct{sleep} above in \ct{node:timers/promises}.
 \end{itemize}
 
 \section{Retry with full jitter}
 \begin{lstlisting}[style=js]
 async function retry(fn, { tries = 5, base = 100, cap = 10_000, signal } = {}) {
   for (let i = 0; ; i++) {
-    try { return await fn(signal); }
-    catch (e) {
+    try { return await fn(signal); } catch (e) {
       if (i + 1 >= tries || signal?.aborted) throw e;
-      await sleep(Math.random() * Math.min(cap, base * 2 ** i), signal);
-    } } }
+      await sleep(Math.random() * Math.min(cap, base * 2 ** i), signal); } } }
 \end{lstlisting}
-Full jitter = random(0, min(cap, base·2\textsuperscript{attempt})) — the least work of the
-variants in Brooker's 2015 simulation. Retry only idempotent requests (PUT, DELETE, GET, HEAD, OPTIONS,
-TRACE); honour \ct{Retry-After} on 429 / 503.
+Why random: clients that failed together retry together, and plain exponential backoff keeps
+them in step — bursts and idle gaps. Full jitter, random(0, min(cap,
+base·2\textsuperscript{attempt})), spreads them to a near-constant rate: in a 2015 AWS
+simulation with 100 contending clients it more than halved the calls of un-jittered backoff.
+Retry only idempotent requests; honour \ct{Retry-After} on 429 / 503.
 
 \section{Async iteration and disposal}
 \begin{lstlisting}[style=js]
@@ -326,14 +381,33 @@ const all = await Array.fromAsync(pages('/feed')); // ES2026, one by one
         \ct{yield v} awaits \ct{v} first.
   \item \ct{for await (x of [p1, p2])} also works, one at a time — a \ct{p2} that rejects while
         \ct{p1} is awaited has no handler yet (the first trap).
-  \item \ct{await using r = …} (finished, ES2027): at block exit, also on throw,
-        \ct{r[Symbol.asyncDispose]()} (else \ct{Symbol.dispose}) is awaited, in reverse order;
-        errors combine into \ct{SuppressedError}. \ct{AsyncDisposableStack} holds many.
+  \item \link{\ct{await using r = …}}{https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/await_using}
+        (finished, ES2027): at block exit, also on throw, \ct{r[Symbol.asyncDispose]()} (else
+        \ct{Symbol.dispose}) is awaited, in reverse order; errors combine into
+        \ct{SuppressedError}. \ct{AsyncDisposableStack} holds many.
 \end{itemize}
 
-\section{Remember}
-\textbf{Executor now, handlers later · every \ct{then} is a new promise · a returned native
-promise costs 2 extra jobs · nothing stops unless a signal asks.}
+\begin{htmlonly}
+\section{Further reading}
+\begin{itemize}
+  \item \href{https://v8.dev/blog/fast-async}{Faster async functions and promises} (V8, 2018) —
+        the job counts behind drawing 2, and how Node 8's out-of-spec \texttt{await} order became
+        ES2019's rule
+  \item \href{https://blog.izs.me/2013/08/designing-apis-for-asynchrony/}{Designing APIs for Asynchrony}
+        (2013) — the ``Zalgo'' essay: why an API must be always sync or always async, the rule
+        \texttt{then} obeys
+  \item \href{https://github.com/promises-aplus/promises-spec/issues/94}{Promises/A+ issue 94: Incorporate monads and category theory}
+        (2013) — the argument over whether \texttt{then} should flatten, and why it does
+  \item \href{https://promisesaplus.com/}{Promises/A+} — the short community spec that defined
+        thenables before ES2015; its notes explain why any object with a \texttt{then} is adopted
+  \item \href{https://github.com/tc39/proposal-cancelable-promises}{tc39/proposal-cancelable-promises}
+        — the cancel-token design (\texttt{Promise.withCancelToken}) withdrawn in 2016: the road
+        the language did not take
+  \item \href{https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/}{Exponential Backoff And Jitter}
+        (AWS, 2015) — the simulation and its graphs: the bursts plain backoff leaves, and the
+        flat rate jitter makes
+\end{itemize}
+\end{htmlonly}
 
 \end{multicols}
 
