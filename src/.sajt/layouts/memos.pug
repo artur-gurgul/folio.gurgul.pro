@@ -1,12 +1,13 @@
-//- memos.pug — the list of study sheets (.tex pages), grouped by area.
+//- memos.pug — the list of folios (.tex pages), grouped by area.
 //-
-//- The list is STATIC: every sheet is in the HTML, so it works with
-//- JavaScript off and search engines see it. The filter — search, area,
-//- category, tags — is the SIDEBAR (sidebar.pug): plain links and a GET
-//- form into this page. static/js/memos.js then takes those controls over
-//- and filters the list in place, reads the index Sajt writes at build
-//- (context.memos.index) for every tag, and the text (context.memos.search)
-//- when the search box is used, keeping the state in the URL
+//- The list is the page's CONTENT, so it is in the HTML (frame.pug): every folio
+//- with its title and one-liner, readable with JavaScript off and by a crawler.
+//- What only serves the filter is not in the HTML: static/js/memos.js reads it
+//- from the index Sajt writes at build (context.memos.index) — each folio's
+//- area, labels and tags (the tag links under each folio come from there) — and
+//- the text (context.memos.search) when the search box is used. The filter
+//- itself is the side panel (site.js builds it from nav.json); memos.js takes it
+//- over and filters the list in place, keeping the state in the URL
 //- (?area=swift&tag=actors) so a filter is shareable.
 //-
 //- Use: a page with `layout: memos` (its own text goes above the list).
@@ -20,55 +21,31 @@
   }
   areas.sort((x, y) => x.key.localeCompare(y.key))
   for (const a of areas) a.sheets.sort((x, y) => x.title.localeCompare(y.title))
-  const list = context.memos.list
+  const description = page.file.data.description || "folio — one subject, one A4 page: dense facts and visualisations to remember it by"
 doctype html
 html(lang="en")
   head
-    meta(charset="utf-8")
-    meta(name="viewport" content="width=device-width, initial-scale=1")
-    title= page.title ? page.title + " — folio" : "folio"
-    meta(name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by")
-    link(rel="icon" href="/static/favicon.svg" type="image/svg+xml")
-    meta(name="theme-color" content="#0a5fd6")
-    link(rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin)
-    link(rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin)
-    link(rel="stylesheet" href="/static/css/all.css")
-    link(rel="stylesheet" href="/static/css/hightlight.css")
-    link(rel="stylesheet" href="/static/css/sheet.css")
-  body
-    .container
-      .sidebar
-        include sidebar.pug
-      .scroll
-        .content
-          h1.title= page.title
-          #post
-            != page.file.html
-            .memos(data-index=context.memos.index data-search=context.memos.search data-list=list)
-              p.memos-status
-                span.memos-count #{sheets.length} #{sheets.length === 1 ? "folio" : "folios"}
-                span.memos-active
-              each a in areas
-                section.memos-area(data-area=a.key)
-                  h2= a.key
-                  ul.memos-list
-                    each s in a.sheets
-                      li(data-url=s.url data-area=s.area data-tags=s.tags.join(" ") data-labels=Object.keys(s.labels).map(k => s.labels[k].map(v => k + "=" + v).join(" ")).join(" "))
-                        a.memos-title(href=s.url)= s.title
-                        if s.oneliner
-                          p.memos-oneliner= s.oneliner
-                        if s.tags.length
-                          p.memos-tags
-                            each t, i in s.tags
-                              if i > 0
-                                = " · "
-                              a(href=list + "?tag=" + encodeURIComponent(t))= t
-              p.memos-empty.hidden Nothing matches — clear a filter in the side panel.
-          .footer
-            include footer.pug
-    script(src="/static/js/memos.js")
-    script.
-      if (window.matchMedia('(max-width: 860px)').matches) {
-        var c = document.querySelector('details.contents');
-        if (c) c.open = false;
-      }
+    include head.pug
+    script(src="/static/js/memos.js" defer)
+  body(data-nav=context.generate && context.generate.nav)
+    include frame.pug
+    +frame
+      .content
+        h1.title= page.title
+        #post
+          != page.file.html
+          .memos(data-index=context.memos.index data-search=context.memos.search data-list=context.memos.list)
+            p.memos-status
+              span.memos-count #{sheets.length} #{sheets.length === 1 ? "folio" : "folios"}
+              span.memos-active
+            each a in areas
+              section.memos-area(data-area=a.key)
+                h2= a.key
+                ul.memos-list
+                  each s in a.sheets
+                    li
+                      a.memos-title(href=s.url)= s.title
+                      if s.oneliner
+                        p.memos-oneliner= s.oneliner
+        .footer
+          include footer.pug

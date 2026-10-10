@@ -1,0 +1,26 @@
+//- The <head> every layout shares. The including layout sets `description`
+//- (what a search result shows under the title) first.
+//-
+//- The canonical link names the one URL a page is known by: GitHub Pages also
+//- answers /x without .html, and /index.html as /. nav.json is preloaded so the
+//- side panel (static/js/site.js) is not a second round trip after the page.
+-
+  const canonicalPath = page.finalPath.replace(/(^|\/)index\.html$/, "$1")
+  const canonical = context.site && context.site.url ? context.site.url + canonicalPath : undefined
+  const navJson = context.generate && context.generate.nav
+meta(charset="utf-8")
+meta(name="viewport" content="width=device-width, initial-scale=1")
+title= page.title ? page.title + " — folio" : "folio"
+meta(name="description" content=description)
+if canonical
+  link(rel="canonical" href=canonical)
+link(rel="icon" href="/static/favicon.svg" type="image/svg+xml")
+meta(name="theme-color" content="#0a5fd6")
+link(rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin)
+link(rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin)
+if navJson
+  link(rel="preload" href=navJson as="fetch" crossorigin)
+link(rel="stylesheet" href="/static/css/all.css")
+link(rel="stylesheet" href="/static/css/hightlight.css")
+link(rel="stylesheet" href="/static/css/sheet.css")
+script(src="/static/js/site.js" defer)

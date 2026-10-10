@@ -1,55 +1,43 @@
+//- A page: a folio (a .tex page) or an ordinary one (the front page).
+//-
+//- The HTML carries the page's own content only (frame.pug); the side panel is
+//- built by static/js/site.js from nav.json, after the content is on screen.
+-
+  const here = (context.sheets || []).find(s => s.url === page.finalPath)
+  //- a folio gets the wide layout: its diagrams and tables are drawn for an A4
+  //- width and are unreadable in a 680 px reading column
+  const isFolio = !!here
+  //- what a search result shows under the title: a folio's one-liner
+  const description = (here && here.oneliner) || page.file.data.description || "folio — one subject, one A4 page: dense facts and visualisations to remember it by"
+  //- where a reader can fix or report a folio: its source on GitHub, and the
+  //- fact-correction form pre-filled with the folio's file
+  const repo = "https://github.com/artur-gurgul/folio.gurgul.pro"
+  const srcFile = page.finalPath.replace(/^\//, "").replace(/\.html$/, ".tex")
+  //- discussion lives on GitHub only (owner: no backend, no third party). Each
+  //- folio has ONE thread: its number is the folio's hidden `discussion=<n>`
+  //- label. Until a folio has one, the link starts it (pre-filled, in the
+  //- "Folio comments" category) — then record its number in the folio.
+  const thread = here && here.labels && here.labels.discussion && here.labels.discussion[0]
+  const discussBody = "About the folio: https://folio.gurgul.pro" + page.finalPath + "\n\n"
+  const discussUrl = thread ? repo + "/discussions/" + thread : repo + "/discussions/new?category=folio-comments&title=" + encodeURIComponent(page.title || srcFile) + "&body=" + encodeURIComponent(discussBody)
 doctype html
 html(lang="en")
   head
-    meta(charset="utf-8")
-    meta(name="viewport" content="width=device-width, initial-scale=1")
-    title= page.title ? page.title + " — folio" : "folio"
-    meta(name="description" content="folio — one subject, one A4 page: dense facts and visualisations to remember it by")
-
-    link(rel="icon" href="/static/favicon.svg" type="image/svg+xml")
-    meta(name="theme-color" content="#0a5fd6")
-    link(rel="preload" href="/static/fonts/rajdhani/Rajdhani-Medium.woff2" as="font" type="font/woff2" crossorigin)
-    link(rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin)
-    link(rel="stylesheet" href="/static/css/all.css")
-    link(rel="stylesheet" href="/static/css/hightlight.css")
-    link(rel="stylesheet" href="/static/css/sheet.css")
-  body
-    //- a folio page (a .tex page) gets the wide layout: its diagrams and tables
-    //- are drawn for an A4 width and are unreadable in a 680 px reading column
-    - const isFolio = (context.sheets || []).some(s => s.url === page.finalPath)
-    //- where a reader can fix or report a folio: its source on GitHub, and the
-    //- fact-correction form pre-filled with the folio's file
-    - const repo = "https://github.com/artur-gurgul/folio.gurgul.pro"
-    - const srcFile = page.finalPath.replace(/^\//, "").replace(/\.html$/, ".tex")
-    //- discussion lives on GitHub only (owner: no backend, no third party). Each
-    //- folio has ONE thread: its number is the folio's hidden `discussion=<n>`
-    //- label. Until a folio has one, the link starts it (pre-filled, in the
-    //- "Folio comments" category) — then record its number in the folio.
-    - const here = (context.sheets || []).find(s => s.url === page.finalPath)
-    - const thread = here && here.labels && here.labels.discussion && here.labels.discussion[0]
-    - const discussBody = "About the folio: https://folio.gurgul.pro" + page.finalPath + "\n\n"
-    - const discussUrl = thread ? repo + "/discussions/" + thread : repo + "/discussions/new?category=folio-comments&title=" + encodeURIComponent(page.title || srcFile) + "&body=" + encodeURIComponent(discussBody)
+    include head.pug
+  body(data-nav=context.generate && context.generate.nav data-area=here ? here.area : undefined)
     //- printing a folio prints THE A4 folio: the PDF's page as a vector SVG,
     //- loaded but invisible on screen, the only thing shown in print (sheet.css)
     if isFolio
       img.folio-print(src=page.finalPath.replace(/\.html$/, ".svg") alt="" aria-hidden="true")
-    .container
-      .sidebar
-        include sidebar.pug
-      .scroll
-        .content(class=isFolio ? "folio-page" : undefined)
-          h1.title= page.title
-          #post!= page.file.html
-          if isFolio
-            p.folio-actions
-              a(href=repo + "/issues/new?template=fact-correction.yml&folio=" + encodeURIComponent(srcFile)) Report a problem
-              span.sep  ·
-              a(href=discussUrl) Discuss this folio
-          .footer
-            include footer.pug
-    //- On a phone the contents start folded; on a desktop they are always open.
-    script.
-      if (window.matchMedia('(max-width: 860px)').matches) {
-        var c = document.querySelector('details.contents');
-        if (c) c.open = false;
-      }
+    include frame.pug
+    +frame
+      .content(class=isFolio ? "folio-page" : undefined)
+        h1.title= page.title
+        #post!= page.file.html
+        if isFolio
+          p.folio-actions
+            a(href=repo + "/issues/new?template=fact-correction.yml&folio=" + encodeURIComponent(srcFile)) Report a problem
+            span.sep  ·
+            a(href=discussUrl) Discuss this folio
+        .footer
+          include footer.pug
