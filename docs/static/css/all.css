@@ -1,12 +1,53 @@
-/* Sajt default theme.
+/* folio's theme — dark (owner, 2026-10-10: "probably darker site would be
+ * more pleasing to look at … look nice and professional").
+ *
+ * The idea: the sheet on a dark desk at night. The page is a deep slate, the
+ * side panel the Tango palette's own darkest grey (Aluminium 6, #2e3436), and
+ * the accents are the LIGHT end of the same Tango families the printed folios
+ * use in their dark shades — blue stays blue, green stays green, paper to
+ * screen. The one bright thing is the folios' figures: their SVGs are dark ink
+ * with no background of their own, so each sits on a sheet of paper (sheet.css).
  *
  * Fonts are bundled under static/fonts/ and licensed under the SIL Open Font
  * License 1.1 (see static/fonts/FONTS.md and each family's OFL.txt):
- *   Rajdhani — headings, navigation and text
- *   0xProto  — code
+ *   Atkinson Hyperlegible — reading text (the printed folios' face)
+ *   Rajdhani              — headings, the site's name and the panel's navigation
+ *   0xProto               — code
  */
 
 /* ── fonts ──────────────────────────────────────────────────────────────── */
+
+@font-face {
+	font-family: "Atkinson Hyperlegible";
+	src: url("/static/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Regular.woff2") format("woff2");
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Atkinson Hyperlegible";
+	src: url("/static/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Bold.woff2") format("woff2");
+	font-weight: 700;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Atkinson Hyperlegible";
+	src: url("/static/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Italic.woff2") format("woff2");
+	font-weight: 400;
+	font-style: italic;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Atkinson Hyperlegible";
+	src: url("/static/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-BoldItalic.woff2") format("woff2");
+	font-weight: 700;
+	font-style: italic;
+	font-display: swap;
+}
 
 @font-face {
 	font-family: "Rajdhani";
@@ -67,19 +108,28 @@
 /* ── tokens ─────────────────────────────────────────────────────────────── */
 
 :root {
-	--font-text: "Rajdhani", system-ui, -apple-system, "Segoe UI", sans-serif;
+	/* form controls and scrollbars follow the dark page */
+	color-scheme: dark;
+
+	--font-text: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
+	--font-display: "Rajdhani", system-ui, -apple-system, "Segoe UI", sans-serif;
 	--font-code: "0xProto", ui-monospace, "SFMono-Regular", Menlo, monospace;
 
-	--bg: #fbfbfd;
-	--surface: #ffffff;
-	--sidebar-bg: #f3f5f9;
-	--text: #1c2230;
-	--muted: #5f687a;
-	--border: #e2e6ee;
-	--accent: #0a5fd6;
-	--accent-strong: #0848a3;
-	--accent-soft: rgba(10, 95, 214, 0.08);
-	--code-bg: #f5f7fb;
+	--bg: #24292b;            /* the desk */
+	--bg-deep: #1d2224;       /* code blocks; text on an accent fill */
+	--surface: #2b3133;       /* raised: inputs, chips */
+	--sidebar-bg: #2e3436;    /* Tango Aluminium 6 */
+	--text: #e8e8e4;          /* off-white, never #fff */
+	--heading: #f3f3ef;
+	--muted: #a9ada6;
+	--border: #3b4245;
+	--accent: #729fcf;        /* Tango Sky Blue, the light end: borders, fills */
+	--link: #8fb5e0;          /* link TEXT: #729fcf was 4.29:1 on a tinted box, under AA */
+	--accent-strong: #a4c5ea; /* hover: lighter, on a dark page */
+	--accent-soft: rgba(114, 159, 207, 0.13);
+	--code-bg: #2f3639;
+	--paper: #f7f7f4;         /* the sheet a figure is drawn on */
+	--ink: #1c2230;           /* text on paper */
 
 	--radius: 10px;
 	--sidebar-width: 300px;
@@ -87,8 +137,8 @@
 	   ~149 px (padding, name, tagline, the Filter line), so the place kept
 	   for it before it is built is exactly the place it then takes */
 	--sidebar-phone-height: 9.5rem;
-	/* Rajdhani is condensed: 18px sets ~8.4px per character, so 760px was
-	   ~90 characters a line. 680px is ~80, the top of the comfortable range. */
+	/* Atkinson Hyperlegible at 17px sets ~9px per character: 680px is ~75
+	   characters a line, inside the comfortable range. */
 	--content-width: 680px;
 }
 
@@ -109,13 +159,19 @@ body {
 	margin: 0;
 	background: var(--bg);
 	color: var(--text);
-	/* Medium (500). SemiBold was tried on 2026-09-24 and reverted on
-	   2026-09-25 (owner: "medium font on the website looked better") */
-	/* 1.5, not 1.6: Rajdhani's own line box at 18px is 23px (1.28), with a
-	   tall x-height and short extenders, so 1.6 floats the lines apart. */
-	font: 500 18px/1.5 var(--font-text);
+	/* Atkinson Hyperlegible, as on paper (it has 400 and 700 only). Light
+	   text on a dark page reads best with a little more leading than on
+	   white: 1.6. (Until 2026-10-10 the text was Rajdhani Medium at 18px —
+	   "medium font on the website looked better", 2026-09-25 — and Rajdhani
+	   stays for headings and navigation.) */
+	font: 400 17px/1.6 var(--font-text);
 	-webkit-font-smoothing: antialiased;
 	text-rendering: optimizeLegibility;
+}
+
+::selection {
+	background: rgba(114, 159, 207, 0.35);
+	color: var(--heading);
 }
 
 h1,
@@ -124,11 +180,11 @@ h3,
 h4,
 h5,
 h6 {
-	font-family: var(--font-text);
+	font-family: var(--font-display);
 	font-weight: 700;
 	line-height: 1.2;
 	letter-spacing: 0.01em;
-	color: var(--text);
+	color: var(--heading);
 	margin: 1.6em 0 0.5em;
 }
 
@@ -148,7 +204,7 @@ p {
 }
 
 a {
-	color: var(--accent);
+	color: var(--link);
 	text-decoration: none;
 	text-underline-offset: 0.18em;
 }
@@ -164,7 +220,7 @@ a:focus-visible {
 #post a {
 	text-decoration: underline;
 	text-decoration-thickness: 1px;
-	text-decoration-color: rgba(10, 95, 214, 0.35);
+	text-decoration-color: rgba(114, 159, 207, 0.45);
 	text-underline-offset: 0.2em;
 	overflow-wrap: anywhere;
 }
@@ -221,6 +277,12 @@ svg {
 	background: var(--sidebar-bg);
 	border-right: 1px solid var(--border);
 	padding: 2rem 1.5rem;
+	/* navigation is chrome, not reading text: the display face, with the 1.5
+	   leading Rajdhani was tuned for. Not the body's 1.6 — that made the
+	   folded phone panel ~3 px taller than --sidebar-phone-height, and the
+	   content jumped when it arrived (caught by the "stays still" check) */
+	font-family: var(--font-display);
+	line-height: 1.5;
 }
 
 /* the panel is fixed, so the page makes room for it once it is there
@@ -261,7 +323,7 @@ svg {
 }
 
 .sidebar .intro a:hover {
-	color: var(--accent);
+	color: var(--link);
 	text-decoration: none;
 }
 
@@ -364,7 +426,7 @@ h1.title {
 	   bleeds edge to edge instead; see the media query.) */
 	margin: 0 0 1rem;
 	padding: 2rem 0 0.9rem;
-	background: rgba(251, 251, 253, 0.86);
+	background: rgba(36, 41, 43, 0.88);
 	-webkit-backdrop-filter: saturate(160%) blur(10px);
 	backdrop-filter: saturate(160%) blur(10px);
 	border-bottom: 1px solid var(--border);
@@ -457,16 +519,16 @@ thead th {
 }
 
 tbody tr:nth-child(even) {
-	background: var(--code-bg);
+	background: rgba(255, 255, 255, 0.03);
 }
 
-/* images and diagrams get a quiet frame, as before */
+/* images and diagrams are drawn in dark ink: they sit on paper */
 p:has(> img),
 p:has(> svg) {
 	padding: 1rem;
-	background: var(--surface);
-	border: 1px solid var(--border);
-	border-radius: var(--radius);
+	background: var(--paper);
+	color: var(--ink);
+	border-radius: 4px;
 }
 
 p > img,
@@ -492,8 +554,9 @@ samp {
 	font-size: 0.85em;
 	padding: 0.12em 0.4em;
 	border-radius: 6px;
+	/* a soft ground, no border: on dark, a box round every identifier made
+	   dense folio text look like a form */
 	background: var(--code-bg);
-	border: 1px solid var(--border);
 	white-space: nowrap;
 }
 
@@ -504,7 +567,7 @@ samp {
 	white-space: pre;
 	font-size: 0.82em;
 	line-height: 1.6;
-	background: var(--code-bg);
+	background: var(--bg-deep);
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
 }
@@ -592,7 +655,7 @@ svg g {
 	padding: 0.25em 0.8em;
 	border: 1px solid var(--accent);
 	border-radius: 8px;
-	color: var(--accent);
+	color: var(--link);
 	font-weight: 700;
 	font-size: 0.9rem;
 	text-decoration: none;
@@ -613,10 +676,8 @@ svg g {
 .tex-page {
 	display: block;
 	overflow: hidden;
-	background: #fff;
-	border: 1px solid var(--border);
-	border-radius: var(--radius);
-	box-shadow: 0 1px 2px rgba(28, 34, 48, 0.06), 0 4px 16px rgba(28, 34, 48, 0.06);
+	background: var(--paper);
+	border-radius: 4px;
 	cursor: zoom-in;
 }
 
@@ -637,7 +698,8 @@ svg g {
 .disclaimer {
 	color: var(--muted);
 	font-size: 0.9rem;
-	font-weight: 600;
+	/* 400: Atkinson has no 600, and 700 made the small print shout */
+	font-weight: 400;
 }
 
 .disclaimer p {
@@ -648,7 +710,7 @@ svg g {
 
 @media (max-width: 860px) {
 	body {
-		font-size: 17px;
+		font-size: 16px;
 	}
 
 	.sidebar {
@@ -708,5 +770,33 @@ svg g {
 			linear-gradient(var(--border), var(--border)) 0 calc(var(--sidebar-phone-height) - 1px) / 100% 1px no-repeat,
 			linear-gradient(var(--sidebar-bg), var(--sidebar-bg)) 0 0 / 100% calc(var(--sidebar-phone-height) - 1px) no-repeat,
 			var(--bg);
+	}
+}
+
+/* ── print: ink on white ────────────────────────────────────────────────
+ * A folio prints its own A4 page (sheet.css). Any other page — the front
+ * page, the list — prints its text dark on white, whatever the screen theme,
+ * without the side panel or the place kept for it. */
+@media print {
+	:root {
+		color-scheme: light;
+		--bg: #fff;
+		--surface: #fff;
+		--text: #000;
+		--heading: #000;
+		--muted: #444;
+		--border: #ccc;
+		--accent: #204a87;
+		--code-bg: #f3f3f3;
+		--bg-deep: #f3f3f3;
+	}
+
+	.sidebar {
+		display: none;
+	}
+
+	body {
+		padding: 0 !important;
+		background: #fff !important;
 	}
 }

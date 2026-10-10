@@ -23,7 +23,7 @@
 .folio-actions {
 	margin: 2rem 0 0;
 	font-size: 0.85rem;
-	color: var(--muted, #667);
+	color: var(--muted);
 }
 
 .folio-actions .sep {
@@ -130,8 +130,12 @@
 	font-size: 0.95rem;
 	border: 1px solid var(--border);
 	border-radius: 8px;
-	background: var(--surface);
+	background: var(--bg);
 	color: var(--text);
+}
+
+.side-search::placeholder {
+	color: var(--muted);
 }
 
 .side-search:focus {
@@ -152,15 +156,19 @@ ul.posts.side-areas li span.count {
 }
 
 /* a selected area looks like the current page in the contents (the sidebar
-   carries no tags — owner, 2026-09-29) */
+   carries no tags — owner, 2026-09-29). Dark text on the light accent: white
+   on #729fcf is under 3:1. */
 ul.posts a.on {
 	background: var(--accent);
 	border-left-color: var(--accent);
-	color: #fff;
+	color: var(--bg-deep);
 }
 
-ul.posts a.on .count {
-	color: rgba(255, 255, 255, 0.85);
+/* as specific as the muted count rule above, or that one wins and the count
+   is light grey on the light accent — invisible (1.04:1 on the old light
+   theme). Solid, not translucent: 80 % let the blue through, 4.14:1. */
+ul.posts.side-areas a.on span.count {
+	color: var(--bg-deep);
 }
 
 .side-apply {
@@ -168,7 +176,7 @@ ul.posts a.on .count {
 	padding: 0.35rem 0.9rem;
 	font: inherit;
 	font-weight: 700;
-	color: #fff;
+	color: var(--bg-deep);
 	background: var(--accent);
 	border: 0;
 	border-radius: 8px;
@@ -219,7 +227,7 @@ ul.posts a.on .count {
 }
 
 .sheet-meta li.sheet-label a {
-	border-color: rgba(10, 95, 214, 0.25);
+	border-color: rgba(114, 159, 207, 0.3);
 	color: var(--accent-strong);
 	background: var(--accent-soft);
 }
@@ -251,7 +259,9 @@ ul.posts a.on .count {
 	padding: 0.35rem 0.9rem;
 	border-radius: 8px;
 	background: var(--accent);
-	color: #fff !important;
+	color: var(--bg-deep) !important;
+	font-family: var(--font-display);
+	font-weight: 700;
 	text-decoration: none !important;
 }
 
@@ -308,9 +318,25 @@ ul.posts a.on .count {
 	margin-right: 0.25em;
 }
 
+/* the one bright thing on the dark page: a figure is drawn in dark ink with
+   no background of its own (the PDF's own drawing), so it sits on paper, as
+   it does in the printed folio */
 .sheet-figure {
-	margin: 1rem 0 1.4rem;
+	/* the paper is cut to the figure: a small diagram in a full-width strip
+	   was a bright band of empty paper on the dark page */
+	width: fit-content;
+	max-width: 100%;
+	margin: 1rem auto 1.4rem;
+	padding: 1rem;
 	text-align: center;
+	background: var(--paper);
+	color: var(--ink);
+	border-radius: 4px;
+}
+
+/* a figure drawn across the printed page still fills the column */
+.sheet-figure:has(img.wide) {
+	width: auto;
 }
 
 .sheet-figure img {
@@ -391,13 +417,17 @@ ul.posts a.on .count {
 
 /* ── the paper palette on the web ───────────────────────────────────────── */
 
+/* Paper uses the DARK end of each Tango family on white; the dark page uses
+   the LIGHT end of the same families, so a colour keeps its meaning — blue is
+   still the keyword, green the string — while reading on dark. (Paper:
+   #204a87 #4e9a06 #8f5902 #ce5c00 #b22222.) */
 :root {
-	--c-blue: #204a87;
-	--c-green: #4e9a06;
-	--c-brown: #8f5902;
-	--c-orange: #ce5c00;
-	--c-red: #b22222;
-	--c-grey: #6b7280;
+	--c-blue: #729fcf;
+	--c-green: #8ae234;
+	--c-brown: #e9b96e;
+	--c-orange: #fcaf3e;
+	--c-red: #ef6b6b;
+	--c-grey: #a9ada6;
 }
 
 .c-sheetblue, .c-tangokeyword, .c-navyblue { color: var(--c-blue); }
@@ -408,10 +438,25 @@ ul.posts a.on .count {
 .c-sheetgrey, .c-gray, .c-grey, .c-black { color: var(--c-grey); }
 .c-white { color: inherit; }
 
-.chip.c-sheetblue { background: rgba(32, 74, 135, 0.08); }
-.chip.c-sheetgreen { background: rgba(78, 154, 6, 0.1); }
-.chip.c-sheetorange { background: rgba(206, 92, 0, 0.1); }
-.chip.c-sheetred { background: rgba(178, 34, 34, 0.08); }
+.chip.c-sheetblue { background: rgba(114, 159, 207, 0.14); }
+.chip.c-sheetgreen { background: rgba(138, 226, 52, 0.12); }
+.chip.c-sheetorange { background: rgba(252, 175, 62, 0.13); }
+.chip.c-sheetred { background: rgba(239, 107, 107, 0.13); }
+
+/* the highlight.js theme (hightlight.css, BSD, left as it is) is drawn for
+   white; on the dark page its tokens take the same light Tango shades */
+.hljs { color: var(--text); }
+.hljs-comment, .hljs-quote { color: var(--c-brown); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-name, .hljs-tag, .hljs-attribute { color: var(--c-blue); }
+.hljs-string, .hljs-code, .hljs-meta .hljs-string { color: var(--c-green); }
+.hljs-number, .hljs-title, .hljs-symbol, .hljs-bullet, .hljs-regexp, .hljs-link { color: var(--c-orange); }
+.hljs-type, .hljs-built_in, .hljs-params, .hljs-title.class_, .hljs-class .hljs-title,
+.hljs-variable, .hljs-template-variable, .hljs-attr, .hljs-selector-id, .hljs-selector-class,
+.hljs-section, .hljs-meta { color: #ad7fa8; }   /* Tango Plum, the light end */
+.hljs-subst { color: var(--text); }
+.hljs-addition { background-color: rgba(138, 226, 52, 0.15); }
+.hljs-deletion { background-color: rgba(239, 107, 107, 0.15); }
+.hljs-formula { background-color: var(--code-bg); }
 
 /* ── the memo list ──────────────────────────────────────────────────────── */
 
