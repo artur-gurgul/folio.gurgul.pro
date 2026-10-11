@@ -31,6 +31,17 @@ costs · when to choose it**, plus the pitfall people actually fall into — kep
 next to the thing it belongs to. Comparisons are concrete (what each one
 solves, costs, fits), never ratings.
 
+**Dense means dense with what teaches — and that takes effort.** Free space on
+the page is a research task: find the next thing a practitioner needs (a
+mechanism, a consequence, a worked example), or redesign the layout so the
+central picture gets the room. Never fill it with what is quickest to verify —
+flags, option names, version numbers, dates, origin stories: that is how a page
+turns into documentation or trivia. Sourced is the minimum, not the goal; the
+test for every line is whether a reader understands or remembers more for it.
+Plan the page around one idea before typesetting, and judge the layout by
+reading it at print size, not by how full the columns are (maintainer,
+2026-10-11: "i asked you to put effort to make it dense and well fitted").
+
 **Never on the page:**
 - **History for its own sake** — dates, origin stories, who wrote it first, the
   conference talk it came from. Only when the reader needs it to understand or
