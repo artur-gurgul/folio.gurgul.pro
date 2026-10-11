@@ -1,5 +1,5 @@
 % crashes-symbolication.tex — reading an iOS crash report, exception types, dSYMs, MetricKit.
-% Sources (checked 2026-10-07):
+% Sources (checked 2026-10-07; re-checked 2026-10-11):
 %   developer.apple.com/documentation/xcode/sigtrap_sigill (EXC_BREAKPOINT/SIGTRAP on ARM, SIGILL
 %     on x86_64; Swift runtime traps) · /xcode/sigkill (termination codes: 0x8badf00d watchdog,
 %     0xdead10cc file/SQLite lock during suspension) · /xcode/interpreting-the-json-format-of-a-
@@ -9,6 +9,14 @@
 %     · /diagnosticresult (crash, hang, cpuException, diskWriteException, appLaunch, memoryException)
 %     · /memoryexceptiondiagnostic (memory-limit termination) · /mxmetricmanager (deprecated 27.2;
 %     diagnostics immediately on iOS 15+, metrics at most daily)
+%   (added 2026-10-11) .../xcode/addressing-watchdog-terminations (scene-create/-update; the two CPU
+%     lines; String(contentsOf:) is synchronous networking; SCNetworkReachabilityGetFlags; "office")
+%   .../xcode/building-your-app-to-include-debugging-information (other Xcode/settings → other UUID;
+%     retain the archive) · ld(1) -random_uuid (UUID = hash of the output) · atos(1) -i
+%   .../xcode/adding-identifiable-symbol-names-to-a-crash-report (inlined frames omitted; atos -i)
+%   .../xcode/identifying-high-memory-use-with-jetsam-event-reports (no backtraces of your threads)
+%   .../metrickit/metricmanager (two tasks on one sequence get "a non-deterministic subset")
+%   swiftlang/swift Assert.swift (precondition: "In release mode just trap.")
 % @labels: area=security-build kind=tooling platform=apple topic=debugging,build discussion=251
 % @tags: crash-report, symbolication, dsym, atos, dwarfdump, exc-bad-access, exc-breakpoint, sigabrt, watchdog, jetsam, metrickit, mxdiagnosticpayload
 \documentclass[8pt]{extarticle}
@@ -77,10 +85,10 @@ UUID matches} — no matching dSYM, no names, ever.}
     {\textbf{MyApp.app.dSYM} (from the \emph{archive})\\\texttt{dwarfdump --uuid} →\\\texttt{4C4C44E2-\dots-A91F (arm64)}};
   \draw[->, thick, sheetBlue] ($(ri.east)+(0,-0.22)$) -| ($(dsym.west)+(-0.3,0)$) node[lbl, pos=0.75, left, text=sheetBlue]{UUID\\must\\match} -- (dsym.west);
   \node[box, draw=sheetGreen!70!black, fill=sheetGreen!10, font=\scriptsize, align=left, anchor=north west] (atos) at ($(dsym.south west)+(0,-0.35)$)
-    {\texttt{atos -arch arm64 -o …/DWARF/MyApp}\\\texttt{\ \ -l 0x104598000 0x1045c3a10}\\→ \texttt{CartVM.total() (CartVM.swift:42)}};
+    {\texttt{atos -arch arm64 -o …/DWARF/MyApp}\\\texttt{\ \ -l 0x104598000 -i 0x1045c3a10}\\→ \texttt{CartVM.total() (in MyApp) (CartVM.swift:42)}};
   \draw[flow] (dsym) -- (atos);
   \node[box, draw=sheetRed, fill=sheetRed!7, font=\scriptsize, align=left, anchor=north west] (miss) at ($(atos.south west)+(0,-0.3)$)
-    {UUID differs (rebuilt, lost dSYM) →\\hex offsets forever. Rebuilding the same\\commit gives a \textbf{new} UUID.};
+    {UUID differs (rebuilt, lost dSYM) →\\hex offsets forever. The UUID hashes the\\binary: other Xcode or settings, \textbf{new} UUID.};
 \end{tikzpicture}
 
 \begin{multicols}{2}
@@ -93,7 +101,7 @@ UUID matches} — no matching dSYM, no names, ever.}
 \textbf{Type (signal)} & \textbf{Meaning} & \textbf{First move} \\
 \midrule
 \texttt{EXC\_BAD\_ACCESS} (SIGSEGV / SIGBUS) & bad pointer: freed object, \texttt{unowned}, unsafe pointer; \texttt{KERN\_INVALID\_ADDRESS} & Zombies, ASan \\
-\texttt{EXC\_BREAKPOINT} (SIGTRAP) & Swift trap: \texttt{!} on nil, index out of range, \texttt{fatalError}, \texttt{precondition}, \texttt{as!}, overflow & top app frame; the \emph{Fatal error} msg \\
+\texttt{EXC\_BREAKPOINT} (SIGTRAP) & Swift trap: \texttt{!} on nil, index out of range, \texttt{fatalError}, \texttt{precondition}, \texttt{as!}, overflow & top app frame (Release drops \texttt{precondition}'s message) \\
 \texttt{EXC\_CRASH} (SIGABRT) & \texttt{abort()}: uncaught \texttt{NSException}, C \texttt{assert} & \emph{Last Exception Backtrace} \\
 \texttt{EXC\_CRASH} (SIGKILL) \texttt{0x8badf00d} & watchdog: main thread blocked at launch / resume / suspend & main stack; I/O off main \\
 \texttt{0xdead10cc} & held a file or SQLite lock while being suspended & \texttt{beginBackgroundTask}, release first \\
@@ -108,9 +116,8 @@ no crash log & \textbf{jetsam} (memory limit) & iOS 27 MetricKit \texttt{.memory
   \item \textbf{dSYM} = DWARF debug info split out of the stripped binary
         (\texttt{DEBUG\_INFORMATION\_FORMAT = dwarf-with-dsym}); the archive keeps it.
         Find one by UUID: \texttt{mdfind "com\_apple\_xcode\_dsym\_uuids == <UUID>"}.
-  \item \textbf{Bitcode} is gone (deprecated in Xcode 14): the App Store no longer
-        recompiles, so the \emph{archive's} dSYM is the shipped one. Old bitcode builds
-        needed \emph{Download dSYMs} from App Store Connect.
+  \item \textbf{Bitcode} is gone (Xcode 14): the App Store no longer recompiles, and App
+        Store Connect has no dSYM to download: the \emph{archive's} is your only copy.
   \item Where crashes arrive: Xcode \textbf{Organizer} (opt-in users, delayed,
         auto-symbolicated if the dSYM is known) · Crashlytics/Sentry (upload dSYMs from a
         build phase or CI) · \textbf{MetricKit}.
@@ -125,18 +132,19 @@ no crash log & \textbf{jetsam} (memory limit) & iOS 27 MetricKit \texttt{.memory
 
 \section{Reproduce and triage}
 \begin{itemize}
-  \item Memory crashes: scheme → Diagnostics → \textbf{Zombie Objects} (message to a freed
-        object), \textbf{Address Sanitizer} (use-after-free, overflow),
-        \textbf{Thread Sanitizer} (races; not with ASan), Main Thread Checker.
-  \item Hangs/watchdog: Time Profiler, Hangs instrument. OOM: Allocations, Memory Graph,
-        downsample images, drop caches on memory warning.
+  \item Memory: \textbf{Zombies}, \textbf{ASan}; races: \textbf{TSan} (not with ASan).
+        OOM: Memory Graph; downsample images.
+  \item \texttt{8badf00d}: read \emph{Elapsed application CPU time} (all threads) before
+        the stack. High = working: Time Profiler. Low = \emph{waiting}, e.g. a synchronous
+        network call, even one already off the stack (\texttt{String(contentsOf:)} on a URL,
+        \texttt{SCNetworkReachabilityGetFlags}). Office Wi-Fi never shows it.
 \end{itemize}
 
 \columnbreak
 
 \section{Example}
 \begin{lstlisting}[language=SwiftSheet]
-let metrics = MetricManager()        // iOS 27: hold ONE instance
+let metrics = MetricManager()        // ONE; 2 loops split reports
 Task {
   for await report in metrics.diagnosticReports { // never throws
     switch report.result {
@@ -147,19 +155,16 @@ Task {
   }
 }
 \end{lstlisting}
-\begin{lstlisting}[style=plain]
-dwarfdump --uuid MyApp.app/MyApp MyApp.app.dSYM  # equal?
-\end{lstlisting}
 
 \section{Traps}
 \begin{itemize}
   \trap{Swift traps are \textbf{not} SIGABRT: on arm64 they are \texttt{EXC\_BREAKPOINT
         (SIGTRAP)} (\texttt{EXC\_BAD\_INSTRUCTION}/SIGILL on Intel simulators).}
-  \trap{``No crash log'' $\neq$ no crash — jetsam kills leave only a \texttt{JetsamEvent} log.}
+  \trap{``No crash log'' $\neq$ no crash — a jetsam event report holds every process's memory but \emph{no} backtrace of your threads.}
   \trap{\texttt{0x8badf00d} is not a bug at the top frame: it is where the main thread
         \emph{was} when time ran out.}
-  \trap{Optimized builds inline code: a frame may show the caller's line or skip callees.}
-  \trap{Never trust ``I rebuilt the same commit'' — different UUID, dSYM useless.}
+  \trap{Inlined calls have no frame of their own: \texttt{atos -i} brings them back from the dSYM.}
+  \trap{Never trust ``I rebuilt the same commit'': another Xcode version or build setting means another UUID. Keep every shipped archive.}
 \end{itemize}
 
 \section{Remember}

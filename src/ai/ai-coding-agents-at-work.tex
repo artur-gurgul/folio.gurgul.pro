@@ -3,7 +3,7 @@
 % diff verifiable, rules files (AGENTS.md, CLAUDE.md, Copilot, Codex) and how each is found, the
 % context budget, permission modes + sandboxes, Xcode 26 → 26.3 → 27, MCP up to 2026-07-28, prompt
 % injection + hallucinated packages, and what the measurements (SWE-bench, METR) do and do not show.
-% Sources (checked 2026-10-09):
+% Sources (checked 2026-10-09; re-checked 2026-10-11):
 %   developer.apple.com/documentation/xcode-release-notes: xcode-26-release-notes (ChatGPT + Claude
 %     accounts, any Chat Completions provider by API key, local model on Apple silicon, Coding Tools,
 %     predictive completion runs locally) · xcode-26_3-release-notes (agentic coding: Claude Agent +
@@ -23,9 +23,11 @@
 %     chat prompt overrides) · aaif.io news 2025-12-09 (AAIF founded with MCP, goose, AGENTS.md)
 %   code.claude.com/docs/en: memory (managed → user → project → local; ancestors at launch,
 %     subdirectories on demand; concatenated, not overriding; @import max 4 hops; < 200 lines;
-%     AGENTS.md read when no CLAUDE.md; .claude/rules paths:; "context, not enforced
+%     AGENTS.md read when no CLAUDE.md or CLAUDE.local.md; .claude/rules paths:; "context, not enforced
 %     configuration") · permissions (deny → ask → allow, first match wins; enforced by Claude Code,
-%     not the model) · permission-modes (default = Manual, acceptEdits, plan, auto = classifier,
+%     not the model; a Bash rule matches command text: Bash(git push *) misses git -C . push, Read deny
+%     misses a script that opens the file) · permission-modes (default = Manual; auto = built-in start
+%     mode from v2.1.283; acceptEdits, plan, auto = classifier,
 %     dontAsk, bypassPermissions = containers / VMs only; deny rules hold in every mode) ·
 %     sandboxing (off by default; Seatbelt; bubblewrap + socat; writes = working dir + temp; reads
 %     incl. ~/.ssh; env inherited; network via a proxy whose allow-list starts empty; file tools, MCP
@@ -62,8 +64,10 @@
 %   arxiv.org/abs/2310.06770 (SWE-bench, ICLR 2024: 2 294 issues, 12 Python repos, Claude 2 1.96 %)
 %     · swebench.com/verified (500 human-validated instances) ·
 %     openai.com/index/why-we-no-longer-evaluate-swe-bench-verified (2026-02-23: 138 audited, 59.4 %
-%     flawed tests or descriptions; models reproduce gold patches) — read through the search index,
-%     the page refuses direct fetches
+%     flawed tests or descriptions; models reproduce gold patches) — page text read 2026-10-11 (openai.com
+%     refuses direct fetches): 138 problems "o3 did not consistently solve over 64 independent runs";
+%     "59.4% … material issues in test design and/or problem description"; narrow tests 35.5 %, wide
+%     18.8 %, other 5.1 %; "all frontier models we tested were able to reproduce … the gold patch"
 %   metr.org/blog: 2025-07-10 (16 developers, 246 issues, Cursor + Claude 3.5/3.7; +19 % time, CI +2
 %     to +39; expected -24 %, believed -20 %) · 2026-02-24 (57 developers, 143 repos, 800+ tasks;
 %     -18 % [-38, +9] returning, -4 % [-15, +9] new; negative = faster; unreliable: selection)
@@ -149,13 +153,13 @@ hooks and sandboxes enforce; a test, build or screenshot proves.}
 \textbf{file} & \textbf{read by · how it is found}\\
 \midrule
 \ct{AGENTS.md} & open format; Agentic AI Foundation (Linux Foundation) with MCP and goose since
-  9 Dec 2025; Codex, Copilot, Cursor, Gemini CLI, Jules, Zed … 20+ tools. \textbf{Nearest file
+  9 Dec 2025; read by 20+ tools. \textbf{Nearest file
   wins}; the chat prompt overrides.\\
 Codex & \ct{\tld/.codex}, then repo root $\to$ cwd; \ct{AGENTS.override.md} first; concatenated,
   closer = later; stops at 32\,KiB.\\
 \ct{CLAUDE.md} & Claude Code: managed $\to$ user $\to$ project $\to$ \ct{CLAUDE.local.md}; ancestors
-  at launch, subdirs on demand; \textbf{concatenated, none overrides}; \ct{@import} $\le$4 hops; aim
-  $<$200 lines; \ct{.claude/rules/} by \ct{paths:}; \ct{AGENTS.md} only without \ct{CLAUDE.md}.\\
+  at launch, subdirs on demand; \textbf{concatenated, none overrides}; aim
+  $<$200 lines; \ct{.claude/rules/} by \ct{paths:}; \ct{AGENTS.md} only with no \ct{CLAUDE.md} — and a private \ct{CLAUDE.local.md} counts.\\
 Copilot & \ct{.github/copilot-instructions.md}, \ct{*.instructions.md} (\ct{applyTo}); agent,
   review, CLI: nearest \ct{AGENTS.md} or root \ct{CLAUDE.md}/\ct{GEMINI.md}.\\
 \bottomrule
@@ -180,7 +184,7 @@ Never: edit .pbxproj by hand, read Secrets.xcconfig, push
         command output; quality degrades as it fills. Chroma's ``context rot'' (Jul 2025, 18
         models): accuracy falls with input length even on simple tasks.
   \item \textbf{One task per session}, \ct{/clear} between; after two failed corrections, clear and
-        re-prompt with what you learned. Give exact paths, the full error, a screenshot.
+        re-prompt with what you learned.
   \item Keep exploration out: a \textbf{subagent} reads in its own window and returns a summary;
         skills and path-scoped rules load on demand. APIs newer than the training data (iOS 27
         SDK, Swift 6.4): hand it the docs page.
@@ -206,9 +210,10 @@ Never: edit .pbxproj by hand, read Secrets.xcconfig, push
         Enforced by the client, not the model.
   \item \textbf{Sandbox} (shell only, off by default; Seatbelt, bubblewrap): writes = working dir +
         temp; reads include \ct{\tld/.ssh}, \ct{\tld/.aws} until denied; network via a proxy,
-        allow-list starts empty. File tools, MCP servers, hooks run \textbf{outside} it.
-  \item \textbf{Codex}: sandbox \ct{read-only} · \ct{workspace-write} (no network) ·
-        \ct{danger-full-access} × approvals \ct{on-request} · \ct{never} · granular.
+        allow-list starts empty. File tools, MCP servers, hooks run \textbf{outside} it. Fails
+        \textbf{open} unless \ct{failIfUnavailable}.
+  \item A rule matches \emph{text}: deny \ct{Bash(git push *)} misses \ct{git -C . push}, a \ct{Read}
+        deny misses a script that opens the file. Limits that ignore the text: the sandbox.
 \end{itemize}
 
 \section{Failure modes $\to$ the check}
@@ -239,9 +244,9 @@ Never: edit .pbxproj by hand, read Secrets.xcconfig, push
   \node[lbl, anchor=north west, text width=76mm, align=left, font=\scriptsize] at (0.12,-1.23) {\textbf{27}
     (14 Sep 2026; Swift 6.4; Apple silicon only): \textbf{plan} = editable Markdown, approved before
     it proceeds; + Gemini, Antigravity; agents boot simulators, tap and screenshot, drive the
-    debugger, schemes, build settings, entitlements over MCP; translate String Catalogs; Organizer
-    recommendations; \textbf{plug-ins} = skills + MCP servers + Agent Client Protocol agents;
-    \ct{lldb-mcp}; a filesystem security layer over agents and every process they spawn.};
+    debugger, schemes, build settings, entitlements over MCP;
+    \textbf{plug-ins} = skills + MCP servers + Agent Client Protocol agents;
+    \ct{lldb-mcp}; an opt-in filesystem security layer over agents and every process they spawn.};
 \end{tikzpicture}
 
 \section{MCP — how tools plug in}
@@ -309,8 +314,8 @@ Never: edit .pbxproj by hand, read Secrets.xcconfig, push
         calls it unreliable (developers declined no-AI tasks). \textbf{Felt $\neq$ measured.}
   \item \textbf{SWE-bench} (ICLR 2024): 2\,294 GitHub issues, 12 Python repos; solved = hidden tests
         pass; Claude 2: 1.96\,\%. \textbf{Verified}: 500 human-checked. OpenAI dropped it (23 Feb
-        2026): 59.4\,\% of 138 audited unsolved tasks flawed, models reproduce the fixes\unverified{}
-        — public benchmarks leak into training.
+        2026): of 138 problems o3 did not reliably solve, 59.4\,\% had flawed tests or descriptions
+        (35.5\,\%: tests that demand one implementation); every model tested recalled gold patches.
 \end{itemize}
 
 \textbf{Remember: context in, permissions around, checks out — the agent types, you sign.}
@@ -319,6 +324,6 @@ Never: edit .pbxproj by hand, read Secrets.xcconfig, push
 
 \noindent{\footnotesize\color{sheetGrey}\textit{Related:} \texttt{llm-features-in-apps} ·
 \texttt{xcodebuild-simctl-cli} · \texttt{ci-pipeline-design} · Supply-chain security · Threat
-modelling a mobile feature · XCTest \& Swift Testing · Git in depth}
+modelling · XCTest \& Swift Testing · Git in depth}
 
 \end{document}

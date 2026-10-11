@@ -5,7 +5,7 @@
 % actor vs Mutex (Synchronization).
 % Goes deeper than concurrency (bank-balance reentrancy basics) and
 % swift6-strict-concurrency (Sendable rules, error table) — neither repeated.
-% Sources (checked 2026-10-06):
+% Sources (checked 2026-10-06; re-checked 2026-10-11):
 %   swift-evolution SE-0392 (custom executors: nonisolated var unownedExecutor,
 %     assumeIsolated / preconditionIsolated / assertIsolated) · SE-0433 (Mutex: ~Copyable,
 %     Sendable, withLock) · SE-0420 (#isolation) · SE-0461 (nonsending / @concurrent) —
@@ -13,6 +13,13 @@
 %   developer.apple.com/documentation/dispatch/dispatchserialqueue (conforms to SerialExecutor;
 %     init(label:…) iOS 17.0) · /synchronization/mutex (iOS 18.0, macOS 15.0)
 %   docs.swift.org/swift-book Concurrency chapter (actor isolation, reentrancy at await)
+%   Added 2026-10-11: SE-0306 ("Reentrancy by default all but eliminates the potential for
+%     deadlocks"; the A-calls-B-calls-A example) · SE-0466 (default isolation, Swift 6.2) ·
+%     WWDC25 "Embracing Swift concurrency" (main actor mode "enabled by default for new app
+%     projects created with Xcode 26"; "@concurrent tells Swift to run the function in the
+%     background") · developer.apple.com/documentation/synchronization/mutex (iOS 18.0+,
+%     "non-recursive exclusive access") · developer.apple.com/forums/thread/755979 (DTS: actor on
+%     the delegate's queue) · /avfoundation/avcapturevideodataoutput/setsamplebufferdelegate(_:queue:)
 % @labels: area=swift kind=concept platform=apple topic=concurrency discussion=143
 % @tags: actors, reentrancy, mainactor, global-actor, custom-executor, unownedexecutor, assumeisolated, isolated-parameter, isolation-macro, mutex, unchecked-sendable, request-deduplication
 \documentclass[8pt]{extarticle}
@@ -85,7 +92,7 @@ is serialised with the UI.}
 
 {\footnotesize\itshape\color{sheetBrown} Between two \texttt{await}s an actor
 method is atomic. Across one, assume \textbf{anything} in the actor changed. Swift
-chose reentrancy to rule out deadlocks (an actor awaiting a call back into itself);
+chose reentrancy because it ``all but eliminates'' deadlocks (A awaits B, B calls back into A);
 the price is interleaving.}
 
 \begin{multicols}{2}
@@ -101,13 +108,12 @@ the price is interleaving.}
         the \textbf{cooperative pool} — not a thread of its own.
         \texttt{@MainActor}'s executor is the main thread. \textbf{Blocking}
         inside an actor (semaphore, sync I/O) starves the pool.
-  \item \textbf{Global actor}: \texttt{@globalActor actor DB \{ static let
-        shared = DB() \}}; \texttt{@DB} on types/functions puts \emph{many}
-        declarations in \emph{one} domain. \texttt{MainActor} is one.
+  \item \textbf{Global actor} (\texttt{@globalActor} type with \texttt{static let shared}):
+        \emph{many} declarations, \emph{one} domain. \texttt{MainActor} is one.
   \item \textbf{Custom executor} (SE-0392, 5.9): \texttt{nonisolated var
         unownedExecutor: UnownedSerialExecutor}. Back an actor with a
         \texttt{DispatchSerialQueue} (iOS 17) to share a queue with a delegate
-        API (\texttt{AVCaptureSession}); in its callbacks use
+        API (\texttt{AVCaptureVideoDataOutput}); in its callbacks use
         \texttt{assumeIsolated \{\}} (traps if wrong) —
         \texttt{preconditionIsolated()} / \texttt{assertIsolated()} to check.
   \item \textbf{\texttt{nonisolated}} member: outside the domain, sees only
@@ -118,15 +124,15 @@ the price is interleaving.}
         \textbf{\texttt{\#isolation}} (SE-0420):
         \texttt{isolation: isolated (any Actor)? = \#isolation} = ``run on my
         caller's actor'' — a generic async helper that never hops, so non-Sendable
-        closures are fine.
+        closures are fine. Swift 6.2: \texttt{nonisolated(nonsending)} (SE-0461) gets the
+        same with no parameter; \texttt{@concurrent} forces the hop off the actor.
   \item \textbf{\texttt{@unchecked Sendable} is acceptable} only when \emph{you}
         synchronise every access (lock, \texttt{Mutex}, serial queue) or wrap a
         type documented thread-safe — state the invariant in a comment, run TSan.
   \item \textbf{\texttt{Mutex<State>}} (\texttt{Synchronization},
-        iOS 18\unverified): \texttt{\textasciitilde Copyable}, \texttt{Sendable};
+        iOS 18): \texttt{\textasciitilde Copyable}, \texttt{Sendable}, non-recursive;
         \texttt{withLock \{ \$0 \ldots \}} is synchronous, so the lock can never be
-        held across an \texttt{await}. A \texttt{final class} with
-        \texttt{let m = Mutex(…)} is plain \texttt{Sendable} — no \texttt{@unchecked}.
+        held across an \texttt{await}.
 \end{itemize}
 
 \section{Why not always \texttt{@MainActor}?}
@@ -144,7 +150,6 @@ use for & UI state, view models & cache + network, DB & tiny sections, sync APIs
 
 \section{Other reentrancy fixes}
 \begin{enumerate}
-  \item Mutate \emph{before} suspending (reserve, then \texttt{await}).
   \item \textbf{Re-check} state after every \texttt{await}; never carry a local
         copy of actor state across one.
   \item Move the invariant into a \textbf{synchronous} actor method.
@@ -188,13 +193,12 @@ actor Camera {                     // shares the capture queue
 \begin{itemize}
   \trap{``Actors make it thread-safe'' — they remove \emph{data} races, not
         \emph{logic} races — reentrancy reorders state between awaits.}
-  \trap{Sync callers (delegate callback, \texttt{description}) cannot
-        \texttt{await} an actor: \texttt{Mutex}, or \texttt{assumeIsolated} on the
-        right executor.}
   \trap{Waiting on actor work with a semaphore from the pool can deadlock:
         never block in async code.}
-  \trap{Everything on \texttt{@MainActor} = no parallelism and hangs; one actor
-        per \emph{resource}, not one per screen.}
+  \trap{``Everything on \texttt{@MainActor} hangs'' is dated: Xcode 26 made it the
+        default for new app projects (SE-0466), and an \texttt{await} on main frees
+        main. It hangs on \emph{CPU} work there: make that \texttt{@concurrent}. One
+        actor per \emph{resource}, not one per screen.}
 \end{itemize}
 
 \section{Remember}

@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Swift 6 · strict concurrency &amp; data-race safety — folio</title><meta name="description" content="In the Swift 6 language mode data-race safety is a compile-time guarantee: all mutable state belongs to one isolation domain (an actor, a global actor like @MainActor, or nonisolated); a value crosses domains only if it is Sendable or provably never used again by the sender (region isolation / sending). Swift 5 warnings become errors."><link rel="canonical" href="https://folio.gurgul.pro/swift/swift6-strict-concurrency.html"><link rel="icon" href="/static/favicon.svg?v=6e92094c60" type="image/svg+xml"><meta name="theme-color" content="#24292b"><meta name="color-scheme" content="dark"><link rel="preload" href="/static/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Regular.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/nav.json?v=d83009f1cd" as="fetch" crossorigin><link rel="stylesheet" href="/static/css/all.css?v=ab00b078aa"><link rel="stylesheet" href="/static/css/hightlight.css?v=af1b576646"><link rel="stylesheet" href="/static/css/sheet.css?v=dc1b9e25a8"><script src="/static/js/site.js?v=2b182a126c" defer></script><script src="/static/js/figures.js?v=35892c93fc" defer></script></head><body data-nav="/nav.json?v=d83009f1cd" data-area="swift"><img class="folio-print" src="/swift/swift6-strict-concurrency.svg?v=8df89136f9" alt="" aria-hidden="true"><main class="content folio-page"><h1 class="title">Swift 6 · strict concurrency &amp; data-race safety</h1><div id="post"><article class="sheet">
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Swift 6 · strict concurrency &amp; data-race safety — folio</title><meta name="description" content="In the Swift 6 language mode data-race safety is a compile-time guarantee: all mutable state belongs to one isolation domain (an actor, a global actor like @MainActor, or nonisolated); a value crosses domains only if it is Sendable or provably never used again by the sender (region isolation / sending). Swift 5 warnings become errors."><link rel="canonical" href="https://folio.gurgul.pro/swift/swift6-strict-concurrency.html"><link rel="icon" href="/static/favicon.svg?v=6e92094c60" type="image/svg+xml"><meta name="theme-color" content="#24292b"><meta name="color-scheme" content="dark"><link rel="preload" href="/static/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Regular.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/nav.json?v=d83009f1cd" as="fetch" crossorigin><link rel="stylesheet" href="/static/css/all.css?v=ab00b078aa"><link rel="stylesheet" href="/static/css/hightlight.css?v=af1b576646"><link rel="stylesheet" href="/static/css/sheet.css?v=dc1b9e25a8"><script src="/static/js/site.js?v=2b182a126c" defer></script><script src="/static/js/figures.js?v=35892c93fc" defer></script></head><body data-nav="/nav.json?v=d83009f1cd" data-area="swift"><img class="folio-print" src="/swift/swift6-strict-concurrency.svg?v=6f424f1dee" alt="" aria-hidden="true"><main class="content folio-page"><h1 class="title">Swift 6 · strict concurrency &amp; data-race safety</h1><div id="post"><article class="sheet">
 <p class="sheet-kicker">swift · folio</p>
 <p class="sheet-oneliner"><strong>In one line:</strong> In the <strong>Swift 6 language mode</strong> data-race safety is a
 <strong>compile-time guarantee</strong>: all mutable state belongs to one
@@ -10,13 +10,12 @@ or <code>nonisolated</code>); a value crosses domains only if it is
 <section class="sheet-section">
 <h2>How it works</h2>
 <ul>
-<li><strong>Domains.</strong> Each <code>actor</code> instance = one domain (serial  executor). A <strong>global actor</strong> (<code>@MainActor</code>, or  <code>@globalActor actor DB { static let shared = DB() }</code>) = one  domain shared by everything marked with it. <strong><code>nonisolated</code></strong>  = no domain: sees only <code>let</code>/Sendable state. Crossing = <code>await</code>.</li>
-<li><strong><code>Sendable</code></strong> = marker protocol, safe to share. Implicit for  <strong>non-public</strong> structs/enums with Sendable members;  <strong><code>public</code></strong> ones must declare it. A <code>final class</code>  with only <code>let</code> Sendable stored properties conforms (checked).  Actors and <code>@MainActor</code> classes are Sendable for free.  <code>@unchecked Sendable</code> = “trust me, I lock”.</li>
-<li><strong><code>@Sendable</code> closure</strong> may run concurrently: Sendable  captures only, no captured <code>var</code>. (<code>addTask</code>,  <code>Task.detached</code>.)</li>
+<li><strong>Domains.</strong> Each <code>actor</code> instance = one domain (serial  executor). A <strong>global actor</strong> (<code>@MainActor</code>, or  your own <code>@globalActor</code>) = one  domain shared by everything marked with it. <strong><code>nonisolated</code></strong>  = no domain: sees only <code>let</code>/Sendable state. Crossing = <code>await</code>.</li>
+<li><strong><code>Sendable</code></strong> = marker protocol, safe to share. Implicit for  <strong>non-public</strong> structs/enums with Sendable members;  <strong><code>public</code></strong> ones must declare it (unless <code>@frozen</code>). A <code>final class</code>  with only <code>let</code> Sendable stored properties may declare it (checked).  Actors and <code>@MainActor</code> classes are Sendable for free.  <code>@unchecked Sendable</code> = “trust me, I lock”.</li>
+<li><strong><code>@Sendable</code> closure</strong> may run concurrently: Sendable  captures only, no captured <code>var</code>. <code>Task {}</code>,  <code>Task.detached</code>, <code>addTask</code> take a <strong><code>sending</code></strong> closure instead (6.0): it may capture what the caller gives up.</li>
 <li><strong>Region-based isolation</strong> (SE-0414, Swift 6.0): a  <em>non</em>-Sendable value in a <strong>disconnected region</strong> (fresh, not  reachable from any actor’s state) may be sent if the sender never uses it  again. <strong><code>sending</code></strong> (SE-0430) spells it in a signature:  <code>f(_ x: sending Box)</code>, <code>-&gt; sending T</code>.</li>
-<li><strong>Globals</strong> (SE-0412): a global/<code>static var</code> must be  global-actor isolated, or a Sendable <code>let</code>. Hatch:  <code>nonisolated(unsafe)</code>.</li>
-<li><strong><code>@preconcurrency import M</code></strong> silences Sendable errors for  types of a not-yet-migrated module.</li>
-<li><strong>Swift 6.2 / Xcode 26 “Approachable Concurrency”</strong>:  default isolation <code>MainActor</code> (SE-0466); nonisolated  <code>async</code> runs on the caller’s actor (SE-0461), <code>@concurrent</code>  opts out; isolated conformance <code>extension V: @MainActor P</code> (SE-0470).</li>
+<li><strong><code>@preconcurrency import M</code></strong> turns Sendable errors (Swift 6 mode) into warnings for  types of a not-yet-migrated module.</li>
+<li><strong>Swift 6.2, opt-in per module</strong> (not implied by Swift 6 mode):  default isolation <code>MainActor</code> (SE-0466); with Xcode’s <strong>Approachable Concurrency</strong> setting, nonisolated  <code>async</code> runs on the caller’s actor (SE-0461), <code>@concurrent</code>  opts out; isolated conformance <code>extension V: @MainActor P</code> (SE-0470).</li>
 </ul>
 </section>
 <section class="sheet-section">
@@ -34,7 +33,6 @@ or <code>nonisolated</code>); a value crosses domains only if it is
     <span class="hljs-keyword">await</span> store.take(b)                  <span class="hljs-comment">// OK: sent away...</span>
     <span class="hljs-comment">// b.n = 5   error: &#x27;b&#x27; used after being sent</span>
   }
-  <span class="hljs-keyword">nonisolated</span> <span class="hljs-keyword">func</span> <span class="hljs-title function_">id</span>() -&gt; <span class="hljs-type">String</span> { <span class="hljs-string">&quot;vm&quot;</span> } <span class="hljs-comment">// no hop</span>
 }</code></pre>
 </section>
 <section class="sheet-section">
@@ -42,7 +40,7 @@ or <code>nonisolated</code>); a value crosses domains only if it is
 <ol>
 <li>Swift 5 mode + <strong>complete</strong> checking <em>as warnings</em>:  <code>SWIFT_STRICT_CONCURRENCY = complete</code> (SwiftPM  <code>.enableUpcomingFeature(&quot;StrictConcurrency&quot;)</code>).</li>
 <li><strong>One module at a time</strong>: UI types <code>@MainActor</code>, models as  Sendable values, deps behind <code>@preconcurrency import</code>.</li>
-<li>Flip it: <code>SWIFT_VERSION = 6</code> / <code>swiftLanguageModes: [.v6]</code>;  modules in 5 and 6 mode link together. Then shrink every  <code>@unchecked</code> / <code>(unsafe)</code> / <code>@preconcurrency</code> —  each is debt.</li>
+<li>Flip it: <code>SWIFT_VERSION = 6</code> / <code>swiftLanguageModes: [.v6]</code>;  modules in 5 and 6 mode link together (<code>swift-tools-version: 6.0</code> alone flips <em>every</em> package target to 6). Then shrink every  <code>@unchecked</code> / <code>(unsafe)</code> / <code>@preconcurrency</code> —  each is debt.</li>
 </ol>
 </section>
 <section class="sheet-section">
@@ -50,7 +48,7 @@ or <code>nonisolated</code>); a value crosses domains only if it is
 <figure class="sheet-figure"><img src="swift6-strict-concurrency-fig1.svg?v=58dd13e2d8" width="298" height="120" style="--f:0.475" alt="Swift 6 · strict concurrency &amp; data-race safety — figure 1" loading="lazy"></figure>
 <p><em><span class="c-sheetbrown"> Inside a domain: synchronous. Across:
 <code>await</code> + the value is <strong>Sendable</strong> or a <strong>disconnected
-region</strong>. Non-Sendable state still reachable from its home (red) never leaves.</span></em></p>
+region</strong>.</span></em></p>
 </section>
 <section class="sheet-section">
 <h2>Common errors <span class="math">→</span> fix</h2>
@@ -73,9 +71,9 @@ region</strong>. Non-Sendable state still reachable from its home (red) never le
 <ul>
 <li class="trap"><strong>Swift 6 compiler <span class="math">≠</span> Swift 6 mode</strong>: an old project on the  6.x compiler still builds in Swift 5 mode; mode is per module.</li>
 <li class="trap"><code>@unchecked Sendable</code> over an unlocked <code>var</code> mutes the  checker and <em>keeps</em> the race.</li>
-<li class="trap"><code>Task.detached</code> in an actor is <strong>not</strong> isolated to it;  <code>Task {}</code> inherits the actor.</li>
+<li class="trap"><code>Task.detached</code> in an actor is <strong>not</strong> isolated to it;  <code>Task {}</code> is only if it strongly captures <code>self</code> (SE-0420).</li>
 <li class="trap">Actors stop <em>data</em> races, not <em>logic</em> races — state can  change across any <code>await</code> (reentrancy).</li>
-<li class="trap">A <code>public struct</code> is <strong>not</strong> implicitly Sendable.</li>
+<li class="trap">Runtime too: in Swift 6 mode, isolated code reached off its actor from unchecked code (<code>@objc</code>, <code>@preconcurrency</code> conformances) <strong>crashes instead of racing</strong> (SE-0423).</li>
 </ul>
 </section>
 <section class="sheet-section">

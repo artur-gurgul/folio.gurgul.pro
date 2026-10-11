@@ -3,7 +3,7 @@
 % clones, prefix-stripped environments, the .xcresult, exit codes and their 1980 origin, who an export
 % method lets install, headless signing, SwiftPM on CI, what a simulator really is, which Xcode
 % answers, Xcode Cloud, and what changed from Xcode 13 to Xcode 27.
-% Sources (checked 2026-10-10):
+% Sources (checked 2026-10-10; re-checked 2026-10-11):
 %   keith.github.io/xcode-man-pages (mirror of the Xcode 27.2 beta 2 man pages): xcodebuild.1 (actions;
 %     destination keys, id XOR name, OS = latest by default, generic/ prefix, several -destination =
 %     whole suite on each concurrently, -parallelize-tests-among-destinations,
@@ -19,7 +19,7 @@
 %     the scheme's parameters to it; editable; TestBundlePath, TestHostPath, EnvironmentVariables,
 %     CommandLineArguments) · xcresulttool.1 (get test-results summary / tests, export attachments,
 %     merge) · xcode-select.1 (-s needs sudo, affects all users; DEVELOPER_DIR overrides it; the tool shims
-%     invoke the selected directory's tool) · xcrun.1 (--find; sets SDKROOT for the tools it runs)
+%     invoke the selected directory's tool) · xcrun.1 (--find; sets SDKROOT for the tools it runs, "build tools like xcodebuild or make are exempt")
 %     · altool.1 (--api-key / --api-issuer, private_keys directories) · index page (27.2 beta 2)
 %   tuhs.org/cgi-bin/utree.pl?file=4BSD/usr/include/sysexits.h (the 4BSD copy: "notably delivermail
 %     and the Berkeley network"; "Error numbers begin at EX__BASE to reduce the possibility of
@@ -35,6 +35,15 @@
 %     · developer.apple.com/forums/thread/121458 (accepted answer quotes the man page: 70 for failed
 %     commands; asker sees 65) · github.com/apache/cordova-ios/issues/966 ("xcodebuild: Command
 %     failed with exit code 65")
+%   discuss.bitrise.io/t/phasescriptexecution-copy-fails-cordova-build-failed-error-exit-status-65/13664
+%     (2020: "** BUILD FAILED **" … "xcodebuild: Command failed with exit code 65") ·
+%     github.com/fastlane/fastlane/issues/29553 (Xcode 16.3, 2025: "Unable to find a destination matching
+%     the provided destination specifier" … "Exit status: 70") · developer.apple.com/forums/thread/766079
+%     (Xcode Cloud, Oct 2024: export archive "Command exited with non-zero exit-code: 70")
+%   secretlab.games/ipad-day-941-am (2010: "All promotional images of the iPhone show the time as 9:42 AM";
+%     Forstall: 42 minutes for the iPhone, 41 for the iPad) · developer.apple.com/forums/thread/690647
+%     (Xcode 13 notes: build numbers synced "in a staged copy", "doesn't modify … your archive") ·
+%     xcode-27 release notes (170335449: cross-framework assertion failures are a warning by default)
 %   developer.apple.com/documentation/xcode-release-notes: xcode-13 (test repetition: three modes,
 %     -test-iterations with -retry-tests-on-failure / -run-tests-until-failure; xcodebuild
 %     authenticates with App Store Connect API keys — authenticationKeyPath / ID / IssuerID — for
@@ -153,7 +162,7 @@ Xcode} answers.}
   \node[box, draw=sheetGreen!70!black, fill=sheetGreen!10, font=\tiny, text width=16mm, minimum height=10mm] (asc) at (14.05,2.78) {\textbf{App Store Connect}\\processing\\$\rightarrow$ TestFlight\\$\rightarrow$ review};
   \draw[flow] (src) -- (a1); \draw[flow] (a1) -- (xa); \draw[flow] (xa) -- (a2); \draw[flow] (a2) -- (ipa);
   \draw[hot] (ipa) -- node[lbl, above]{upload} (asc);
-  \node[lbl, anchor=north west] at (2.0,2.2) {\textcolor{sheetRed}{E} = ExportOptions.plist; \ct{destination=upload} exports \emph{and} uploads};
+  \node[lbl, anchor=north west] at (2.0,2.2) {\textcolor{sheetRed}{E} = ExportOptions.plist; \ct{destination=upload} uploads instead of exporting};
   \node[lbl, anchor=north east] at (14.9,2.2) {or \ct{altool \dd upload-package}, Transporter, the ASC API};
   % ---- test path: build once, shard, merge ----
   \node[ttl] at (-0.15,1.75) {Tests — build once, enumerate, shard across Macs, merge the results};
@@ -201,7 +210,7 @@ arguments (Xcode 26+: even \emph{disabled} plan configurations). Any Mac runs it
   }
   \node[lbl, anchor=west, align=left] at (5.15,0) {a class per runner:\\class \ct{setUp} once;\\time ≥ slowest class};
 \end{tikzpicture}\par
-Clones carry the original's name. Several \ct{-destination}s each run the \emph{whole} suite;
+Several \ct{-destination}s each run the \emph{whole} suite; with parallel testing on,
 \ct{-parallelize-tests-among-destinations} splits it.
 
 \hd{One prefix, stripped on the way in}
@@ -217,8 +226,7 @@ whole device — in a 2019 experiment, enough to give an iPhone 8 simulator Face
 
 \hd{The \ct{.xcresult}: query it, never parse it}
 \link{\ct{xcresulttool}}{https://keith.github.io/xcode-man-pages/xcresulttool.1.html} speaks JSON;
-\ct{help <command>} prints the schema. Xcode 16 swapped its commands: \ct{get object} needs
-\ct{\dd legacy}, and parsers built on it broke.
+\ct{help <command>} prints the schema.
 
 \hd{What changed, Xcode 13 $\rightarrow$ 27}
 \noindent\begin{tikzpicture}[sheet]
@@ -256,13 +264,16 @@ whole device — in a 2019 experiment, enough to give an iPhone 8 simulator Face
 \link{sysexits(3)}{https://man.freebsd.org/cgi/man.cgi?query=sysexits&sektion=3}:
 \ct{sysexits.h}, first shipped in 4BSD (1980), written for delivermail — sendmail's predecessor — and
 the Berkeley network, starting at 64 ``to reduce the possibility of clashing''. Logs after
-\ct{** TEST FAILED **} show 65: branch on non-zero, never on a number.
+\ct{** BUILD}/\ct{TEST FAILED **} show 65, an unmatched \ct{-destination} 70: branch on non-zero,
+never on a number.
 
 \hd{Traps}
 \begin{itemize}
   \trap{\ct{xcodebuild … | xcbeautify} without \link{\ct{set -o pipefail}}{https://www.gnu.org/software/bash/manual/html_node/Pipelines.html}:
         the pipeline returns the formatter's status — a red build reports green.}
   \trap{No \ct{OS=} is \ct{latest}: a new runner image moves the iOS version. Pin \ct{OS=} or \ct{id=}.}
+  \trap{Xcode 27: \ct{XCTAssert} inside a Swift Testing test (or \ct{\#expect} in XCTest) only warns,
+        unless the test plan's interoperability setting says otherwise.}
 \end{itemize}
 
 \columnbreak
@@ -277,15 +288,14 @@ the Berkeley network, starting at 64 ``to reduce the possibility of clashing''. 
 \end{tikzpicture}\par
 The 100 is per product family per membership year; \link{disabling a device does not give the slot
 back}{https://developer.apple.com/help/account/devices/devices-overview/}, only renewal does.
-\ct{manageAppVersionAndBuildNumber}: Xcode rewrites every build number in the archive — off when CI
-owns it. \ct{testFlightInternalTestingOnly}: never submittable. Manual signing:
+\ct{manageAppVersionAndBuildNumber}: on upload Xcode raises a used build number and syncs the extensions', in a staged copy, never the archive — off when CI
+owns it. \ct{testFlightInternalTestingOnly}: internal TestFlight only. Manual signing:
 \ct{provisioningProfiles} \{bundle id $\rightarrow$ profile\}.
 
 \hd{Signing with nobody at the keyboard}
 \ct{-allowProvisioningUpdates} lets \ct{xcodebuild} make certificates and fetch profiles itself; an
 App Store Connect API key (key path, key ID, issuer ID) stands in for a logged-in account and also
-uploads. \ct{altool} finds \ct{AuthKey\_<id>.p8} in \ct{./private\_keys},
-\ct{\textasciitilde/.appstoreconnect/private\_keys} and two more.
+uploads.
 
 \hd{Swift packages, plugins, macros on CI}
 \begin{itemize}
@@ -317,7 +327,7 @@ home of its own. CPU and memory limits are not simulated: on a Mac with a teraby
 What a phone will not let a script do, a simulator will: \ct{privacy … grant} (no alert to tap),
 \ct{push} an \ct{.apns} file, \ct{keychain … add-root-cert} (trust your proxy),
 \ct{status\_bar … override \dd time 9:41}. Why 9:41: Apple designed keynotes so the reveal lands about
-40 minutes in and the screen matches the audience's watches — the 2007 iPhone appeared at 9:41. Script
+40 minutes in and the screen matches the audience's watches — the 2007 iPhone showed 9:42, the 2010 iPad 9:41. Script
 with UDIDs; \ct{booted} = the one booted device. Phones: \ct{devicectl} (CoreDevice, iOS 17+),
 \ct{\dd device} by name, UDID or ECID; parse \ct{\dd json-output}, not text.
 
@@ -331,7 +341,7 @@ with UDIDs; \ct{booted} = the one booted device. Phones: \ct{devicectl} (CoreDev
   \draw[flow] (sh.east) -- node[lbl, below, pos=0.55]{else} (xs.west);
   \draw[flow] (dv.east) -- (tl.west); \draw[flow] (xs.east) -- (tl.west);
 \end{tikzpicture}\par
-\ct{xcrun \dd find T} resolves without running; \ct{xcrun} sets \ct{SDKROOT} for what it starts.
+\ct{xcrun \dd find T} resolves without running; \ct{xcrun \dd sdk S} exports \ct{SDKROOT} to the tools it starts, but not to \ct{xcodebuild} or \ct{make}.
 \ct{xcodes} + \ct{.xcode-version} pin the Xcode. Fresh Mac: \ct{-runFirstLaunch};
 \ct{-downloadPlatform iOS -exportPath D} once, \ct{-importPlatform} on every Mac.
 

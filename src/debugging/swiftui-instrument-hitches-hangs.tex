@@ -6,7 +6,7 @@
 % identity + dependency rules (swiftui/swiftui-performance-identity.tex), the Instruments tool
 % map (ios-swift/instruments-performance.tex), MetricKit + hang rate in depth
 % (debugging/production-performance-metrics.tex), main-actor fixes (debugging/concurrency-debugging.tex).
-% Sources (checked 2026-10-07):
+% Sources (checked 2026-10-07; re-checked 2026-10-11):
 %   developer.apple.com/videos/play/wwdc2025/306 "Optimize SwiftUI performance with Instruments"
 %     (template = SwiftUI instrument + Time Profiler + Hangs + Hitches; the four lanes; orange/red
 %     = likelihood; Command-I builds Release; Show Updates -> Set Inspection Range and Zoom -> Time
@@ -153,7 +153,7 @@ thread.}
 \begin{itemize}
   \item Contents: the next-generation \textbf{SwiftUI} instrument + \textbf{Time Profiler} +
         \textbf{Hangs} + \textbf{Hitches}. Needs Xcode 26 and a device OS that records SwiftUI
-        traces (Instruments 27: iOS 17+ devices only); Command-I (Profile) builds
+        traces; any Instruments 27 recording needs iOS 17+. Command-I (Profile) builds
         \textbf{Release}. The old \emph{View Body} / \emph{View Properties} instruments:
         deprecated, still in the library.
 \end{itemize}
@@ -264,8 +264,8 @@ blocked & waiting in a syscall (\texttt{mach\_msg2\_trap}), on a lock or semapho
 \section{Before release}
 \begin{itemize}
   \item Settings $\to$ Developer $\to$ \textbf{Hang Detection} (development + TestFlight builds,
-        from 250~ms) $\to$ hang log + tailspin. \textbf{Animation Hitches}: redesigned in 26
-        (multiple displays, app update intervals, far less data); visionOS 27 in Xcode 27.
+        from 250~ms) $\to$ hang log + tailspin. Hang reporting times only the main run
+        loop: event delivery + render add 10--50~ms more to what the user feels.
 \end{itemize}
 
 \section{Traps}
@@ -277,9 +277,8 @@ blocked & waiting in a syscall (\texttt{mach\_msg2\_trap}), on a lock or semapho
 
 \end{multicols}
 
-\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rendering pipeline (commit / render
-hitches, frame budget) · SwiftUI performance \& identity · SwiftUI Environment \& Preferences ·
-Instruments \& performance · performance in production (hang rate, MetricKit) · debugging Swift
-Concurrency (blocked main actor) · logging, signposts \& power}
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} rendering pipeline · SwiftUI performance \&
+identity · Instruments \& performance · performance in production · debugging Swift Concurrency ·
+logging, signposts \& power}
 
 \end{document}
