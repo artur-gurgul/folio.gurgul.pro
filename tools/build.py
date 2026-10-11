@@ -134,6 +134,23 @@ def main() -> int:
     if missing:
         return fail("could not point LaTeX source at GitHub:\n  " + "\n  ".join(missing), 1)
 
+    # No "In one line:" label on the web either. Maintainer, 2026-10-11: text that brings no
+    # value, like "In one line:", goes — the sheet style dropped it on paper, but Sajt's HTML
+    # renderer writes the label itself. Take it out, and fail if any page still carries it, so a
+    # change in Sajt's markup cannot bring it back unnoticed.
+    label = '<p class="sheet-oneliner"><strong>In one line:</strong> '
+    left = []
+    for page in sorted(OUT.rglob("*.html")):
+        html = page.read_text()
+        if label in html:
+            html = html.replace(label, '<p class="sheet-oneliner">')
+            page.write_text(html)
+        if "In one line:" in html:
+            left.append(str(page.relative_to(OUT)))
+    if left:
+        return fail("\"In one line:\" is still on a page (Sajt's one-liner markup changed?):\n  "
+                    + "\n  ".join(left[:20]), 1)
+
     # The site is dark; a figure is drawn for paper. Recolour every figure for the page
     # (the print SVG of each folio stays as it is) — tools/dark-figures.py.
     dark = subprocess.run([sys.executable, str(ROOT / "tools" / "dark-figures.py"), str(OUT)])
