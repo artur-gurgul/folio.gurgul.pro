@@ -1,7 +1,7 @@
 % ios-client-system-design.tex — designing an iOS client end to end: requirements, layered
 % client, offline-first + sync, pagination, image loading, flags, modules, observability —
 % worked on a feed.
-% Sources (checked 2026-10-06):
+% Sources (checked 2026-10-06; re-checked 2026-10-11):
 %   developer.apple.com/documentation/foundation/nscache · .../imageio (downsampling: WWDC18 219
 %     "Image and Graphics Best Practices") · .../uikit/uicollectionviewdatasourceprefetching
 %   developer.apple.com/documentation/network/nwpathmonitor · .../backgroundtasks/bgapprefreshtask
@@ -9,6 +9,14 @@
 %   datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header (Idempotency-Key)
 %   RFC 9110 §13.1.1 If-Match, §15.5.13 412 Precondition Failed
 %   frame budgets 16.7 ms @ 60 Hz / 8.3 ms @ 120 Hz (1000 / Hz)
+%   (added 2026-10-11) developer.apple.com/videos/play/wwdc2018/416 (2048×1536 JPEG, 590 KB on disk,
+%     "4 bytes per pixel"; the talk rounds to "about 10 megabytes", the product is 12,582,912 B)
+%   rfc-editor.org/rfc/rfc9700 §4.14.2 (rotation: an invalidated token makes the server "revoke the
+%     active refresh token") · swift-evolution 0306-actors (reentrancy / interleaving)
+%   developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app
+%     ("two or three per hour") · .../backgroundtasks/bgtaskrequest/earliestbegindate
+%   swiftlang/swift stdlib/public/core/Codable.swift (Array decodes each element with try)
+%   Idempotency-Key: draft-07, 2025-10-15, expired Internet-Draft (UUID "RECOMMENDED")
 % @labels: area=architecture kind=architecture platform=ios topic=system-design,architecture,networking discussion=83
 % @tags: ios-system-design, feed, offline-first, cursor-pagination, outbox, idempotency-key, optimistic-update, conflict-resolution, image-cache, downsampling, feature-flags
 \documentclass[8pt]{extarticle}
@@ -109,10 +117,8 @@ truth}; the network \emph{syncs into} it.}
         $\to$ \texttt{\{items, nextCursor\}}; items carry multi-resolution image URLs
         and \texttt{viewerHasLiked}. Normalize: entities by \texttt{id} in one store,
         the feed = ordered \emph{id list} $\to$ one like updates every screen.
-  \item \textbf{3 Layers.} View $\to$ ViewModel (UI state enum, no UIKit) $\to$
-        use cases $\to$ \textbf{Repository} (hides remote vs local) $\to$ data sources.
-        Dependencies point inward; the domain owns the repository protocol (DIP)
-        $\to$ fake repo in tests.
+  \item \textbf{3 Layers} (figure): the \textbf{Repository} hides remote vs local;
+        dependencies point inward; the domain owns its protocol (DIP) $\to$ fake repo in tests.
   \item \textbf{4 Data flow.} \emph{Read}: observe local store (1) $\to$ fetch page
         (2) $\to$ upsert + dedup (3) $\to$ store emits (4). \emph{Write}: optimistic
         store write $\to$ outbox $\to$ server $\to$ ack or \textbf{revert}.
@@ -120,22 +126,22 @@ truth}; the network \emph{syncs into} it.}
         Retries need \textbf{idempotency} (client UUID key; ``set'' not ``increment'').
         Backoff + jitter; per-item success. Deletes = \textbf{tombstones}. Conflicts —
         \emph{name the policy}: server-wins, LWW (loses edits; clock skew), version/ETag
-        + \texttt{If-Match} (412), field merge, CRDT. Triggers: foreground,
-        \texttt{NWPathMonitor}, \texttt{BGAppRefreshTask}, silent push.
+        + \texttt{If-Match} (412), field merge, CRDT. Triggers: foreground (the only sure one),
+        \texttt{NWPathMonitor}; best effort: \texttt{BGAppRefreshTask}, silent push ($\le$ 2--3/h).
   \item \textbf{Pagination.} \emph{Cursor/keyset}: stable under inserts, opaque,
-        resumable. \emph{Offset}: new posts at the top shift pages $\to$ duplicates and
+        resumable. \emph{Offset}: new posts at the top push seen rows to the next page (duplicates), deletes leave
         gaps. Prefetch the next page N rows before the end.
-  \item \textbf{Images.} Memory: \texttt{NSCache} of \emph{decoded, downsampled}
-        images (cost limit, purged under pressure). Disk: size-bounded LRU of
+  \item \textbf{Images.} Decoded = w$\times$h$\times$4 bytes, whatever the file (590 KB 2048$\times$1536 JPEG $\to$ 12 MB). Memory: \texttt{NSCache} of \emph{decoded, downsampled}
+        images (cost = those bytes; purged under pressure). Disk: size-bounded LRU of
         bytes. Downsample with ImageIO to points × scale, off main; coalesce
         duplicate URL requests; \textbf{cancel on reuse} and check the cell still
         shows the same id; prefetch via \texttt{prefetchItemsAt}.
   \item \textbf{Real-time.} WebSocket deltas for \emph{visible} posts in the
         foreground; APNs when backgrounded. Server count \emph{replaces}, never adds to,
         the optimistic one.
-  \item \textbf{Platform.} SPM feature + Core modules (build time, boundaries).
-        Flags: cached remote config, safe default. Token in \textbf{Keychain}; 401
-        $\to$ refresh + replay.
+  \item \textbf{Auth.} Token in \textbf{Keychain}; 401 $\to$ \emph{one} shared refresh,
+        then replay. Under rotation a second, parallel refresh presents a spent token,
+        which RFC 9700 treats as theft: the server revokes the live token too.
 \end{itemize}
 
 \columnbreak
@@ -166,8 +172,6 @@ actor FeedRepository: FeedRepositoryProtocol { // init omitted
 \midrule
 SwiftData · GRDB · files & queries + migrations · SQL control · feed cache only \\
 SwiftUI \texttt{List} vs UIKit CV & velocity vs fine reuse / prefetch control \\
-WebSocket · polling · APNs & live in foreground · fallback · app closed \\
-Nuke / Kingfisher & use one — but justify each layer \\
 \bottomrule
 \end{tabular}}
 
@@ -176,14 +180,14 @@ Nuke / Kingfisher & use one — but justify each layer \\
   \trap{Network as source of truth $\to$ blank screen offline and on every cold launch.}
   \trap{\textbf{Offset} pagination on a live feed; loading only at the bottom.}
   \trap{Retrying a POST with no idempotency key $\to$ double like.}
+  \trap{\texttt{actor} $\neq$ one at a time: while \texttt{loadNext()} waits at \texttt{await}, a second call reads the same cursor and fetches the page again. Keep one in-flight \texttt{Task}.}
   \trap{Caching only bytes (decode per display); full-res decode on main.}
   \trap{``It just syncs'' — name the conflict policy and how you \emph{detect}
         a conflict (version, not clock).}
-  \trap{\texttt{try!} decoding the page — one bad item kills the feed.}
+  \trap{One bad item fails a whole \texttt{[Post]} decode, \texttt{try!} or not: decode per item, log and drop it.}
 \end{itemize}
 
 \section{Remember}
-\textbf{Requirements $\to$ API $\to$ layers $\to$ flow $\to$ hard parts $\to$ trade-offs.}
 Local is truth · cursor · outbox + key · decoded RAM + disk LRU.
 
 

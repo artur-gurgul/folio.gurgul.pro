@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Actors · reentrancy · isolation — and why not just @MainActor? — folio</title><meta name="description" content="An actor is a reference type whose mutable state is guarded by a serial executor: one task at a time runs its isolated code, outsiders await. It is reentrant — at every await inside it other calls may run, so a check made before a suspension can be stale after. @MainActor is one global actor on the main thread: everything there is serialised with the UI."><link rel="canonical" href="https://folio.gurgul.pro/swift/actors-reentrancy-isolation.html"><link rel="icon" href="/static/favicon.svg?v=6e92094c60" type="image/svg+xml"><meta name="theme-color" content="#24292b"><meta name="color-scheme" content="dark"><link rel="preload" href="/static/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Regular.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/nav.json?v=d83009f1cd" as="fetch" crossorigin><link rel="stylesheet" href="/static/css/all.css?v=ab00b078aa"><link rel="stylesheet" href="/static/css/hightlight.css?v=af1b576646"><link rel="stylesheet" href="/static/css/sheet.css?v=dc1b9e25a8"><script src="/static/js/site.js?v=2b182a126c" defer></script><script src="/static/js/figures.js?v=35892c93fc" defer></script></head><body data-nav="/nav.json?v=d83009f1cd" data-area="swift"><img class="folio-print" src="/swift/actors-reentrancy-isolation.svg?v=34594e70f5" alt="" aria-hidden="true"><main class="content folio-page"><h1 class="title">Actors · reentrancy · isolation — and why not just @MainActor?</h1><div id="post"><article class="sheet">
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Actors · reentrancy · isolation — and why not just @MainActor? — folio</title><meta name="description" content="An actor is a reference type whose mutable state is guarded by a serial executor: one task at a time runs its isolated code, outsiders await. It is reentrant — at every await inside it other calls may run, so a check made before a suspension can be stale after. @MainActor is one global actor on the main thread: everything there is serialised with the UI."><link rel="canonical" href="https://folio.gurgul.pro/swift/actors-reentrancy-isolation.html"><link rel="icon" href="/static/favicon.svg?v=6e92094c60" type="image/svg+xml"><meta name="theme-color" content="#24292b"><meta name="color-scheme" content="dark"><link rel="preload" href="/static/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Regular.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/nav.json?v=d83009f1cd" as="fetch" crossorigin><link rel="stylesheet" href="/static/css/all.css?v=ab00b078aa"><link rel="stylesheet" href="/static/css/hightlight.css?v=af1b576646"><link rel="stylesheet" href="/static/css/sheet.css?v=dc1b9e25a8"><script src="/static/js/site.js?v=2b182a126c" defer></script><script src="/static/js/figures.js?v=35892c93fc" defer></script></head><body data-nav="/nav.json?v=d83009f1cd" data-area="swift"><img class="folio-print" src="/swift/actors-reentrancy-isolation.svg?v=959baffc2e" alt="" aria-hidden="true"><main class="content folio-page"><h1 class="title">Actors · reentrancy · isolation — and why not just @MainActor?</h1><div id="post"><article class="sheet">
 <p class="sheet-kicker">swift · folio</p>
 <p class="sheet-oneliner"><strong>In one line:</strong> An <strong>actor</strong> is a reference type whose mutable state is guarded by a
 <strong>serial executor</strong>: one task at a time runs its isolated code, outsiders
@@ -11,7 +11,7 @@ is serialised with the UI.</p>
 <figure class="sheet-figure"><img src="actors-reentrancy-isolation-fig1.svg?v=37e4e2a41b" width="680" height="90" style="--f:1.000" class="wide" alt="Actors · reentrancy · isolation — and why not just @MainActor? — figure 1" loading="lazy"></figure>
 <p><em><span class="c-sheetbrown"> Between two <code>await</code>s an actor
 method is atomic. Across one, assume <strong>anything</strong> in the actor changed. Swift
-chose reentrancy to rule out deadlocks (an actor awaiting a call back into itself);
+chose reentrancy because it “all but eliminates” deadlocks (A awaits B, B calls back into A);
 the price is interleaving.</span></em></p>
 </section>
 <section class="sheet-section">
@@ -19,14 +19,13 @@ the price is interleaving.</span></em></p>
 <ul>
 <li><strong>Actor</strong>: reference type, no inheritance, always <code>Sendable</code>.  Inside: synchronous access to <code>self</code>. Outside: <code>await</code> even  for a sync method (a possible hop). Arguments and results crossing the  boundary must be <code>Sendable</code> (or <code>sending</code>).</li>
 <li><strong>Executor</strong>: a default actor is a serial executor whose jobs run on  the <strong>cooperative pool</strong> — not a thread of its own.  <code>@MainActor</code>’s executor is the main thread. <strong>Blocking</strong>  inside an actor (semaphore, sync I/O) starves the pool.</li>
-<li><strong>Global actor</strong>: <code>@globalActor actor DB { static let
- shared = DB() }</code>; <code>@DB</code> on types/functions puts <em>many</em>  declarations in <em>one</em> domain. <code>MainActor</code> is one.</li>
+<li><strong>Global actor</strong> (<code>@globalActor</code> type with <code>static let shared</code>):  <em>many</em> declarations, <em>one</em> domain. <code>MainActor</code> is one.</li>
 <li><strong>Custom executor</strong> (SE-0392, 5.9): <code>nonisolated var
- unownedExecutor: UnownedSerialExecutor</code>. Back an actor with a  <code>DispatchSerialQueue</code> (iOS 17) to share a queue with a delegate  API (<code>AVCaptureSession</code>); in its callbacks use  <code>assumeIsolated {}</code> (traps if wrong) —  <code>preconditionIsolated()</code> / <code>assertIsolated()</code> to check.</li>
+ unownedExecutor: UnownedSerialExecutor</code>. Back an actor with a  <code>DispatchSerialQueue</code> (iOS 17) to share a queue with a delegate  API (<code>AVCaptureVideoDataOutput</code>); in its callbacks use  <code>assumeIsolated {}</code> (traps if wrong) —  <code>preconditionIsolated()</code> / <code>assertIsolated()</code> to check.</li>
 <li><strong><code>nonisolated</code></strong> member: outside the domain, sees only  <code>let</code> Sendable state; needed for sync protocol requirements  (<code>Hashable</code>, <code>description</code>).</li>
-<li><strong><code>isolated</code> parameter</strong>: <code>func f(_ b: isolated Bank)</code>  runs on <code>b</code>’s executor, touching its state synchronously.  <strong><code>#isolation</code></strong> (SE-0420):  <code>isolation: isolated (any Actor)? = #isolation</code> = “run on my  caller’s actor” — a generic async helper that never hops, so non-Sendable  closures are fine.</li>
+<li><strong><code>isolated</code> parameter</strong>: <code>func f(_ b: isolated Bank)</code>  runs on <code>b</code>’s executor, touching its state synchronously.  <strong><code>#isolation</code></strong> (SE-0420):  <code>isolation: isolated (any Actor)? = #isolation</code> = “run on my  caller’s actor” — a generic async helper that never hops, so non-Sendable  closures are fine. Swift 6.2: <code>nonisolated(nonsending)</code> (SE-0461) gets the  same with no parameter; <code>@concurrent</code> forces the hop off the actor.</li>
 <li><strong><code>@unchecked Sendable</code> is acceptable</strong> only when <em>you</em>  synchronise every access (lock, <code>Mutex</code>, serial queue) or wrap a  type documented thread-safe — state the invariant in a comment, run TSan.</li>
-<li><strong><code>Mutex&lt;State&gt;</code></strong> (<code>Synchronization</code>,  iOS 18<span class="unverified">(unverified)</span>): <code>~Copyable</code>, <code>Sendable</code>;  <code>withLock { $0 …}</code> is synchronous, so the lock can never be  held across an <code>await</code>. A <code>final class</code> with  <code>let m = Mutex(…)</code> is plain <code>Sendable</code> — no <code>@unchecked</code>.</li>
+<li><strong><code>Mutex&lt;State&gt;</code></strong> (<code>Synchronization</code>,  iOS 18): <code>~Copyable</code>, <code>Sendable</code>, non-recursive;  <code>withLock { $0 …}</code> is synchronous, so the lock can never be  held across an <code>await</code>.</li>
 </ul>
 </section>
 <section class="sheet-section">
@@ -47,7 +46,6 @@ the price is interleaving.</span></em></p>
 <section class="sheet-section">
 <h2>Other reentrancy fixes</h2>
 <ol>
-<li>Mutate <em>before</em> suspending (reserve, then <code>await</code>).</li>
 <li><strong>Re-check</strong> state after every <code>await</code>; never carry a local  copy of actor state across one.</li>
 <li>Move the invariant into a <strong>synchronous</strong> actor method.</li>
 </ol>
@@ -87,9 +85,8 @@ the price is interleaving.</span></em></p>
 <h2>Traps</h2>
 <ul>
 <li class="trap">“Actors make it thread-safe” — they remove <em>data</em> races, not  <em>logic</em> races — reentrancy reorders state between awaits.</li>
-<li class="trap">Sync callers (delegate callback, <code>description</code>) cannot  <code>await</code> an actor: <code>Mutex</code>, or <code>assumeIsolated</code> on the  right executor.</li>
 <li class="trap">Waiting on actor work with a semaphore from the pool can deadlock:  never block in async code.</li>
-<li class="trap">Everything on <code>@MainActor</code> = no parallelism and hangs; one actor  per <em>resource</em>, not one per screen.</li>
+<li class="trap">“Everything on <code>@MainActor</code> hangs” is dated: Xcode 26 made it the  default for new app projects (SE-0466), and an <code>await</code> on main frees  main. It hangs on <em>CPU</em> work there: make that <code>@concurrent</code>. One  actor per <em>resource</em>, not one per screen.</li>
 </ul>
 </section>
 <section class="sheet-section">

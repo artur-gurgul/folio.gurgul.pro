@@ -1,7 +1,7 @@
 % async-and-network-testing.tex — waiting for async work in XCTest and Swift Testing, stubbing
 % URLSession with a URLProtocol, the ways a request fails, injected clocks and schedulers, streams,
 % ordering, cancellation, and the parallel-test traps of a shared stub.
-% Sources (checked 2026-10-09):
+% Sources (checked 2026-10-09; re-checked 2026-10-11):
 %   developer.apple.com/documentation/xctest: asynchronous-tests-and-expectations (async test runs on
 %     an arbitrary actor unless @MainActor) · xctestexpectation/isinverted (fails immediately if
 %     fulfilled) · /assertforoverfulfill (true from the XCTestCase convenience methods, false from
@@ -20,7 +20,8 @@
 %     shortest wins; per test case; Swift 6.0) · ST-0005 (ranged confirmations, 6.1) · ST-0006
 %     (#expect(throws:) returns the error, 6.1) · ST-0016 (Test.cancel; CancellationError in a
 %     cancelled test = cancellation, 6.3) · ST-0021 (XCTAssert counts inside Swift Testing;
-%     XCTestExpectation / XCTWaiter excluded, 6.4) · swift.org/blog/swift-6.4-released
+%     XCTestExpectation / XCTWaiter excluded, 6.4; before it, an XCTAssert failure in a @Test was
+%     "False Negative (No-op)") · swift.org/blog/swift-6.4-released
 %   swift-evolution: SE-0374 (Clock.sleep(for:) usable on any Clock<Duration>, 5.9) · SE-0388
 %     (AsyncStream.makeStream, 5.9) · SE-0412 (globals / statics: global actor, immutable Sendable,
 %     or nonisolated(unsafe); 5.10) · SE-0472 (Task.immediate, 6.2) · SE-0493 (await in defer, 6.4)
@@ -44,7 +45,8 @@
 %   developer.apple.com/forums/thread/97310 (httpBody nil inside a URLProtocol; body in
 %     httpBodyStream) · oleb.net/2022/cancellation-forms (async URLSession throws URLError.cancelled)
 %   developer.apple.com/documentation/combine: immediatescheduler (ignores dates) · anycancellable
-%     (cancels on deinit) · publisher/values (iOS 15, Failure == Never)
+%     (cancels on deinit) · publisher/values (iOS 15, Failure == Never) · asyncthrowingpublisher (a failing publisher's
+%     values, for try await)
 %   github.com/pointfreeco: swift-clocks README (TestClock advance / run, ImmediateClock,
 %     UnimplementedClock, any Clock<Duration>) · combine-schedulers README (TestScheduler via
 %     DispatchQueue.test; Combine's ImmediateScheduler has its own time types) ·
@@ -141,16 +143,13 @@ parallel & a class runs its tests one by one & all at once, \textbf{one process}
   \item \ct{wait(for:timeout:)} is \textbf{unavailable in \ct{async} functions} since Xcode 14.3
         (it can deadlock): \ct{await fulfillment(of:timeout:)}. Left out, the timeout is
         \ct{.infinity} — only \ct{executionTimeAllowance} then ends a hang.
-  \item A wait returns the moment all are fulfilled: the timeout is a \emph{ceiling}.
-        \ct{XCTWaiter.Result}: \ct{completed} · \ct{timedOut} · \ct{incorrectOrder} ·
-        \ct{invertedFulfillment} · \ct{interrupted}.
   \item Over-fulfilling fails only with \ct{assertForOverFulfill}: \ct{true} from the
         \ct{XCTestCase} convenience methods, \ct{false} from \ct{XCTestExpectation(description:)}.
   \item Predicate expectations \textbf{poll} — slow; prefer callback, KVO or notification ones
         (inject a private \ct{NotificationCenter()}, hand it to the expectation).
   \item Swift Testing has no wait: a confirmation neither blocks nor suspends. \ct{XCTestExpectation}
-        is unsupported in \ct{@Test} — even 6.4's interop (\ct{XCTAssert} now counts there)
-        excludes it. Bridge a callback:\newline
+        is unsupported in \ct{@Test} (6.4's interop excludes it, though it made \ct{XCTAssert} fail a \ct{@Test}: before, a shared XCTest helper's failure left the test \textbf{green}).
+        Bridge a callback:\newline
         \ct{try await withCheckedThrowingContinuation \{ c in}\newline
         \ct{\ \ api.fetch(42) \{ c.resume(with: \$0) \} \}}\newline
         Resume \textbf{exactly once}: a second resume is a \ct{fatalError}; none leaves the test
@@ -260,7 +259,7 @@ Assert the \textbf{request} too. Its body arrives as \ct{httpBodyStream}; \ct{ht
         types, so it cannot replace \ct{DispatchQueue} without generics; combine-schedulers'
         \ct{AnySchedulerOf<DispatchQueue>} + \ct{DispatchQueue.test} + \ct{advance(by:)} can.
         Keep the \ct{AnyCancellable} (deinit cancels), or \ct{for await} over
-        \ct{publisher.values} (iOS 15, \ct{Failure == Never}).
+        \ct{publisher.values} (iOS 15; \ct{for try await} if it can fail).
   \item \textbf{AsyncStream}: drive the SUT through \ct{AsyncStream.makeStream(of:)} (5.9) — the
         test holds the continuation. Consume \emph{bounded}: \ct{s.prefix(3)} or \ct{finish()};
         an unfinished stream never ends the \ct{for await}.

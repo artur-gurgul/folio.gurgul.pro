@@ -1,7 +1,7 @@
 % swiftui-performance-identity.tex — structural vs explicit identity, AnyView / if-branch resets,
 % dependency tracking (@Observable vs ObservableObject), equatable views, cheap body, List vs LazyVStack,
 % pagination, stable ids, Self._printChanges(), the SwiftUI Instrument.
-% Sources (checked 2026-10-06):
+% Sources (checked 2026-10-06; re-checked 2026-10-11):
 %   WWDC21 "Demystify SwiftUI" (explicit vs structural identity; if/else → _ConditionalContent;
 %     AnyView hides structure, can cost performance; identifiers must be stable)
 %   WWDC23 "Demystify SwiftUI performance" (_printChanges: debug-only, best-effort; "@self")
@@ -9,8 +9,18 @@
 %     Update Groups, Long View Body / Representable / Other Updates, Cause & Effect Graph)
 %   developer.apple.com/documentation/swiftui/lazyvstack (creates items only as needed) ·
 %     /view/equatable() · /equatableview
-%   Not in those sources, marked \unverified on the page: List's UICollectionView backing and
-%     cell reuse, LazyVStack's lack of reuse.
+%   Added 2026-10-11: WWDC26 "Dive into lazy stacks and scrolling with SwiftUI" (off-screen rows kept
+%     "for a number of updates", then deleted with their state; prefetch may run body, onAppear never)
+%   developer.apple.com/documentation/swiftui/state (default value instantiated on every view init;
+%     defer with .task) · /state/init(wrappedValue:) (storage initialized once) ·
+%     /stateobject/init(wrappedValue:) (@autoclosure, run once) ·
+%     /migrating-from-the-observable-object-protocol-to-the-observable-macro (ObservableObject: "any
+%     published property"; @Observable: properties body reads)
+%   WWDC25 "Optimize SwiftUI performance with Instruments" (isFavorite over the whole array: every
+%     row's body runs; per-item model) · Xcode 27 release notes (SwiftUI instrument: layout-cache reasons)
+%   WWDC21 "Demystify SwiftUI" (inert modifiers; branches in modifiers "across files") ·
+%     objc.io "Why Conditional View Modifiers are a Bad Idea" (2021-08-24)
+%   List's backing is no longer claimed: iOS 16 notes say only "no longer uses UITableView".
 % @labels: area=swiftui kind=concept platform=apple topic=performance,ui discussion=184
 % @tags: structural-identity, explicit-identity, anyview, conditionalcontent, body-invalidation, observable, equatable-view, lazyvstack, list, pagination, printchanges, swiftui-instrument
 \documentclass[8pt]{extarticle}
@@ -38,33 +48,34 @@ cheap) + \textbf{narrow dependencies} (few bodies run) + \textbf{cheap bodies} (
   \item \textbf{Structural identity} — a view's \emph{type + position} in the \texttt{body} tree.
         \texttt{if/else} becomes \texttt{\_ConditionalContent}: the two branches are \emph{different slots},
         so switching branch = destroy one view, create the other (state gone, \texttt{onAppear} again,
-        transition plays).
+        transition plays). Two states of \emph{one} view? Fold the condition into a value (picture);
+        a \texttt{.if(cond) \{ \ldots \}} helper is a branch in disguise.
   \item \textbf{Explicit identity} — \texttt{ForEach} ids (\texttt{Identifiable} / \texttt{id: \textbackslash.x})
         and \texttt{.id(\_:)}. A new \texttt{.id} value = a brand-new view: legit to \emph{reset} a form or
         scroll view, costly if it changes every update.
   \item \textbf{\texttt{AnyView}} erases the type, so SwiftUI cannot see the structure: when the wrapped
-        type changes the whole subtree is replaced, and diffing is slower. Prefer \texttt{@ViewBuilder},
-        \texttt{some View}, or a modifier on one view (\texttt{.opacity}, \texttt{.disabled}) over a branch.
+        type changes the whole subtree is replaced, and diffing is slower. Prefer \texttt{some View} and generics.
   \item \textbf{What invalidates \texttt{body}}: a \texttt{@State}/\texttt{@Binding} it reads; an
         \texttt{ObservableObject}'s \texttt{objectWillChange} (\emph{any} \texttt{@Published} — whole object);
         an \texttt{@Observable} (17) property it \emph{read} during the last \texttt{body} (per property);
         an \texttt{@Environment} value it reads; or new, non-equal inputs from the parent.
   \item \textbf{Skipping}: SwiftUI compares a child's inputs before calling its \texttt{body}; closures and
         non-equatable fields defeat that. \texttt{Equatable} view + \texttt{.equatable()} lets \emph{your}
-        \texttt{==} decide — worth it only if \texttt{==} is cheap \emph{and} complete.
+        \texttt{==} decide — worth it only if \texttt{==} is cheap \emph{and} complete (a missed field ⇒ \textbf{stale UI}).
   \item \textbf{Cheap body}: no \texttt{DateFormatter()}, sorting, filtering, image decode or I/O inside
         \texttt{body} or \texttt{init} — precompute in the model, cache in a \texttt{static let}, or load in
         \texttt{.task(id:)} (cancelled + restarted when \texttt{id} changes).
-  \item \textbf{Narrow state}: push state into the smallest subview that reads it; pass plain values, not the
-        whole model, to leaf views.
-  \item \textbf{\texttt{List}} (\texttt{UICollectionView}-backed since 16) \textbf{reuses} cells\unverified; \texttt{LazyVStack}
-        in a \texttt{ScrollView} builds rows \emph{on demand}, \emph{no reuse}\unverified; \texttt{VStack} builds all rows up front.
-  \item \textbf{Pagination}: load more when the last (or $n$-th from last) row appears, guarded by
-        \texttt{isLoading} + a page cursor — \texttt{onAppear} re-fires on scroll-back.
+  \item \textbf{\texttt{@State var m = Model()}} evaluates \texttt{Model()} on \emph{every} view init and keeps
+        only the first (\texttt{@StateObject} takes an autoclosure, run once): a heavy or side-effecting
+        init ⇒ optional \texttt{@State}, created in \texttt{.task}.
+  \item \textbf{Lazy rows}: \texttt{LazyVStack} builds rows \emph{on demand}; a row scrolled away stops updating,
+        is kept for a number of updates, then freed \emph{with its \texttt{@State}} — keep row data in the model.
+        Prefetch can run a row's \texttt{body} and never call \texttt{onAppear}; \texttt{onAppear} re-fires on
+        scroll-back, so guard paging with \texttt{isLoading} (example). \texttt{VStack} builds every row up front.
   \item \textbf{Measure}: \texttt{let \_ = Self.\_printChanges()} in \texttt{body} (DEBUG, prints
         \texttt{@self}, \texttt{@identity} or the property that changed). Instruments' \textbf{SwiftUI}
-        template: \emph{View Body} counts (pre-Xcode 26); Xcode 26's SwiftUI instrument adds long-update lanes and a
-        \emph{Cause \& Effect} graph. Pair with Time Profiler + Hangs.
+        instrument (Xcode 26+): long-update lanes and a \emph{Cause \& Effect} graph; Xcode 27 also records
+        why a layout was not cached. Pair with Time Profiler + Hangs.
 \end{itemize}
 
 \section{Example — a lean, paged feed}
@@ -132,14 +143,13 @@ struct FeedView: View { let feed: Feed
   \trap{\texttt{ForEach(items, id: \textbackslash.self)} on mutable values, array indices, or
         \texttt{UUID()} made in \texttt{body} — every row looks new: lost row state, wrong animations,
         duplicate-id glitches. Use a stable, entity-owned id.}
-  \trap{``\texttt{@Observable} fixes everything'' — a view that reads a high-churn property, or a whole
-        model passed down, still redraws a lot. Computed properties count as reads of what they touch.}
+  \trap{``\texttt{@Observable} fixes everything'' — a row whose \texttt{isFavorite(item)} scans the whole
+        favorites array depends on all of it: one new favorite re-runs \emph{every} row's \texttt{body}.
+        Give rows a per-item model or plain values. Computed properties count as reads of what they touch.}
   \trap{\texttt{.id(UUID())} or an \texttt{.id} tied to often-changing data silently rebuilds the subtree
         (and a wrapped \texttt{UIView}) on every update.}
-  \trap{An incomplete \texttt{==} on an \texttt{Equatable} view ⇒ \textbf{stale UI}; an expensive one is
-        slower than just re-rendering.}
   \trap{\texttt{VStack} of 10\,000 rows inside a \texttt{ScrollView} — eager; use \texttt{List} or
-        \texttt{LazyVStack}. A \texttt{GeometryReader} per row adds layout passes.}
+        \texttt{LazyVStack}.}
 \end{itemize}
 
 \section{Remember}

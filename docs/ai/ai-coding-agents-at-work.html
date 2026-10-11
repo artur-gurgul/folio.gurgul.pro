@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>AI coding agents at work — loop, context, permissions, proof — folio</title><meta name="description" content="A coding agent is a model calling tools in a loop inside a harness that decides what each call may touch. You control the context it sees, the permissions and sandbox around it and the check it must pass: rules files advise; permission rules, hooks and sandboxes enforce; a test, build or screenshot proves."><link rel="canonical" href="https://folio.gurgul.pro/ai/ai-coding-agents-at-work.html"><link rel="icon" href="/static/favicon.svg?v=6e92094c60" type="image/svg+xml"><meta name="theme-color" content="#24292b"><meta name="color-scheme" content="dark"><link rel="preload" href="/static/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Regular.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/nav.json?v=d83009f1cd" as="fetch" crossorigin><link rel="stylesheet" href="/static/css/all.css?v=ab00b078aa"><link rel="stylesheet" href="/static/css/hightlight.css?v=af1b576646"><link rel="stylesheet" href="/static/css/sheet.css?v=dc1b9e25a8"><script src="/static/js/site.js?v=2b182a126c" defer></script><script src="/static/js/figures.js?v=35892c93fc" defer></script></head><body data-nav="/nav.json?v=d83009f1cd" data-area="ai"><img class="folio-print" src="/ai/ai-coding-agents-at-work.svg?v=b44fba7b38" alt="" aria-hidden="true"><main class="content folio-page"><h1 class="title">AI coding agents at work — loop, context, permissions, proof</h1><div id="post"><article class="sheet">
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>AI coding agents at work — loop, context, permissions, proof — folio</title><meta name="description" content="A coding agent is a model calling tools in a loop inside a harness that decides what each call may touch. You control the context it sees, the permissions and sandbox around it and the check it must pass: rules files advise; permission rules, hooks and sandboxes enforce; a test, build or screenshot proves."><link rel="canonical" href="https://folio.gurgul.pro/ai/ai-coding-agents-at-work.html"><link rel="icon" href="/static/favicon.svg?v=6e92094c60" type="image/svg+xml"><meta name="theme-color" content="#24292b"><meta name="color-scheme" content="dark"><link rel="preload" href="/static/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Regular.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/nav.json?v=d83009f1cd" as="fetch" crossorigin><link rel="stylesheet" href="/static/css/all.css?v=ab00b078aa"><link rel="stylesheet" href="/static/css/hightlight.css?v=af1b576646"><link rel="stylesheet" href="/static/css/sheet.css?v=dc1b9e25a8"><script src="/static/js/site.js?v=2b182a126c" defer></script><script src="/static/js/figures.js?v=35892c93fc" defer></script></head><body data-nav="/nav.json?v=d83009f1cd" data-area="ai"><img class="folio-print" src="/ai/ai-coding-agents-at-work.svg?v=193fc93989" alt="" aria-hidden="true"><main class="content folio-page"><h1 class="title">AI coding agents at work — loop, context, permissions, proof</h1><div id="post"><article class="sheet">
 <p class="sheet-kicker">ai · folio</p>
 <p class="sheet-oneliner"><strong>In one line:</strong> A coding agent is a model calling tools <strong>in a loop</strong> inside a <strong>harness</strong> that
 decides what each call may touch. You control the <strong>context</strong> it sees, the <strong>permissions
@@ -16,13 +16,13 @@ hooks and sandboxes enforce; a test, build or screenshot proves.</p>
 </thead>
 <tbody>
 <tr><td><code>AGENTS.md</code></td><td>open format; Agentic AI Foundation (Linux Foundation) with MCP and goose since
- 9 Dec 2025; Codex, Copilot, Cursor, Gemini CLI, Jules, Zed … 20+ tools. <strong>Nearest file
+ 9 Dec 2025; read by 20+ tools. <strong>Nearest file
  wins</strong>; the chat prompt overrides.</td></tr>
 <tr><td>Codex</td><td><code>~/.codex</code>, then repo root <span class="math">→</span> cwd; <code>AGENTS.override.md</code> first; concatenated,
  closer = later; stops at 32 KiB.</td></tr>
 <tr><td><code>CLAUDE.md</code></td><td>Claude Code: managed <span class="math">→</span> user <span class="math">→</span> project <span class="math">→</span> <code>CLAUDE.local.md</code>; ancestors
- at launch, subdirs on demand; <strong>concatenated, none overrides</strong>; <code>@import</code> <span class="math">≤</span>4 hops; aim
- <span class="math">&lt;</span>200 lines; <code>.claude/rules/</code> by <code>paths:</code>; <code>AGENTS.md</code> only without <code>CLAUDE.md</code>.</td></tr>
+ at launch, subdirs on demand; <strong>concatenated, none overrides</strong>; aim
+ <span class="math">&lt;</span>200 lines; <code>.claude/rules/</code> by <code>paths:</code>; <code>AGENTS.md</code> only with no <code>CLAUDE.md</code> — and a private <code>CLAUDE.local.md</code> counts.</td></tr>
 <tr><td>Copilot</td><td><code>.github/copilot-instructions.md</code>, <code>*.instructions.md</code> (<code>applyTo</code>); agent,
  review, CLI: nearest <code>AGENTS.md</code> or root <code>CLAUDE.md</code>/<code>GEMINI.md</code>.</td></tr>
 </tbody>
@@ -42,7 +42,7 @@ Never: edit .pbxproj by hand, read Secrets.xcconfig, push</code></pre>
 <h2>Context is the budget</h2>
 <ul>
 <li>The window holds system prompt, rules, tool schemas and <em>every</em> message, file read and  command output; quality degrades as it fills. Chroma’s “context rot” (Jul 2025, 18  models): accuracy falls with input length even on simple tasks.</li>
-<li><strong>One task per session</strong>, <code>/clear</code> between; after two failed corrections, clear and  re-prompt with what you learned. Give exact paths, the full error, a screenshot.</li>
+<li><strong>One task per session</strong>, <code>/clear</code> between; after two failed corrections, clear and  re-prompt with what you learned.</li>
 <li>Keep exploration out: a <strong>subagent</strong> reads in its own window and returns a summary;  skills and path-scoped rules load on demand. APIs newer than the training data (iOS 27  SDK, Swift 6.4): hand it the docs page.</li>
 </ul>
 </section>
@@ -63,8 +63,8 @@ Never: edit .pbxproj by hand, read Secrets.xcconfig, push</code></pre>
 </table></p>
 <ul>
 <li>Rules: <strong>deny <span class="math">→</span> ask <span class="math">→</span> allow, first match wins</strong>, specificity ignored:  <code>Bash(aws *)</code> denied beats <code>Bash(aws s3 ls)</code> allowed; deny holds in every mode.  Enforced by the client, not the model.</li>
-<li><strong>Sandbox</strong> (shell only, off by default; Seatbelt, bubblewrap): writes = working dir +  temp; reads include <code>~/.ssh</code>, <code>~/.aws</code> until denied; network via a proxy,  allow-list starts empty. File tools, MCP servers, hooks run <strong>outside</strong> it.</li>
-<li><strong>Codex</strong>: sandbox <code>read-only</code> · <code>workspace-write</code> (no network) ·  <code>danger-full-access</code> × approvals <code>on-request</code> · <code>never</code> · granular.</li>
+<li><strong>Sandbox</strong> (shell only, off by default; Seatbelt, bubblewrap): writes = working dir +  temp; reads include <code>~/.ssh</code>, <code>~/.aws</code> until denied; network via a proxy,  allow-list starts empty. File tools, MCP servers, hooks run <strong>outside</strong> it. Fails  <strong>open</strong> unless <code>failIfUnavailable</code>.</li>
+<li>A rule matches <em>text</em>: deny <code>Bash(git push *)</code> misses <code>git -C . push</code>, a <code>Read</code>  deny misses a script that opens the file. Limits that ignore the text: the sandbox.</li>
 </ul>
 </section>
 <section class="sheet-section">
@@ -79,7 +79,7 @@ Never: edit .pbxproj by hand, read Secrets.xcconfig, push</code></pre>
 </section>
 <section class="sheet-section">
 <h2>Xcode’s agents, release by release</h2>
-<figure class="sheet-figure"><img src="ai-coding-agents-at-work-fig2.svg?v=895143b5a4" width="302" height="97" style="--f:0.481" alt="AI coding agents at work — loop, context, permissions, proof — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="ai-coding-agents-at-work-fig2.svg?v=d05ae74982" width="302" height="97" style="--f:0.481" alt="AI coding agents at work — loop, context, permissions, proof — figure 2" loading="lazy"></figure>
 </section>
 <section class="sheet-section">
 <h2>MCP — how tools plug in</h2>
@@ -103,13 +103,13 @@ Never: edit .pbxproj by hand, read Secrets.xcconfig, push</code></pre>
 <figure class="sheet-figure"><img src="ai-coding-agents-at-work-fig5.svg?v=abaff337d8" width="313" height="81" style="--f:0.499" alt="AI coding agents at work — loop, context, permissions, proof — figure 5" loading="lazy"></figure>
 <ul>
 <li>2025: <strong>+19 %</strong> time, felt 20 % faster; the 2026 follow-up leans faster, but METR  calls it unreliable (developers declined no-AI tasks). <strong>Felt <span class="math">≠</span> measured.</strong></li>
-<li><strong>SWE-bench</strong> (ICLR 2024): 2 294 GitHub issues, 12 Python repos; solved = hidden tests  pass; Claude 2: 1.96 %. <strong>Verified</strong>: 500 human-checked. OpenAI dropped it (23 Feb  2026): 59.4 % of 138 audited unsolved tasks flawed, models reproduce the fixes<span class="unverified">(unverified)</span>  — public benchmarks leak into training.</li>
+<li><strong>SWE-bench</strong> (ICLR 2024): 2 294 GitHub issues, 12 Python repos; solved = hidden tests  pass; Claude 2: 1.96 %. <strong>Verified</strong>: 500 human-checked. OpenAI dropped it (23 Feb  2026): of 138 problems o3 did not reliably solve, 59.4 % had flawed tests or descriptions  (35.5 %: tests that demand one implementation); every model tested recalled gold patches.</li>
 </ul>
 <h3 class="sheet-hd">Remember: context in, permissions around, checks out — the agent types, you sign.</h3>
 </section>
 <p class="sheet-related"><span class="sheet-related-label">Related:</span> <code>llm-features-in-apps</code> ·
 <code>xcodebuild-simctl-cli</code> · <code>ci-pipeline-design</code> · Supply-chain security · Threat
-modelling a mobile feature · XCTest &amp; Swift Testing · Git in depth</p>
+modelling · XCTest &amp; Swift Testing · Git in depth</p>
 <ul class="sheet-meta"><li class="sheet-label sheet-label-area"><a href="/folios.html?area=ai" title="area">ai</a></li><li class="sheet-label sheet-label-kind"><a href="/folios.html?kind=process" title="kind">process</a></li><li class="sheet-label sheet-label-platform"><a href="/folios.html?platform=general" title="platform">general</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=ai" title="topic">ai</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=tooling" title="topic">tooling</a></li><li class="sheet-label sheet-label-topic"><a href="/folios.html?topic=security" title="topic">security</a></li><li class="sheet-tag"><a href="/folios.html?tag=coding-agents">coding-agents</a></li><li class="sheet-tag"><a href="/folios.html?tag=agentic-coding">agentic-coding</a></li><li class="sheet-tag"><a href="/folios.html?tag=claude-code">claude-code</a></li><li class="sheet-tag"><a href="/folios.html?tag=codex">codex</a></li><li class="sheet-tag"><a href="/folios.html?tag=xcode">xcode</a></li><li class="sheet-tag"><a href="/folios.html?tag=mcp">mcp</a></li><li class="sheet-tag"><a href="/folios.html?tag=agents-md">agents-md</a></li><li class="sheet-tag"><a href="/folios.html?tag=rules-file">rules-file</a></li><li class="sheet-tag"><a href="/folios.html?tag=prompt-injection">prompt-injection</a></li><li class="sheet-tag"><a href="/folios.html?tag=permissions">permissions</a></li><li class="sheet-tag"><a href="/folios.html?tag=sandbox">sandbox</a></li><li class="sheet-tag"><a href="/folios.html?tag=context-window">context-window</a></li><li class="sheet-tag"><a href="/folios.html?tag=llm">llm</a></li><li class="sheet-tag"><a href="/folios.html?tag=supply-chain">supply-chain</a></li><li class="sheet-tag"><a href="/folios.html?tag=swe-bench">swe-bench</a></li><li class="sheet-tag"><a href="/folios.html?tag=verification">verification</a></li></ul>
 </article></div><p class="folio-actions"><a href="https://github.com/artur-gurgul/folio.gurgul.pro/issues/new?template=fact-correction.yml&amp;folio=ai%2Fai-coding-agents-at-work.tex">Report a problem</a><span class="sep"> ·</span><a href="https://github.com/artur-gurgul/folio.gurgul.pro/discussions/287">Discuss this folio</a></p><div class="footer"><div class="disclaimer"><p>Free to use for anything, no attribution needed —
 <a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>. Bundled fonts: SIL OFL 1.1; code highlighting theme: BSD-3-Clause.</p></div></div></main></body></html>

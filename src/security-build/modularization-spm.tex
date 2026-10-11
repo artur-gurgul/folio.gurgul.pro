@@ -1,8 +1,9 @@
 % modularization-spm.tex — why/how to modularize an iOS app with local SPM packages.
-% Sources (checked 2026-10-07):
+% Sources (checked 2026-10-07; re-checked 2026-10-11):
 %   developer.apple.com/documentation/packagedescription — package(url:from:) (up to the next
 %     major) · library(name:type:targets:) (type omitted: SwiftPM chooses) ·
-%     SwiftSetting.unsafeFlags (products become ineligible for other packages) ·
+%     SwiftSetting.unsafeFlags (products become ineligible for other packages — in practice only
+%     for version/registry dependencies, see below) ·
 %     binaryTarget(name:url:checksum:) (SwiftPM 5.3, Apple platforms) · Package.platforms
 %     (minimum versions; a dependency's minimum must be ≤ the top-level package's)
 %   /xcode/bundling-resources-with-a-swift-package (process vs copy; Bundle.module is created
@@ -12,7 +13,18 @@
 %     artifacts are a .zip) · SE-0303 (plugins run sandboxed, Swift 5.6)
 %   swift-package-manager Sources/PackageGraph/ModulesGraph+Loading.swift (module cycles always
 %     rejected; package-to-package cycles allowed when every root manifest is tools 6.0+)
-%   Not confirmed, marked \unverified: automatic libraries usually linking statically.
+% Checked 2026-10-11:
+%   swift-package-manager Sources/SwiftBuildSupport/PackagePIFProjectBuilder+Products.swift
+%     (an .automatic product's "modules are still linked statically by default") ·
+%     Sources/Workspace/Workspace+Manifests.swift (unsafeAllowedPackages: root, path, edited,
+%     branch/revision; not version or registry) · Sources/PackageModel/ToolsVersion.swift
+%     (tools 6.x -> Swift 6 language mode)
+%   Xcode 11.4.1 release notes (the "duplication of library code" error was wrong for app +
+%     extension) · Xcode 12.5 release notes (dynamic "if doing so avoids duplication") ·
+%     developer.apple.com/documentation/technologyoverviews/app-extensions ("separate processes")
+%   forums.swift.org/t/35007 ("only one copy of the code in each process") · WWDC22 110362
+%     (static lib in two frameworks: "weird runtime issues"; dylibs slow launch)
+%   SE-0303 (build commands re-run on changed inputs; prebuild commands every build)
 % @labels: area=security-build kind=architecture platform=apple topic=build,architecture discussion=255
 % @tags: swift-package-manager, package-swift, modularization, api-impl-split, composition-root, access-control, package-access-level, bundle-module, binary-target, spm-plugins, package-resolved, incremental-build
 \documentclass[8pt]{extarticle}
@@ -103,11 +115,11 @@ is faster incremental builds and \textbf{compiler-enforced} boundaries.}
         deps); \texttt{FeatureImpl} = UI + logic. Others import the API; the app injects
         the Impl. Cross-feature navigation = a \texttt{Router}/\texttt{Route} enum in Core,
         resolved by the app.
-  \item \textbf{Package.swift:} first line \texttt{// swift-tools-version:5.9};
-        \textbf{products} = what consumers can import (\texttt{.library}, \texttt{.executable},
-        \texttt{.plugin}); \textbf{targets} = compilation units = modules; package
-        \textbf{dependencies} (which repo/version) \emph{and} per-target dependencies
-        (\texttt{.product(name:package:)}) — you need both.
+  \item \textbf{Package.swift:} the first line \texttt{// swift-tools-version:} picks the
+        manifest API \emph{and}, from \textbf{6.0}, puts every target in the \textbf{Swift 6
+        language mode} (data races = errors) unless \texttt{swiftLanguageModes: [.v5]}.
+        A dependency takes two entries: the package \emph{and} the target's
+        \texttt{.product(name:package:)}.
   \item \textbf{Versions:} \texttt{from: "1.2.0"} = \texttt{>=1.2.0 <2.0.0};
         \texttt{.exact}, ranges; commit \texttt{Package.resolved} for apps.
   \item \textbf{Resources:} \texttt{.process} (optimised: asset catalogs, localisation)
@@ -118,7 +130,7 @@ is faster incremental builds and \textbf{compiler-enforced} boundaries.}
   \item \textbf{Binary target:} \texttt{.binaryTarget(name:url:checksum:)} (or
         \texttt{path:}) wraps a prebuilt \texttt{.xcframework}; checksum of the
         \emph{zip} from \texttt{swift package compute-checksum}.
-  \item \textbf{Plugins:} \emph{build-tool} (runs every build: SwiftGen, protobuf) vs
+  \item \textbf{Plugins:} \emph{build-tool} (SwiftGen, protobuf; a build command re-runs on changed inputs, a \emph{prebuild} one every build) vs
         \emph{command} (\texttt{swift package <verb>}: lint, format). Sandboxed.
 \end{itemize}
 
@@ -153,18 +165,18 @@ let package = Package(name: "Cart", platforms: [.iOS(.v16)],
         use \texttt{Bundle.module}.}
   \trap{\textbf{Over-modularization:} per-module manifest, link and DI cost; clean builds
         can get \emph{slower}. Cut along ownership/change seams, not per screen.}
-  \trap{A giant \texttt{Common} module that everything imports and that changes weekly
-        recompiles the world — split it (DesignSystem, Networking, …).}
   \trap{\texttt{ServiceLocator.shared} inside features hides dependencies — inject
         API protocols through \texttt{init} from the composition root.}
   \trap{\texttt{package} (Swift 5.9) $\neq$ \texttt{@\_spi}: \texttt{package} = visible to
         modules \emph{in the same package}; \texttt{@\_spi(X)} = public but only for
         importers writing \texttt{@\_spi(X) import} (underscored, unofficial).}
-  \trap{\texttt{.library(type:)} omitted = \emph{automatic}: SwiftPM picks (usually
-        static\unverified). Static in app \emph{and} extension = two copies; dynamic = one
-        copy + dyld cost.}
-  \trap{\texttt{.unsafeFlags} make the target's products ineligible for use by other
-        packages — fine in the app's own root package, fatal in a shared one.}
+  \trap{\texttt{.library(type:)} omitted = \emph{automatic} = \textbf{static} by
+        default. Two copies bite only in \emph{one process} (app + own dynamic
+        framework): Xcode 12.5+ then builds it \emph{dynamic} (+ dyld cost). App +
+        extension = two processes: two copies cost only size.}
+  \trap{\texttt{.unsafeFlags} are refused only in a dependency resolved \emph{by
+        version} (or registry): root, \texttt{path:} and branch/revision packages may
+        use them, the same package pulled in with \texttt{from:} may not.}
 \end{itemize}
 
 \section{Remember}

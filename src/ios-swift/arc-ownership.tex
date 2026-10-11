@@ -1,6 +1,6 @@
 % arc-ownership.tex — ARC, strong/weak/unowned, retain cycles, capture lists,
 % the dealloc test, memory tools.
-% Sources (checked 2026-10-05):
+% Sources (checked 2026-10-05; re-checked 2026-10-11):
 %   docs.swift.org/swift-book/documentation/the-swift-programming-language/automaticreferencecounting
 %     (strong/weak/unowned, weak must be an optional var set to nil, unowned optional references
 %     since Swift 5, unowned(unsafe), Customer/CreditCard, closure capture lists)
@@ -9,7 +9,15 @@
 %   developer.apple.com/documentation/xcode/gathering-information-about-memory-use (Memory Graph,
 %     malloc stack logging) · Instruments help: Leaks, Allocations (Mark Generation), Zombies
 %   developer.apple.com/documentation/foundation/timer (the run loop keeps a scheduled timer)
-%   github.com/swiftlang/swift-evolution: SE-0269 (Swift 5.3), SE-0345 (5.7), SE-0365 (5.8)
+%   github.com/swiftlang/swift-evolution: SE-0269 (Swift 5.3), SE-0345 (5.7), SE-0365 (5.8),
+%     SE-0481 (weak let, "Implemented (Swift 6.3)")
+% Checked 2026-10-11:
+%   github.com/swiftlang/swift stdlib/public/SwiftShims/swift/shims/RefCount.h (a weak store adds
+%     the side table, one-way; side table freed at weak RC 0; allocation freed at unowned RC 0;
+%     unowned load after deinit halts in swift_abortRetainUnowned)
+%   developer.apple.com/videos/play/wwdc2024/10173 "Analyze heap memory" (weak reference storage
+%     on first weak ref, ~as big as the objects in the 1M-ByteProducer demo; unowned: no extra
+%     memory, faster; conservative scanning can miss a real leak)
 % @labels: area=ios-swift kind=concept platform=apple topic=memory,debugging discussion=59
 % @tags: arc, strong, weak, unowned, retain-cycle, capture-list, weak-self, delegate, deinit, memory-graph-debugger, leaks-instrument, allocations
 \documentclass[8pt]{extarticle}
@@ -51,16 +59,13 @@ You break cycles by making the back-edge \texttt{weak} or \texttt{unowned}.}
   \item ARC manages \textbf{class instances} (+ actors, closure contexts).
         Structs/enums are copied, not counted — but copying a struct that
         holds a class ref retains that object.
-  \item \textbf{strong} (default) — owns: +1. \textbf{weak} — non-owning, must be
-        \texttt{var} + Optional; the runtime (side table) sets it to
-        \texttt{nil} when the object dies. \textbf{unowned} — non-owning, not
-        auto-nilled; access after death = \textbf{crash} (\texttt{unowned(unsafe)}
-        = dangling pointer, UB).
-  \item \textbf{Ownership $\neq$ nil-ability.} Two independent dials:
-        \texttt{?} answers \emph{``can it be nil?''};
-        \texttt{strong/weak/unowned} answers \emph{``does it keep the object
-        alive?''}. \texttt{var x: Foo?} retains exactly as hard as
-        \texttt{var x: Foo}.
+  \item \textbf{strong} (default) — owns: +1. \textbf{weak} — non-owning, Optional,
+        \texttt{var} (or \texttt{let} since Swift 6.3). The 1st weak ref
+        \textbf{allocates a side table}; weak refs point at it, so a load reads
+        \texttt{nil} after \texttt{deinit}. \textbf{unowned} — points at the object:
+        no extra memory, faster; read after \texttt{deinit} = \textbf{crash}, and the
+        dead object's memory stays until the last unowned ref goes
+        (\texttt{unowned(unsafe)} = dangling pointer, UB).
   \item \textbf{weak vs unowned:} can the referent die while I still hold the
         ref? \emph{Maybe} $\to$ \texttt{weak} (delegates, async callbacks —
         the safe default). \emph{Never — it outlives me} $\to$
@@ -110,6 +115,8 @@ func test_VM_deallocates() {
         \emph{who holds whom}; purple \textbf{!} = leak/cycle. Turn on
         \emph{Malloc Stack Logging} to see where it was allocated.
   \item \textbf{Instruments — Leaks}: finds \emph{unreachable} blocks (true leaks, cycles).
+        The scan is \emph{conservative}: bytes that look like a pointer keep a block
+        ``reachable'', so a real leak can be missed.
   \item \textbf{Instruments — Allocations}: heap growth over time;
         \emph{Mark Generation} exposes \emph{abandoned} memory (reachable but
         never freed, e.g. an unbounded cache).
@@ -174,8 +181,6 @@ func test_VM_deallocates() {
 \begin{itemize}
   \trap{\textbf{``Optional means non-owning''} — no:
         \texttt{var parent: Node?} is \emph{strong}; write \texttt{weak}.}
-  \trap{\textbf{\texttt{[x]} is by value}, not by reference: snapshot at
-        creation. Reference type $\to$ the \emph{pointer} is copied.}
   \trap{Proving no leak: \texttt{weak} ref $\to$ set strong to \texttt{nil}
         $\to$ \texttt{XCTAssertNil}. A \texttt{deinit} print is only the manual version.}
   \trap{``No leaks'' but memory grows $\to$ abandoned memory $\to$ Allocations.}

@@ -4,7 +4,7 @@
 % (port rights, audit tokens), the Data Protection KEY HIERARCHY (the class table itself is on
 % keychain-secure-enclave), the silicon mitigation ladder (PAC → SPTM/TXM → MIE), Enhanced Security,
 % and the device-level modes (Lockdown, Stolen Device Protection, Automatic Restart).
-% Sources (checked 2026-10-09):
+% Sources (checked 2026-10-09; re-checked 2026-10-11):
 %   support.apple.com/guide/security/security-of-runtime-process-sec15bfe098e/web (all third-party apps
 %     sandboxed; user mobile; random home dir at install; OS partition read-only; entitlements = signed
 %     key-value pairs; background only via system APIs; XN; W+X only with the Apple-only dynamic
@@ -54,7 +54,19 @@
 %     stops launch; backup rules) · technotes/tn2406 (iOS 8 split) · technotes/tn2415 (get-task-allow)
 %     · KernelProgramming/Mach (single receiver, many senders)
 %   developer.apple.com/forums/thread/92693 (Apple DTS: container path can change, never while running)
-%     · /thread/815819 (Apple DTS, Feb 2026: shipping systems run third-party apps' tagging in soft mode)
+%     · /thread/815819 (Apple DTS, Feb 2026: shipping systems run third-party apps' tagging in soft mode;
+%     "xyzOS 26.n, n < 4 … forces soft mode for third-party programs") · /thread/15685 (Apple DTS 2015:
+%     UserDefaults inherits CompleteUntilFirstUserAuthentication, "you can't access it prior to first
+%     unlock") · /thread/760711 (DTS Jul 2024: VoIP apps and Notification Service Extensions launch before
+%     first unlock; "the actual damage was caused by the app trying to modify/'fix' things") ·
+%     /thread/802755 (DTS Oct 2025: a Live Activity at reboot runs the app before first unlock)
+%   developer.apple.com/documentation/ios-ipados-release-notes/ios-ipados-26_4-release-notes (160719439:
+%     apps "can now opt in to the full protections of Memory Integrity Enforcement … Previously
+%     applications were limited to Soft Mode") · /xcode-release-notes/xcode-26_1-release-notes (26.1.1,
+%     160806045: "all applications will currently run under Soft Mode")
+%   developer.apple.com/documentation/xcode/enabling-enhanced-security-for-your-app (enabling tagging
+%     in Xcode also adds the soft-mode entitlement; "disable soft mode to protect your users")
+%   christianselig.com/2024/10/beware-userdefaults (the API "returns the default integer value of 0")
 %   developer.apple.com/support/alternative-browser-engines (EU, iOS 17.4 / iPadOS 18) ·
 %     /support/app-distribution-in-japan (iOS 26.2) · /app-store/review/guidelines (2.5.2, 2.5.6, 4.7)
 %   support.apple.com/en-us/105120 (Lockdown Mode, iOS 16) · /en-us/120340 (Stolen Device Protection, 17.3)
@@ -171,7 +183,6 @@ ID}, writable+executable memory is Apple-only. Other processes are reached over
         relative paths or bookmarks, never absolute ones.
   \item \ct{Documents/} and \ct{Library/} are backed up, \ct{Library/Caches/} and \ct{tmp/} are
         not; Caches may be purged when storage is low.
-  \item Background work only through system-provided APIs.
 \end{itemize}
 
 \hd{Ways out — always brokered}
@@ -186,8 +197,8 @@ own apps & \textbf{App Group} \ct{group.<name>}: shared container (deleted with 
   UNIX socket inside the container \\
 secrets & keychain access group (same Team ID); a registered App Group doubles as one \\
 LAN, devices & Local Network alert on first use; multicast needs an entitlement;
-  \textbf{AccessorySetupKit}: one picker grants Bluetooth / Wi-Fi / LAN \\
-helper code & \textbf{extension}: own process + container, the containing app's privacy grants;
+  \textbf{AccessorySetupKit}: one picker grants that accessory's Bluetooth / Wi-Fi / LAN \\
+helper code & \textbf{extension}: own process + container, the embedding app's privacy grants;
   keyboards: no network until \emph{Open Access}, never in secure fields \\
 \bottomrule
 \end{tabular}}
@@ -203,7 +214,6 @@ helper code & \textbf{extension}: own process + container, the containing app's 
 \ct{…security.application-groups} & group container, IPC names & 3\\
 \ct{…default-data-protection} & app-wide default file class & 3\\
 \ct{…associated-domains} & universal links, webcredentials, App Clips & 9\\
-\ct{…networking.multicast} & multicast + broadcast (managed) & 14\\
 \ct{…web-browser-engine.host} & non-WebKit engine (EU, Japan) & 17.4\\
 \ct{get-task-allow} & debugger may attach (dev signing only) & —\\
 \bottomrule
@@ -235,7 +245,9 @@ are re-signed by Apple and carry no profile.
   \item \textbf{Stolen Device Protection}: away from familiar places, saved passwords and cards
         need Face/Touch ID with no passcode fallback; Apple Account changes wait an hour.
   \item \textbf{Automatic Restart}: a long-locked device reboots, After $\to$ Before First
-        Unlock — class C data is locked again.
+        Unlock — class C data is locked again. Code does run there (VoIP apps, notification
+        service extensions, a Live Activity at reboot: Apple DTS); \ct{UserDefaults}, a class C
+        file, then reads as unset with no error.
   \item \textbf{Background Security Improvements}: WebKit and system-library fixes between
         updates, active after a restart, removable (shipped as patch + antipatch).
 \end{itemize}
@@ -267,7 +279,7 @@ are re-signed by Apple and carry no profile.
   \item \textbf{UID}: random, fused at manufacture; A9+ made by the SE's TRNG — unknown to Apple.
         Passcode tangled with it: guessing runs \textbf{on this device}, $\approx$80\,ms a try
         ($>$5.5 years for 6 chars a–z 0–9), delays 1\,min $\to$ 8\,h enforced by the SE across
-        reboots; Erase Data after 10 failures.
+        reboots; opt-in Erase Data after 10 failures.
 \end{itemize}
 
 \hd{Silicon mitigation ladder}
@@ -292,22 +304,21 @@ are re-signed by Apple and carry no profile.
 \textbf{PAC}: 5 secret 128-bit keys; return addresses: per-process key + stack-pointer salt;
 function pointers: one key for all processes. \textbf{SPTM} sits above the kernel,
 \textbf{TXM} enforces code-execution policy: page tables hold even against kernel write.
-\textbf{MIE} (iPhone 17, Air): typed allocators (\ct{kalloc\_type}, \ct{xzone malloc}) +
+\textbf{MIE} (A19 / M5 and later): typed allocators (\ct{kalloc\_type}, \ct{xzone malloc}) +
 synchronous tags, always on for the kernel and 70+ system processes.
 
 \hd{Enhanced Security — an opt-in capability}
-Entitlements \ct{com.apple.security.hardened-process} plus
-\ct{.enhanced-security-version-string} ($\geq$ 2 $\to$ freed memory becomes guard regions) ·
-\ct{.checked-allocations} (tagging, A19 / M5+; \ct{.soft-mode} = simulated crash) ·
-\ct{.platform-restrictions-string} (checks on loaded dylibs, incoming Mach messages) ·
-\ct{.dyld-ro} (loader state read-only) · \ct{….enforce-checked-pointer-arithmetic-overflow}
-(\ct{arm64e.x1}). Build settings: arm64e, typed allocators, stack zero-init, libc++ hardening;
-optional \ct{-fbounds-safety}. Apple DTS, Feb 2026: third-party tagging ran in soft mode
-anyway\unverified.
+One capability, \ct{com.apple.security.hardened-process}; each sub-key adds one defence:
+freed memory becomes guard regions (version $\geq$ 2) · allocations carry hardware tags
+(\ct{.checked-allocations}, A19 / M5+) · loaded dylibs and incoming Mach messages are checked ·
+internal platform state goes read-only (\ct{.dyld-ro}) · pointer arithmetic is overflow-checked
+(\ct{arm64e.x1}). Build side: arm64e, typed allocators, stack zero-init, libc++ hardening,
+optionally \ct{-fbounds-safety}. In \ct{.soft-mode} a tag fault is only a simulated crash, and
+until iOS 26.4 every third-party app ran in soft mode whatever it asked for.
 
 \hd{Traps}
 \begin{itemize}
-  \trap{Shipping with tagging \ct{.soft-mode} still on — tag faults only log.}
+  \trap{Turning tagging on in Xcode also adds \ct{.soft-mode}: ship it and tag faults only log.}
   \trap{arm64e: a C++ virtual call through a mismatched declaration, or \ct{dispatch\_queue\_t} /
         \ct{xpc\_connection\_t} passed between C++ and Objective-C++, now crashes.}
   \trap{Simulator can't test PAC; tagging acts only on A19 / M5 hardware.}
