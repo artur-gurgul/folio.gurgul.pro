@@ -31,6 +31,31 @@ costs · when to choose it**, plus the pitfall people actually fall into — kep
 next to the thing it belongs to. Comparisons are concrete (what each one
 solves, costs, fits), never ratings.
 
+**Every folio is dense and deep in its subject — what the subject is depends
+on the folio — and folios are linked.** An overview (e.g. `os/zfs`, for people
+who want to know ZFS) collects the facts of the whole subject, **ranks them by
+importance and fits as many as the page holds**, most important first; the
+facts are chosen with the maintainer. What the page cannot hold becomes a
+**subtopic**: a folio of its own, added to the to-do list, so the work can go
+on there or move to a new subject. The overview links to its subtopics and they
+link back. Maintainer, 2026-10-11: "this folio is like index, as i told you
+multiple times, that folios are linked. this one is overview on zfs and
+features" — and: "folios are dense and deep in subject, but it depemds on the
+folio, the one we work on is for people who want to know aabout the zfs, so we
+collect informatuons about zfs all facts rankend by importance and try to fit as
+much as we can, then we create subtopics add them to todo list, so we can
+continue with it or start new subject."
+
+**Draw it, and compose freely.** When an idea can be illustrated, draw it.
+The page is not a two-column form: compose each folio for its content —
+full-width figures, three columns, a figure beside its text, whatever fits it.
+A part that does not translate well to HTML gets an alternative web version in
+the same `.tex` (`\pdfonly{…}` for paper, `\htmlonly{…}` or the `htmlonly`
+block for the web). Maintainer, 2026-10-11: "do not forget about images, when
+we csn ilustrate some ide we csn use drawings, do not focus on two columns, you
+have freedom of composition, tex files can have two in comments alternative
+version for the web, the parts that does nit translate well to html".
+
 **Dense means dense with what teaches — and that takes effort.** Free space on
 the page is a research task: find the next thing a practitioner needs (a
 mechanism, a consequence, a worked example), or redesign the layout so the

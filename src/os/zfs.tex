@@ -1,49 +1,73 @@
-% zfs.tex — ZFS / OpenZFS: pool → vdevs → disks, datasets, copy-on-write + the checksum tree,
-% transaction groups and the ZIL, ARC / L2ARC, snapshots / clones / send-receive, property
-% defaults, what each vdev type survives, the release timeline, and the traps.
-% Sources (checked 2026-10-06):
-%   github.com/openzfs/zfs man/man7/zpoolconcepts.7 (vdev types; raidz "can sustain one, two, or
-%     three failures"; special = metadata, indirect blocks, ZIL without a log device, DDT; "Cache
-%     devices cannot be mirrored or part of a raidz configuration")
-%   man/man8/zpool-remove.8 (removable: spare, cache, log, mirror + single top-level, dedup,
-%     special; only if no top-level raidz/draid and all ashift equal)
-%   man/man8/zpool-attach.8 (RAIDZ expansion: data reflowed, "old blocks retain their old
-%     data-to-parity ratio", redundancy maintained)
-%   man/man7/zfsprops.7 (recordsize 512 B–128 KiB, 16 MiB with large_blocks, affects new files only;
-%     compression=on -> lz4; checksum=on -> fletcher4, also sha256/sha512/skein/edonr/blake3;
-%     encryption=on -> aes-256-gcm; dedup off; sync standard/always/disabled; atime + relatime)
-%   man/man4/zfs.4 (zfs_arc_max=0: larger of RAM - 1 GiB and 5/8 RAM; zfs_dirty_data_max RAM/10;
-%     auto ashift 9..14) · module/zfs/txg.c ("zfs_txg_timeout = 5"; open / quiescing / syncing)
-%   openzfs.github.io/openzfs-docs/Performance and Tuning/Workload Tuning.html (recordsize 128K
-%     default; volblocksize 16K since 2.2; compression=on default since 2.2; ashift 12 or 13 on
-%     flash; InnoDB 16K, PostgreSQL 32K–128K, sequential 1M)
-%   api.github.com/repos/openzfs/zfs/releases (0.8.0 2019-05-23 encryption, raw send, device
-%     removal, checkpoint, TRIM · 2.0.0 2020-11-30 unified Linux+FreeBSD, sequential resilver,
-%     persistent L2ARC, zstd · 2.1.0 2021-07-02 dRAID · 2.2.0 2023-10-13 block cloning, BLAKE3,
-%     corrective receive · 2.3.0 2025-01-14 RAIDZ expansion, fast dedup, Direct IO, JSON ·
-%     2.4.0 2025-12-18 default quotas, uncached IO, ZIL on special vdevs)
-%   en.wikipedia.org/wiki/OpenZFS (Sun 2001; CDDL in OpenSolaris 2005; illumos 2010; OpenZFS 2013;
-%     CDDL vs GPL -> out-of-tree module on Linux)
+% zfs.tex — ZFS / OpenZFS, the overview: how a pool is built from vdevs and datasets, never
+% overwriting + checksums + self-healing, snapshots and what they cost, send/receive, the write and
+% read paths, and the choices that cannot be undone. Facts ranked by importance, as many as fit;
+% the subtopics (pool layout, snapshots & replication, write path, ARC, root & boot, integrity,
+% encryption & dedup) get folios of their own.
+% Sources (checked 2026-10-11) — first checked 2026-10-06:
+%   github.com/openzfs/zfs man/man7/zpoolconcepts.7 ("Data is dynamically distributed across all
+%     top-level devices"; a vdev faults with "Insufficient replicas"; raidz "can sustain one, two, or
+%     three failures"; dRAID "integrated distributed hot spares", "fixed stripe width … to allow
+%     fully sequential resilvering"; special = "all metadata, the indirect blocks of user data, intent
+%     log (in absence of separate log device), and deduplication tables", small blocks opt-in, full
+%     special class spills to normal; "Log devices can be mirrored"; "Cache devices cannot be mirrored
+%     or part of a raidz configuration", a cache read error "is reissued to the original storage pool
+%     device"; hot spares replace a failed device automatically; checkpoint = "a pool-wide snapshot",
+%     rewinding "will permanently discard it")
+%   man/man7/zfsconcepts.7 (snapshots "created extremely quickly, and initially consume no additional
+%     space", "As data within the active dataset changes, the snapshot consumes more data"; snapshots
+%     "automatically mounted on demand"; clones "can only be created from a snapshot", promote reverses
+%     the dependency; bookmarks reference "when a snapshot was created", no space)
+%   man/man7/zfsprops.7 ("Properties are inherited from the parent unless overridden by the child";
+%     a snapshot's used = "space that is referenced exclusively by this snapshot", freed if destroyed;
+%     written = "written since the previous snapshot"; copies "in addition to any redundancy",
+%     "stored on different disks, if possible", charged to the dataset; compression on = lz4 when the
+%     feature is enabled; recordsize "affects only files created afterward"; sync=disabled "is very
+%     dangerous"; encryption on = aes-256-gcm; dedup off)
+%   man/man8/zpool-scrub.8 (scrub "examines all data … and verifies each block's checksum"; replicated
+%     devices: "ZFS automatically repairs any damage"; resilver "only examines data that ZFS knows to
+%     be out of date")
+%   man/man8/zfs-send.8 (incremental -i; from a bookmark; -w raw "may then be received on an untrusted
+%     machine", cannot be read "or alter[ed] without being detected"; -t resumes)
+%   man/man8/zfs-receive.8 (-s keeps partial state, receive_resume_token; -c corrective receive,
+%     "Metadata can not be healed")
+%   man/man8/zpool-remove.8 (raidz/draid top-level vdevs block removal; ashift must match) ·
+%     man/man8/zpool-attach.8 (raidz expansion: "old blocks retain their old data-to-parity ratio") ·
+%     man/man7/zpool-features.7 (an unsupported active feature blocks read-write import, and read-only
+%     import unless read-only compatible; compatibility limits zpool upgrade)
+%   zfsprops.7 also: quota "a dataset and its descendants", refquota excludes "descendants,
+%     including file systems and snapshots", reservation = "minimum amount of space guaranteed"
+%   man/man4/zfs.4 (zfs_arc_max=0: the larger of RAM − 1 GiB and 5/8 of RAM; auto ashift) ·
+%     module/zfs/txg.c (zfs_txg_timeout = 5) · OpenZFS docs, Workload Tuning (ashift 12 for 4K disks)
+%   en.wikipedia.org/wiki/OpenZFS (CDDL vs GPL → out-of-tree module on Linux); measured on OpenZFS
+%     2.3.9, Debian 13: the module is built per kernel (DKMS) and must be in the initramfs for a ZFS
+%     root; <mountpoint>/.zfs/snapshot/<name>/ reads back a file with snapdir=hidden
 % @labels: area=os kind=concept platform=general topic=storage,data discussion=141
 % @tags: zfs, openzfs, copy-on-write, merkle-tree, raidz, draid, mirror, zil, slog, arc, l2arc, snapshots, send-receive, checksums, scrub, compression, ashift
 \documentclass[8pt]{extarticle}
 \usepackage{printup-sheet}
 \usepackage{array}
 
+% Linked text: the website links it, paper prints the text only (paper holds no links).
+\newcommand\link[2]{\pdfonly{#1}\htmlonly{\href{#2}{#1}}}
 \newcommand\ct[1]{\texttt{#1}}
-\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcommand\hd[1]{\par\vspace{4pt}\noindent{\bfseries\color{sheetBlue}#1}\par\vspace{2pt}}
 
 \tikzset{
-  pool/.style={box, draw=sheetBlue, fill=sheetBlue!8, font=\scriptsize\bfseries, minimum height=5mm},
-  vd/.style={box, draw=sheetGreen!60!black, fill=sheetGreen!10, font=\tiny, inner sep=1.5pt, minimum height=4.2mm},
-  aux/.style={box, draw=sheetOrange, fill=sheetOrange!10, font=\tiny, inner sep=1.5pt, minimum height=4.2mm},
-  dk/.style={cell, minimum width=5.2mm, minimum height=3.6mm, font=\tiny},
-  ds/.style={box, draw=sheetBrown, fill=sheetBrown!8, font=\tiny\ttfamily, inner sep=1.5pt, minimum height=4mm},
-  bp/.style={box, font=\tiny, inner sep=1.2pt, minimum width=10mm, minimum height=4mm},
-  old/.style={bp, draw=sheetGrey, fill=black!4, text=black!60},
-  new/.style={bp, draw=sheetGreen!60!black, fill=sheetGreen!14},
-  lbl/.style={font=\tiny, text=black!75, inner sep=1pt, align=center},
-  hd/.style={font=\bfseries\small, text=sheetBlue, anchor=west},
+  ttl/.style={font=\bfseries, text=sheetBlue, anchor=west},
+  ds/.style={box, draw=sheetBrown, fill=sheetBrown!8, font=\small\ttfamily, inner sep=2pt},
+  pool/.style={box, draw=sheetBlue, fill=sheetBlue!8, font=\small\bfseries, inner sep=2.5pt},
+  vd/.style={box, draw=sheetGreen!60!black, fill=sheetGreen!12, font=\small\bfseries, inner sep=2pt},
+  dk/.style={cell, minimum width=4.6mm, minimum height=4mm, fill=sheetGreen!8},
+  kind/.style={box, draw=sheetOrange, fill=sheetOrange!10, font=\small\bfseries, inner sep=2pt,
+               minimum width=19mm},
+  say/.style={font=\small, align=left, anchor=west, inner sep=1pt},
+  lbl/.style={font=\small, text=black!75, align=center, inner sep=1pt},
+  blk/.style={box, font=\small, inner sep=1.5pt, minimum width=9mm, minimum height=4.5mm},
+  old/.style={blk, draw=sheetGrey, fill=black!5, text=black!65},
+  new/.style={blk, draw=sheetGreen!60!black, fill=sheetGreen!14},
+  held/.style={blk, draw=sheetOrange, fill=sheetOrange!15},
+  wrote/.style={blk, draw=sheetBlue, fill=sheetBlue!12},
+  stage/.style={box, font=\small, inner sep=2pt, minimum height=5mm, text width=24mm, align=center},
 }
 
 \begin{document}
@@ -51,157 +75,187 @@
 
 \sheettitle{ZFS — pools, copy-on-write, checksums, snapshots}{os · folio}
 
-\oneliner{ZFS is a volume manager and a filesystem in one: disks form \textbf{vdevs}, vdevs form a
-\textbf{pool}, and every \textbf{dataset} draws space from the whole pool. Nothing is overwritten in
-place — every change is written to \textbf{new blocks} and the tree of \textbf{checksummed} block
-pointers is re-rooted atomically, so a crash leaves the old or the new state, a \textbf{snapshot}
-is free, and silent corruption is \emph{detected} and, given redundancy, \emph{repaired}.}
+\oneliner{ZFS is a volume manager and a filesystem in one. Disks form \textbf{vdevs}, vdevs form a
+\textbf{pool}, and every \textbf{dataset} draws on the pool's free space. Nothing is overwritten in
+place: each change goes to new blocks under a new root, so a crash leaves the old state or the new
+one, a \textbf{snapshot} costs nothing to take, and a disk that returns wrong data is caught by a
+\textbf{checksum} — and, with redundancy, repaired.}
 
-\vspace{2pt}
+\vspace{3pt}
 \noindent\begin{tikzpicture}[sheet]
-  % ───────── pool layout
-  \node[hd] at (-0.2,3.35) {Pool $\to$ vdevs $\to$ disks};
-  \node[ds] (d1) at (0.7,2.85) {tank/home};
-  \node[ds] (d2) at (2.35,2.85) {tank/db};
-  \node[ds] (d3) at (4.05,2.85) {tank/vm (zvol)};
-  \node[pool, minimum width=58mm] (p) at (2.4,2.2) {pool \ct{tank} — space shared by every dataset};
-  \foreach \d in {d1,d2,d3} \draw[flow] (\d) -- (\d |- p.north);
-  \node[vd] (r) at (0.95,1.45) {raidz2};
-  \node[vd] (m) at (3.3,1.45) {mirror};
-  \draw[flow] (p.south -| r) -- (r); \draw[flow] (p.south -| m) -- (m);
-  \foreach \i in {0,...,5} \node[dk, fill=sheetGreen!8] at (-0.35+0.52*\i,0.8) {};
-  \node[dk, fill=sheetGreen!8] at (3.0,0.8) {}; \node[dk, fill=sheetGreen!8] at (3.6,0.8) {};
-  \draw (r.south) -- (0.95,1.0); \draw (m.south) -- (3.3,1.0);
-  \node[lbl] at (0.95,0.38) {6 disks: any 2 may fail};
-  \node[lbl] at (3.3,0.38) {any 1 of 2};
-  \node[lbl, text=sheetBlue, align=left, anchor=west] at (-0.3,0.0) {writes stripe across top-level vdevs — lose \textbf{one vdev}, lose the \textbf{pool}};
-  \node[aux] (sp) at (5.35,1.65) {special: metadata};
-  \node[aux] (lg) at (5.35,1.15) {log (SLOG): ZIL};
-  \node[aux] (ca) at (5.35,0.65) {cache: L2ARC};
-  % ───────── copy-on-write tree
-  \draw[sheetGrey!40] (6.55,3.5) -- (6.55,-0.15);
-  \node[hd] at (6.7,3.35) {Copy-on-write: change one block};
-  \node[old] (u0) at (8.1,2.8) {uberblock $n$};
-  \node[old] (i0) at (8.1,2.1) {indirect};
-  \node[old] (a0) at (7.45,1.35) {A};
-  \node[old] (b0) at (8.75,1.35) {B};
-  \draw[->, sheetGrey] (u0) -- (i0); \draw[->, sheetGrey] (i0) -- (a0); \draw[->, sheetGrey] (i0) -- (b0);
-  \node[new] (u1) at (10.7,2.8) {uberblock $n{+}1$};
-  \node[new] (i1) at (10.7,2.1) {indirect$'$};
-  \node[new] (b1) at (11.35,1.35) {B$'$};
-  \draw[->, thick, sheetGreen!60!black] (u1) -- (i1); \draw[->, thick, sheetGreen!60!black] (i1) -- (b1);
-  \draw[->, thick, sheetGreen!60!black] (i1.south west) -- (a0.east);
-  \node[lbl, text=sheetGreen!40!black, align=left, anchor=west] at (11.95,2.1) {each pointer stores\\the child's \textbf{checksum}};
-  \node[lbl, align=left, anchor=west] at (11.95,1.35) {A is \textbf{shared}, not copied};
-  \node[lbl, text=sheetBrown, align=center] at (9.4,0.75) {snapshot = keep pointing at uberblock $n$'s tree: \textbf{O(1)}, no copy;\\
-    space is only what later changes free up};
-  \node[lbl, text=sheetRed, align=center] at (9.4,0.15) {new uberblock written last, in a txg $\le$ 5 s:\\a crash leaves tree $n$ or tree $n{+}1$ — never a half};
-  % ───────── write path
-  \draw[sheetGrey!40] (13.45,3.5) -- (13.45,-0.15);
-  \node[hd] at (13.6,3.35) {Write path};
-  \node[bp, minimum width=22mm] (app) at (15.2,2.85) {\ct{write()} / \ct{fsync()}};
-  \node[bp, minimum width=22mm, fill=sheetBlue!8] (arc) at (15.2,2.15) {RAM: dirty data (txg)};
-  \node[aux, minimum width=22mm] (zil) at (15.2,1.45) {ZIL (on SLOG if any)};
-  \node[vd, minimum width=22mm] (pl) at (15.2,0.75) {pool: txg sync};
-  \draw[flow] (app) -- (arc); \draw[flow] (arc) -- (pl.north west);
-  \draw[hot] (app.east) to[out=-20, in=20] node[lbl, left, text=sheetOrange]{sync} (zil.east);
-  \node[lbl, align=center] at (15.2,0.15) {ZIL is only \textbf{read after a crash};\\SLOG speeds \emph{sync} writes only};
+  % ───────── the pool
+  \node[ttl] at (0,4.55) {How ZFS is built};
+  \node[lbl, anchor=west] at (2.3,4.55) {· datasets inherit properties down the tree; a child may override};
+  \node[ds] (h) at (1.1,3.8) {tank/home};
+  \node[ds] (d) at (3.3,3.8) {tank/db};
+  \node[ds] (v) at (5.75,3.8) {tank/vm (a zvol)};
+  \node[pool, minimum width=88mm] (p) at (4.4,3.0) {pool \ct{tank} — every dataset draws on the same free space};
+  \foreach \n in {h,d,v} \draw[flow] (\n) -- (\n |- p.north);
+  \node[vd] (m) at (1.6,2.05) {mirror};
+  \node[vd] (r) at (6.0,2.05) {raidz2};
+  \draw[flow] (p.south -| m) -- (m); \draw[flow] (p.south -| r) -- (r);
+  \node[lbl] at (3.8,2.32) {data is spread over\\every top-level vdev};
+  \node[dk] at (1.3,1.3) {}; \node[dk] at (1.9,1.3) {};
+  \foreach \i in {0,...,5} \node[dk] at (4.7+0.52*\i,1.3) {};
+  \draw (m.south) -- (1.6,1.52); \draw (r.south) -- (6.0,1.52);
+  \node[lbl] at (1.6,0.82) {survives all but one disk};
+  \node[lbl] at (6.0,0.82) {survives any 2 of the 6};
+  \node[lbl, text=sheetRed, anchor=west] at (0,0.22)
+    {Redundancy lives \textbf{inside each vdev}: lose one vdev, lose the \textbf{whole pool}.};
+  % ───────── the other kinds of vdev
+  \draw[sheetGrey!40] (9.25,4.75) -- (9.25,0.0);
+  \node[ttl] at (9.45,4.55) {Other kinds of vdev};
+  \foreach \y/\k/\t in {
+      3.95/{raidz1, raidz3}/{1 or 3 parity disks: survive 1 or 3 failed disks},
+      3.23/dRAID/{spare space spread over all disks, a fixed stripe: a sequential, faster rebuild},
+      2.51/special/{metadata and the dedup table (small blocks opt-in). \textcolor{sheetRed}{Lose it, lose the pool}: mirror it},
+      1.79/log (SLOG)/{the intent log: only \emph{sync} writes get faster. Can be mirrored},
+      1.07/cache (L2ARC)/{more read cache, no redundancy needed: a failed read goes to the pool},
+      0.35/spare/{takes over a failed disk on its own}} {
+    \node[kind] at (10.45,\y) {\k};
+    \node[say, text width=50mm] at (11.5,\y) {\t};
+  }
 \end{tikzpicture}
 
-\begin{multicols}{2}
-\raggedright
+\begin{multicols}{3}
+\raggedright\setstretch{1.0}
 
-\section{Vdevs — what each survives}
-{\footnotesize\setlength\tabcolsep{2pt}
-\begin{tabular}{@{}L{14mm}L{19mm}L{43mm}@{}}
-\toprule
-\textbf{vdev} & \textbf{survives} & \textbf{notes} \\
-\midrule
-mirror & all but 1 disk & fastest resilver (sequential resilver, 2.0); removable \\
-raidz1/2/3 & 1 / 2 / 3 disks & distributed parity; widen by \textbf{expansion} (2.3) \\
-draid1/2/3 & 1 / 2 / 3 & raidz + \textbf{distributed} hot spare — fast rebuild (2.1) \\
-special & = its own redundancy & metadata (+ small blocks); \textbf{lose it, lose the pool} — mirror it \\
-log (SLOG) & ZIL content & low-latency SSD for sync writes; mirroring allowed \\
-cache & — & L2ARC; persistent since 2.0; can't be mirrored \\
-spare & — & hot spare taken over on a failure \\
-\bottomrule
-\end{tabular}}
-\textbf{Removal}: spare, cache, log, mirror, single disk, special, dedup — only if \textbf{no
-raidz/draid} top-level vdev exists and all \ct{ashift}s match. A raidz vdev can never be removed.
+\hd{Never overwrite}
+\noindent\begin{tikzpicture}[sheet]
+  \node[old] (r0) at (0.7,2.0) {root $n$};
+  \node[old] (i0) at (0.7,1.25) {pointers};
+  \node[old] (b) at (0.3,0.45) {B};
+  \node[new] (r1) at (3.75,2.0) {root $n{+}1$};
+  \node[new] (i1) at (3.75,1.25) {pointers$'$};
+  \node[new] (b1) at (4.15,0.45) {B$'$};
+  \node[blk, draw=black!60, fill=white] (a) at (2.2,0.45) {A};
+  \draw[->, sheetGrey] (r0) -- (i0); \draw[->, sheetGrey] (i0) -- (b); \draw[->, sheetGrey] (i0) -- (a);
+  \draw[->, thick, sheetGreen!60!black] (r1) -- (i1); \draw[->, thick, sheetGreen!60!black] (i1) -- (b1);
+  \draw[->, thick, sheetGreen!60!black] (i1) -- (a);
+  \node[lbl] at (2.2,-0.15) {A is shared, not copied};
+\end{tikzpicture}\par
+Changing B writes B$'$ and new pointers up to a new root, \textbf{written last}. A crash leaves the
+old tree or the new one: no half-written state, no \ct{fsck}.
 
-\section{Integrity}
-\begin{itemize}
-  \item The checksum of every block lives in its \textbf{parent's} block pointer — a Merkle tree up
-        to the uberblock, so a disk returning wrong data (bit rot, misdirected write) is caught on
-        read. Default \ct{fletcher4}; \ct{sha256}, \ct{sha512}, \ct{skein}, \ct{edonr},
-        \ct{blake3} (2.2).
-  \item With redundancy the bad copy is \textbf{rewritten from a good one} (self-healing).
-        \ct{zpool scrub} reads everything to find it before you need it.
-  \item \ct{copies=2|3} keeps extra copies even on one disk (charged to the dataset).
-  \item \ct{zpool status}: per-device \textbf{READ / WRITE / CKSUM} counters; files with permanent
-        errors are listed by name.
-\end{itemize}
+Every pointer holds the \textbf{checksum} of the block it points to, all the way up to the root. A
+disk that returns wrong data, or the right data from the wrong place, fails the check.
 
-\section{Caching}
-\textbf{ARC} in RAM (adaptive: recently + frequently used). Default cap: the larger of
-\textbf{RAM $-$ 1 GiB} and \textbf{5/8 of RAM}. \textbf{L2ARC} on SSD extends it but needs RAM for
-its headers. Dirty data is capped at RAM/10 by default.
-
-\section{Timeline}
-{\footnotesize Sun starts ZFS 2001 · CDDL source in OpenSolaris 2005 · illumos fork 2010 ·
-\textbf{OpenZFS} 2013 · 0.8 (2019) encryption, raw send, TRIM, device removal · \textbf{2.0}
-(2020) one codebase for Linux + FreeBSD, zstd · 2.1 (2021) dRAID · 2.2 (2023) block cloning,
-BLAKE3 · \textbf{2.3} (Jan 2025) RAIDZ expansion, fast dedup, Direct IO · 2.4 (Dec 2025).
-CDDL is held incompatible with the GPL, so on Linux ZFS ships as an out-of-tree module.\par}
+On a mirror, raidz or dRAID the bad copy is \textbf{rewritten from a good one}. A \textbf{scrub}
+reads everything to find damage before you need the data; a \textbf{resilver} rebuilds only what
+is out of date. \ct{copies=2} keeps a second copy even on a single disk.
 
 \columnbreak
 
-\section{Datasets \& properties (defaults)}
-{\footnotesize\setlength\tabcolsep{2pt}
-\begin{tabular}{@{}L{18mm}L{58mm}@{}}
-\toprule
-\ct{recordsize} & 128 KiB (512 B–16 MiB); a \emph{maximum} per block; new files only \\
-\ct{volblocksize} & zvols: 16 KiB since 2.2; fixed at creation \\
-\ct{compression} & \ct{on} = lz4, default \emph{on} since 2.2; also zstd (2.0), gzip \\
-\ct{checksum} & \ct{on} = fletcher4 \\
-\ct{encryption} & off; \ct{on} = aes-256-gcm, per dataset, since 0.8 \\
-\ct{sync} & \ct{standard} · \ct{always} · \ct{disabled} (loses acknowledged writes) \\
-\ct{atime} & on, with \ct{relatime} — set \ct{off} for busy reads \\
-\ct{dedup} & off — every block's hash in a table that must stay hot \\
-\bottomrule
-\end{tabular}}
-Workload advice (OpenZFS docs): InnoDB \ct{recordsize=16K}, PostgreSQL 32K–128K, large
-sequential files \ct{1M}. \textbf{ashift} (sector size, $2^n$) is fixed per vdev at creation —
-\ct{ashift=12} for 4K disks, 12 or 13 for flash.
+\hd{Snapshots}
+\noindent\begin{tikzpicture}[sheet]
+  \node[lbl, anchor=east] at (0.55,1.6) {\ct{@mon}};
+  \node[new] at (1.05,1.6) {A}; \node[held] at (1.95,1.6) {B}; \node[held] at (2.85,1.6) {C};
+  \node[lbl, anchor=east] at (0.55,0.85) {now};
+  \node[new] at (1.05,0.85) {A}; \node[wrote] at (1.95,0.85) {B$'$};
+  \node[lbl, text=black!50] at (2.85,0.85) {deleted};
+  \node[lbl, anchor=west, align=left, text=sheetGreen!45!black] at (3.4,1.9) {A: shared};
+  \node[lbl, anchor=west, align=left, text=sheetOrange!80!black] at (3.4,1.45) {B, C: held only\\by \ct{@mon}};
+  \node[lbl, anchor=west, align=left, text=sheetBlue] at (3.4,0.75) {B$'$: written\\since \ct{@mon}};
+\end{tikzpicture}\par
+A snapshot is \textbf{the old root kept alive}: instant, nothing copied, no space at first. It grows
+as the live data changes away from it.
 
-\section{Snapshots, clones, replication}
-\begin{lstlisting}
-zpool create tank raidz2 sda sdb sdc sdd sde sdf
-zfs create -o recordsize=1M tank/media
-zfs snapshot tank/db@daily-1
-zfs rollback tank/db@daily-1     # -r if newer snaps
-zfs clone tank/db@daily-1 tank/t # writable, shared
-zfs send -i @daily-1 tank/db@daily-2 |
-  ssh backup zfs receive -u pool/db   # delta only
-zfs send -w tank/secret@s | ...  # raw: still encrypted
-zpool scrub tank; zpool status -x
-\end{lstlisting}
-Incremental send walks block birth times, not files — cost $\propto$ change, not size.
+Deleting C frees nothing while \ct{@mon} holds it. Destroying \ct{@mon} frees only its \ct{used}:
+the blocks nothing else holds (B and C). \ct{written} is what changed since the last snapshot.
+A \ct{quota} caps a dataset with its children and snapshots, a \ct{refquota} the dataset alone; a
+\ct{reservation} guarantees it space.
 
-\section{Traps}
-\begin{itemize}
-  \trap{A snapshot is not a backup: same pool, same disks — \ct{send} it elsewhere.}
-  \trap{Adding a single disk as a top-level vdev to a raidz pool makes it the pool's weak point.}
-  \trap{RAIDZ expansion keeps old blocks at the old data:parity ratio until rewritten.}
-  \trap{A SLOG does nothing for async writes; L2ARC is no substitute for RAM.}
-\end{itemize}
+Any snapshot reads back at \ct{.zfs/snapshot/<name>/}, even when hidden: one file back, no rollback.
+A \textbf{clone} is a writable dataset made from a snapshot, sharing its blocks.
 
-\section{Remember}
-\textbf{Pool of vdevs · never overwrite · checksum in the parent · snapshot = old root · redundancy is per vdev.}
+\columnbreak
+
+\hd{Send and receive}
+\noindent\begin{tikzpicture}[sheet]
+  \node[lbl, font=\small\ttfamily] at (0.75,2.05) {tank/db};
+  \node[old] (s1) at (0.75,1.4) {@1}; \node[new] (s2) at (0.75,0.65) {@2};
+  \node[lbl, font=\small\ttfamily] at (4.0,2.05) {backup/db};
+  \node[old] (t1) at (4.0,1.4) {@1}; \node[new, dashed] (t2) at (4.0,0.65) {@2};
+  \draw[hot] (s2.east) -- node[lbl, above, text=sheetOrange!80!black]{only blocks} node[lbl, below, text=sheetOrange!80!black]{born after @1} (t2.west);
+  \node[lbl] at (2.4,-0.05) {over a pipe or \ct{ssh}};
+\end{tikzpicture}\par
+\ct{send} turns a snapshot, or \textbf{only the difference between two}, into a stream;
+\ct{receive} replays it into another pool. The cost follows what changed, not the size. An
+incremental send can also start from a \textbf{bookmark}, which marks when a snapshot was taken and
+costs nothing, so the old snapshot itself can go.
+
+A \textbf{raw} send stays encrypted: the backup host stores it without being able to read it, or
+to change it unnoticed. An interrupted receive kept with \ct{-s} resumes from its token. A
+corrective receive repairs damaged data from a healthy stream.
+
+\textcolor{sheetRed}{\textbf{A snapshot is not a backup}}: it lives on the same disks. A backup is a
+snapshot sent somewhere else.
 
 \end{multicols}
 
-\noindent{\footnotesize\color{sheetGrey}\textit{Related:} git-in-depth (a Merkle DAG too) ·
-zero-downtime-db-migrations · sqlite-grdb-internals (WAL vs ZIL)}
+\begin{multicols}{3}
+\raggedright\setstretch{1.0}
+
+\hd{Writing}
+\noindent\begin{tikzpicture}[sheet]
+  \node[stage, draw=sheetGrey, fill=white] (w) at (1.3,2.05) {\ct{write()}, \ct{fsync()}};
+  \node[stage, draw=sheetBlue, fill=sheetBlue!8] (t) at (1.3,1.2) {RAM: transaction group};
+  \node[stage, draw=sheetGreen!60!black, fill=sheetGreen!12] (pl) at (1.3,0.35) {pool, every $\le$5 s};
+  \node[box, draw=sheetOrange, fill=sheetOrange!10, font=\small, inner sep=2pt, text width=13mm, align=center] (z) at (4.05,1.2) {ZIL\\(on SLOG)};
+  \draw[flow] (w) -- (t); \draw[flow] (t) -- (pl);
+  \draw[hot] (w.east) -| node[lbl, pos=0.25, above]{sync} (z.north);
+\end{tikzpicture}\par
+Writes gather in RAM and land together. A sync write (\ct{fsync}, a database commit) also goes to
+the \textbf{intent log}, which is read only after a crash. A \textbf{SLOG} makes sync writes faster
+and nothing else; \ct{sync=disabled} acknowledges writes it has not stored.
+
+\ct{recordsize} is the largest block of a dataset and applies to files created afterwards.
+Compression is on by default (lz4): fewer bytes to write and read.
+
+\columnbreak
+
+\hd{Reading}
+\noindent\begin{tikzpicture}[sheet]
+  \node[stage, draw=sheetBlue, fill=sheetBlue!8] (arc) at (1.3,2.05) {ARC, in RAM};
+  \node[stage, draw=sheetOrange, fill=sheetOrange!10] (l2) at (1.3,1.2) {L2ARC, on SSD};
+  \node[stage, draw=sheetGreen!60!black, fill=sheetGreen!12] (pl) at (1.3,0.35) {the pool's disks};
+  \draw[flow] (arc) -- node[lbl, right]{miss} (l2); \draw[flow] (l2) -- node[lbl, right]{miss} (pl);
+\end{tikzpicture}\par
+The \textbf{ARC} caches what is read most often and most recently. By default it may grow to the
+larger of RAM $-$ 1 GiB and 5/8 of RAM: on a ZFS box, ``used'' memory is mostly cache.
+
+An \textbf{L2ARC} extends it onto an SSD, but its index lives in RAM. Dedup is off by default for
+the same reason: its table must stay in RAM to be fast. Encryption is chosen per dataset.
+
+\columnbreak
+
+\hd{Choices you cannot undo}
+\begin{itemize}
+  \trap{\ct{ashift}, the sector size, is fixed per vdev when it is created: \ct{12} for disks with 4K
+        sectors.}
+  \trap{A raidz or dRAID vdev can never be removed from the pool.}
+  \trap{A \textbf{checkpoint} rewinds the whole pool, configuration included — and rewinding
+        discards it.}
+  \trap{A single disk added beside a raidz becomes the pool's weakest vdev.}
+  \trap{Expanding a raidz with a disk keeps old blocks at their old data:parity ratio.}
+  \trap{\ct{zpool upgrade} can make the pool unreadable to an older ZFS; the \ct{compatibility}
+        property limits it.}
+  \trap{On Linux, ZFS is a separate kernel module, rebuilt for every kernel; a ZFS root needs it in
+        the initramfs.}
+\end{itemize}
+
+\begin{htmlonly}
+\section{Further reading}
+\begin{itemize}
+  \item \href{https://openzfs.github.io/openzfs-docs/}{OpenZFS documentation} — the project's own guides, from getting started to performance tuning
+  \item \href{https://github.com/openzfs/zfs/blob/master/man/man7/zpoolconcepts.7}{zpoolconcepts(7)} — every kind of vdev, what each survives, and how a pool fails
+  \item \href{https://github.com/openzfs/zfs/blob/master/man/man7/zfsconcepts.7}{zfsconcepts(7)} — datasets, snapshots, clones and bookmarks, in the manual's words
+\end{itemize}
+\end{htmlonly}
+
+\end{multicols}
+
+\noindent{\footnotesize\color{sheetGrey}\textit{Related:} linux-filesystems-storage · git-in-depth
+(a Merkle DAG too) · sqlite-grdb-internals (WAL vs ZIL) · os-fundamentals}
 
 \end{document}
