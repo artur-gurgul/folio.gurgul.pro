@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>StoreKit 2 · in-app purchases &amp; subscriptions — folio</title><meta name="description" content="A StoreKit 2 purchase ends in a signed letter, not a callback: each Transaction is a JWS the App Store signs and StoreKit checks on the device, against the certificate chain packed inside it. Your part is verify → grant → finish() — with an ear open from launch (Transaction.updates) for all that is bought, renewed or refunded while you are not looking."><link rel="canonical" href="https://folio.gurgul.pro/ios-platform/storekit2.html"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#24292b"><meta name="color-scheme" content="dark"><link rel="preload" href="/static/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Regular.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/nav.json" as="fetch" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"><script src="/static/js/site.js" defer></script></head><body data-nav="/nav.json" data-area="ios-platform"><img class="folio-print" src="/ios-platform/storekit2.svg" alt="" aria-hidden="true"><main class="content folio-page"><h1 class="title">StoreKit 2 · in-app purchases &amp; subscriptions</h1><div id="post"><article class="sheet">
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>StoreKit 2 · in-app purchases &amp; subscriptions — folio</title><meta name="description" content="A StoreKit 2 purchase ends in a signed letter, not a callback: each Transaction is a JWS the App Store signs and StoreKit checks on the device, against the certificate chain packed inside it. Your part is verify → grant → finish() — with an ear open from launch (Transaction.updates) for all that is bought, renewed or refunded while you are not looking."><link rel="canonical" href="https://folio.gurgul.pro/ios-platform/storekit2.html"><link rel="icon" href="/static/favicon.svg?v=6e92094c60" type="image/svg+xml"><meta name="theme-color" content="#24292b"><meta name="color-scheme" content="dark"><link rel="preload" href="/static/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Regular.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/nav.json?v=d83009f1cd" as="fetch" crossorigin><link rel="stylesheet" href="/static/css/all.css?v=ab00b078aa"><link rel="stylesheet" href="/static/css/hightlight.css?v=af1b576646"><link rel="stylesheet" href="/static/css/sheet.css?v=80dd95ec25"><script src="/static/js/site.js?v=2b182a126c" defer></script></head><body data-nav="/nav.json?v=d83009f1cd" data-area="ios-platform"><img class="folio-print" src="/ios-platform/storekit2.svg?v=90f20b1063" alt="" aria-hidden="true"><main class="content folio-page"><h1 class="title">StoreKit 2 · in-app purchases &amp; subscriptions</h1><div id="post"><article class="sheet">
 <p class="sheet-kicker">ios-platform · folio</p>
 <p class="sheet-oneliner"><strong>In one line:</strong> A StoreKit 2 purchase ends in a <strong>signed letter</strong>, not a callback:
 each <code>Transaction</code> is a <strong>JWS</strong> the App Store signs and StoreKit
@@ -9,7 +9,7 @@ or refunded while you are not looking.</p>
 <p class="sheet-tools"><a class="sheet-download" href="storekit2.pdf" download>Download PDF</a> <a href="storekit2.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/storekit2.tex">LaTeX source</a></p>
 <section class="sheet-section">
 <h2>Why it looks like this</h2>
-<figure class="sheet-figure"><img src="storekit2-fig1.svg" width="308" height="58" style="--f:0.491" alt="StoreKit 2 · in-app purchases &amp; subscriptions — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="storekit2-fig1.svg?v=c707ead0c6" width="308" height="58" style="--f:0.491" alt="StoreKit 2 · in-app purchases &amp; subscriptions — figure 1" loading="lazy"></figure>
 <ul>
 <li><strong>2012</strong>: on iOS <span class="math">≤</span> 5.1 an app asked Apple’s server “is this  receipt valid?” itself. A DNS redirect plus a user-installed CA put  an impostor there that said yes, and generic receipts could be  replayed. Fix: ask from <em>your</em> server; iOS 6 closed it.</li>
 <li><strong>StoreKit 2 asks nobody</strong>: the chain to Apple’s root travels  <em>inside</em> each JWS, so the check runs offline, and  <a href="https://developer.apple.com/documentation/storekit/transaction/deviceverification"><code>deviceVerification</code></a>  = SHA-384(nonce + this device’s ID) ties it to one device.</li>
@@ -18,7 +18,7 @@ or refunded while you are not looking.</p>
 </section>
 <section class="sheet-section">
 <h2>What a transaction really is</h2>
-<figure class="sheet-figure"><img src="storekit2-fig2.svg" width="305" height="121" style="--f:0.486" alt="StoreKit 2 · in-app purchases &amp; subscriptions — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="storekit2-fig2.svg?v=03f2c21cd7" width="305" height="121" style="--f:0.486" alt="StoreKit 2 · in-app purchases &amp; subscriptions — figure 2" loading="lazy"></figure>
 </section>
 <section class="sheet-section">
 <h2>How it flows</h2>
@@ -47,7 +47,7 @@ or refunded while you are not looking.</p>
 </section>
 <section class="sheet-section">
 <h2>One purchase, two roads in</h2>
-<figure class="sheet-figure"><img src="storekit2-fig3.svg" width="301" height="208" style="--f:0.480" alt="StoreKit 2 · in-app purchases &amp; subscriptions — figure 3" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="storekit2-fig3.svg?v=37a1c09d99" width="301" height="208" style="--f:0.480" alt="StoreKit 2 · in-app purchases &amp; subscriptions — figure 3" loading="lazy"></figure>
 <p><a href="https://support.apple.com/en-us/105055">Ask to Buy</a> expires:
 not approved in 24 h, the child asks again.
 <a href="https://developer.apple.com/documentation/appstoreservernotifications">Server notifications</a>
@@ -55,7 +55,7 @@ carry the same JWS. Device decides UX, server decides truth.</p>
 </section>
 <section class="sheet-section">
 <h2>When a renewal charge fails</h2>
-<figure class="sheet-figure"><img src="storekit2-fig4.svg" width="283" height="55" style="--f:0.451" alt="StoreKit 2 · in-app purchases &amp; subscriptions — figure 4" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="storekit2-fig4.svg?v=103f65c5e7" width="283" height="55" style="--f:0.451" alt="StoreKit 2 · in-app purchases &amp; subscriptions — figure 4" loading="lazy"></figure>
 <ul>
 <li><a href="https://developer.apple.com/help/app-store-connect/manage-subscriptions/enable-billing-grace-period-for-auto-renewable-subscriptions">Grace</a>  lasts 3, 16 or 28 days (weekly: 3 or 6), the sub still in  <code>currentEntitlements</code>; in billing retry it drops out.</li>
 <li>Grace is money too: recovered in it, the <em>days of paid service</em>  never break — a year of them in one group lifts your share from  <a href="https://developer.apple.com/help/app-store-connect/manage-subscriptions/offer-auto-renewable-subscriptions/">70% to 85%</a>.  Back within 60 days the count goes on; later, it restarts.</li>

@@ -14,6 +14,8 @@ CHECKS
             style uses (tools/ci-fonts.py installs the exact ones)
   figures   every published figure (docs/**/*-figN.svg) is recoloured for the
             dark page, and its text is at least 4.5:1 on it (tools/dark-figures.py)
+  cache     every file a published page loads is named with ?v=<its content
+            hash>, and is there (tools/cache-bust.py)
 
   --selftest  every check must flag a planted bad sample first (a positive
               control); a check that cannot go red proves nothing
@@ -169,6 +171,21 @@ def check_figures() -> None:
         "\n".join(run.stdout.strip().splitlines()[:-1][:20]))
 
 
+def cache_bust(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(ROOT / "tools" / "cache-bust.py"), *args],
+                          capture_output=True, text=True)
+
+
+def check_cache() -> None:
+    run = cache_bust(str(ROOT / "docs"), "--check")
+    summary = (run.stdout.strip().splitlines() or [""])[-1]
+    if run.returncode == 2:
+        say("CNC", "cache", (run.stdout + run.stderr).strip())
+        return
+    say("FAIL" if run.returncode else "PASS", f"cache — {summary}",
+        "\n".join(run.stdout.strip().splitlines()[:-1][:20]))
+
+
 def selftest(with_compile: bool) -> bool:
     """Positive controls: each check's core must flag a planted bad sample."""
     controls = [
@@ -181,6 +198,8 @@ def selftest(with_compile: bool) -> bool:
                        + "api" + "_key = '" + "x" * 24 + "'")) >= 2),
         # its own controls: a paper figure and a too-faint text colour must both fail
         ("figures flags a paper figure and faint text", dark_figures("--selftest").returncode == 0),
+        # its own controls: an unstamped page and a stamp gone stale must both fail
+        ("cache flags a missing and a stale stamp", cache_bust("--selftest").returncode == 0),
     ]
     if with_compile and shutil.which("xelatex") and shutil.which("pdfinfo"):
         template = ROOT / "tools" / "templates" / "folio.tex"
@@ -214,6 +233,7 @@ def main() -> int:
     check_headers()
     check_leaks()
     check_figures()
+    check_cache()
     if args.base and not args.allow_docs:
         check_docs(args.base)
     if args.compile:

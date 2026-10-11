@@ -46,6 +46,7 @@ src/                     the sources — the only place content is written
 tools/build.py           builds src/ → docs/ (needs a compiled Sajt: --sajt or $SAJT)
 tools/check.py           the checks (headers, leaks, dark figures, docs untouched, one page) — no Sajt needed
 tools/dark-figures.py    recolours the figures for the dark page (the build runs it)
+tools/cache-bust.py      names every file a page loads with ?v=<its hash> (the build runs it, last)
 tools/ci-fonts.py        installs the exact fonts the page-count check needs
 tools/templates/folio.tex  the anatomy of a folio — start every new one from it
 docs/                    ⚠ BUILD OUTPUT, served by GitHub Pages. Never edit by hand.
@@ -80,7 +81,13 @@ which is what prints, stays paper. A recoloured figure is marked with its style
 version and never recoloured twice; `tools/check.py` fails while any figure is
 still paper or in an older style. Every figure is shown at **one scale** — its
 share of the A4 text width (`--f`, written by `tools/build.py`) of the column —
-so a small figure's text is as large as a wide one's. The build writes `nav.json`,
+so a small figure's text is as large as a wide one's. Last, every file a page loads —
+stylesheets, scripts, figures, the JSON files — is named with `?v=<its content hash>`
+(`tools/cache-bust.py`): GitHub Pages lets a browser keep every file for ten minutes, and
+without it a reload after a release shows the new page with the old CSS. Fonts and links
+(`<a href>`) are not stamped; `tools/check.py` fails while a stamp is missing or stale, so
+anything that replaces a published file afterwards runs `tools/cache-bust.py docs` again.
+The build writes `nav.json`,
 `sitemap.xml` and `robots.txt` (`generate:` in `src/.sajt/config.yaml`) and
 fails without them. Do not put anything into a page that every page repeats —
 it belongs in a JSON file, a stylesheet or a script.

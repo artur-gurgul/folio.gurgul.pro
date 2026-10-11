@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Flaky tests · CI · coverage · TDD — folio</title><meta name="description" content="A flaky test passes and fails on the same code. The cause is nondeterminism — async waits, races, test order, network, time — so remove the source; a retry only measures it. Coverage says what ran, not what was checked. TDD = test list → one failing test → pass → refactor, minutes per loop."><link rel="canonical" href="https://folio.gurgul.pro/testing/flaky-tests-ci-tdd.html"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#24292b"><meta name="color-scheme" content="dark"><link rel="preload" href="/static/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Regular.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/nav.json" as="fetch" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"><script src="/static/js/site.js" defer></script></head><body data-nav="/nav.json" data-area="testing"><img class="folio-print" src="/testing/flaky-tests-ci-tdd.svg" alt="" aria-hidden="true"><main class="content folio-page"><h1 class="title">Flaky tests · CI · coverage · TDD</h1><div id="post"><article class="sheet">
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Flaky tests · CI · coverage · TDD — folio</title><meta name="description" content="A flaky test passes and fails on the same code. The cause is nondeterminism — async waits, races, test order, network, time — so remove the source; a retry only measures it. Coverage says what ran, not what was checked. TDD = test list → one failing test → pass → refactor, minutes per loop."><link rel="canonical" href="https://folio.gurgul.pro/testing/flaky-tests-ci-tdd.html"><link rel="icon" href="/static/favicon.svg?v=6e92094c60" type="image/svg+xml"><meta name="theme-color" content="#24292b"><meta name="color-scheme" content="dark"><link rel="preload" href="/static/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Regular.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/nav.json?v=d83009f1cd" as="fetch" crossorigin><link rel="stylesheet" href="/static/css/all.css?v=ab00b078aa"><link rel="stylesheet" href="/static/css/hightlight.css?v=af1b576646"><link rel="stylesheet" href="/static/css/sheet.css?v=80dd95ec25"><script src="/static/js/site.js?v=2b182a126c" defer></script></head><body data-nav="/nav.json?v=d83009f1cd" data-area="testing"><img class="folio-print" src="/testing/flaky-tests-ci-tdd.svg?v=a89207df62" alt="" aria-hidden="true"><main class="content folio-page"><h1 class="title">Flaky tests · CI · coverage · TDD</h1><div id="post"><article class="sheet">
 <p class="sheet-kicker">testing · folio</p>
 <p class="sheet-oneliner"><strong>In one line:</strong> A <strong>flaky</strong> test passes and fails on the <em>same</em> code. The cause is
 nondeterminism — async waits, races, test order, network, time — so <strong>remove the
@@ -6,11 +6,11 @@ source</strong>; a retry only measures it. Coverage says what <em>ran</em>, not 
 <em>checked</em>. TDD = <strong>test list → one failing test → pass → refactor</strong>, minutes per loop.</p>
 <p class="sheet-tools"><a class="sheet-download" href="flaky-tests-ci-tdd.pdf" download>Download PDF</a> <a href="flaky-tests-ci-tdd.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/testing/flaky-tests-ci-tdd.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="flaky-tests-ci-tdd-fig1.svg" width="630" height="202" style="--f:1.000" class="wide" alt="Flaky tests · CI · coverage · TDD — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="flaky-tests-ci-tdd-fig1.svg?v=2b52ce9286" width="630" height="202" style="--f:1.000" class="wide" alt="Flaky tests · CI · coverage · TDD — figure 1" loading="lazy"></figure>
 </section>
 <section class="sheet-section">
 <h2>Flakiness grows with size</h2>
-<figure class="sheet-figure"><img src="flaky-tests-ci-tdd-fig2.svg" width="278" height="60" style="--f:0.443" alt="Flaky tests · CI · coverage · TDD — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="flaky-tests-ci-tdd-fig2.svg?v=8d06eab3d7" width="278" height="60" style="--f:0.443" alt="Flaky tests · CI · coverage · TDD — figure 2" loading="lazy"></figure>
 <p>Flaky share rises <em>linearly</em> with test size — binary size r<sup>2</sup> 0.82, RAM r<sup>2</sup> 0.76; once size is accounted for, the tool adds little. Almost 16 % of Google’s tests show some flakiness (2016). Google’s TAP, as reported in 2014: 1.6 M test failures a day, 73 K of them (4.56 %) flaky; a failing test was re-run 10 times on the same version, and one pass labelled it flaky. 96 % of the flaky tests in the FSE study did not depend on OS or hardware — they reproduce on a laptop. Fowler: flaky tests are “a virulent infection” — once people shrug at red, healthy tests’ failures get ignored too.</p>
 </section>
 <section class="sheet-section">
@@ -32,7 +32,7 @@ source</strong>; a retry only measures it. Coverage says what <em>ran</em>, not 
 </section>
 <section class="sheet-section">
 <h2>Coverage — what ran, not what was checked</h2>
-<figure class="sheet-figure"><img src="flaky-tests-ci-tdd-fig3.svg" width="303" height="62" style="--f:0.483" alt="Flaky tests · CI · coverage · TDD — figure 3" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="flaky-tests-ci-tdd-fig3.svg?v=7cebdcda4f" width="303" height="62" style="--f:0.483" alt="Flaky tests · CI · coverage · TDD — figure 3" loading="lazy"></figure>
 <ul>
 <li><strong>Xcode is line-based</strong>: execution count per line, never-run code in red. Turn on  in the test plan (“Gather coverage for” chosen targets) or <code>-enableCodeCoverage YES</code>;  it slows tests linearly. Skipped tests don’t count; known-issue / expected-failure tests  <em>do</em>.</li>
 <li>CI: <code>xcrun xccov view --report --json R.xcresult</code> (<code>--files-for-target</code>,  <code>--functions-for-file</code>) · <code>xccov diff --json old.xcresult new.xcresult</code> ·  <code>xccov merge</code>.</li>
@@ -42,7 +42,7 @@ source</strong>; a retry only measures it. Coverage says what <em>ran</em>, not 
 </section>
 <section class="sheet-section">
 <h2>CI — fast gate, slow second stage</h2>
-<figure class="sheet-figure"><img src="flaky-tests-ci-tdd-fig4.svg" width="299" height="46" style="--f:0.477" alt="Flaky tests · CI · coverage · TDD — figure 4" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="flaky-tests-ci-tdd-fig4.svg?v=9a6b89dbb0" width="299" height="46" style="--f:0.477" alt="Flaky tests · CI · coverage · TDD — figure 4" loading="lazy"></figure>
 <ul>
 <li><strong>CI</strong> (Fowler, rev. 2024): everyone pushes to mainline daily · every push builds ·  self-testing build · fix a broken build <em>immediately</em> · keep it fast (XP’s  ten-minute build) · slower suites in a second stage.</li>
 <li><strong>Pin the world</strong>: <code>-destination &#39;platform=iOS Simulator,name=…,OS=…&#39;</code>, the Xcode  version, the test plan (<code>-testPlan</code>, <code>-only-test-configuration</code>). GitHub Actions  <code>macos-latest</code> = macOS 26 arm64 (Oct 2026), <code>xcode-27</code> in preview; one Xcode  major per image, patches replaced, images updated weekly.</li>
@@ -51,7 +51,7 @@ source</strong>; a retry only measures it. Coverage says what <em>ran</em>, not 
 </section>
 <section class="sheet-section">
 <h2>TDD — Canon TDD (Beck, Dec 2023)</h2>
-<figure class="sheet-figure"><img src="flaky-tests-ci-tdd-fig5.svg" width="298" height="71" style="--f:0.475" alt="Flaky tests · CI · coverage · TDD — figure 5" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="flaky-tests-ci-tdd-fig5.svg?v=19a7b334a1" width="298" height="71" style="--f:0.475" alt="Flaky tests · CI · coverage · TDD — figure 5" loading="lazy"></figure>
 <ul>
 <li><strong>Green-bar patterns</strong> (<em>TDD by Example</em>, 2002): <strong>Fake It</strong> (a constant  first) · <strong>Triangulate</strong> (generalise only from a second example) · <strong>Obvious
  Implementation</strong> (just type it).</li>

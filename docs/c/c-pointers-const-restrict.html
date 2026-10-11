@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Pointers — declarations, const, restrict, decay, lifetime — folio</title><meta name="description" content="A pointer is an address plus a type (the step of p+1, the type of *p) plus one object it may reach — only inside that object, only while it lives. Read a declaration from the name outward: right first ([], ()), then left (*, qualifiers). const binds to what is on its left (if nothing, its right). restrict promises that data modified through the pointer has no other path."><link rel="canonical" href="https://folio.gurgul.pro/c/c-pointers-const-restrict.html"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><meta name="theme-color" content="#24292b"><meta name="color-scheme" content="dark"><link rel="preload" href="/static/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Regular.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/nav.json" as="fetch" crossorigin><link rel="stylesheet" href="/static/css/all.css"><link rel="stylesheet" href="/static/css/hightlight.css"><link rel="stylesheet" href="/static/css/sheet.css"><script src="/static/js/site.js" defer></script></head><body data-nav="/nav.json" data-area="c"><img class="folio-print" src="/c/c-pointers-const-restrict.svg" alt="" aria-hidden="true"><main class="content folio-page"><h1 class="title">Pointers — declarations, const, restrict, decay, lifetime</h1><div id="post"><article class="sheet">
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Pointers — declarations, const, restrict, decay, lifetime — folio</title><meta name="description" content="A pointer is an address plus a type (the step of p+1, the type of *p) plus one object it may reach — only inside that object, only while it lives. Read a declaration from the name outward: right first ([], ()), then left (*, qualifiers). const binds to what is on its left (if nothing, its right). restrict promises that data modified through the pointer has no other path."><link rel="canonical" href="https://folio.gurgul.pro/c/c-pointers-const-restrict.html"><link rel="icon" href="/static/favicon.svg?v=6e92094c60" type="image/svg+xml"><meta name="theme-color" content="#24292b"><meta name="color-scheme" content="dark"><link rel="preload" href="/static/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Regular.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/static/fonts/rajdhani/Rajdhani-Bold.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/nav.json?v=d83009f1cd" as="fetch" crossorigin><link rel="stylesheet" href="/static/css/all.css?v=ab00b078aa"><link rel="stylesheet" href="/static/css/hightlight.css?v=af1b576646"><link rel="stylesheet" href="/static/css/sheet.css?v=80dd95ec25"><script src="/static/js/site.js?v=2b182a126c" defer></script></head><body data-nav="/nav.json?v=d83009f1cd" data-area="c"><img class="folio-print" src="/c/c-pointers-const-restrict.svg?v=6b142d359a" alt="" aria-hidden="true"><main class="content folio-page"><h1 class="title">Pointers — declarations, const, restrict, decay, lifetime</h1><div id="post"><article class="sheet">
 <p class="sheet-kicker">c · folio</p>
 <p class="sheet-oneliner"><strong>In one line:</strong> A pointer is an address <strong>plus a type</strong> (the step of <code>p+1</code>, the type of
 <code>*p</code>) <strong>plus one object</strong> it may reach — only inside that object, only while it lives.
@@ -75,15 +75,15 @@ int g(int *restrict a, int *restrict b)
 <li>Only on pointers to object types. <code>f(int *restrict p)</code> and <code>f(int *p)</code> are  compatible declarations. Restricted-to-restricted assignment: outer block → inner only.</li>
 <li><code>memcpy</code>, <code>memccpy</code>, <code>strcpy</code>, <code>strncpy</code> take <code>restrict</code>: overlap is UB;  <code>memmove</code> copies <em>as if</em> via a temporary array. Not a C++ keyword: G++ spells it  <code>__restrict__</code>.</li>
 </ul>
-<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig1.svg" width="246" height="46" style="--f:0.392" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig1.svg?v=383b6553df" width="246" height="46" style="--f:0.392" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 1" loading="lazy"></figure>
 </section>
 <section class="sheet-section">
 <h2>Which part is read-only?</h2>
-<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig2.svg" width="264" height="85" style="--f:0.421" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig2.svg?v=e6b22674a9" width="264" height="85" style="--f:0.421" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 2" loading="lazy"></figure>
 </section>
 <section class="sheet-section">
 <h2>Decay, arithmetic, sizeof</h2>
-<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig3.svg" width="287" height="82" style="--f:0.457" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 3" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig3.svg?v=942bc95835" width="287" height="82" style="--f:0.457" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 3" loading="lazy"></figure>
 <ul>
 <li>Decay to <code>&amp;a[0]</code> happens everywhere except under <code>sizeof</code>, <code>typeof</code>, unary  <code>&amp;</code>, and a string literal initialising an array.</li>
 <li>Parameter <code>int a[10]</code> <em>is</em> <code>int *a</code>: <code>sizeof a / sizeof a[0]</code> gives  pointer size / element size (GCC warns by default). Pass the length:  <code>(size_t n, int a[n])</code> documents it; <code>int (*m)[n]</code> keeps a row size.</li>
@@ -94,7 +94,7 @@ int g(int *restrict a, int *restrict b)
 </section>
 <section class="sheet-section">
 <h2>Array of pointers · pointer to array · 2-D</h2>
-<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig4.svg" width="282" height="103" style="--f:0.449" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 4" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig4.svg?v=05c76cf9d6" width="282" height="103" style="--f:0.449" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 4" loading="lazy"></figure>
 </section>
 <section class="sheet-section">
 <h2>Null pointers</h2>
@@ -106,7 +106,7 @@ int g(int *restrict a, int *restrict b)
 </section>
 <section class="sheet-section">
 <h2>Lifetime — dangling pointers</h2>
-<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig5.svg" width="301" height="95" style="--f:0.480" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 5" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig5.svg?v=201cf82861" width="301" height="95" style="--f:0.480" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 5" loading="lazy"></figure>
 <ul>
 <li>Once the object dies, <strong>every</strong> use of the pointer value is UB — <code>if (p == q)</code>  after <code>free(p)</code> too; its bits are indeterminate. GCC <code>-Wuse-after-free=2</code> and  <code>-Wdangling-pointer=2</code> are in <code>-Wall</code>; ASan finds use-after-free, -return, -scope.</li>
 <li><code>char buf[32]; return buf;</code> (GCC warns by default). Fix: caller’s buffer + size,  <code>static</code> (not re-entrant) or <code>malloc</code> (caller frees).</li>
