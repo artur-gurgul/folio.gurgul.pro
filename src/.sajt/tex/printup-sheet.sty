@@ -109,10 +109,40 @@
 \RequirePackage{enumitem}
 \setlist{nosep, leftmargin=*}
 
+% ── the QR in the top-right corner ─────────────────────────────────────────
+% A printed folio names its own page and version, so a print in someone's hand (or on a
+% scanner) says which folio it is and when it was printed. Maintainer, 2026-10-11: "Qr code
+% with id for identification the smallest practical it can be url … small, so it will not take
+% a lot of space in the top right corner e.g.
+% http://folio.gurgul.pro/design/vip-ribs-mvi-redux.html?v=11.10.26".
+%   \pdfonly{\folioslug{<area>/<name>}}  right after \begin{document} — the folio's own path
+%     (its header's area can differ from its directory, so the path is stated, not guessed);
+%   v = the day this PDF was compiled, DD.MM.YY. A release keeps the published PDF of every
+%     folio it did not change, so on the site it is the day the folio last changed.
+% It sits in the empty top margin above "<area> · folio", right-aligned to the text, and is
+% \smash-ed, so it takes NO space: no page's layout moves. 11 mm = 0.33 mm a module at the
+% 33 modules a page URL needs (0.30 mm at 37 for the longest paths).
+\RequirePackage{qrcode}
+\newcommand\folio@slug{}
+\newcommand\folioslug[1]{\gdef\folio@slug{#1}}
+\newcommand\folio@version{\two@digits{\day}.\two@digits{\month}.\two@digits{\the\numexpr\year-2000\relax}}
+% nolink: by default the code is a hyperlink and takes the link colour; black reads best.
+% The box is measured: qrcode's box has depth, so a plain \raisebox{3mm} left it ON the
+% "<area> · folio" text (first build, 2026-10-11).
+\newcommand\folio@drawqr[1]{\qrcode[height=11mm, level=L, nolink]{#1}}
+\newsavebox\folio@qrbox
+\newcommand\folio@qr{%
+  \ifx\folio@slug\@empty\else
+    \edef\folio@url{http://folio.gurgul.pro/\folio@slug.html?v=\folio@version}%
+    \sbox\folio@qrbox{\expandafter\folio@drawqr\expandafter{\folio@url}}%
+    \makebox[0pt][r]{\smash{\raisebox{\dimexpr 3mm+\dp\folio@qrbox\relax}{\usebox\folio@qrbox}}}%
+  \fi}
 \newcommand\sheettitle[2]{%
-  {\noindent\Large\bfseries #1}\hfill{\small\color{sheetGrey}#2}\par\vspace{2pt}%
+  {\noindent\Large\bfseries #1}\hfill{\small\color{sheetGrey}#2}\folio@qr\par\vspace{2pt}%
   {\color{sheetBlue}\rule{\linewidth}{0.8pt}}\par}
-\newcommand\oneliner[1]{\noindent\colorbox{sheetBlue!8}{\parbox{\dimexpr\linewidth-2\fboxsep}{\textbf{In one line:} #1}}\par}
+% No "In one line:" label: the box says what it is (maintainer, 2026-10-11: text that brings no
+% value, like "In one line:", goes).
+\newcommand\oneliner[1]{\noindent\colorbox{sheetBlue!8}{\parbox{\dimexpr\linewidth-2\fboxsep}{#1}}\par}
 \newcommand\trap[1]{\item[\textcolor{sheetRed}{\textbf{!}}] #1}
 % \unverified — put right after a claim that was NOT checked against a primary
 % source (from memory, a blog, a forum). Owner, 2026-09-25: uncertain facts

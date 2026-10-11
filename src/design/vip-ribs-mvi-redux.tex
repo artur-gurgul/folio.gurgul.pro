@@ -1,214 +1,214 @@
-% vip-ribs-mvi-redux.tex — map of iOS architectures beyond MVC/MVVM/VIPER: Clean Swift (VIP),
-% RIBs (Uber), MVI, Redux/ReSwift, TCA and the SwiftUI "MV" approach. Four loops side by side,
-% a who-owns-state table, and the lineage of the ideas.
-% Sources (checked 2026-10-05):
-%   clean-swift.com/clean-swift-ios-architecture · github.com/Clean-Swift/CleanStore (ListOrders scene)
-%   github.com/uber/RIBs (README, wiki) · github.com/uber/RIBs-iOS RIBs/Classes/Interactor.swift
-%   uber.com/blog/new-rider-app-architecture (2016-12-20)
-%   staltz.com/unidirectional-user-interface-architectures.html (2015-08-22)
-%   hannesdorfmann.com/android/mosby3-mvi-1 · redux.js.org (three principles; history of Redux)
-%   github.com/ReSwift/ReSwift (README, releases) · github.com/pointfreeco/swift-composable-architecture
-%   developer.apple.com/documentation/swiftui/managing-model-data-in-your-app
-%   objc.io/issues/13-architecture/viper (Gilbert, Stoll, 2014-06) · redux.js.org/faq/organizing-state
-%   developer.android.com/topic/architecture/ui-layer/events
+% vip-ribs-mvi-redux.tex — the iOS architectures past MVC/MVVM/VIPER as answers to three questions
+% (who owns the state, which way data moves, where effects run): Clean Swift (VIP), RIBs (Uber),
+% MVI (Cycle.js), Redux (and Flux before it), TCA, SwiftUI's "MV". Each one's loop, the idea that
+% makes it click, and the history that explains its quirk.
+% Sources (checked 2026-10-11):
+%   clean-swift.com/clean-swift-ios-architecture ("derived from the Clean Architecture proposed by
+%     Uncle Bob"; you "don't need to learn any testing or mocking frameworks") ·
+%     github.com/Clean-Swift/CleanStore (ListOrders scene: 6 files — ViewController, Interactor,
+%     Presenter, Router, Worker, Models)
+%   github.com/uber/RIBs README ("the cross-platform architecture framework behind many mobile apps
+%     at Uber"; "Business logic drives the app, not the view tree"; "a RIB does not have to have a
+%     view") and wiki (tutorial tree: LoggedOut, viewless LoggedIn, OffGame, Game) ·
+%     github.com/uber/RIBs-iOS RIBs/Classes/Interactor.swift · uber.com/blog/new-rider-app-architecture
+%   staltz.com/unidirectional-user-interface-architectures.html (2015-08-22: "A MVI tuple is a UI
+%     program") · cycle.js.org/dialogue.html ("both human and computer would be functions with
+%     inputs and outputs"; the human "a function from its senses to its actuators") ·
+%     cycle.js.org/drivers.html ("encapsulate all I/O effects in drivers", to keep main() pure)
+%   redux.js.org/understanding/history-and-design/history-of-redux (mid-2015, built to demonstrate
+%     time-travel debugging; Flux 2014: only Dispatcher.dispatch updates a store) ·
+%     redux.js.org/tutorials/fundamentals/part-2-concepts-data-flow (named after Array.reduce();
+%     "reduce a set of actions (over time) into a single state") · .../part-3-state-actions-reducers
+%     (no async logic or side effects in reducers) · github.com/ReSwift/ReSwift
+%   infoq.com/news/2014/05/facebook-mvc-flux (Flux "helped Facebook eliminate a chat bug that
+%     informed users they have a new message when it was not the case")
+%   github.com/pointfreeco/swift-composable-architecture README (TestStore: "Each step of the way we
+%     need to prove that state changed how we expect"; an effect that feeds data back "we must
+%     assert on that")
+%   developer.apple.com/documentation/swiftui/managing-model-data-in-your-app ·
+%     objc.io/issues/13-architecture/viper · developer.android.com/topic/architecture/ui-layer/events
 % @labels: area=design kind=architecture platform=ios discussion=5
 % @tags: vip, clean-swift, ribs, mvi, redux, reswift, mv-pattern, viper, interactor, unidirectional-data-flow, tca, observation
 \documentclass[8pt]{extarticle}
 \usepackage{printup-sheet}
 \usepackage{array}
 
-\lstdefinelanguage{SwiftSheet}{
-  morekeywords={protocol,class,final,struct,enum,func,var,let,weak,init,
-    if,else,return,guard,self,nil,try,await,async,private,some,is,
-    true,false,case,switch,default,static,in,AnyObject},
-  sensitive=true, morecomment=[l]{//}, morestring=[b]",
-  literate={->}{{\hbox{-}\hbox{>}}}2 {==}{{\hbox{=}\hbox{=}}}2 {??}{{\hbox{?}\hbox{?}}}2}
-
+% Every loop is drawn for ONE 80 mm column, with its boxes at the body's size (8 pt) and its
+% labels at 7 pt (maintainer, 2026-10-11: "rearange diagrams the way we do not need to make text
+% smaller").
 \tikzset{
-  rb/.style={box, font=\footnotesize, minimum width=15mm, minimum height=6.5mm, inner sep=2pt},
+  rb/.style={box, font=\normalsize, minimum width=17mm, minimum height=7.5mm, inner sep=2.5pt},
   vw/.style={rb, draw=sheetBlue, fill=sheetBlue!8},
   lg/.style={rb, draw=sheetGreen!60!black, fill=sheetGreen!12},
   pr/.style={rb, draw=sheetOrange, fill=sheetOrange!10},
   rt/.style={rb, draw=sheetBrown, fill=sheetBrown!10},
-  lbl/.style={font=\scriptsize, text=black!75, inner sep=1pt, align=center},
-  ttl/.style={font=\bfseries\normalsize},
-  tn/.style={draw=sheetGreen!60!black, fill=sheetGreen!10, rounded corners=2pt, font=\scriptsize,
-             inner sep=1.5pt, align=center, minimum width=12mm, minimum height=5.5mm},
-  ev/.style={circle, fill=sheetBlue, inner sep=1.6pt},
-  yr/.style={font=\bfseries\scriptsize, text=sheetBlue},
-  evl/.style={font=\scriptsize, align=center, text=black!85},
+  gy/.style={rb, draw=sheetGrey, fill=black!4},
+  you/.style={rb, draw=sheetRed, fill=sheetRed!8, rounded corners=8pt},
+  lbl/.style={font=\small, text=black!75, inner sep=1.5pt, align=center},
+  note/.style={font=\small, text=sheetGreen!50!black, align=center},
+  tn/.style={draw=sheetGreen!60!black, fill=sheetGreen!10, rounded corners=2pt, font=\normalsize,
+             inner sep=2pt, align=center, minimum width=15mm, minimum height=7mm},
+  st/.style={circle, draw=sheetBlue, thick, fill=sheetBlue!8, font=\small, minimum size=7mm, inner sep=0pt},
 }
 
 \begin{document}
+\pdfonly{\folioslug{design/vip-ribs-mvi-redux}}
 
 \sheettitle{VIP · RIBs · MVI · Redux · MV — the architecture map}{design · folio}
 
-\oneliner{Every iOS architecture answers three questions: \textbf{who owns the state},
-\textbf{which way does data flow}, and \textbf{where do side effects live}. \textbf{VIP} (Clean
-Swift) makes each screen a one-way \emph{cycle} of three objects; \textbf{RIBs} (Uber) drive the app
-by a \emph{tree of business logic}, not of views; \textbf{MVI} and \textbf{Redux} keep one
-immutable state changed only by a reducer; \textbf{TCA} is Redux made composable; \textbf{MV} says
-SwiftUI views plus \texttt{@Observable} models are already enough.}
+\oneliner{Every UI architecture answers three questions — \textbf{who owns the state},
+\textbf{which way data moves}, \textbf{where side effects run} — and these patterns differ only in
+their answers.}
 
 \vspace{2pt}
-\noindent\begin{tikzpicture}[sheet, yscale=1.12]
-  % ── 1. VIP ─────────────────────────────────────────────
-  \node[ttl] at (1.9,2.75) {VIP (Clean Swift)};
-  \node[vw] (vc) at (1.9,2.05) {ViewController};
-  \node[lg] (in) at (3.35,0.75) {Interactor};
-  \node[pr] (pe) at (0.45,0.75) {Presenter};
-  \draw[flow] (vc.east) -| node[lbl, right, pos=0.7]{Request} (in.north);
-  \draw[flow] (in) -- node[lbl, below]{Response} (pe);
-  \draw[hot] (pe.north) |- node[lbl, left, pos=0.3]{ViewModel} node[lbl, above, pos=0.75, text=sheetOrange]{weak} (vc.west);
-  \node[rt, minimum width=11mm] (ro) at (1.2,-0.4) {Router\\[-2pt]{\scriptsize owned by VC}};
-  \node[rb, minimum width=11mm, draw=sheetGrey, fill=black!4] (wo) at (3.35,-0.4) {Worker\\[-2pt]{\scriptsize API, DB}};
-  \draw[flow] (in) -- (wo);
-  \node[lbl, text=sheetGreen!50!black] at (1.9,-1.05) {one-way cycle, one per scene};
-
-  % ── 2. RIBs ────────────────────────────────────────────
-  \node[ttl] at (6.4,2.75) {RIBs (Uber)};
-  \node[tn] (root) at (6.4,2.05) {Root\\R · I · V};
-  \node[tn] (lo) at (5.2,1.05) {LoggedOut\\R · I · V};
-  \node[tn, draw=sheetOrange, fill=sheetOrange!10, dashed] (li) at (7.6,1.05) {LoggedIn\\R · I \textbf{(no view)}};
-  \node[tn] (og) at (6.9,0.0) {OffGame\\R · I · V};
-  \node[tn] (tt) at (8.3,0.0) {Game\\R · I · V};
-  \draw[flow] (root) -- (lo); \draw[flow] (root) -- (li);
-  \draw[flow] (li) -- (og); \draw[flow] (li) -- (tt);
-  \draw[hot] (tt.north) to[bend right=40] (li.east);
-  \node[lbl, align=center] at (5.0,-0.05) {Router\\attaches /\\detaches\\children};
-  \node[lbl, text=sheetGreen!50!black] at (6.5,-0.78) {tree of \emph{logic}; views follow};
-  \node[lbl] at (6.5,-1.07) {Builder = factory + DI · \textcolor{sheetOrange}{orange = Listener (up)}};
-
-  % ── 3. MVI ─────────────────────────────────────────────
-  \node[ttl] at (10.7,2.75) {MVI};
-  \node[vw] (mv) at (10.7,2.05) {View\\[-1pt]{\scriptsize \texttt{render(state)}}};
-  \node[pr] (mi) at (12.0,0.65) {Intent\\[-1pt]{\scriptsize events → actions}};
-  \node[lg] (mm) at (9.5,0.65) {Model\\[-1pt]{\scriptsize actions → state}};
-  \draw[flow] (mv.east) -| node[lbl, right, pos=0.7]{events} (mi.north);
-  \draw[flow] (mi) -- node[lbl, above]{actions} (mm);
-  \draw[flow] (mm.north) |- node[lbl, left, pos=0.3]{state} (mv.west);
-  \node[lbl, text=sheetGreen!50!black] at (10.7,-0.78) {one immutable state per screen};
-  \node[lbl] at (10.7,-1.07) {RxJS Observables in Cycle.js};
-
-  % ── 4. Redux / ReSwift ────────────────────────────────
-  \node[ttl] at (14.6,2.75) {Redux / ReSwift};
-  \node[vw] (rv) at (14.6,2.05) {View\\[-1pt]{\scriptsize \texttt{StoreSubscriber}}};
-  \node[rb, draw=sheetGrey, fill=black!4] (mw) at (15.85,0.95) {Middleware};
-  \node[lg] (rr) at (15.85,-0.15) {Reducer\\[-1pt]{\scriptsize pure}};
-  \node[rt] (rs) at (13.65,0.35) {Store\\[-1pt]{\scriptsize \textbf{one} app State}};
-  \draw[flow] (rv.east) -| node[lbl, left, pos=0.93]{\texttt{dispatch(a)}} (mw.north);
-  \draw[flow] (mw) -- (rr);
-  \draw[flow] (rr.west) -- (rs.south east);
-  \draw[flow] (rs.north) |- node[lbl, left, pos=0.3, align=right]{\texttt{newState}\\\texttt{(state:)}} (rv.west);
-  \node[lbl, text=sheetGreen!50!black] at (14.6,-0.78) {single source of truth};
-  \node[lbl] at (14.6,-1.07) {async: thunks (ReSwift-Thunk)};
-\end{tikzpicture}
-
-\vspace{1pt}
-{\footnotesize\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.05}
-\noindent\begin{tabular}{@{}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{29mm}>{\raggedright\arraybackslash}p{21mm}>{\raggedright\arraybackslash}p{35mm}@{}}
+{\small\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.08}
+\noindent\begin{tabular}{@{}>{\raggedright\arraybackslash}p{14mm}>{\raggedright\arraybackslash}p{40mm}>{\raggedright\arraybackslash}p{56mm}>{\raggedright\arraybackslash}p{44mm}@{}}
 \toprule
-\textbf{Pattern} & \textbf{State lives in} & \textbf{Data flow} & \textbf{Testability} & \textbf{Boilerplate} & \textbf{Fits} \\
+ & \textbf{owns the state} & \textbf{data moves} & \textbf{side effects run in} \\
 \midrule
-VIP & Interactor (+ \texttt{DataStore}) & VC$\to$I$\to$P$\to$VC, one way & high: spy the next role & high: 7 per scene & UIKit apps, per-scene rigour \\
-RIBs & each RIB's Interactor & tree; Rx down, listener up & high: I/R/B behind protocols & very high, codegen & huge apps, hundreds of engineers \\
-MVI & one immutable screen State & Intent$\to$Model$\to$View & high: pure reducer & medium & complex screens, Android parity \\
-Redux / ReSwift & one global Store & dispatch$\to$reducer$\to$subscribers & high reducers; effects harder & medium–high & shared app-wide state \\
-TCA & Store tree of features & unidirectional, composed & very high: \texttt{TestStore} & high & big SwiftUI teams \\
-MV & \texttt{@Observable} models & view calls model, observes it & models yes, view logic no & low & SwiftUI small–mid apps \\
+\textbf{VIP} & the scene's Interactor & one way round: VC $\to$ Interactor $\to$ Presenter $\to$ VC & Workers the Interactor calls \\
+\textbf{RIBs} & each RIB's Interactor & down a tree of business logic; listeners report up & the Interactor, as Rx subscriptions \\
+\textbf{MVI} & one immutable State per screen & View $\to$ \emph{you} $\to$ Intent $\to$ Model $\to$ View & drivers, outside the pure program \\
+\textbf{Redux} & one Store for the whole app & dispatch $\to$ reducer $\to$ every subscriber & middleware (thunks) — never a reducer \\
+\textbf{TCA} & one Store, scoped per feature & actions into reducers composed into one & the Effects a reducer returns \\
+\textbf{MV} & \texttt{@Observable} models & the view reads the model and calls it & the model's own methods \\
 \bottomrule
 \end{tabular}}
-
-\vspace{2pt}
-\noindent\begin{tikzpicture}[sheet]
-  \draw[thick, black!40] (-0.2,0) -- (16.6,0);
-  \draw[black!40, thick] (1.25,-0.13) -- (1.45,0.13);
-  \draw[black!40, thick] (1.45,-0.13) -- (1.65,0.13);
-  \node[ev] at (0.4,0) {};   \node[yr, above] at (0.4,0.12) {1979};
-  \node[evl, below] at (0.4,-0.12) {\textbf{MVC} · Reenskaug\\the View observes the Model};
-  \node[ev] at (3.3,0) {};   \node[yr, above] at (3.3,0.12) {2014};
-  \node[evl, below] at (3.3,-0.12) {\textbf{Flux} · Facebook\\one-way flow};
-  \node[ev] at (6.1,0) {};   \node[yr, above] at (6.1,0.12) {mid-2015};
-  \node[evl, below] at (6.1,-0.12) {\textbf{Redux} · Abramov\\one store, pure reducers};
-  \node[ev] at (8.9,0) {};   \node[yr, above] at (8.9,0.12) {Aug 2015};
-  \node[evl, below] at (8.9,-0.12) {\textbf{MVI} · Staltz\\Cycle.js, RxJS};
-  \node[ev] at (11.7,0) {};  \node[yr, above] at (11.7,0.12) {Dec 2016};
-  \node[evl, below] at (11.7,-0.12) {\textbf{RIBs} · Uber\\rider-app rewrite};
-  \node[ev] at (14.6,0) {};  \node[yr, above] at (14.6,0.12) {iOS 17};
-  \node[evl, below] at (14.6,-0.12) {\textbf{\texttt{@Observable}}\\SwiftUI ``MV'', no ViewModel};
-  \node[font=\tiny, text=black!50, anchor=east] at (16.6,0.32) {not to scale};
-\end{tikzpicture}
 
 \begin{multicols}{2}
 \raggedright
 
-\section{How it works}
+% ── VIP ────────────────────────────────────────────────────────────────────────────────────
+\section{VIP — Clean Swift}
+\noindent\begin{tikzpicture}[sheet]
+  \path[use as bounding box] (0,-0.62) rectangle (8,2.08);
+  \node[vw] (vc) at (4.0,1.7) {ViewController};
+  \node[pr] (pe) at (1.15,0.65) {Presenter};
+  \node[lg] (in) at (6.85,0.65) {Interactor};
+  \draw[flow] (vc.east) -| node[lbl, right, pos=0.75]{Request} (in.north);
+  \draw[flow] (in) -- node[lbl, below]{Response} (pe);
+  \draw[hot] (pe.north) |- node[lbl, left, pos=0.3]{ViewModel} node[lbl, above, pos=0.78, text=sheetOrange]{weak} (vc.west);
+  \node[rt] (ro) at (1.15,-0.3) {Router \textnormal{\small owned by VC}};
+  \node[gy] (wo) at (6.85,-0.3) {Worker \textnormal{\small API, DB}};
+  \draw[flow] (in) -- (wo);
+  \node[note] at (4.0,-0.3) {turns one way only};
+\end{tikzpicture}
+
+Uncle Bob's Clean Architecture, cut down to \textbf{one screen}. Because the cycle turns only one
+way, each role is tested alone against a hand-written \textbf{spy of the next role} — Clean
+Swift's pitch is that you ``don't need to learn any testing or mocking frameworks''. The price is
+ceremony: \textbf{6 files per scene}.
 \begin{itemize}
-  \item \textbf{VIP} (Clean Swift; Clean Architecture per scene): VC
-        (\texttt{DisplayLogic}) sends a \emph{Request} to the Interactor (\texttt{BusinessLogic},
-        uses \textbf{Workers}, holds the \texttt{DataStore}); its \emph{Response} goes to the
-        Presenter (\texttt{PresentationLogic}), which formats a \emph{ViewModel} and calls
-        \texttt{display…} on the VC. \textbf{Router} (\texttt{RoutingLogic} +
-        \texttt{DataPassing}) navigates, passing data via the \texttt{DataStore}. Models nest per
-        use case (\texttt{ListOrders.FetchOrders.Request}). Older templates: \texttt{…Input}/%
-        \texttt{…Output} protocols, wired by a \textbf{Configurator}.
-  \item \textbf{RIBs} = \textbf{R}outer · \textbf{I}nteractor · \textbf{B}uilder (+ Component for
-        dependencies, optional Presenter and View). The Interactor holds business logic and Rx
-        subscriptions, alive between \texttt{didBecomeActive()} and \texttt{willResignActive()};
-        bind with \texttt{disposeOnDeactivate(interactor:)}. Router attaches/detaches children;
-        Builder creates the unit and is the only part that knows the DI system. Up: a
-        \texttt{Listener} the parent implements; down: Rx streams or \texttt{build()} arguments.
-  \item \textbf{MVI}: \emph{Intent} turns user events into actions, \emph{Model} turns actions
-        into state, \emph{View} renders state — a pure \texttt{render(state)} of one immutable
-        state.
-  \item \textbf{Redux}'s 3 principles: one store = single source of truth · state is
-        read-only, changed only by an action · pure reducers (state + action $\to$ new
-        state). ReSwift: \texttt{Store<AppState>(reducer:state:)}, \texttt{dispatch},
-        \texttt{newState(state:)}; \texttt{subscribe(self) \{ \$0.select(…) \}} narrows
-        updates, skipping repeats of an \texttt{Equatable} substate.
-  \item \textbf{MV}: no per-screen ViewModel; logic lives in \texttt{@Observable} models
-        (iOS 17, macOS 14). A view updates only when a property its \texttt{body} reads
-        changes. Own with \texttt{@State}, share with \texttt{.environment(model)}, read with
-        \texttt{@Environment(Model.self)}, bind with \texttt{@Bindable}.
-  \item \textbf{TCA}: State · Action · Reducer · Store; effects and dependencies are
-        injectable, and \texttt{TestStore} asserts every state change and effect.
+  \trap{``VIP is VIPER renamed.'' VIPER's Presenter sits \emph{between} View and Interactor,
+        both ways, and Entities stay in the Interactor; VIP is a one-way cycle.}
 \end{itemize}
 
-\section{Why RIBs exist}
-Uber's rider app (rewrite, 2016): an MVC app grown to a few hundred engineers, one
-\texttt{RequestViewController} from 300 to 3,000+ lines. RIBs make \textbf{business logic, not
-the view tree, drive routing} — a deep logic tree with a shallow view tree.
+% ── MVI ────────────────────────────────────────────────────────────────────────────────────
+\section{MVI — Cycle.js}
+\noindent\begin{tikzpicture}[sheet]
+  \path[use as bounding box] (0,-0.5) rectangle (8,2.05);
+  \node[vw] (mv) at (3.3,1.6) {View \textnormal{\small\texttt{render(state)}}};
+  \node[you] (u) at (6.85,1.6) {you\\[-1pt]\textnormal{\small senses $\to$ hands}};
+  \node[lg] (mm) at (1.1,0.35) {Model\\[-1pt]\textnormal{\small actions $\to$ state}};
+  \node[pr] (mi) at (6.85,0.35) {Intent\\[-1pt]\textnormal{\small events $\to$ actions}};
+  \draw[flow] (mv) -- node[lbl, above]{screen} (u);
+  \draw[flow] (u) -- node[lbl, left]{events} (mi);
+  \draw[flow] (mi) -- node[lbl, above]{actions} (mm);
+  \draw[flow] (mm.north) |- node[lbl, left, pos=0.3]{state} (mv.west);
+\end{tikzpicture}
 
-\section{Example — one VIP use case}
-\begin{lstlisting}[language=SwiftSheet]
-enum ListOrders { enum Fetch {          // per use case
-  struct Request {}
-  struct Response { let orders: [Order] }
-  struct ViewModel { let rows: [String] } } }
-protocol ListOrdersDisplayLogic: AnyObject {
-  func display(_ vm: ListOrders.Fetch.ViewModel) }
-final class ListOrdersInteractor {      // BusinessLogic
-  var presenter: ListOrdersPresenter?; let worker = OrdersWorker()
-  func fetch(_ r: ListOrders.Fetch.Request) {
-    worker.load { self.presenter?.present(.init(orders: $0)) } } }
-final class ListOrdersPresenter {       // PresentationLogic
-  weak var viewController: ListOrdersDisplayLogic?  // no cycle
-  func present(_ r: ListOrders.Fetch.Response) {
-    viewController?.display(.init(rows: r.orders.map(\.title))) } }
-\end{lstlisting}
-
-\section{Traps}
+\textbf{You are the other half of the loop.} Cycle.js treats the interaction as a dialogue: ``both
+human and computer would be functions with inputs and outputs'' — the screen is your input, your
+events are its input. The program stays \textbf{pure}; \emph{drivers} do all the I/O. ``A MVI tuple
+is a UI program'' (Staltz, 2015).
 \begin{itemize}
-  \trap{``VIP is VIPER renamed.'' VIPER (2014): Presenter \emph{between} View and Interactor,
-        both ways; Entities stay in the Interactor. VIP: a one-way cycle.}
-  \trap{RIBs' Router is not ``just navigation'': it attaches/detaches child RIBs from
-        Interactor output — screens follow the tree.}
-  \trap{Redux: subscribers hear every change unless they \texttt{select} a slice; local UI
-        state (\texttt{isDropdownOpen}) stays out of the store.}
-  \trap{A one-off message kept in state shows again on every re-render until the view
+  \trap{A one-off message kept in state shows again on every re-render, until the view
         reports it shown and the state clears it.}
-  \trap{Conforming to the \texttt{Observable} protocol alone adds no observation — use the
-        \texttt{@Observable} macro.}
+\end{itemize}
+
+% ── MV and TCA ─────────────────────────────────────────────────────────────────────────────
+\section{TCA and MV}
+\textbf{TCA} is Redux with the effects brought inside: a reducer \emph{returns} its effects as
+values, so the TestStore makes you prove every step — ``each step of the way we need to prove that
+state changed how we expect'', and an effect that feeds data back must be asserted too.
+\textbf{MV} drops the ViewModel: SwiftUI tracks the properties \texttt{body} reads, one by one, so a
+plain \texttt{@Observable} model can sit right behind the view. The \texttt{Observable} protocol
+alone observes nothing; the macro does.
+
+\noindent\begin{tikzpicture}[sheet, x=1mm, y=1mm]
+  % two writes to the same model, two outcomes (a boxed model first: its labels ran over the box)
+  \path[use as bounding box] (0,0) rectangle (80,13);
+  \node[vw, minimum width=27mm, minimum height=10mm, align=center] (b) at (66,6.5) {\texttt{body}\\[-1pt]\textnormal{\small\texttt{Text(m.title)}}};
+  \node[font=\normalsize\ttfamily, anchor=west, inner sep=0pt] (t) at (0,10) {m.title = "…"};
+  \draw[flow, draw=sheetGreen!60!black, very thick] (t.east) ++(1.5,0) -- node[lbl, above, text=sheetGreen!45!black]{\textbf{body re-runs}} (b.west |- t.east);
+  \node[font=\normalsize\ttfamily, anchor=west, inner sep=0pt, text=black!50] (c) at (0,3) {m.count += 1};
+  \node[lbl, anchor=west, text=black!55] at (22,3) {nothing: never read};
+\end{tikzpicture}
+
+\columnbreak
+
+% ── RIBs ───────────────────────────────────────────────────────────────────────────────────
+\section{RIBs — Uber}
+\noindent\begin{tikzpicture}[sheet]
+  \path[use as bounding box] (0,-0.9) rectangle (8,2.2);
+  \node[tn] (root) at (4.0,1.85) {Root · R · I · V};
+  \node[tn] (lo) at (1.4,0.88) {LoggedOut\\R · I · V};
+  \node[tn, draw=sheetOrange, fill=sheetOrange!10, dashed] (li) at (5.6,0.88) {LoggedIn\\R · I \textbf{(no view)}};
+  \node[tn] (og) at (4.45,-0.12) {OffGame\\R · I · V};
+  \node[tn] (tt) at (6.95,-0.12) {Game\\R · I · V};
+  \draw[flow] (root) -- (lo); \draw[flow] (root) -- (li);
+  \draw[flow] (li) -- (og); \draw[flow] (li) -- (tt);
+  \draw[hot] (tt.north east) to[bend right=50] (li.east);
+  \node[lbl, align=center] at (1.4,-0.12) {R·I·B = Router,\\Interactor, Builder};
+  \node[note] at (4.0,-0.72) {tree of \emph{logic}; views follow · \textcolor{sheetOrange}{orange = Listener (up)}};
+\end{tikzpicture}
+
+\textbf{``Business logic drives the app, not the view tree.''} LoggedIn has no view at all: it
+only decides which child is attached, OffGame or Game, and the screen follows. RIBs came out of
+Uber's rider-app rewrite, when a few hundred engineers shared one MVC app and its
+\texttt{RequestViewController} had grown from 300 to 3,000+ lines. The same tree runs on iOS
+and Android.
+\begin{itemize}
+  \trap{The Router is not ``just navigation'': it attaches child RIBs from Interactor
+        output; screens follow.}
+\end{itemize}
+
+% ── Redux ──────────────────────────────────────────────────────────────────────────────────
+\section{Redux — and Flux before it}
+\noindent\begin{tikzpicture}[sheet]
+  \path[use as bounding box] (0,-0.82) rectangle (8,2.12);
+  \node[vw] (rv) at (4.0,1.75) {View \textnormal{\small\texttt{subscriber}}};
+  \node[gy] (mw) at (6.8,0.98) {Middleware};
+  \node[lg] (rr) at (6.8,-0.12) {Reducer \textnormal{\small pure}};
+  \node[rt] (rs) at (1.4,0.35) {Store\\[-1pt]\textnormal{\small\textbf{one} app State}};
+  \draw[flow] (rv.east) -| node[lbl, above, pos=0.3]{\texttt{dispatch(a)}} (mw.north);
+  \draw[flow] (mw) -- (rr);
+  \draw[flow] (rr.west) -- (rs.south east);
+  \draw[flow] (rs.north) |- node[lbl, left, pos=0.3]{new state} (rv.west);
+  \node[note] at (4.0,-0.65) {single source of truth · effects in middleware};
+\end{tikzpicture}
+
+\textbf{State is a fold over actions.} Reducers are named after \texttt{Array.reduce()}: they
+``reduce a set of actions (over time) into a single state''.
+
+\noindent\begin{tikzpicture}[sheet, x=1mm, y=1mm]
+  % the label sits UNDER the arc's lowest point: on the arc (first build) it ran into the text
+  \path[use as bounding box] (0,-12.5) rectangle (80,5);
+  \foreach \s/\x in {0/4, 1/26, 2/48, 3/70} \node[st] (s\s) at (\x,0) {$s_\s$};
+  \foreach \a/\f/\t in {1/0/1, 2/1/2, 3/2/3}
+    \draw[flow] (s\f) -- node[lbl, above]{$a_\a$} (s\t);
+  \draw[hot, dashed] (s3.south) to[bend left=16] (s0.south);
+  \node[lbl, text=sheetOrange] at (37,-10.5) {time travel: replay $a_1 \ldots a_k$ from $s_0$};
+\end{tikzpicture}
+
+That is why they must be \textbf{pure}: Redux was written in mid-2015 to show
+\textbf{time-travel debugging} — replay the actions up to any point and you have the state there.
+\textbf{Flux} (Facebook, 2014) began with a chat that told users they had a new message when they
+had none; its cure was one rule: only a dispatched action may change a store.
+
+\begin{itemize}
+  \trap{Every subscriber hears every change unless it \texttt{select}s a slice; an open
+        dropdown does not belong in the store.}
 \end{itemize}
 
 \end{multicols}
