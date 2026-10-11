@@ -112,6 +112,10 @@ it belongs in a JSON file, a stylesheet or a script.
    `discussion=<n>` in `% @labels:` (GitHub Discussions, category *Folio
    comments*). "Discuss this folio" opens that thread; a folio without one
    starts it — then record the new thread's number in the folio.
+   **A printed folio names its own page:** a small QR of its URL and version
+   (`http://folio.gurgul.pro/<area>/<name>.html?v=DD.MM.YY`) in the top-right
+   corner. Every folio states its path right after `\begin{document}`:
+   `\pdfonly{\folioslug{<area>/<name>}}`; `tools/check.py` ("slugs") checks it.
 5. **A folio owns its page.** Content may start from older notes, but once it
    is here it is folio's: edit it here, adapt it freely to these rules.
 6. **No branding.** No personal names, logos, initials or "my notepad" voice —
@@ -167,11 +171,16 @@ it belongs in a JSON file, a stylesheet or a script.
 1. **Look at the result before calling it done.** Build, open the rendered
    page and its PDF, and confirm it fits one A4 and reads well. "It compiles"
    is not evidence about anything visual.
-2. **Checks never lie.** A check exits **0** pass · **1** failed · **2**
+2. **Lay out each folio for its own content — never shrink the text to fit.**
+   Width is the scarce resource: when diagrams crowd a row and their labels
+   get small, rearrange them (one per column, each beside its text) instead.
+   TeX can do any layout; a page that fits is not done until it looks
+   designed. Every folio has its own needs.
+3. **Checks never lie.** A check exits **0** pass · **1** failed · **2**
    could not check — "it is broken" and "I learned nothing" are different
    answers. Every check proves it can go red (a positive control) before its
    green means anything.
-3. **Nothing internal or secret, anywhere.** This repository and its history
+4. **Nothing internal or secret, anywhere.** This repository and its history
    are public: no hostnames of private machines, private IP addresses, keys,
    tokens, personal data or paths from other projects — not in pages, not in
    comments, not in commit messages.

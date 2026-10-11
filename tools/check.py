@@ -5,7 +5,9 @@ Standard library only, and no Sajt needed — anyone can run it.
 
 CHECKS
   headers   every folio (src/**/*.tex) has a "% Sources" line and a "% @labels:" line
-  leaks     no private IP addresses, MAC addresses, private keys or key-like
+  slugs     every folio states its own path, \\pdfonly{\\folioslug{<area>/<name>}}, and it is
+            the path the file is at: the printed QR in the top-right corner is that page's URL
+  leaks    no private IP addresses, MAC addresses, private keys or key-like
             assignments in any tracked text file — this repository is public
   docs      with --base REF: the change does not touch docs/ (build output; the
             maintainer rebuilds it). --allow-docs skips it (maintainer changes)
@@ -80,6 +82,21 @@ def header_problems(text: str) -> list[str]:
     return missing
 
 
+SLUG = re.compile(r"\\pdfonly\{\\folioslug\{([^{}]*)\}\}")
+
+
+def slug_problem(text: str, rel: str) -> str:
+    """'' when the folio at src/<rel> states \\folioslug{<rel without .tex>}; else why not.
+    The printed QR is built from it, so a wrong one points a reader at another page."""
+    want = rel[:-len(".tex")] if rel.endswith(".tex") else rel
+    found = SLUG.findall(text)
+    if not found:
+        return f"no \\pdfonly{{\\folioslug{{{want}}}}} (the printed QR needs it)"
+    if found != [want]:
+        return f"\\folioslug says {', '.join(found)}; the file is {want}"
+    return ""
+
+
 def leak_hits(text: str) -> list[str]:
     return [f"L{n} [{name}] {m.group(0)}"
             for n, line in enumerate(text.splitlines(), 1)
@@ -115,6 +132,17 @@ def check_headers() -> None:
            for f in found if (p := header_problems(f.read_text(errors="replace")))]
     say("FAIL" if bad else "PASS", f"headers — {len(found)} folio(s) carry Sources + labels",
         "\n".join(bad))
+
+
+def check_slugs() -> None:
+    found = folios()
+    if not found:
+        say("CNC", "slugs", "no folios found under src/")
+        return
+    bad = [f"{f.relative_to(ROOT)}: {why}" for f in found
+           if (why := slug_problem(f.read_text(errors="replace"), f.relative_to(SRC).as_posix()))]
+    say("FAIL" if bad else "PASS", f"slugs — {len(found)} folio(s) state their own path for the QR",
+        "\n".join(bad[:40]))
 
 
 def check_leaks() -> None:
@@ -191,6 +219,9 @@ def selftest(with_compile: bool) -> bool:
     controls = [
         ("headers flags a folio without Sources/labels",
          bool(header_problems("% just a comment\n\\documentclass{article}"))),
+        ("slugs flags a folio naming another path, and one naming none",
+         bool(slug_problem("\\pdfonly{\\folioslug{swift/x}}", "design/x.tex"))
+         and bool(slug_problem("\\begin{document}", "design/x.tex"))),
         # the planted samples are assembled at run time: written out literally
         # they would sit in this tracked file and the leak scan would flag itself
         ("leaks flags a private IP and a key",
@@ -231,6 +262,7 @@ def main() -> int:
         print("RESULT: COULD-NOT-CHECK — a positive control did not go red")
         return 2
     check_headers()
+    check_slugs()
     check_leaks()
     check_figures()
     check_cache()
