@@ -13,7 +13,9 @@ What it does:
   3. writes docs/.nojekyll, so GitHub serves the files exactly as built.
 
 Before the copy, every figure (<name>-figN.svg) is recoloured for the dark page by
-tools/dark-figures.py; the whole-page <name>.svg, which is what prints, stays paper.
+tools/dark-figures.py; the whole-page <name>.svg, which is what prints, stays paper. Last,
+every file a page loads gets ?v=<its content hash> in the page (tools/cache-bust.py), so a
+release is never shown with the previous release's CSS from a browser's cache.
 
 Needs: Node.js, and for .tex pages xelatex + pdftocairo (TeX Live, poppler).
 
@@ -151,6 +153,13 @@ def main() -> int:
             page.write_text(new)
             sized += 1
     print(f"figures sized to one scale on {sized} page(s)")
+
+    # LAST, after everything that changes a file a page loads: each of those URLs gets ?v=<the
+    # file's content hash> (tools/cache-bust.py). GitHub Pages lets a browser cache every file for
+    # ten minutes, so without it a reload after a release pairs the new page with the old CSS.
+    stamp = subprocess.run([sys.executable, str(ROOT / "tools" / "cache-bust.py"), str(OUT)])
+    if stamp.returncode != 0:
+        return fail(f"tools/cache-bust.py exited {stamp.returncode}", 1)
 
     if args.check:
         print("check only — docs/ untouched")
