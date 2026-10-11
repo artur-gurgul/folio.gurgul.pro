@@ -6,7 +6,7 @@ other memory and <strong>no CPU barrier</strong>. State shared with an interrupt
 another CPU needs a lock-free <code>_Atomic</code>, a <strong>critical section</strong>, or a lock.</p>
 <p class="sheet-tools"><a class="sheet-download" href="c-volatile-atomics-isr.pdf" download>Download PDF</a> <a href="c-volatile-atomics-isr.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/c/c-volatile-atomics-isr.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="c-volatile-atomics-isr-fig1.svg" width="616" height="104" class="wide" alt="volatile · _Atomic · interrupts — sharing state safely in C — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-volatile-atomics-isr-fig1.svg" width="616" height="104" style="--f:0.982" class="wide" alt="volatile · _Atomic · interrupts — sharing state safely in C — figure 1" loading="lazy"></figure>
 </section>
 <section class="sheet-section">
 <h2>What <code>volatile</code> guarantees (C23)</h2>
@@ -66,7 +66,7 @@ another CPU needs a lock-free <code>_Atomic</code>, a <strong>critical section</
 </section>
 <section class="sheet-section">
 <h2>Publish with release / acquire</h2>
-<figure class="sheet-figure"><img src="c-volatile-atomics-isr-fig2.svg" width="277" height="64" alt="volatile · _Atomic · interrupts — sharing state safely in C — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-volatile-atomics-isr-fig2.svg" width="277" height="64" style="--f:0.442" alt="volatile · _Atomic · interrupts — sharing state safely in C — figure 2" loading="lazy"></figure>
 </section>
 <section class="sheet-section">
 <h2>How hardware makes <code>n++</code> indivisible</h2>
@@ -86,7 +86,7 @@ another CPU needs a lock-free <code>_Atomic</code>, a <strong>critical section</
 </section>
 <section class="sheet-section">
 <h2>Cortex-M interrupt priority under FreeRTOS</h2>
-<figure class="sheet-figure"><img src="c-volatile-atomics-isr-fig3.svg" width="303" height="37" alt="volatile · _Atomic · interrupts — sharing state safely in C — figure 3" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-volatile-atomics-isr-fig3.svg" width="303" height="37" style="--f:0.483" alt="volatile · _Atomic · interrupts — sharing state safely in C — figure 3" loading="lazy"></figure>
 <ul>
 <li>In an ISR only <code>…FromISR</code> calls: the others may block, and an ISR has no task to  block. Collect <code>xHigherPriorityTaskWoken</code>, then one <code>portYIELD_FROM_ISR()</code> at the  end. A direct-to-task notification is the cheapest way to unblock a task.</li>
 <li>Only the top bits of the 8-bit priority field exist. An API-calling ISR left at the  default 0 sits above any legal MAX_SYSCALL: no critical section can mask it.</li>

@@ -7,7 +7,7 @@ come back <strong><code>.limited</code></strong>, a user-chosen subset (iOS 14) 
 a gallery, backup or editor app.</p>
 <p class="sheet-tools"><a class="sheet-download" href="photokit-photos-picker.pdf" download>Download PDF</a> <a href="photokit-photos-picker.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/photokit-photos-picker.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="photokit-photos-picker-fig1.svg" width="616" height="121" class="wide" alt="Photos — the picker vs PhotoKit, limited library — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="photokit-photos-picker-fig1.svg" width="616" height="121" style="--f:0.982" class="wide" alt="Photos — the picker vs PhotoKit, limited library — figure 1" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">Door 1 — the picker</span></h3>
 <ul>
 <li>Result = <code>PHPickerResult.itemProvider</code> (UIKit) or <code>PhotosPickerItem</code> (a <code>Transferable</code> placeholder).  UIKit: <code>didFinishPicking</code> fires on Add <em>and</em> Cancel — <strong>you dismiss</strong>.</li>
@@ -48,7 +48,7 @@ cell.req <span class="hljs-operator">=</span> caching.requestImage(for: asset,
   <span class="hljs-keyword">guard</span> cell.assetID <span class="hljs-operator">==</span> asset.localIdentifier <span class="hljs-keyword">else</span> { <span class="hljs-keyword">return</span> } <span class="hljs-comment">// reused</span>
   cell.image <span class="hljs-operator">=</span> img }       <span class="hljs-comment">// called twice: degraded, then final</span></code></pre>
 <h3 class="sheet-hd"><span class="c-sheetblue">One request, two answers</span></h3>
-<figure class="sheet-figure"><img src="photokit-photos-picker-fig2.svg" width="291" height="50" alt="Photos — the picker vs PhotoKit, limited library — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="photokit-photos-picker-fig2.svg" width="291" height="50" style="--f:0.464" alt="Photos — the picker vs PhotoKit, limited library — figure 2" loading="lazy"></figure>
 <p><strong>Live grid</strong>: <code>change.changeDetails(for: old)</code> <span class="math">→</span> on main swap in <code>fetchResultAfterChanges</code>; <code>hasIncrementalChanges</code> ? batch <strong>removed <span class="math">→</span> inserted <span class="math">→</span> moves <span class="math">→</span> changed</strong> : <code>reloadData()</code>.</p>
 <h3 class="sheet-hd"><span class="c-sheetblue">Keys and the limited library</span></h3>
 <p><table class="sheet-table">

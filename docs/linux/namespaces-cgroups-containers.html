@@ -6,7 +6,7 @@
 from read-only image layers is what it stands on. No hypervisor, no guest kernel — a kernel bug is an escape.</p>
 <p class="sheet-tools"><a class="sheet-download" href="namespaces-cgroups-containers.pdf" download>Download PDF</a> <a href="namespaces-cgroups-containers.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/linux/namespaces-cgroups-containers.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="namespaces-cgroups-containers-fig1.svg" width="625" height="161" class="wide" alt="Containers = namespaces + cgroups + overlayfs — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="namespaces-cgroups-containers-fig1.svg" width="625" height="161" style="--f:0.996" class="wide" alt="Containers = namespaces + cgroups + overlayfs — figure 1" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">The 8 namespaces</span></h3>
 <p><table class="sheet-table">
 <thead>
@@ -29,7 +29,7 @@ from read-only image layers is what it stands on. No hypervisor, no guest kernel
 <li>Init exits <span class="math">→</span> the kernel SIGKILLs the whole PID namespace; a later <code>fork</code> into it  fails <code>ENOMEM</code>. A dying net ns hands physical NICs back to the initial ns and destroys  its veths.</li>
 </ul>
 <h3 class="sheet-hd"><span class="c-sheetblue">User namespaces and rootless</span></h3>
-<figure class="sheet-figure"><img src="namespaces-cgroups-containers-fig2.svg" width="290" height="47" alt="Containers = namespaces + cgroups + overlayfs — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="namespaces-cgroups-containers-fig2.svg" width="290" height="47" style="--f:0.462" alt="Containers = namespaces + cgroups + overlayfs — figure 2" loading="lazy"></figure>
 <ul>
 <li>Unprivileged since <strong>3.8</strong>: the creator gets the <strong>full capability set inside</strong>  its user ns and none in the parent; mount, PID, net … then need <code>CAP_SYS_ADMIN</code>  only <em>there</em> — the basis of rootless. Unmapped ids show as 65534.</li>
 <li>Unprivileged, you may map only your own uid (and write <code>deny</code> to <code>setgroups</code> before  <code>gid_map</code>); ranges come from setuid <code>newuidmap</code>/<code>newgidmap</code> reading  <code>/etc/subuid</code> (<code>alice:100000:65536</code>; Docker rootless wants <span class="math">≥</span>65 536). Container uid  33 = host 100032.</li>
@@ -74,7 +74,7 @@ echo $$            &gt; /sys/fs/cgroup/demo/cgroup.procs</code></pre>
 </table></p>
 <p>Charged memory: page cache + anon + dentries, inodes + TCP buffers. <code>free</code>, <code>top</code>, <code>/proc/meminfo</code> show the <em>host</em>: JDK 10+ (<code>UseContainerSupport</code>) and Go 1.25 (<code>GOMAXPROCS</code> = the <code>cpu.max</code> limit, not requests) read the cgroup instead.</p>
 <h3 class="sheet-hd"><span class="c-sheetblue">cgroup v1 sunset</span></h3>
-<figure class="sheet-figure"><img src="namespaces-cgroups-containers-fig3.svg" width="307" height="50" alt="Containers = namespaces + cgroups + overlayfs — figure 3" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="namespaces-cgroups-containers-fig3.svg" width="307" height="50" style="--f:0.489" alt="Containers = namespaces + cgroups + overlayfs — figure 3" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">What it may do: capabilities, seccomp, LSM</span></h3>
 <ul>
 <li>Docker keeps <strong>14 caps</strong>: AUDIT_WRITE, CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL,  MKNOD, NET_BIND_SERVICE, NET_RAW, SETFCAP, SETGID, SETPCAP, SETUID, SYS_CHROOT;  Podman <strong>11</strong> (no AUDIT_WRITE, MKNOD, NET_RAW). Best: <code>--cap-drop=ALL</code> + add back.</li>

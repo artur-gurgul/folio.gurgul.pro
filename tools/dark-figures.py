@@ -8,9 +8,10 @@ darker background". So every colour in a figure is moved to its dark-page equiva
 
   white                    → the page's background, exactly: a white box becomes the page
   black                    → the page's text colour, exactly
-  the paper's Tango shades → the light shades of the same families — the site's own accents, so
-                             blue is still the keyword and green the string (paper #204a87 →
-                             screen #729fcf, and so on; PALETTE below)
+  the paper's Tango shades → the site's soft accents in the same hues, so blue is still the
+                             keyword and green the string (paper #204a87 → screen #8caaee, and
+                             so on; PALETTE below)
+  a box (filled + outlined)→ a half-strength outline: the filled shape carries it
   every other colour       → its lightness turned over between the page's text and background
   (tints, greys, mixes)      in OKLab (light becomes dark, dark becomes light), its hue kept; a
                              light tint keeps a little more colour, so a box stays visible
@@ -46,16 +47,25 @@ from pathlib import Path
 
 BG = "#24292b"      # the page (all.css --bg)
 TEXT = "#e8e8e4"    # the page's text (all.css --text)
-MARK = 'data-folio-dark="1"'
+# the style version: a figure recoloured by an older version cannot be recoloured again (its
+# paper colours are gone), so --check reports it and the build, which starts from paper, fixes it
+VERSION = 2
+MARK = f'data-folio-dark="{VERSION}"'
+MARK_RE = re.compile(r'data-folio-dark="(\d+)"')
+# a box's outline on the dark page: half strength. Full-strength coloured wireframes read as
+# "heavy … like the 90s" (owner, 2026-10-10); a filled shape with a quiet edge does not.
+BOX_OUTLINE_OPACITY = "0.5"
 FIGURE = re.compile(r"-fig\d+\.svg$")
 
-# the paper's Tango shades (printup-sheet.sty) → the site's light shades (sheet.css --c-*)
+# the paper's Tango shades (printup-sheet.sty) → the site's soft accents (sheet.css --c-*). Not
+# Tango's own light shades: on a dark page their green #8ae234 and orange read as neon, many
+# hues at once — "heavy … like the 90s" (owner, 2026-10-10). Soft pastels keep the meaning.
 PALETTE = {
-    (32, 74, 135): "#729fcf",    # sheetBlue = tangoKeyword
-    (78, 154, 6): "#8ae234",     # sheetGreen = tangoString
-    (143, 89, 2): "#e9b96e",     # sheetBrown = tangoComment
-    (206, 92, 0): "#fcaf3e",     # sheetOrange = tangoOperator
-    (181, 37, 28): "#ef6b6b",    # sheetRed = BrickRed
+    (32, 74, 135): "#8caaee",    # sheetBlue = tangoKeyword
+    (78, 154, 6): "#a6d189",     # sheetGreen = tangoString
+    (143, 89, 2): "#e5c890",     # sheetBrown = tangoComment
+    (206, 92, 0): "#ef9f76",     # sheetOrange = tangoOperator
+    (181, 37, 28): "#e78284",    # sheetRed = BrickRed
 }
 
 # Paper has two kinds of colour: INK (text, lines, saturated colours — OKLab lightness up to
@@ -174,7 +184,11 @@ def recolour(colour: str) -> str:
         t = (L_TX - L2) / (L_TX - L_BG)
         return hexed(from_oklab_point(L2, A_TX + (A_BG - A_TX) * t, B_TX + (B_BG - B_TX) * t))
     if L > 0.85:
-        C = min(C * 1.6, 0.09)             # a pale tint: keep enough colour to see the box
+        # a pale tint becomes a dark fill: keep real colour in it, or dark orange turns brown and
+        # dark yellow-green olive — the murky boxes of the first dark version
+        C = min(max(C * 2.4, 0.035), 0.075)
+    elif L <= INK_UP_TO:
+        C *= 0.8                           # ink: a little softer, pastel rather than neon
     return hexed(from_oklch(L2, C, math.atan2(b, a)))
 
 
@@ -193,10 +207,26 @@ def lighten_for(colour: str, text_colour: str, need: float = 4.6) -> str:
     return hexed(rgb)
 
 
+PATH_EL = re.compile(r"<path\b[^>]*>")
+
+
+def quiet_box(m: re.Match) -> str:
+    """A filled AND outlined shape (a box) gets a half-strength outline; a line or an arrow
+    (outline only) keeps its full strength."""
+    el = m.group(0)
+    filled = re.search(r'\sfill="(#[0-9a-fA-F]{6})"', el)
+    if not filled or filled.group(1).lower() == BG or not re.search(r'\sstroke="#', el):
+        return el
+    if "stroke-opacity=" in el:
+        return re.sub(r'stroke-opacity="[^"]*"', f'stroke-opacity="{BOX_OUTLINE_OPACITY}"', el)
+    return el.replace("<path", f'<path stroke-opacity="{BOX_OUTLINE_OPACITY}"', 1)
+
+
 def recolour_svg(text: str) -> str:
-    if MARK in text[:2000]:
+    if MARK_RE.search(text[:2000]):
         return text
     out = VALUE.sub(lambda m: m.group("key") + recolour(m.group("colour")), text)
+    out = PATH_EL.sub(quiet_box, out)
     # INVERSE text (white on a coloured shape on paper — a step marker, a labelled bar) is now
     # the page colour on that shape made light. Where the shape did not come out light enough
     # for it — "paused*" on a mid-brown bar read 3.58:1 (2026-10-10) — lighten the shape.
@@ -223,8 +253,12 @@ def check(paths: list[Path], root: Path | None = None) -> list[str]:
     for p in paths:
         name = p.relative_to(root) if root else p
         text = p.read_text(errors="replace")
-        if MARK not in text[:2000]:
+        mark = MARK_RE.search(text[:2000])
+        if not mark:
             bad.append(f"{name}: still drawn for paper (no {MARK})")
+            continue
+        if mark.group(1) != str(VERSION):
+            bad.append(f"{name}: recoloured by an older style (v{mark.group(1)}, now v{VERSION}) — rebuild")
             continue
         seen = set()
         for m in GLYPH_FILL.finditer(text):
@@ -265,13 +299,15 @@ def selftest() -> bool:
         results.append(("--check flags text under 4.5:1 on the page", bool(check([tmp]))))
         tmp.write_text(dark)
         results.append(("--check passes the recoloured figure", not check([tmp])))
+        tmp.write_text(dark.replace(MARK, 'data-folio-dark="1"'))
+        results.append(("--check flags a figure recoloured by an older style", bool(check([tmp]))))
         # a numbered marker: white digit in a blue circle on paper → page-colour digit, light circle
         marker = recolour_svg(
             '<svg><path fill="rgb(12.5%, 28.999329%, 52.89917%)" d="M0 0"/>'
             '<g fill="rgb(100%, 100%, 100%)" fill-opacity="1"><use xlink:href="#glyph-0-1"/></g></svg>')
         tmp.write_text(marker)
         results.append(("--check passes a page-colour digit on its light circle", not check([tmp])))
-        tmp.write_text(marker.replace('<path fill="#729fcf" d="M0 0"/>', ""))
+        tmp.write_text(re.sub(r'<path fill="#[0-9a-f]{6}" d="M0 0"/>', "", marker))
         results.append(("--check flags page-colour text with no shape under it", bool(check([tmp]))))
         # a labelled bar whose mid-tone fill comes out too dark for its page-colour label: the
         # real one, "paused*" in android-coroutines-platform (paper #e9b68c → #a2734b, 3.58:1)
@@ -285,14 +321,19 @@ def selftest() -> bool:
     results += [
         ("white becomes the page background", f'<rect fill="{BG}"/>' in dark),
         ("black becomes the page text", f'<g fill="{TEXT}" fill-opacity' in dark),
-        ("Tango blue becomes the light Tango blue", 'stroke="#729fcf"' in dark),
+        ("Tango blue becomes the site's blue", 'stroke="#8caaee"' in dark),
         ("a pale blue tint becomes a dark blue tint",
          (lambda c: contrast(c, parse(BG)) < 1.6 and c[2] > c[0])(
-             parse(re.search(r'stroke="#729fcf" fill="(#[0-9a-f]{6})"', dark).group(1)))),
+             parse(re.search(r'stroke="#8caaee" fill="(#[0-9a-f]{6})"', dark).group(1)))),
         ("style colours are recoloured too", f"fill:{BG};stroke:{TEXT}" in dark),
         ("the paper's grey ink is readable on the page (≥ 4.5:1)",
          contrast(parse(recolour("#737373")), parse(BG)) >= 4.5),
         ("the file is marked, and a second run changes nothing", MARK in dark and recolour_svg(dark) == dark),
+        ("a box's outline is quiet (half strength)",
+         re.search(rf'<path stroke-opacity="{BOX_OUTLINE_OPACITY}" stroke="#8caaee" fill=', dark) is not None),
+        ("a line (outline only) keeps its full strength",
+         quiet_box(re.match(r".*", '<path fill="none" stroke="#e8e8e4" stroke-opacity="1"/>'))
+         == '<path fill="none" stroke="#e8e8e4" stroke-opacity="1"/>'),
     ]
     for name, ok in results:
         print(f"  {'PASS' if ok else 'FAIL'} {name}")

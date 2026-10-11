@@ -74,10 +74,13 @@ hidden whenever JavaScript is on. Groups, not folios, so it stays small as the
 site grows. The site is **dark**; a folio's figures are drawn for paper, so the
 build recolours every figure (`<name>-figN.svg`) for the dark page with
 `tools/dark-figures.py` — white becomes the page's background, ink becomes
-light, the Tango shades their light ends — while the whole-page `<name>.svg`,
-which is what prints, stays paper. A recoloured figure is marked and never
-recoloured twice; `tools/check.py` fails while any figure is still paper. The
-build writes `nav.json`,
+light, the Tango shades soft pastels in the same hues (the page uses the same
+set), box outlines go to half strength — while the whole-page `<name>.svg`,
+which is what prints, stays paper. A recoloured figure is marked with its style
+version and never recoloured twice; `tools/check.py` fails while any figure is
+still paper or in an older style. Every figure is shown at **one scale** — its
+share of the A4 text width (`--f`, written by `tools/build.py`) of the column —
+so a small figure's text is as large as a wide one's. The build writes `nav.json`,
 `sitemap.xml` and `robots.txt` (`generate:` in `src/.sajt/config.yaml`) and
 fails without them. Do not put anything into a page that every page repeats —
 it belongs in a JSON file, a stylesheet or a script.

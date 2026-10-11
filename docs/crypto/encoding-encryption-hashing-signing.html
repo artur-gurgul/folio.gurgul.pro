@@ -8,7 +8,7 @@ the secret is a password. Choose by the property needed: format, confidentiality
 authenticity, non-repudiation.</p>
 <p class="sheet-tools"><a class="sheet-download" href="encoding-encryption-hashing-signing.pdf" download>Download PDF</a> <a href="encoding-encryption-hashing-signing.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/crypto/encoding-encryption-hashing-signing.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="encoding-encryption-hashing-signing-fig1.svg" width="628" height="172" class="wide" alt="Encoding vs encryption vs hashing vs signing — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="encoding-encryption-hashing-signing-fig1.svg" width="628" height="172" style="--f:1.000" class="wide" alt="Encoding vs encryption vs hashing vs signing — figure 1" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">What each one guarantees — and what it does not</span></h3>
 <p><table class="sheet-table">
 <thead>
@@ -64,7 +64,7 @@ authenticity, non-repudiation.</p>
 <p>10-digit phone numbers are only 10<sup>10</sup> inputs: hash them all and every digest reverses. EDPB Guidelines 01/2025: anyone who knows the identifier recomputes an unkeyed pseudonym — use a keyed one-way function (a MAC), secret kept apart. Still personal data: <em>pseudonymised</em> (GDPR Art. 4(5)), not anonymous.</p>
 <h3 class="sheet-hd"><span class="c-sheetblue">MAC vs signature — who can prove what</span></h3>
 <p>Both prove integrity and origin. A <strong>MAC</strong> tag could come from either holder of K: no proof to a third party. A <strong>signature</strong> comes only from the private-key holder and anyone can check it — <strong>non-repudiation</strong> (FIPS 186-5: verifiable “by a third party”). RFC 9421 HTTP Message Signatures carries both: <code>hmac-sha256</code> beside <code>ed25519</code>, <code>ecdsa-p256-sha256</code>, <code>rsa-pss-sha512</code>. A truncated HMAC keeps <span class="math">≥</span> half the hash and <span class="math">≥</span> 80 bits (RFC 2104).</p>
-<figure class="sheet-figure"><img src="encoding-encryption-hashing-signing-fig2.svg" width="294" height="59" alt="Encoding vs encryption vs hashing vs signing — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="encoding-encryption-hashing-signing-fig2.svg" width="294" height="59" style="--f:0.469" alt="Encoding vs encryption vs hashing vs signing — figure 2" loading="lazy"></figure>
 <ul>
 <li><strong>FIPS 186-5</strong> (Feb 2023): RSA, ECDSA (deterministic RFC 6979 too), EdDSA (Ed25519,  Ed448); DSA only verifies old signatures; a signing key pair “shall not” do anything else.</li>
 <li>“Signing = encrypting with the private key” fits only textbook RSA; ECDSA, EdDSA, ML-DSA  cannot encrypt. Encryption to a public key proves nothing about who sent it.</li>
@@ -90,7 +90,7 @@ authenticity, non-repudiation.</p>
 <li>Hashing on the client does not replace the server’s: whatever the server compares  <em>is</em> the password.</li>
 </ul>
 <h3 class="sheet-hd"><span class="c-sheetblue">Quantum — what changes per job</span></h3>
-<figure class="sheet-figure"><img src="encoding-encryption-hashing-signing-fig3.svg" width="299" height="41" alt="Encoding vs encryption vs hashing vs signing — figure 3" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="encoding-encryption-hashing-signing-fig3.svg" width="299" height="41" style="--f:0.477" alt="Encoding vs encryption vs hashing vs signing — figure 3" loading="lazy"></figure>
 <p>Dates: NIST IR 8547, still a draft (Nov 2024). <strong>Encoding</strong>: unaffected. <strong>AES <span class="math">≥</span> 128,
 SHA-256, HMAC</strong>: PQ category <span class="math">≥</span> 1, no transition planned. <strong>Public-key</strong> jobs fall to Shor: encryption now (recorded today, decrypted later); authentication only when checked — except code a device verifies for years. Detail: <code>post-quantum-crypto</code>.</p>
 <h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>

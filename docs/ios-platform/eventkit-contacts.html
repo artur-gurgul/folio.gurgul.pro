@@ -7,7 +7,7 @@ Climb the <strong>access ladder</strong> only as far as the feature needs: a <st
 <strong>full access</strong>. One long-lived <code>EKEventStore</code> / <code>CNContactStore</code>; on “store changed”, refetch.</p>
 <p class="sheet-tools"><a class="sheet-download" href="eventkit-contacts.pdf" download>Download PDF</a> <a href="eventkit-contacts.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/eventkit-contacts.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="eventkit-contacts-fig1.svg" width="633" height="152" class="wide" alt="EventKit &amp; Contacts — access levels, model, sync — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="eventkit-contacts-fig1.svg" width="633" height="152" style="--f:1.000" class="wide" alt="EventKit &amp; Contacts — access levels, model, sync — figure 1" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">EventKit</span></h3>
 <ul>
 <li><strong>One <code>EKEventStore</code></strong>, created once and kept: expensive to initialise; objects from one  store must not be used with another. Fetched <em>before</em> the grant? <code>reset()</code> after it.</li>
@@ -40,7 +40,7 @@ Climb the <strong>access ladder</strong> only as far as the feature needs: a <st
 </tbody>
 </table></p>
 <h3 class="sheet-hd"><span class="c-sheetblue">Saving an edit to a recurring series</span></h3>
-<figure class="sheet-figure"><img src="eventkit-contacts-fig2.svg" width="255" height="85" alt="EventKit &amp; Contacts — access levels, model, sync — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="eventkit-contacts-fig2.svg" width="255" height="85" style="--f:0.406" alt="EventKit &amp; Contacts — access levels, model, sync — figure 2" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">Contacts</span></h3>
 <ul>
 <li><code>CNContactStore</code>: <code>requestAccess(for: .contacts)</code> — then branch on  <code>authorizationStatus(for:)</code>: a <code>Bool</code> cannot say limited vs full. Fetches do I/O: <strong>off main</strong>.</li>

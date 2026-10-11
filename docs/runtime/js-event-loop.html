@@ -7,7 +7,7 @@ own, queued at each <strong>rendering opportunity</strong>. Node walks libuv’s
 microtasks — an endless chain of them freezes everything.</p>
 <p class="sheet-tools"><a class="sheet-download" href="js-event-loop.pdf" download>Download PDF</a> <a href="js-event-loop.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/runtime/js-event-loop.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="js-event-loop-fig1.svg" width="624" height="164" class="wide" alt="The JavaScript event loop — browser and Node — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="js-event-loop-fig1.svg" width="624" height="164" style="--f:0.995" class="wide" alt="The JavaScript event loop — browser and Node — figure 1" loading="lazy"></figure>
 </section>
 <section class="sheet-section">
 <h2>What runs when</h2>
@@ -90,7 +90,7 @@ fs.readFile(file, () =&gt; { setTimeout(() =&gt; console.log(&#x27;t&#x27;), 0);
 <li><strong>Long task</strong>: a task + its microtask checkpoint <span class="math">&gt;</span><strong>50 ms</strong> (so input waits  <span class="math">&lt;</span>50 ms, inside RAIL’s 100 ms); <strong>LoAF</strong> (Chrome 123) adds rendering + per-script  attribution. <strong>INP</strong> = input delay + processing + presentation of clicks, taps, keys; p75  <span class="math">≤</span>200 ms good, <span class="math">&gt;</span>500 ms poor; Core Web Vital since 12 Mar 2024.</li>
 <li><code>await</code> does <strong>not</strong> yield — its continuation is a microtask in the same  checkpoint. To let input and paint in, <strong>end the task</strong>.</li>
 </ul>
-<figure class="sheet-figure"><img src="js-event-loop-fig2.svg" width="293" height="61" alt="The JavaScript event loop — browser and Node — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="js-event-loop-fig2.svg" width="293" height="61" style="--f:0.467" alt="The JavaScript event loop — browser and Node — figure 2" loading="lazy"></figure>
 <ul>
 <li><code>scheduler.yield()</code>: the continuation keeps the task’s priority and signal and runs  <strong>ahead</strong> of same-priority tasks. <code>scheduler.postTask(fn, {priority, delay,
  signal})</code>: <code>user-blocking</code> · <code>user-visible</code> (default) · <code>background</code> (WICG draft).</li>

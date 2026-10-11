@@ -8,7 +8,7 @@ named policy — server-authoritative, LWW, field merge, <strong>OT</strong> (a 
 or <strong>CRDTs</strong> (merge is mathematically order-free); keep deletes as <strong>tombstones</strong>.</p>
 <p class="sheet-tools"><a class="sheet-download" href="sync-engines.pdf" download>Download PDF</a> <a href="sync-engines.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/architecture/sync-engines.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="sync-engines-fig1.svg" width="647" height="129" class="wide" alt="Sync engines — clocks, conflicts, CRDTs — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="sync-engines-fig1.svg" width="647" height="129" style="--f:1.000" class="wide" alt="Sync engines — clocks, conflicts, CRDTs — figure 1" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">The engine</span></h3>
 <ul>
 <li><strong>Local store = truth</strong>; each write also appends an <strong>op</strong>  <code>{opId: UUID, entity, id, field, value, baseVersion}</code> to a durable <strong>outbox</strong>  in the <em>same</em> transaction. Ops (intent: “add tag b”) merge better than  snapshots (“tags = {a,b}”).</li>

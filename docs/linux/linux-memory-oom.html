@@ -8,7 +8,7 @@ inside the allocating task (<strong>direct reclaim</strong>, a stall); when recl
 <strong>cgroup</strong> that hit <code>memory.max</code>.</p>
 <p class="sheet-tools"><a class="sheet-download" href="linux-memory-oom.pdf" download>Download PDF</a> <a href="linux-memory-oom.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/linux/linux-memory-oom.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="linux-memory-oom-fig1.svg" width="632" height="158" class="wide" alt="Linux memory — accounting, reclaim, swap, OOM — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="linux-memory-oom-fig1.svg" width="632" height="158" style="--f:1.000" class="wide" alt="Linux memory — accounting, reclaim, swap, OOM — figure 1" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">Per process: VSZ, RSS, PSS, USS</span></h3>
 <p><table class="sheet-table">
 <tbody>
@@ -92,7 +92,7 @@ Out of memory: Killed process 4242 (java) total-vm:9123456kB,
 <h3 class="sheet-hd"><span class="c-sheetblue">Transparent huge pages</span></h3>
 <p><code>enabled</code>: <code>always</code> · <code>madvise</code> (only <code>MADV_HUGEPAGE</code> ranges) · <code>never</code>; build default (Kconfig: <code>always</code>). <code>defrag</code>: <code>always</code> · <code>defer</code> · <code>defer+madvise</code> · <code>madvise</code> (default) · <code>never</code>. 2 MB pages cut TLB misses; cost compaction stalls, <strong>khugepaged</strong> work, bloat. <strong>mTHP</strong>: <code>hugepages-&lt;size&gt;kB/enabled</code>, PMD size <code>inherit</code>, others <code>never</code>. Redis: <code>never</code>, and <code>overcommit_memory=1</code> for <code>fork()</code> snapshots.</p>
 <p><strong><span class="c-sheetblue">When it landed — kernel <span class="c-sheetblue"></span> · systemd <span class="c-sheetorange"></span></span></strong></p>
-<figure class="sheet-figure"><img src="linux-memory-oom-fig2.svg" width="305" height="60" alt="Linux memory — accounting, reclaim, swap, OOM — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="linux-memory-oom-fig2.svg" width="305" height="60" style="--f:0.486" alt="Linux memory — accounting, reclaim, swap, OOM — figure 2" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
 <ul>
 <li class="trap">A full tmpfs or <code>/dev/shm</code> shows as <code>Cached</code> yet is not reclaimable — only swap or  <code>rm</code> frees it.</li>

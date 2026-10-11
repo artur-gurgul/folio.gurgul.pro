@@ -8,7 +8,7 @@ call arrives: a <strong>PushKit VoIP push</strong> wakes it, it <em>must</em> re
 at once, and CallKit owns the system call UI and the audio session.</p>
 <p class="sheet-tools"><a class="sheet-download" href="realtime-webrtc-callkit.pdf" download>Download PDF</a> <a href="realtime-webrtc-callkit.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/realtime-webrtc-callkit.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="realtime-webrtc-callkit-fig1.svg" width="648" height="229" class="wide" alt="Real-time calls on iOS — WebRTC, CallKit, PushKit — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="realtime-webrtc-callkit-fig1.svg" width="648" height="229" style="--f:1.000" class="wide" alt="Real-time calls on iOS — WebRTC, CallKit, PushKit — figure 1" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">WebRTC</span></h3>
 <ul>
 <li><strong>Signalling is not specified</strong> by WebRTC (JSEP, RFC 8829/9429): you move SDP and  candidates over your own channel. <strong>SDP</strong> describes codecs, media sections, ICE ufrag/pwd  and the <strong>DTLS certificate fingerprint</strong>. Offer/answer (RFC 3264)<span class="unverified">(unverified)</span>:  <code>createOffer</code> <span class="math">→</span> <code>setLocalDescription</code> <span class="math">→</span> send; the peer  <code>setRemoteDescription</code> <span class="math">→</span> <code>createAnswer</code> <span class="math">→</span> <code>setLocalDescription</code> <span class="math">→</span> send back.</li>

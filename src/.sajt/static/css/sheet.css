@@ -84,18 +84,19 @@
 }
 
 /* phones: a figure drawn across an A4 shrinks to ~1/3 in a 390 px column and
- * its labels become unreadable. Wide figures keep a readable minimum width and
- * scroll sideways inside their own strip, as the table does — never the page. */
+ * its labels become unreadable. Every figure is laid out as if the column were
+ * 760 px (its share --f of it, as on a desktop) and scrolls sideways inside its
+ * own strip when that is wider than the phone, as the table does — never the
+ * page. */
 @media (max-width: 860px) {
 	.content.folio-page .sheet-figure {
 		overflow-x: auto;
 		-webkit-overflow-scrolling: touch;
 	}
 
-	.content.folio-page .sheet-figure img.wide {
-		width: auto;
+	.content.folio-page .sheet-figure img {
+		width: calc(var(--f, 1) * 760px);
 		max-width: none;
-		min-width: 760px;
 	}
 }
 
@@ -157,11 +158,17 @@ ul.posts.side-areas li span.count {
 
 /* a selected area looks like the current page in the contents (the sidebar
    carries no tags — owner, 2026-09-29). Dark text on the light accent: white
-   on #729fcf is under 3:1. */
+   on the light accent is under 3:1. */
 ul.posts a.on {
 	background: var(--accent);
 	border-left-color: var(--accent);
 	color: var(--bg-deep);
+}
+
+/* the current area's count, on its tinted row: muted grey there was 4.38:1 —
+   the full text colour (as specific as the muted count rule above) */
+ul.posts.side-areas a.current span.count {
+	color: var(--text);
 }
 
 /* as specific as the muted count rule above, or that one wins and the count
@@ -227,7 +234,7 @@ ul.posts.side-areas a.on span.count {
 }
 
 .sheet-meta li.sheet-label a {
-	border-color: rgba(114, 159, 207, 0.3);
+	border-color: rgba(140, 170, 238, 0.3);
 	color: var(--accent-strong);
 	background: var(--accent-soft);
 }
@@ -326,15 +333,14 @@ ul.posts.side-areas a.on span.count {
 	text-align: center;
 }
 
+/* every figure at ONE scale: its share of the A4 text width (--f, written by
+   tools/build.py) of the column. Until 2026-10-10 a figure drawn across the
+   page filled the column while a smaller one kept its printed size, so a small
+   figure's text came out ~1.6x smaller — 8-9 px, "very small" (owner) */
 .sheet-figure img {
+	width: calc(var(--f, 1) * 100%);
 	max-width: 100%;
 	height: auto;
-}
-
-/* a picture drawn across the printed page fills the column here too; a
-   small one keeps its printed size (tex.ts decides from the SVG's size) */
-.sheet-figure img.wide {
-	width: 100%;
 }
 
 .sheet-code {
@@ -404,16 +410,18 @@ ul.posts.side-areas a.on span.count {
 
 /* ── the paper palette on the web ───────────────────────────────────────── */
 
-/* Paper uses the DARK end of each Tango family on white; the dark page uses
-   the LIGHT end of the same families, so a colour keeps its meaning — blue is
-   still the keyword, green the string — while reading on dark. (Paper:
-   #204a87 #4e9a06 #8f5902 #ce5c00 #b22222.) */
+/* Paper uses the DARK end of each Tango family on white; the dark page uses a
+   soft pastel in the same hue, so a colour keeps its meaning — blue is still
+   the keyword, green the string — while reading on dark. The figures use the
+   same set (tools/dark-figures.py). (Paper: #204a87 #4e9a06 #8f5902 #ce5c00
+   #b22222; until 2026-10-10 the screen had Tango's own light shades, which
+   read as neon on dark.) */
 :root {
-	--c-blue: #729fcf;
-	--c-green: #8ae234;
-	--c-brown: #e9b96e;
-	--c-orange: #fcaf3e;
-	--c-red: #ef6b6b;
+	--c-blue: #8caaee;
+	--c-green: #a6d189;
+	--c-brown: #e5c890;
+	--c-orange: #ef9f76;
+	--c-red: #e78284;
 	--c-grey: #a9ada6;
 }
 
@@ -425,13 +433,13 @@ ul.posts.side-areas a.on span.count {
 .c-sheetgrey, .c-gray, .c-grey, .c-black { color: var(--c-grey); }
 .c-white { color: inherit; }
 
-.chip.c-sheetblue { background: rgba(114, 159, 207, 0.14); }
-.chip.c-sheetgreen { background: rgba(138, 226, 52, 0.12); }
-.chip.c-sheetorange { background: rgba(252, 175, 62, 0.13); }
-.chip.c-sheetred { background: rgba(239, 107, 107, 0.13); }
+.chip.c-sheetblue { background: rgba(140, 170, 238, 0.14); }
+.chip.c-sheetgreen { background: rgba(166, 209, 137, 0.13); }
+.chip.c-sheetorange { background: rgba(239, 159, 118, 0.13); }
+.chip.c-sheetred { background: rgba(231, 130, 132, 0.13); }
 
 /* the highlight.js theme (hightlight.css, BSD, left as it is) is drawn for
-   white; on the dark page its tokens take the same light Tango shades */
+   white; on the dark page its tokens take the same soft accents */
 .hljs { color: var(--text); }
 .hljs-comment, .hljs-quote { color: var(--c-brown); font-style: italic; }
 .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-name, .hljs-tag, .hljs-attribute { color: var(--c-blue); }
@@ -439,10 +447,10 @@ ul.posts.side-areas a.on span.count {
 .hljs-number, .hljs-title, .hljs-symbol, .hljs-bullet, .hljs-regexp, .hljs-link { color: var(--c-orange); }
 .hljs-type, .hljs-built_in, .hljs-params, .hljs-title.class_, .hljs-class .hljs-title,
 .hljs-variable, .hljs-template-variable, .hljs-attr, .hljs-selector-id, .hljs-selector-class,
-.hljs-section, .hljs-meta { color: #ad7fa8; }   /* Tango Plum, the light end */
+.hljs-section, .hljs-meta { color: #ca9ee6; }   /* a soft violet */
 .hljs-subst { color: var(--text); }
-.hljs-addition { background-color: rgba(138, 226, 52, 0.15); }
-.hljs-deletion { background-color: rgba(239, 107, 107, 0.15); }
+.hljs-addition { background-color: rgba(166, 209, 137, 0.15); }
+.hljs-deletion { background-color: rgba(231, 130, 132, 0.15); }
 .hljs-formula { background-color: var(--code-bg); }
 
 /* ── the memo list ──────────────────────────────────────────────────────── */

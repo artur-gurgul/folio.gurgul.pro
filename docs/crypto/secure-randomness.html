@@ -6,7 +6,7 @@ unlimited, unpredictable stream. Take every key, nonce, IV and token from the <s
 dangerous moment is <em>before</em> it is seeded, or after its state was copied.</p>
 <p class="sheet-tools"><a class="sheet-download" href="secure-randomness.pdf" download>Download PDF</a> <a href="secure-randomness.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/crypto/secure-randomness.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="secure-randomness-fig1.svg" width="624" height="145" class="wide" alt="Secure randomness — entropy, DRBGs, platform APIs, nonces, UUIDs, failures — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="secure-randomness-fig1.svg" width="624" height="145" style="--f:0.995" class="wide" alt="Secure randomness — entropy, DRBGs, platform APIs, nonces, UUIDs, failures — figure 1" loading="lazy"></figure>
 </section>
 <section class="sheet-section">
 <h2>PRNG · CSPRNG · TRNG</h2>
@@ -46,12 +46,12 @@ dangerous moment is <em>before</em> it is seeded, or after its state was copied.
 </section>
 <section class="sheet-section">
 <h2>UUIDs — identifiers, not secrets (RFC 9562)</h2>
-<figure class="sheet-figure"><img src="secure-randomness-fig2.svg" width="301" height="75" alt="Secure randomness — entropy, DRBGs, platform APIs, nonces, UUIDs, failures — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="secure-randomness-fig2.svg" width="301" height="75" style="--f:0.480" alt="Secure randomness — entropy, DRBGs, platform APIs, nonces, UUIDs, failures — figure 2" loading="lazy"></figure>
 <p>May 2024, obsoletes RFC 4122; “SHOULD utilize UUIDv7 instead of UUIDv1 and UUIDv6”. v4 has “poor database-index locality”; v7 sorts by creation (ms) and <em>reveals</em> it; a counter or sub-ms time in <code>rand_a</code> costs random bits. “SHOULD NOT assume that UUIDs are hard to guess”, “MUST NOT be used as security capabilities” — no reset tokens, no share links. CSPRNG “SHOULD” generate them.</p>
 </section>
 <section class="sheet-section">
 <h2>Modulo bias</h2>
-<figure class="sheet-figure"><img src="secure-randomness-fig3.svg" width="308" height="34" alt="Secure randomness — entropy, DRBGs, platform APIs, nonces, UUIDs, failures — figure 3" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="secure-randomness-fig3.svg" width="308" height="34" style="--f:0.491" alt="Secure randomness — entropy, DRBGs, platform APIs, nonces, UUIDs, failures — figure 3" loading="lazy"></figure>
 <p><code>byte % 10</code>: digits 0–5 have 26/256, 6–9 have 25/256 — 4 % likelier. Reject the red tail and redraw, or call <code>Int.random(in:)</code>, <code>arc4random_uniform</code>, <code>randomInt</code>, <code>secrets.randbelow</code>.</p>
 <pre class="sheet-code"><code class="hljs language-typescript"><span class="hljs-keyword">const</span> lim = <span class="hljs-number">2</span>**<span class="hljs-number">32</span> - <span class="hljs-number">2</span>**<span class="hljs-number">32</span> % n;  <span class="hljs-comment">// largest multiple of n; u = new Uint32Array(1)</span>
 <span class="hljs-keyword">do</span> crypto.<span class="hljs-title function_">getRandomValues</span>(u); <span class="hljs-keyword">while</span> (u[<span class="hljs-number">0</span>] &gt;= lim); <span class="hljs-keyword">return</span> u[<span class="hljs-number">0</span>] % n;</code></pre>
