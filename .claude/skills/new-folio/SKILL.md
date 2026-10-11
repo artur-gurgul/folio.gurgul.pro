@@ -49,9 +49,16 @@ Adapting older notes: drop Q&A lists and "Likely questions", rename
 - Does it read like **documentation** — a list of options, "X is used to Y", the
   reference's API surface? Red flag: rewrite it as the idea, the mechanism or a
   picture, or cut it and `\link` the manual instead.
+- Does each part **teach the subject** — the problem it solves, who does what,
+  how it moves, what it costs, when to choose it? (CLAUDE.md, "What a page must
+  carry, and what it must not".)
 - Is there something here a reader would **not easily find** — the surprising
-  number, the history behind a quirk, the trick nobody writes down? A folio
-  without one is a summary of the manual.
+  number, the trick nobody writes down — that helps them understand or use the
+  subject? A folio without one is a summary of the manual.
+- Is anything here **noise by the rules**: history or dates for their own sake, a
+  name that teaches nothing, a version number as decoration, a label like
+  "In one line:", a quote or attribution on paper? Cut it; sources go in the
+  header, reading links in the web-only Further reading.
 - Is it a **fact** (checkable), not narrative, encouragement or a wordy explanation?
 - Is it said **once**? A fact repeated in the one-liner, a diagram and a list is noise.
 - Would a reader **lose something** if it went? If not, cut it.

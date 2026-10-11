@@ -14,10 +14,46 @@ memorising.
 **It is for learning, not for looking things up.** A folio is for people who
 want to understand ideas, remember them and see them — and to have fun doing
 it. Prefer the mechanism behind a feature, the idea that makes it click, the
-surprising number, the history that explains a quirk, the trick nobody writes
-down. **When something is interesting and hard to find on the internet, it
-belongs on the folio** — that is worth more than what is on the first page of
-the manual.
+surprising number, the trick nobody writes down. **When something is
+interesting and hard to find on the internet, it belongs on the folio** — but
+only if it helps the reader understand or use the subject; a curious fact that
+teaches nothing about it is noise.
+
+## What a page must carry, and what it must not — READ BEFORE WRITING
+
+The maintainer's requirements (2026-10-11), written down so they never have to
+be repeated. A page that breaks one of them is not done, however well it fits.
+
+**Teach the subject.** Every section answers what a learner needs to
+understand and use the thing. For a pattern, a design or a technique that is:
+**the problem it solves · who does what · how data or control moves · what it
+costs · when to choose it**, plus the pitfall people actually fall into — kept
+next to the thing it belongs to. Comparisons are concrete (what each one
+solves, costs, fits), never ratings.
+
+**Never on the page:**
+- **History for its own sake** — dates, origin stories, who wrote it first, the
+  conference talk it came from. Only when the reader needs it to understand or
+  use the subject.
+- **Names that teach nothing** — a framework, library or person mentioned in
+  passing ("Cycle.js"). Name a thing only when the reader will use it.
+- **Version numbers as decoration** ("iOS 17, macOS 14"). Only where the
+  version changes what the reader does (an API that needs iOS 18).
+- **Text without value** — labels and filler ("In one line:"), headings that
+  only repeat the obvious, sentences that restate a picture next to them.
+- **Documentation voice** — lists of API and protocol names, option tables for
+  their own sake, "X is used to Y", vague ratings ("testability: high").
+- **Quotes and attributions on paper** — "(Staltz, 2015)". Say the idea in your
+  own words; the source goes in the header.
+
+**References live on the website, never on paper.** Every fact is checked
+against a source listed in the `% Sources` header (the editor's trail). For
+readers, the sources worth reading go in the web-only Further reading block
+(`\begin{htmlonly}`, rule 8 below), with one line on why each is worth it.
+
+**Layout is designed per folio** (quality rule 2): rearrange diagrams so text
+never shrinks; one A4 page; every folio states its path for the printed QR
+(`\pdfonly{\folioslug{…}}`, rule 4).
 
 **It is not documentation.** A folio that reads like a manual — option lists for
 their own sake, "X is used to Y", an API surface copied from the reference — has
