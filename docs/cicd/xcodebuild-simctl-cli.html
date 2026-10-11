@@ -6,24 +6,24 @@ drives simulators, <code>devicectl</code> phones; <code>xcode-select</code> / <c
 Xcode</strong> answers.</p>
 <p class="sheet-tools"><a class="sheet-download" href="xcodebuild-simctl-cli.pdf" download>Download PDF</a> <a href="xcodebuild-simctl-cli.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/cicd/xcodebuild-simctl-cli.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig1.svg" width="619" height="179" class="wide" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig1.svg" width="619" height="179" style="--f:0.987" class="wide" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 1" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">Build once, test anywhere</span></h3>
 <p><code>build-for-testing</code> writes an <code>.xctestrun</code>: an editable plist of bundle paths, environment and arguments (Xcode 26+: even <em>disabled</em> plan configurations). Any Mac runs it with <code>test-without-building</code> — no source, no compiler. Tests are paths, <code>-only-testing Target/Class/method</code>; <code>@file</code> reads one a line; <em>only</em> beats <em>skip</em>.</p>
 <h3 class="sheet-hd"><span class="c-sheetblue">Two repetition loops that point opposite ways</span></h3>
-<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig2.svg" width="281" height="30" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig2.svg" width="281" height="30" style="--f:0.448" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 2" loading="lazy"></figure>
 <p><code>-test-iterations N</code>: N runs, or either loop’s cap. <code>-test-repetition-relaunch-enabled YES</code>: a fresh process per run.</p>
 <h3 class="sheet-hd"><span class="c-sheetblue">Parallel: the simulator you pick never runs a test</span></h3>
-<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig3.svg" width="288" height="51" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 3" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig3.svg" width="288" height="51" style="--f:0.459" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 3" loading="lazy"></figure>
 <p>Clones carry the original’s name. Several <code>-destination</code>s each run the <em>whole</em> suite; <code>-parallelize-tests-among-destinations</code> splits it.</p>
 <h3 class="sheet-hd"><span class="c-sheetblue">One prefix, stripped on the way in</span></h3>
-<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig4.svg" width="268" height="27" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 4" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig4.svg" width="268" height="27" style="--f:0.427" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 4" loading="lazy"></figure>
 <p><code>simctl</code> has no environment flag; the prefix <em>is</em> the interface. At <code>boot</code> it reaches the whole device — in a 2019 experiment, enough to give an iPhone 8 simulator Face ID.</p>
 <p><strong><span class="c-sheetblue">The <code>.xcresult</code>: query it, never parse it</span></strong></p>
 <p><a href="https://keith.github.io/xcode-man-pages/xcresulttool.1.html"><code>xcresulttool</code></a> speaks JSON; <code>help &lt;command&gt;</code> prints the schema. Xcode 16 swapped its commands: <code>get object</code> needs <code>--legacy</code>, and parsers built on it broke.</p>
 <p><strong><span class="c-sheetblue">What changed, Xcode 13 <span class="math">→</span> 27</span></strong></p>
-<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig5.svg" width="304" height="98" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 5" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig5.svg" width="304" height="98" style="--f:0.485" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 5" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">Exit codes: a 1980 mail header</span></h3>
-<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig6.svg" width="271" height="39" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 6" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig6.svg" width="271" height="39" style="--f:0.432" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 6" loading="lazy"></figure>
 <p><a href="https://keith.github.io/xcode-man-pages/xcodebuild.1.html"><code>xcodebuild</code></a> exits by <a href="https://man.freebsd.org/cgi/man.cgi?query=sysexits&amp;sektion=3">sysexits(3)</a>: <code>sysexits.h</code>, first shipped in 4BSD (1980), written for delivermail — sendmail’s predecessor — and the Berkeley network, starting at 64 “to reduce the possibility of clashing”. Logs after <code>** TEST FAILED **</code> show 65: branch on non-zero, never on a number.</p>
 <h3 class="sheet-hd"><span class="c-sheetblue">Traps</span></h3>
 <ul>
@@ -31,7 +31,7 @@ Xcode</strong> answers.</p>
 <li class="trap">No <code>OS=</code> is <code>latest</code>: a new runner image moves the iOS version. Pin <code>OS=</code> or <code>id=</code>.</li>
 </ul>
 <p><strong><span class="c-sheetblue">Export: <code>method</code> answers “who may install this?”</span></strong></p>
-<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig7.svg" width="291" height="74" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 7" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig7.svg" width="291" height="74" style="--f:0.464" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 7" loading="lazy"></figure>
 <p>The 100 is per product family per membership year; <a href="https://developer.apple.com/help/account/devices/devices-overview/">disabling a device does not give the slot
 back</a>, only renewal does. <code>manageAppVersionAndBuildNumber</code>: Xcode rewrites every build number in the archive — off when CI owns it. <code>testFlightInternalTestingOnly</code>: never submittable. Manual signing: <code>provisioningProfiles</code> {bundle id <span class="math">→</span> profile}.</p>
 <h3 class="sheet-hd"><span class="c-sheetblue">Signing with nobody at the keyboard</span></h3>
@@ -45,10 +45,10 @@ back</a>, only renewal does. <code>manageAppVersionAndBuildNumber</code>: Xcode 
 </ul>
 <h3 class="sheet-hd"><span class="c-sheetblue">A simulator is a userspace, not a virtual machine</span></h3>
 <p><a href="https://developer.apple.com/videos/play/wwdc2019/418/">The iOS userspace</a> — its own <code>launchd</code>, daemons and frameworks — runs on the <em>Mac’s</em> kernel, sharing its filesystem with a home of its own. CPU and memory limits are not simulated: on a Mac with a terabyte of RAM the “iPhone” can allocate a terabyte. Simulator timings say nothing about a phone.</p>
-<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig8.svg" width="303" height="48" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 8" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig8.svg" width="303" height="48" style="--f:0.483" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 8" loading="lazy"></figure>
 <p>What a phone will not let a script do, a simulator will: <code>privacy … grant</code> (no alert to tap), <code>push</code> an <code>.apns</code> file, <code>keychain … add-root-cert</code> (trust your proxy), <code>status_bar … override --time 9:41</code>. Why 9:41: Apple designed keynotes so the reveal lands about 40 minutes in and the screen matches the audience’s watches — the 2007 iPhone appeared at 9:41. Script with UDIDs; <code>booted</code> = the one booted device. Phones: <code>devicectl</code> (CoreDevice, iOS 17+), <code>--device</code> by name, UDID or ECID; parse <code>--json-output</code>, not text.</p>
 <h3 class="sheet-hd"><span class="c-sheetblue">Which Xcode answers</span></h3>
-<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig9.svg" width="308" height="47" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 9" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="xcodebuild-simctl-cli-fig9.svg" width="308" height="47" style="--f:0.491" alt="xcodebuild, simctl &amp; friends — Xcode from the command line — figure 9" loading="lazy"></figure>
 <p><code>xcrun --find T</code> resolves without running; <code>xcrun</code> sets <code>SDKROOT</code> for what it starts. <code>xcodes</code> + <code>.xcode-version</code> pin the Xcode. Fresh Mac: <code>-runFirstLaunch</code>; <code>-downloadPlatform iOS -exportPath D</code> once, <code>-importPlatform</code> on every Mac.</p>
 <h3 class="sheet-hd"><span class="c-sheetblue">Xcode Cloud</span></h3>
 <p>Runs only <code>ci_post_clone.sh</code>, <code>ci_pre_xcodebuild.sh</code> and <code>ci_post_xcodebuild.sh</code> from <a href="https://developer.apple.com/documentation/xcode/writing-custom-build-scripts"><code>ci_scripts/</code></a> beside the project — the last <em>even if xcodebuild failed</em>. No shebang <span class="math">→</span> <code>zsh file</code>; no <code>sudo</code>; created files are deleted; secrets print as asterisks. 25 compute hours a month are included.</p>

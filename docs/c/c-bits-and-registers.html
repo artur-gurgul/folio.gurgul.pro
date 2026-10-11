@@ -7,7 +7,7 @@ field is a <strong>position + width</strong> — read it <em>shift, then mask</e
 write-1-to-clear flags exist so that one bit changes in <strong>one store</strong>.</p>
 <p class="sheet-tools"><a class="sheet-download" href="c-bits-and-registers.pdf" download>Download PDF</a> <a href="c-bits-and-registers.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/c/c-bits-and-registers.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="c-bits-and-registers-fig1.svg" width="600" height="75" class="wide" alt="Bits, masks and hardware registers in C — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-bits-and-registers-fig1.svg" width="600" height="75" style="--f:0.956" class="wide" alt="Bits, masks and hardware registers in C — figure 1" loading="lazy"></figure>
 </section>
 <section class="sheet-section">
 <h2>Six idioms</h2>
@@ -38,7 +38,7 @@ write-1-to-clear flags exist so that one bit changes in <strong>one store</stron
 </section>
 <section class="sheet-section">
 <h2>Precedence — where bit tests break</h2>
-<figure class="sheet-figure"><img src="c-bits-and-registers-fig2.svg" width="230" height="37" alt="Bits, masks and hardware registers in C — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-bits-and-registers-fig2.svg" width="230" height="37" style="--f:0.367" alt="Bits, masks and hardware registers in C — figure 2" loading="lazy"></figure>
 </section>
 <section class="sheet-section">
 <h2>Shifts — C23 6.5.8</h2>
@@ -73,7 +73,7 @@ write-1-to-clear flags exist so that one bit changes in <strong>one store</stron
 </section>
 <section class="sheet-section">
 <h2>The lowest set bit</h2>
-<figure class="sheet-figure"><img src="c-bits-and-registers-fig3.svg" width="261" height="87" alt="Bits, masks and hardware registers in C — figure 3" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-bits-and-registers-fig3.svg" width="261" height="87" style="--f:0.416" alt="Bits, masks and hardware registers in C — figure 3" loading="lazy"></figure>
 <ul>
 <li>Loop <code>x &amp;= x - 1</code> to 0 = popcount in O(set bits) (Wegner 1960; K&amp;R ex. 2-9).  One bit set: <code>x &amp;&amp; !(x &amp; (x - 1))</code> — forget <code>x &amp;&amp;</code> and 0 passes.</li>
 <li><span class="math">a = 2<sup>k</sup></span>, unsigned <code>h</code>: <code>h &amp; (a - 1)</code> = <code>h % a</code>; align up:  <code>(x + a - 1) &amp; ~(a - 1)</code>.</li>
@@ -112,7 +112,7 @@ STATUS = DONE;                       <span class="hljs-comment">// W1C: write on
 </section>
 <section class="sheet-section">
 <h2>One bit, one store</h2>
-<figure class="sheet-figure"><img src="c-bits-and-registers-fig4.svg" width="249" height="66" alt="Bits, masks and hardware registers in C — figure 4" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-bits-and-registers-fig4.svg" width="249" height="66" style="--f:0.397" alt="Bits, masks and hardware registers in C — figure 4" loading="lazy"></figure>
 <ul>
 <li><strong>ESP32</strong> <code>GPIO_OUT_W1TS</code> / <code>_W1TC</code> (offset <code>0x08</code> / <code>0x0C</code>)  set / clear the 1-bits. ESP-IDF’s <code>REG_SET_BIT</code>, <code>REG_SET_FIELD</code> are plain  C read-modify-writes.</li>
 <li><strong>STM32</strong> <code>GPIOx_BSRR</code>: bits 0–15 set, 16–31 reset <code>ODR</code> — “no risk of an  IRQ occurring between the read and the modify access”; both: set wins.</li>
@@ -121,7 +121,7 @@ STATUS = DONE;                       <span class="hljs-comment">// W1C: write on
 </section>
 <section class="sheet-section">
 <h2>Status flags — how a bit is cleared</h2>
-<figure class="sheet-figure"><img src="c-bits-and-registers-fig5.svg" width="273" height="52" alt="Bits, masks and hardware registers in C — figure 5" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-bits-and-registers-fig5.svg" width="273" height="52" style="--f:0.435" alt="Bits, masks and hardware registers in C — figure 5" loading="lazy"></figure>
 <p><table class="sheet-table">
 <thead>
 <tr><th><code><strong>kind</strong></code></th><th><strong>clears by</strong></th><th><strong>write</strong></th></tr>

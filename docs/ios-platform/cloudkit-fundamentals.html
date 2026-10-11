@@ -7,7 +7,7 @@ is checked against the record’s <strong>change tag</strong>, so a conflict is 
 never a silent overwrite. Only <strong>custom zones</strong> give atomic writes, change tokens and sharing.</p>
 <p class="sheet-tools"><a class="sheet-download" href="cloudkit-fundamentals.pdf" download>Download PDF</a> <a href="cloudkit-fundamentals.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/cloudkit-fundamentals.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="cloudkit-fundamentals-fig1.svg" width="634" height="140" class="wide" alt="CloudKit fundamentals — databases, zones, records, errors — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="cloudkit-fundamentals-fig1.svg" width="634" height="140" style="--f:1.000" class="wide" alt="CloudKit fundamentals — databases, zones, records, errors — figure 1" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">Records</span></h3>
 <ul>
 <li><code>CKRecord</code> = <code>recordType</code> + fields (String, number, Data, Date, CLLocation, arrays,  <code>CKAsset</code>, <code>Reference</code>), <span class="math">≤</span> <strong>1 MB</strong> without assets. <code>CKRecord.ID</code> =  <code>recordName</code> (yours, e.g. UUID <span class="math">→</span> idempotent retry) + <code>zoneID</code>: a record never  changes zone.</li>
@@ -37,7 +37,7 @@ never a silent overwrite. Only <strong>custom zones</strong> give atomic writes,
   }
 }</code></pre>
 <h3 class="sheet-hd"><span class="c-sheetblue">The change tag turns a race into an error</span></h3>
-<figure class="sheet-figure"><img src="cloudkit-fundamentals-fig2.svg" width="316" height="105" alt="CloudKit fundamentals — databases, zones, records, errors — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="cloudkit-fundamentals-fig2.svg" width="316" height="105" style="--f:0.504" alt="CloudKit fundamentals — databases, zones, records, errors — figure 2" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">Queries, indexes, schema environments</span></h3>
 <ul>
 <li><code>CKQuery(recordType:predicate:)</code> + sort, paged by <code>queryCursor</code>. Indexes:  <strong>Queryable</strong> (equality; on <code>recordName</code> to list all), <strong>Sortable</strong>  (ranges, sort), <strong>Searchable</strong> (tokens).</li>

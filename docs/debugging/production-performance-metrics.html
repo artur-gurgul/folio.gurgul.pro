@@ -7,7 +7,7 @@ Apple (Organizer) / Google (Play vitals). Read <strong>percentiles per app versi
 never an average, and gate each release on them.</p>
 <p class="sheet-tools"><a class="sheet-download" href="production-performance-metrics.pdf" download>Download PDF</a> <a href="production-performance-metrics.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/debugging/production-performance-metrics.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="production-performance-metrics-fig1.svg" width="628" height="126" class="wide" alt="Performance in production — field metrics, not lab numbers — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="production-performance-metrics-fig1.svg" width="628" height="126" style="--f:1.000" class="wide" alt="Performance in production — field metrics, not lab numbers — figure 1" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">MetricKit — the iOS 27 API</span></h3>
 <ul>
 <li><code>MetricManager</code> — an <em>instance</em>, not a singleton: keep <strong>one</strong>. With two, loops  over one sequence each get a non-deterministic <em>subset</em>.</li>
@@ -66,7 +66,7 @@ mxSignpost(.begin, log: log, name: <span class="hljs-string">&quot;Pay&quot;</sp
 <li>Input ANR = not handled in 5 s. <code>getHistoricalProcessExitReasons()</code> (API 30):  <code>REASON_LOW_MEMORY</code>, <code>REASON_ANR</code> (+ trace). <strong>TTID</strong> = first frame (logcat  <code>Displayed</code>); <strong>TTFD</strong> = <code>reportFullyDrawn()</code>.</li>
 </ul>
 <h3 class="sheet-hd"><span class="c-sheetblue">Thresholds on one axis</span></h3>
-<figure class="sheet-figure"><img src="production-performance-metrics-fig2.svg" width="302" height="94" alt="Performance in production — field metrics, not lab numbers — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="production-performance-metrics-fig2.svg" width="302" height="94" style="--f:0.481" alt="Performance in production — field metrics, not lab numbers — figure 2" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">Definitions</span></h3>
 <ul>
 <li><strong>Launch</strong> = tap <span class="math">→</span> first frame <em>after</em> the launch screen. <strong>Resume</strong> = process  still alive: reported apart, much faster. Cold–warm is a spectrum.</li>
@@ -90,7 +90,7 @@ mxSignpost(.begin, log: log, name: <span class="hljs-string">&quot;Pay&quot;</sp
 </tbody>
 </table></p>
 <h3 class="sheet-hd"><span class="c-sheetblue">Percentiles, not averages — worked</span></h3>
-<figure class="sheet-figure"><img src="production-performance-metrics-fig3.svg" width="306" height="49" alt="Performance in production — field metrics, not lab numbers — figure 3" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="production-performance-metrics-fig3.svg" width="306" height="49" style="--f:0.488" alt="Performance in production — field metrics, not lab numbers — figure 3" loading="lazy"></figure>
 <p>10 launches (s): 0.40 0.40 0.45 0.45 0.50 0.50 0.55 0.60 0.90 6.00 — one outlier doubles the mean (0.53 <span class="math">→</span> 1.08) and leaves p50 where it was.</p>
 <ul>
 <li>MetricKit sends <strong>histograms</strong>: merge buckets across devices, <em>then</em> read the  percentile — never average per-device averages or percentiles.</li>

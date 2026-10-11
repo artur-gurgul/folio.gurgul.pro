@@ -7,7 +7,7 @@ its <strong>critical path</strong> is the developer’s wait. Speed comes from <
 system is judged by the <strong>DORA</strong> metrics — not by how many jobs it has.</p>
 <p class="sheet-tools"><a class="sheet-download" href="ci-pipeline-design.pdf" download>Download PDF</a> <a href="ci-pipeline-design.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/cicd/ci-pipeline-design.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="ci-pipeline-design-fig1.svg" width="535" height="159" class="wide" alt="CI pipeline design — fast feedback, safe merges, one artifact — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="ci-pipeline-design-fig1.svg" width="535" height="159" style="--f:0.853" class="wide" alt="CI pipeline design — fast feedback, safe merges, one artifact — figure 1" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">Order and speed</span></h3>
 <ul>
 <li><strong>Cheap and likely-to-fail first</strong>: lint (seconds) <span class="math">→</span> compile <span class="math">→</span> unit <span class="math">→</span>  snapshot <span class="math">→</span> UI/E2E. Commit stage within XP’s <strong>ten-minute build</strong>; slow suites in a  second stage that “might take a couple of hours” (Fowler, rev. 2024).</li>
@@ -16,7 +16,7 @@ system is judged by the <strong>DORA</strong> metrics — not by how many jobs i
 <li><strong>Cancel superseded PR runs</strong>, never deploys: GitHub <code>concurrency</code> (+ <code>cancel-in-progress</code>)  · GitLab <code>interruptible</code> · Buildkite <em>Cancel Intermediate Builds</em> · Xcode Cloud  <em>Auto-cancel Builds</em> (on by default).</li>
 </ul>
 <h3 class="sheet-hd"><span class="c-sheetblue">Sharding — split by duration, not by count</span></h3>
-<figure class="sheet-figure"><img src="ci-pipeline-design-fig2.svg" width="280" height="54" alt="CI pipeline design — fast feedback, safe merges, one artifact — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="ci-pipeline-design-fig2.svg" width="280" height="54" style="--f:0.446" alt="CI pipeline design — fast feedback, safe merges, one artifact — figure 2" loading="lazy"></figure>
 <p>Wall clock <span class="math">≈</span> build + slowest shard + per-shard setup (boot, download): past a point more shards only add setup and cost. Timing data: Buildkite <code>bktec</code> (history), CircleCI <code>tests split --split-by=timings</code> (previous run; with none, by name).</p>
 <p><table class="sheet-table">
 <thead>

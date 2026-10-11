@@ -75,15 +75,15 @@ int g(int *restrict a, int *restrict b)
 <li>Only on pointers to object types. <code>f(int *restrict p)</code> and <code>f(int *p)</code> are  compatible declarations. Restricted-to-restricted assignment: outer block → inner only.</li>
 <li><code>memcpy</code>, <code>memccpy</code>, <code>strcpy</code>, <code>strncpy</code> take <code>restrict</code>: overlap is UB;  <code>memmove</code> copies <em>as if</em> via a temporary array. Not a C++ keyword: G++ spells it  <code>__restrict__</code>.</li>
 </ul>
-<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig1.svg" width="246" height="46" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig1.svg" width="246" height="46" style="--f:0.392" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 1" loading="lazy"></figure>
 </section>
 <section class="sheet-section">
 <h2>Which part is read-only?</h2>
-<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig2.svg" width="264" height="85" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig2.svg" width="264" height="85" style="--f:0.421" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 2" loading="lazy"></figure>
 </section>
 <section class="sheet-section">
 <h2>Decay, arithmetic, sizeof</h2>
-<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig3.svg" width="287" height="82" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 3" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig3.svg" width="287" height="82" style="--f:0.457" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 3" loading="lazy"></figure>
 <ul>
 <li>Decay to <code>&amp;a[0]</code> happens everywhere except under <code>sizeof</code>, <code>typeof</code>, unary  <code>&amp;</code>, and a string literal initialising an array.</li>
 <li>Parameter <code>int a[10]</code> <em>is</em> <code>int *a</code>: <code>sizeof a / sizeof a[0]</code> gives  pointer size / element size (GCC warns by default). Pass the length:  <code>(size_t n, int a[n])</code> documents it; <code>int (*m)[n]</code> keeps a row size.</li>
@@ -94,7 +94,7 @@ int g(int *restrict a, int *restrict b)
 </section>
 <section class="sheet-section">
 <h2>Array of pointers · pointer to array · 2-D</h2>
-<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig4.svg" width="282" height="103" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 4" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig4.svg" width="282" height="103" style="--f:0.449" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 4" loading="lazy"></figure>
 </section>
 <section class="sheet-section">
 <h2>Null pointers</h2>
@@ -106,7 +106,7 @@ int g(int *restrict a, int *restrict b)
 </section>
 <section class="sheet-section">
 <h2>Lifetime — dangling pointers</h2>
-<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig5.svg" width="301" height="95" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 5" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="c-pointers-const-restrict-fig5.svg" width="301" height="95" style="--f:0.480" alt="Pointers — declarations, const, restrict, decay, lifetime — figure 5" loading="lazy"></figure>
 <ul>
 <li>Once the object dies, <strong>every</strong> use of the pointer value is UB — <code>if (p == q)</code>  after <code>free(p)</code> too; its bits are indeterminate. GCC <code>-Wuse-after-free=2</code> and  <code>-Wdangling-pointer=2</code> are in <code>-Wall</code>; ASan finds use-after-free, -return, -scope.</li>
 <li><code>char buf[32]; return buf;</code> (GCC warns by default). Fix: caller’s buffer + size,  <code>static</code> (not re-entrant) or <code>malloc</code> (caller frees).</li>

@@ -6,7 +6,7 @@ Data = <strong>immutable samples</strong>; totals come from <strong>statistics q
 (they de-duplicate iPhone + Watch), changes from <strong>observer + anchored</strong> ones.</p>
 <p class="sheet-tools"><a class="sheet-download" href="healthkit.pdf" download>Download PDF</a> <a href="healthkit.svg" title="The sheet as printed, one page">Print view</a> <a href="https://github.com/artur-gurgul/folio.gurgul.pro/blob/main/src/ios-platform/healthkit.tex">LaTeX source</a></p>
 <section class="sheet-section">
-<figure class="sheet-figure"><img src="healthkit-fig1.svg" width="636" height="163" class="wide" alt="HealthKit — authorization, data model, queries, sync — figure 1" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="healthkit-fig1.svg" width="636" height="163" style="--f:1.000" class="wide" alt="HealthKit — authorization, data model, queries, sync — figure 1" loading="lazy"></figure>
 <h3 class="sheet-hd"><span class="c-sheetblue">How it works</span></h3>
 <ul>
 <li><strong>Setup</strong>: HealthKit capability (+ <em>Clinical Health Records</em> only if used); plist  <code>NSHealthShareUsageDescription</code> (<strong>read</strong>), <code>NSHealthUpdateUsageDescription</code>  (<strong>write</strong>). Xcode adds <code>healthkit</code> to <em>required device capabilities</em> — remove it if optional.</li>
@@ -38,7 +38,7 @@ days.enumerateStatistics(from: start, to: .now) { s, <span class="hljs-keyword">
 <h3 class="sheet-hd"><span class="c-sheetblue">Workouts</span></h3>
 <p><strong>watchOS</strong>: <code>HKWorkoutSession</code> + <code>HKLiveWorkoutBuilder</code>. <strong>iOS 17</strong>: <code>HKWorkoutSession</code> on iPhone/iPad (a Watch session can <code>startMirroringToCompanionDevice</code>). <strong>iOS 26</strong>: <code>HKLiveWorkoutBuilder</code> on iPhone/iPad — standalone: <code>prepare()</code> (countdown) <span class="math">→</span> <code>startActivity</code> + <code>beginCollection</code> <span class="math">→</span> delegate streams metrics <span class="math">→</span> <code>stopActivity</code>, end, <code>finishWorkout()</code>. Heart rate needs an external strap; the phone locks <span class="math">→</span> show a Live Activity. Logging one after the fact: <code>HKWorkoutBuilder</code>.</p>
 <h3 class="sheet-hd"><span class="c-sheetblue">Why summing raw samples over-counts</span></h3>
-<figure class="sheet-figure"><img src="healthkit-fig2.svg" width="331" height="58" alt="HealthKit — authorization, data model, queries, sync — figure 2" loading="lazy"></figure>
+<figure class="sheet-figure"><img src="healthkit-fig2.svg" width="331" height="58" style="--f:0.528" alt="HealthKit — authorization, data model, queries, sync — figure 2" loading="lazy"></figure>
 <p><strong>Statistics queries merge overlapping sources</strong>, as Health does; summing raw samples (or <code>.separateBySource</code> totals) double-counts.</p>
 <h3 class="sheet-hd"><span class="c-sheetblue">The query family</span></h3>
 <p><table class="sheet-table">

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -41,6 +42,10 @@ DOCS = ROOT / "docs"
 KEEP = {"CNAME"}
 GENERATED = ("nav.json", "sitemap.xml", "robots.txt")
 REPO = "https://github.com/artur-gurgul/folio.gurgul.pro"
+# the A4 sheet's text width (210 mm less 22 mm margins each side = 166 mm = 470.55 pt) in the
+# px Sajt writes on a figure's <img> (pt x 4/3)
+A4_TEXT_PX = 470.55 * 4 / 3
+FIGURE_IMG = re.compile(r'<img src="([^"]+-fig\d+\.svg)" width="(\d+)" height="(\d+)"')
 
 
 def fail(msg: str, code: int, fix: str = "") -> int:
@@ -132,6 +137,20 @@ def main() -> int:
     dark = subprocess.run([sys.executable, str(ROOT / "tools" / "dark-figures.py"), str(OUT)])
     if dark.returncode not in (0,):
         return fail(f"tools/dark-figures.py exited {dark.returncode}", 1)
+
+    # Every figure at the SAME scale on screen. Sajt shows a figure drawn across the page at the
+    # column's width and a smaller one at its printed size, so a small figure's text came out
+    # ~1.6x smaller than a wide one's — 8-9 px, unreadable. Each <img> gets its share of the A4
+    # text width as --f (sheet.css: width = --f x the column), so all figure text is one size.
+    sized = 0
+    for page in OUT.rglob("*.html"):
+        html = page.read_text()
+        new = FIGURE_IMG.sub(lambda m: f'{m.group(0)} style="--f:{min(1.0, int(m.group(2)) / A4_TEXT_PX):.3f}"',
+                             html)
+        if new != html:
+            page.write_text(new)
+            sized += 1
+    print(f"figures sized to one scale on {sized} page(s)")
 
     if args.check:
         print("check only — docs/ untouched")
