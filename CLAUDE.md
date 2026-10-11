@@ -52,8 +52,8 @@ readers, the sources worth reading go in the web-only Further reading block
 (`\begin{htmlonly}`, rule 8 below), with one line on why each is worth it.
 
 **Layout is designed per folio** (quality rule 2): rearrange diagrams so text
-never shrinks; one A4 page; every folio states its path for the printed QR
-(`\pdfonly{\folioslug{…}}`, rule 4).
+never shrinks; one A4 page; every folio states its path for the QR on the
+maintainer's prints (`\pdfonly{\folioslug{…}}`, rule 4).
 
 **It is not documentation.** A folio that reads like a manual — option lists for
 their own sake, "X is used to Y", an API surface copied from the reference — has
@@ -148,9 +148,14 @@ it belongs in a JSON file, a stylesheet or a script.
    `discussion=<n>` in `% @labels:` (GitHub Discussions, category *Folio
    comments*). "Discuss this folio" opens that thread; a folio without one
    starts it — then record the new thread's number in the folio.
-   **A printed folio names its own page:** a small QR of its URL and version
-   (`http://folio.gurgul.pro/<area>/<name>.html?v=DD.MM.YY`) in the top-right
-   corner. Every folio states its path right after `\begin{document}`:
+   **A maintainer's print names its own page:** a small QR of its URL and
+   version (`http://folio.gurgul.pro/<area>/<name>.html?v=DD.MM.YY`) in the
+   top-right corner, so a page on the desk or on the scanner says which folio
+   it is. **The published PDF carries no QR** (maintainer, 2026-10-11: "we
+   share pdf with no qrcode, qrcode is for us to identify quickly the folio"):
+   the sheet style draws it only when the compile defines `\folioprintqr`
+   (`xelatex "\def\folioprintqr{}\input{<name>.tex}"`), which the build never
+   does. Every folio states its path right after `\begin{document}`:
    `\pdfonly{\folioslug{<area>/<name>}}`; `tools/check.py` ("slugs") checks it.
 5. **A folio owns its page.** Content may start from older notes, but once it
    is here it is folio's: edit it here, adapt it freely to these rules.

@@ -6,7 +6,7 @@ Standard library only, and no Sajt needed — anyone can run it.
 CHECKS
   headers   every folio (src/**/*.tex) has a "% Sources" line and a "% @labels:" line
   slugs     every folio states its own path, \\pdfonly{\\folioslug{<area>/<name>}}, and it is
-            the path the file is at: the printed QR in the top-right corner is that page's URL
+            the path the file is at: the QR on the maintainer's prints is that page's URL
   leaks    no private IP addresses, MAC addresses, private keys or key-like
             assignments in any tracked text file — this repository is public
   docs      with --base REF: the change does not touch docs/ (build output; the

@@ -122,7 +122,12 @@
 % It sits in the empty top margin above "<area> · folio", right-aligned to the text, and is
 % \smash-ed, so it takes NO space: no page's layout moves. 11 mm = 0.33 mm a module at the
 % 33 modules a page URL needs (0.30 mm at 37 for the longest paths).
-\RequirePackage{qrcode}
+% It is OURS, not the reader's: maintainer, 2026-10-11, "qr code is optional, we share pdf with
+% no qrcode, qrcode is for us to identify quickly the folio". So it is drawn only when the
+% compile defines \folioprintqr — xelatex "\def\folioprintqr{}\input{<name>.tex}", as the
+% maintainer's print and review tools do. The site build never defines it: the published PDF
+% has no QR, and needs no qrcode package.
+\ifdefined\folioprintqr\RequirePackage{qrcode}\fi
 \newcommand\folio@slug{}
 \newcommand\folioslug[1]{\gdef\folio@slug{#1}}
 \newcommand\folio@version{\two@digits{\day}.\two@digits{\month}.\two@digits{\the\numexpr\year-2000\relax}}
@@ -132,10 +137,12 @@
 \newcommand\folio@drawqr[1]{\qrcode[height=11mm, level=L, nolink]{#1}}
 \newsavebox\folio@qrbox
 \newcommand\folio@qr{%
-  \ifx\folio@slug\@empty\else
-    \edef\folio@url{http://folio.gurgul.pro/\folio@slug.html?v=\folio@version}%
-    \sbox\folio@qrbox{\expandafter\folio@drawqr\expandafter{\folio@url}}%
-    \makebox[0pt][r]{\smash{\raisebox{\dimexpr 3mm+\dp\folio@qrbox\relax}{\usebox\folio@qrbox}}}%
+  \ifdefined\folioprintqr
+    \ifx\folio@slug\@empty\else
+      \edef\folio@url{http://folio.gurgul.pro/\folio@slug.html?v=\folio@version}%
+      \sbox\folio@qrbox{\expandafter\folio@drawqr\expandafter{\folio@url}}%
+      \makebox[0pt][r]{\smash{\raisebox{\dimexpr 3mm+\dp\folio@qrbox\relax}{\usebox\folio@qrbox}}}%
+    \fi
   \fi}
 \newcommand\sheettitle[2]{%
   {\noindent\Large\bfseries #1}\hfill{\small\color{sheetGrey}#2}\folio@qr\par\vspace{2pt}%
