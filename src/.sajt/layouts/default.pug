@@ -46,6 +46,9 @@ doctype html
 html(lang="en")
   head
     include head.pug
+    //- a folio's figures the column is too narrow for open bigger on a click
+    if isFolio
+      script(src="/static/js/figures.js" defer)
   body(data-nav=context.generate && context.generate.nav data-area=here ? here.area : undefined)
     //- printing a folio prints THE A4 folio: the PDF's page as a vector SVG,
     //- loaded but invisible on screen, the only thing shown in print (sheet.css)

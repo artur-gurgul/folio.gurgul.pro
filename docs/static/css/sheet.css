@@ -333,14 +333,128 @@ ul.posts.side-areas a.on span.count {
 	text-align: center;
 }
 
-/* every figure at ONE scale: its share of the A4 text width (--f, written by
-   tools/build.py) of the column. Until 2026-10-10 a figure drawn across the
-   page filled the column while a smaller one kept its printed size, so a small
-   figure's text came out ~1.6x smaller — 8-9 px, "very small" (owner) */
+/* every figure at ONE target scale, as far as the column has room: its drawn
+   width (its share --f of the A4 text width, written by tools/build.py, of
+   627.4 px) times --fig-scale, but never wider than the column. A figure
+   drawn across the page stops at the column; one drawn at half the page grows
+   to the target instead of staying a strip in the middle (owner, 2026-10-11:
+   "have horizontal space to be normal size"). The figures the column stops
+   short of the target open bigger on a click (static/js/figures.js). Folios
+   are 8 pt and their figures' labels mostly 5-6 pt, so 2.4 puts a figure's
+   text at about the page's 17 px (owner chose 2.4 over 1.8 and 3, 2026-10-11).
+   Until 2026-10-11 every figure was its share --f of the column. */
+:root {
+	--a4-text: 627.4px;
+	--fig-scale: 2.4;
+}
+
 .sheet-figure img {
-	width: calc(var(--f, 1) * 100%);
+	width: min(calc(var(--f, 1) * var(--a4-text) * var(--fig-scale)), 100%);
 	max-width: 100%;
 	height: auto;
+}
+
+/* the column stops this figure short of the target: a click enlarges it — the
+   cursor says so, and so does the button figures.js puts in the image's
+   top-right corner (a phone has no cursor) */
+.sheet-figure.zoomable {
+	position: relative;
+}
+
+.sheet-figure.zoomable img {
+	cursor: zoom-in;
+}
+
+.figure-zoom-hint {
+	position: absolute;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: rgba(36, 41, 43, 0.85);
+	color: var(--muted);
+	cursor: zoom-in;
+}
+
+.figure-zoom-hint:hover,
+.figure-zoom-hint:focus-visible {
+	color: var(--text);
+	border-color: var(--accent);
+}
+
+.figure-zoom-hint:focus-visible {
+	outline: 2px solid var(--link);
+	outline-offset: 2px;
+}
+
+.figure-zoom-hint[hidden] {
+	display: none;
+}
+
+/* the enlarged figure: the whole window, the page's own background; a click
+   anywhere, Esc or the close button puts it away */
+dialog.figure-zoom {
+	box-sizing: border-box;
+	width: 100vw;
+	max-width: none;
+	height: 100vh;
+	height: 100dvh;
+	max-height: none;
+	margin: 0;
+	padding: 1rem;
+	border: 0;
+	background: var(--bg);
+	overflow: auto;
+	cursor: zoom-out;
+}
+
+dialog.figure-zoom::backdrop {
+	background: var(--bg);
+}
+
+dialog.figure-zoom img {
+	display: block;
+	max-width: none;
+	height: auto;
+	margin: auto;
+}
+
+/* centred when it fits the window; when it does not (a phone), it starts at
+   the top left and pans. Only while [open]: an author `display` outranks the
+   browser's own `dialog:not([open]) { display: none }`, and a closed dialog
+   left on display:flex covers the top of the page and swallows its clicks */
+dialog.figure-zoom.fits[open] {
+	display: flex;
+}
+
+dialog.figure-zoom .figure-zoom-close {
+	position: fixed;
+	top: 0.6rem;
+	right: 0.8rem;
+	padding: 0.1rem 0.6rem;
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	background: var(--bg);
+	color: var(--text);
+	font: inherit;
+	font-size: 1.4rem;
+	line-height: 1.2;
+	cursor: pointer;
+}
+
+html.figure-zoom-open {
+	overflow: hidden;
+}
+
+@media print {
+	dialog.figure-zoom,
+	.figure-zoom-hint {
+		display: none !important;
+	}
 }
 
 .sheet-code {
