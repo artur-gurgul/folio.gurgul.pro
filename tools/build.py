@@ -143,7 +143,8 @@ def main() -> int:
     # Every figure at the SAME scale on screen. Sajt shows a figure drawn across the page at the
     # column's width and a smaller one at its printed size, so a small figure's text came out
     # ~1.6x smaller than a wide one's — 8-9 px, unreadable. Each <img> gets its share of the A4
-    # text width as --f (sheet.css: width = --f x the column), so all figure text is one size.
+    # text width as --f; sheet.css shows it at --f x the A4 text width x --fig-scale, as far as
+    # the column has room, and static/js/figures.js lets a click enlarge the ones it has not.
     sized = 0
     for page in OUT.rglob("*.html"):
         html = page.read_text()

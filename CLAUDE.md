@@ -79,9 +79,13 @@ light, the Tango shades soft pastels in the same hues (the page uses the same
 set), box outlines go to half strength — while the whole-page `<name>.svg`,
 which is what prints, stays paper. A recoloured figure is marked with its style
 version and never recoloured twice; `tools/check.py` fails while any figure is
-still paper or in an older style. Every figure is shown at **one scale** — its
-share of the A4 text width (`--f`, written by `tools/build.py`) of the column —
-so a small figure's text is as large as a wide one's. Last, every file a page loads —
+still paper or in an older style. Every figure is shown at **one target scale**
+— `--fig-scale` (2.4) times the size it is drawn at (its share `--f` of the A4
+text width, written by `tools/build.py`), which puts its labels at about the
+page's text size — as far as the column has room. A figure the column stops
+short of that gets a zoom cursor and an "enlarge" button in its corner, and a
+click opens it bigger over the page (`static/js/figures.js`, folio pages only;
+Esc or a click closes it). Last, every file a page loads —
 stylesheets, scripts, figures, the JSON files — is named with `?v=<its content hash>`
 (`tools/cache-bust.py`): GitHub Pages lets a browser keep every file for ten minutes, and
 without it a reload after a release shows the new page with the old CSS. Fonts and links
