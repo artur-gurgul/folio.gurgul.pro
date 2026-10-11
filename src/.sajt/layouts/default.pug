@@ -24,6 +24,11 @@
   const thread = here && here.labels && here.labels.discussion && here.labels.discussion[0]
   const discussBody = "About the folio: https://folio.gurgul.pro" + page.finalPath + "\n\n"
   const discussUrl = thread ? repo + "/discussions/" + thread : repo + "/discussions/new?category=folio-comments&title=" + encodeURIComponent(page.title || srcFile) + "&body=" + encodeURIComponent(discussBody)
+  //- the maintainer's review of the folio, when it has one: the hidden
+  //- `review=<words>` label (kebab-case, comma-separated) shown as a notice at
+  //- the top of the page (maintainer, 2026-10-11: mark a folio that is below
+  //- the bar, "add this information on the website")
+  const review = here && here.labels && here.labels.review && here.labels.review.map(v => v.replace(/-/g, " ")).join(", ")
   //- the site map (`sitemap: true`, the front page). With JavaScript off there
   //- is no menu (owner, 2026-10-10: "when there is no javascript, then no menu
   //- at all, just website map"), so the front page lists the subject groups,
@@ -56,6 +61,10 @@ html(lang="en")
       img.folio-print(src=page.finalPath.replace(/\.html$/, ".svg") alt="" aria-hidden="true")
     main.content(class=isFolio ? "folio-page" : undefined)
       h1.title= page.title
+      if review
+        p.folio-review
+          strong Maintainer's review:
+          |  #{review}
       #post!= page.file.html
       if sitemap
         nav.site-map(aria-label="Site map")

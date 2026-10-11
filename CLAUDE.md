@@ -148,6 +148,12 @@ it belongs in a JSON file, a stylesheet or a script.
    `discussion=<n>` in `% @labels:` (GitHub Discussions, category *Folio
    comments*). "Discuss this folio" opens that thread; a folio without one
    starts it — then record the new thread's number in the folio.
+   **The maintainer's review of a folio** is the hidden label `review=<words>`
+   (kebab-case, comma-separated), shown at the top of the folio's web page as
+   "Maintainer's review: …" — never on paper, never as a chip. The maintainer
+   sets it (2026-10-11, the first: `cicd/xcodebuild-simctl-cli`,
+   `review=documentation-like,low-quality,boring`); it is removed when the
+   folio is rewritten and the maintainer accepts it, not before.
    **A maintainer's print names its own page:** a small QR of its URL and
    version (`http://folio.gurgul.pro/<area>/<name>.html?v=DD.MM.YY`) in the
    top-right corner, so a page on the desk or on the scanner says which folio
